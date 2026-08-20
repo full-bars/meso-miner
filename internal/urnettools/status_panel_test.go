@@ -232,9 +232,9 @@ func TestReadProxyFileSource(t *testing.T) {
 
 	t.Run("valid source with windows path", func(t *testing.T) {
 		dir := t.TempDir()
-		writeFile(t, dir, "proxy.state", `{"source":"C:\\Users\\klets\\proxies.txt"}`)
+		writeFile(t, dir, "proxy.state", `{"source":"C:\\Users\\user\\proxies.txt"}`)
 		p := Provider{StateDir: dir}
-		want := `C:\Users\klets\proxies.txt`
+		want := `C:\Users\user\proxies.txt`
 		if got := readProxyFileSource(p); got != want {
 			t.Errorf("got %q, want %q", got, want)
 		}
@@ -332,12 +332,12 @@ func TestPrintProxyStatus(t *testing.T) {
 // provider has no resolved network (e.g. auth not yet completed).
 func TestRenderStatusPanelTitleFallsBackToUser(t *testing.T) {
 	p := Provider{
-		User:     "klets",
+		User:     "user",
 		StateDir: t.TempDir(),
 	}
 	out := capturePanel(t, p)
-	if !strings.Contains(out, "PROVIDER STATUS   klets") {
-		t.Errorf("expected title to fall back to user 'klets':\n%s", out)
+	if !strings.Contains(out, "PROVIDER STATUS   user") {
+		t.Errorf("expected title to fall back to the configured user:\n%s", out)
 	}
 }
 
