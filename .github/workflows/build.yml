@@ -20,7 +20,6 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
-  DOCKER_IMAGE_NAME: 3cape/meso-miner
 
 jobs:
   test-and-lint:
@@ -181,20 +180,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Log in to Docker Hub
-        if: ${{ github.event_name != 'pull_request' }}
-        uses: docker/login-action@v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v6
         with:
           images: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-            ${{ env.DOCKER_IMAGE_NAME }}
           tags: |
             # :latest is the STABLE release — only on v*-meso release tags.
             # group=0 keeps the FULL tag (e.g. v2026.8.24-102938475-meso) so
@@ -248,7 +239,7 @@ jobs:
           '{
             "embeds": [{
               "title": ("🐳 Docker Image Published — " + $version),
-              "description": ("**Platforms:** linux/amd64, linux/arm64\n\n**Pull:**\n```\ndocker pull ghcr.io/full-bars/urnetwork-3.23-fix:" + $version + "\n```\n```\ndocker pull 3cape/meso-miner:" + $version + "\n```\n\n[View build run](" + $runUrl + ")"),
+              "description": ("**Platforms:** linux/amd64, linux/arm64\n\n**Pull:**\n```\ndocker pull ghcr.io/full-bars/urnetwork-3.23-fix:" + $version + "\n```\n\n[View build run](" + $runUrl + ")"),
               "color": 2406797,
               "footer": { "text": "URNetwork Release Monitor • Docker" }
             }]
