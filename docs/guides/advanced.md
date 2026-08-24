@@ -10,7 +10,7 @@ This guide covers multi-server fleet management, performance tuning, hot-reload,
 > - **`ramlogs`** depends on `/dev/shm` (Linux's tmpfs convention). No built-in equivalent on macOS or Windows today.
 > - **`turbo`/`eco`** are *not* kernel-dependent. The Go `urnet-tools` binary supports `turbo` and `eco` on all three platforms as of v3.23.0-fix.27.0. On Linux/macOS they write a persistent environment override; on Windows they set the equivalent registry/env value. You can also set `URNETWORK_PROFILE` directly in any environment.
 >
-> `self-heal`, `proxy *`, `status`, `logs`, `summary`, and `report` work identically on all three platforms.
+> `self-heal`, `proxy *`, `status`, `logs`, and `summary` work identically on all three platforms.
 
 ---
 
