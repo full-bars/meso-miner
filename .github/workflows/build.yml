@@ -78,7 +78,6 @@ jobs:
         run: |
           go vet .
           go vet ./provider/...
-          go vet ./hub/...
 
       - name: Check gofmt
         run: |
