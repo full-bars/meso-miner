@@ -23,17 +23,17 @@ That's it.
 
 **Linux:**
 ```sh
-curl -fSsL https://dl.fullbars.xyz/install.sh | sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh
 ```
 
 **macOS:**
 ```sh
-curl -fSsL https://dl.fullbars.xyz/install-mac.sh | sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh
 ```
 
 **Windows (PowerShell, no admin required):**
 ```powershell
-powershell -c "irm https://dl.fullbars.xyz/install-win.ps1 | iex"
+powershell -c "irm https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Win32.ps1 | iex"
 ```
 
 It will download the provider binary and set it up as a background service (systemd on Linux, launchd on macOS, a Startup entry on Windows).

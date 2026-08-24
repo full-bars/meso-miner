@@ -41,29 +41,21 @@ outside the containers, and delegates into them via `docker exec`.
 
 #### Install `urnet-docker` (Docker users)
 
-The clean one-liner, served from the download domain:
-
 ```bash
-curl -fSsL https://dl.fullbars.xyz/urnet-docker.sh | sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/install-urnet-docker.sh | sh
 ```
 
-If that host is unreachable, use the GitHub source as a fallback:
-
-```bash
-curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh | sh
-```
-
-Both install only the `urnet-docker` CLI on the Docker host. They resolve the
-latest release, download the binary for your OS and architecture (amd64 / arm64),
-verify its SHA-256 against the release API, and install it to `/usr/local/bin`
+This installs only the `urnet-docker` CLI on the Docker host. It resolves the
+latest release, downloads the binary for your OS and architecture (amd64 / arm64),
+verifies its SHA-256 against the release API, and installs it to `/usr/local/bin`
 (or `~/.local/bin` when not run as root). The tool self-updates afterwards with
-`urnet-docker update`. Neither fetches the provider nor a systemd unit.
+`urnet-docker update`. It does not fetch the provider or a systemd unit.
 
 The installer supports Linux and macOS hosts. On a **Windows** Docker host,
 download the matching release asset directly instead:
 
 ```powershell
-Invoke-WebRequest -Uri "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest/download/urnet-docker-windows-amd64" -OutFile "urnet-docker.exe"
+Invoke-WebRequest -Uri "https://github.com/full-bars/meso-miner/releases/latest/download/urnet-docker-windows-amd64" -OutFile "urnet-docker.exe"
 ```
 
 #### Install `urnet-tools` (process/systemd users)
@@ -71,13 +63,7 @@ Invoke-WebRequest -Uri "https://github.com/full-bars/urnetwork-3.23-fix/releases
 Same installer, passing the tool name:
 
 ```bash
-curl -fSsL https://dl.fullbars.xyz/urnet-docker.sh | sh -s -- urnet-tools
-```
-
-GitHub fallback:
-
-```bash
-curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh | sh -s -- urnet-tools
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/install-urnet-docker.sh | sh -s -- urnet-tools
 ```
 
 ## Per-OS details

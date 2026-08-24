@@ -173,14 +173,14 @@ Install via the download domain:
 
 ```bash
 # Docker host tool (urnet-docker)
-curl -fSsL https://dl.fullbars.xyz/urnet-docker.sh | sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/install-urnet-docker.sh | sh
 
 # Process/systemd tool (urnet-tools)
-curl -fSsL https://dl.fullbars.xyz/urnet-docker.sh | sh -s -- urnet-tools
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/install-urnet-docker.sh | sh -s -- urnet-tools
 ```
 
 Fallback to GitHub raw sources if the download domain is unavailable:
 
 ```bash
-curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh | sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/install-urnet-docker.sh | sh
 ```
