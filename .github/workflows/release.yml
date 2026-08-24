@@ -3,7 +3,11 @@ name: Release Binaries
 on:
   push:
     tags:
-      - 'v*'
+      # Scoped to the meso tag scheme (vYYYY.M.D-<code>-meso) so a stray
+      # tag in an unrelated scheme can never fire this workflow — mirrors
+      # build.yml's docker-tag matching, which is already scoped the same
+      # way. Compute a tag with scripts/compute-meso-tag.sh.
+      - 'v*-meso'
   workflow_dispatch:
 
 jobs:
