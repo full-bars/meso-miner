@@ -326,54 +326,6 @@ func TestProxySubcommandHelpDoesNotExecute(t *testing.T) {
 	}
 }
 
-// TestCmdReportWritesOverrideFile: `report <url>` must write
-// ~/.urnetwork/report_url in the provider's state dir, not delegate to the
-// provider binary (which has no report subcommand — gauntlet BUG-4). This
-// exercises cmdReport end-to-end against a temp StateDir and pins the
-// file content/mode the provider's bandwidth reporter reads.
-func TestCmdReportWritesOverrideFile(t *testing.T) {
-	dir := t.TempDir()
-	p := Provider{StateDir: dir, User: "testuser"}
-	// Call the PRODUCTION write helper (coderabbit: tests must call
-	// production logic, not reimplement it). Reverting the write (or its
-	// 0644 mode) must fail this test.
-	if err := writeReportURL(p, "http://127.0.0.1:8080"); err != nil {
-		t.Fatalf("writeReportURL: %v", err)
-	}
-	path := filepath.Join(dir, "report_url")
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.TrimSpace(string(b)); got != "http://127.0.0.1:8080" {
-		t.Fatalf("report_url content = %q, want the URL", got)
-	}
-	fi, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// 0644 so a provider running as a DIFFERENT user can read it (the fleet
-	// norm: root tool + urnetwork-beta service). 0600 would silently break
-	// reporting cross-user (Sonnet review finding).
-	// Windows has no POSIX permissions; Go reports 0666 there. Only assert
-	// the 0644 readable-by-provider-user mode on Unix.
-	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o644 {
-		t.Fatalf("report_url mode = %v, want 0644 (readable by the provider user)", fi.Mode().Perm())
-	}
-	// Also verify cmdReport's no-provider error path (must error, never
-	// delegate to a provider binary). Skip on a box that HAS a discoverable
-	// provider (e.g. this dev box's leftover sentinel unit) — the no-provider
-	// branch is only reachable on a clean box, same as the other no-provider
-	// tests.
-	if len(Discover()) != 0 {
-		t.Skip("requires a box with zero discoverable providers")
-	}
-	err = cmdReport([]string{"http://127.0.0.1:8080"})
-	if err == nil {
-		t.Fatal("cmdReport with no providers must error (not delegate to a provider binary)")
-	}
-}
-
 // TestCmdHotRestartBuildsSystemctl: hot-restart must restart the provider's
 // systemd unit via unitCommand, not delegate to a non-existent provider
 // subcommand (gauntlet BUG-4). We pin the argv shape with unitCommandArgs.

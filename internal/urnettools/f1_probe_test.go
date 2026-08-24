@@ -25,11 +25,11 @@ func TestF1_ProxyAllReachesLoop(t *testing.T) {
 	}
 }
 
-// TestF1_HubTagSurvivesParse pins the parse-layer mechanism for hub: the
-// lenient target parse must preserve --tag=... so cmdHubInstall can read it.
-// (Invoking the full install path would download a binary — out of scope
+// TestF1_TagSurvivesParse pins the parse-layer mechanism: the lenient
+// target parse must preserve --tag=... for commands that take a tag flag.
+// (Invoking a full install path would download a binary — out of scope
 // for a parse test, and hermeticity matters.)
-func TestF1_HubTagSurvivesParse(t *testing.T) {
+func TestF1_TagSurvivesParse(t *testing.T) {
 	_, rest, err := parseTargetFlagsLenient([]string{"install", "--tag=v9.9.9"})
 	if err != nil {
 		t.Fatalf("lenient parse: %v", err)

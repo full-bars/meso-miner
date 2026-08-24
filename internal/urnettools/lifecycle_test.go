@@ -121,17 +121,6 @@ func TestCmdTuneModeValidation(t *testing.T) {
 	}
 }
 
-// TestCmdHubRequiresSubcommand: hub with no subcommand errors cleanly.
-func TestCmdHubRequiresSubcommand(t *testing.T) {
-	err := cmdHub([]string{}, false, false)
-	if err == nil {
-		t.Fatal("expected error for hub with no subcommand")
-	}
-	if !contains(err.Error(), "requires a subcommand") {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
 // TestCmdProxyRequiresSubcommand: proxy with no subcommand errors cleanly.
 func TestCmdProxyRequiresSubcommand(t *testing.T) {
 	err := cmdProxy([]string{}, false, false)
@@ -140,18 +129,6 @@ func TestCmdProxyRequiresSubcommand(t *testing.T) {
 	}
 	if !contains(err.Error(), "requires a subcommand") {
 		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-// TestHubURLValidation: hub set rejects non-http(s) URLs before touching
-// anything.
-func TestHubURLValidation(t *testing.T) {
-	// cmdHub resolves providers first; use a fake provider and the URL check
-	// via a direct helper if available. At minimum, the legacy validation is
-	// mirrored in cmdHub — assert the URL prefix logic here.
-	url := "ftp://bad"
-	if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
-		t.Fatal("validation should reject ftp URL")
 	}
 }
 

@@ -68,7 +68,6 @@ Core Commands:
   auth [<code>] [target]  authenticate provider inside container
   choose-network <api> <connect> [target]  set API/connect endpoints inside container
   summary [target]        activity & performance summary for container
-  report <url> [target]   set hub report URL inside container (no restart)
   update [<container>]     update a container's provider in place (no recreate), or the host binary
   version                 print tool version
 
@@ -89,9 +88,7 @@ Performance & Tuning [target]:
   set <key> [<value>|off]   runtime tuning override in container state
   fast-auth <on|off|status> manage auth rate limiter bypass marker
 
-Hub & Session Management [target]:
-  hub link <url> [--token]  link container provider to central hub
-  hub unlink                remove hub trust and report URL
+Session Management [target]:
   session save <file>       export encrypted identity+proxy bundle
   session load <file>       import encrypted bundle into container
 
@@ -579,21 +576,6 @@ func cmdDockerSummary(args []string) error {
 	return containerExecByName(p.Unit, "urnet-tools", "proxy", "summary")
 }
 
-// cmdDockerReport configures the hub report URL inside the container.
-func cmdDockerReport(args []string) error {
-	providers := DiscoverDocker()
-	t, rest, err := dockerTargetFromArgs(args, providers)
-	if err != nil {
-		return err
-	}
-	p, err := selectTargetInteractive(providers, t)
-	if err != nil {
-		return err
-	}
-	inner := append([]string{"urnet-tools", "report"}, rest...)
-	return containerExecByName(p.Unit, inner...)
-}
-
 // cmdDockerSelfHeal manages the proxy self-heal marker inside the container.
 func cmdDockerSelfHeal(args []string) error {
 	providers := DiscoverDocker()
@@ -636,21 +618,6 @@ func cmdDockerFastAuth(args []string) error {
 		return err
 	}
 	inner := append([]string{"urnet-tools", "fast-auth"}, rest...)
-	return containerExecByName(p.Unit, inner...)
-}
-
-// cmdDockerHub delegates hub management commands into the container.
-func cmdDockerHub(args []string) error {
-	providers := DiscoverDocker()
-	t, rest, err := dockerTargetFromArgs(args, providers)
-	if err != nil {
-		return err
-	}
-	p, err := selectTargetInteractive(providers, t)
-	if err != nil {
-		return err
-	}
-	inner := append([]string{"urnet-tools", "hub"}, rest...)
 	return containerExecByName(p.Unit, inner...)
 }
 

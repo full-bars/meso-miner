@@ -19,10 +19,16 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 | Proxy changes | Restart required | Hot-reload via trigger file, zero downtime, with full added-proxy listing |
 | Proxy source | Static file only | File and/or live URL feed, with scoped auto-cleanup |
 | Error noise | Auth/contract errors spam logs | Rate-limited with suppressed counts |
-| Fleet visibility | None | Hub dashboard — live Mbps, billable traffic, per-proxy drilldown |
 | Performance profiles | None | Auto / Turbo V4 / Turbo V8 / Eco / Lowmem |
 | Crash diagnostics | Journal-only, logs lost on restart | Disk-based critical event log + preserved RAM logs, panic hooks |
 | Custom API/connect backend | One-off `--api_url`/`--connect_url` flags only, re-passed on every invocation | `choose_network` persists the URLs to disk; flags still override per-call |
+
+---
+
+> [!WARNING]
+> **Experimental commands:** `provider claim`, `provider bind-head`, `provider unbind-head`, and
+> `provider wallet set` are experimental, the mechanism may change, and they are not recommended
+> for production use yet. Ported but not exercised against mainnet.
 
 ---
 
@@ -37,7 +43,6 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 | Choose profiles, turbo mode, or host tuning | [Performance Tuning](docs/High-Volume-Performance-Tuning.md) |
 | Understand environment variables | [Configuration Reference](docs/Configuration.md) |
 | Interpret provider logs | [Log Message Reference](LOG_REFERENCE.md) |
-| Monitor your fleet with the bandwidth hub dashboard | [Hub Dashboard](docs/Hub-Dashboard.md) |
 | Load a proxy file into the provider (per-OS) | [Adding Proxies](docs/Adding-Proxies.md) |
 | Feed the provider a live proxy list URL | [Proxy URL Sources](docs/Proxy-URL-Sources.md) |
 
@@ -131,35 +136,12 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 | `urnet-tools hot-restart on/off` | Toggle client JWT reuse across restarts (on by default; `off` sets `URNETWORK_HOT_RESTART=0`) |
 | `urnet-tools session save <file>` | Export identity+proxy state as encrypted bundle (cross-machine transfer) |
 | `urnet-tools session load <file>` | Import identity+proxy state, then restart |
-| `urnet-tools report <url>` | You want to set or change the hub report URL without restarting |
 | `urnet-tools report` | You want to check which URL the provider is currently reporting to |
 | `urnetwork choose_network <api_url> <connect_url>` | You run your own API/connect backend and want the provider to default to it |
 | `urnetwork choose_network --reset` | You want to clear a saved custom network and revert to the main network |
 
 > [!TIP]
 > `~/proxies.txt` and `/home/user/proxies.txt` are both valid path formats.
-
----
-
-## 📡 Fleet Dashboard
-
-Monitor your entire fleet in real time. The hub aggregates bandwidth reports from all nodes and renders a live HTML dashboard with traffic rates, billable accounting, per-proxy drilldown, and auto-refresh.
-
-![Hub Dashboard Preview](docs/hub-dashboard-preview.png)
-
-```bash
-# Run the hub (Linux, via urnet-tools — recommended)
-urnet-tools hub install
-
-# Or run it in Docker (Windows / Mac / any host)
-docker build -f hub/Dockerfile -t urnetwork-hub .
-docker run -d --name urnetwork-hub -p 8080:8080 -v hubdata:/data urnetwork-hub
-
-# Point each provider at it
-URNETWORK_REPORT_URL=http://HUB_IP:8080
-```
-
-See [Hub Setup](docs/Hub-Setup.md) for installation and [Hub Dashboard](docs/Hub-Dashboard.md) for full feature details.
 
 ---
 
@@ -183,8 +165,6 @@ See [Hub Setup](docs/Hub-Setup.md) for installation and [Hub Dashboard](docs/Hub
 - [Configuration Reference](docs/Configuration.md)
 - [Proxy Management & Hot-Reload](docs/Proxy-Management.md)
 - [High-Volume Performance Tuning](docs/High-Volume-Performance-Tuning.md)
-- [Hub Setup](docs/Hub-Setup.md)
-- [Hub Dashboard](docs/Hub-Dashboard.md)
 - [Project Structure](docs/Project-Structure.md)
 - [Log Message Reference](LOG_REFERENCE.md)
 - [Go urnet-tools Reference](docs/urnet-tools-go.md)

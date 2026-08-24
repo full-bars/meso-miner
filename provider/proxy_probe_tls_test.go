@@ -164,6 +164,87 @@ func TestProbeAndFilterProxyURLLines_TLSFailedNotAdmitted(t *testing.T) {
 // (the probe's TLS config pins ServerName to the apiHost, which tests may
 // set to "127.0.0.1" — x509 verification of an IP ServerName requires an
 // IPAddresses SAN, not a DNSName).
+// testCA is a minimal, test-only CA+leaf pair. It doesn't need to match the
+// hub's Ed25519/Argon2id derivation scheme — verifyHubChain only cares that
+// a real x509 chain exists, so a plain self-signed ECDSA CA is sufficient
+// here, and keeps this test file independent of the hub package (provider
+// and hub are separate `package main`s and must not import each other).
+type testCA struct {
+	certDER []byte
+	certPEM []byte
+	key     *ecdsa.PrivateKey
+	cert    *x509.Certificate
+}
+
+func newTestCA(t *testing.T) *testCA {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate CA key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "test-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create CA cert: %v", err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("parse CA cert: %v", err)
+	}
+	return &testCA{
+		certDER: der,
+		certPEM: pemEncodeCert(der),
+		key:     key,
+		cert:    cert,
+	}
+}
+
+func (ca *testCA) issueLeaf(t *testing.T, sans []string) tls.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate leaf key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: "test-leaf"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     sans,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.cert, &key.PublicKey, ca.key)
+	if err != nil {
+		t.Fatalf("create leaf cert: %v", err)
+	}
+	keyBytes, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal leaf key: %v", err)
+	}
+	tlsCert, err := tls.X509KeyPair(pemEncodeCert(der), pemEncodeKey(keyBytes))
+	if err != nil {
+		t.Fatalf("build tls.Certificate: %v", err)
+	}
+	return tlsCert
+}
+
+func pemEncodeCert(der []byte) []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+func pemEncodeKey(der []byte) []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der})
+}
+
 func issueLeafForHost(t *testing.T, ca *testCA, host string) tls.Certificate {
 	t.Helper()
 	if ip := net.ParseIP(host); ip != nil {

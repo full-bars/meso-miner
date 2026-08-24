@@ -711,15 +711,15 @@ Usage:
         [--wallet=<coldkey_ss58>]
         [--max-memory=<mem>]
         [-v...]
-    provider wallet set <coldkey_ss58>
+    provider wallet set <coldkey_ss58>  [EXPERIMENTAL]
         [--api_url=<api_url>]
         [-v...]
-    provider claim [--epoch=<epoch>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
+    provider claim [--epoch=<epoch>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]  [EXPERIMENTAL]
         [--api_url=<api_url>]
         [-v...]
-    provider bind-head --hotkey=<hex> --registrant=<registrant> --contract=<contract> [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
+    provider bind-head --hotkey=<hex> --registrant=<registrant> --contract=<contract> [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]  [EXPERIMENTAL]
         [-v...]
-    provider unbind-head --hotkey=<hex> [--contract=<contract>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
+    provider unbind-head --hotkey=<hex> [--contract=<contract>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]  [EXPERIMENTAL]
         [-v...]
     provider proxy auth add [<key>] <proxy_user> <proxy_password> [-f]
     provider proxy auth remove [<key>] [--all]
@@ -766,6 +766,9 @@ Options:
     --key_file=<key_file>            EVM private key file. When given, claim/bind-head/unbind-head sign
                                      and submit the transaction (via --rpc); without it, the ready-to-submit
                                      calldata is printed for the offline/air-gapped snclaim path.
+                                     EXPERIMENTAL: the claim/bind-head/unbind-head/wallet-set commands are
+                                     experimental, the mechanism may change, and they are not recommended
+                                     for production use yet. Ported but not exercised against mainnet.
     --dry-run                        Build and sign the extrinsic but do not submit.
     --hotkey=<hex>                   Head-tier miner hotkey as a 0x-optional 32-byte hex account id.
     --registrant=<registrant>        The EVM address that will submit bindHead via snclaim (0x, 20 bytes).
@@ -1023,6 +1026,33 @@ func auth(opts docopt.Opts) {
 // for the whole window. "Clear" requires two consecutive healthy polls to avoid
 // premature all-clears during brief lulls mid-outage. A 5-minute per-event
 // cooldown prevents webhook spam if the backend flickers at a boundary.
+// alertWebhookOverridePath returns ~/.urnetwork/alert_webhook, the outage
+// watcher's equivalent of reportURLOverridePath: a file an operator can
+// write to set, change, or clear URNETWORK_ALERT_WEBHOOK without restarting
+// the provider.
+func alertWebhookOverridePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".urnetwork", "alert_webhook"), nil
+}
+
+// resolveAlertWebhook mirrors resolveReportURL: the override file takes
+// precedence over envFallback (URNETWORK_ALERT_WEBHOOK captured at startup)
+// when present and non-blank.
+func resolveAlertWebhook(envFallback string) string {
+	path, err := alertWebhookOverridePath()
+	if err == nil {
+		if b, err := os.ReadFile(path); err == nil {
+			if v := strings.TrimSpace(string(b)); v != "" {
+				return v
+			}
+		}
+	}
+	return envFallback
+}
+
 func runOutageWatcher(ctx context.Context, nodeName, envWebhookURL string) {
 	const pollInterval = 30 * time.Second
 	const cooldown = 5 * time.Minute
@@ -1052,8 +1082,7 @@ func runOutageWatcher(ctx context.Context, nodeName, envWebhookURL string) {
 		}
 
 		// Re-resolve every tick so writing ~/.urnetwork/alert_webhook can
-		// turn outage alerting on, off, or repoint it without a restart —
-		// same reasoning as the hub report URL in bandwidth_reporter.go.
+		// turn outage alerting on, off, or repoint it without a restart.
 		if resolved := resolveAlertWebhook(envWebhookURL); resolved != webhookURL {
 			webhookURL = resolved
 			if webhookURL != "" {
@@ -2403,12 +2432,8 @@ func provide(opts docopt.Opts) {
 		}
 	}
 
-	bootstrapHubCA(ctx, os.Getenv("URNETWORK_REPORT_URL"), os.Getenv("URNETWORK_HUB_TOKEN"))
-
 	go runOutageWatcher(ctx, watcherName, os.Getenv("URNETWORK_ALERT_WEBHOOK"))
 	go runHealthHeartbeat(ctx, provideStartTime, os.Getenv("URNETWORK_PROFILE"))
-	go runBandwidthReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
-	go runHeartbeatReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
 	go runJWTRefresher(ctx, apiUrl)
 	go runEarningWindows(ctx)
 	go runProfitHeartbeat(ctx)

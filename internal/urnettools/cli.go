@@ -61,12 +61,12 @@ func parseGlobalFlags(args []string) (force, dryRun bool, rest []string, err err
 	return force, dryRun, rest, nil
 }
 
-// cmdSimpleDelegation handles the pass-through commands (summary):
-// resolve the targeted provider, then delegate the exact subcommand to that
-// provider's binary. report and hot-restart have real implementations (see
-// cmdReport / cmdHotRestart) because the provider binary has no report or
-// hot-restart subcommands — delegating to it printed the provider's auth
-// usage and did nothing (gauntlet findings BUG-4).
+// cmdSimpleDelegation handles the pass-through commands (summary,
+// hot-restart): resolve the targeted provider, then delegate the exact
+// subcommand to that provider's binary. These have real implementations here
+// because the provider binary has no summary or hot-restart subcommands —
+// delegating to it printed the provider's auth usage and did nothing
+// (gauntlet findings BUG-4).
 func cmdSimpleDelegation(sub string, args []string) error {
 	t, rest, err := parseTargetFlagsLenient(args)
 	if err != nil {
@@ -85,54 +85,6 @@ func cmdSimpleDelegation(sub string, args []string) error {
 	// nested argv; everything else stays flat.
 	cmdArgs := append([]string{"proxy", sub}, rest...)
 	return providerSubcommand(p, cmdArgs...)
-}
-
-// cmdReport implements `urnet-tools report <url> [target]`: it writes the
-// hub-report URL override file (~/.urnetwork/report_url) in the provider's
-// state dir. The provider's bandwidth reporter re-reads that file every
-// tick, so the change takes effect without a restart. The provider binary
-// has NO report subcommand — delegating to it printed auth usage and did
-// nothing (gauntlet finding BUG-4).
-func cmdReport(args []string) error {
-	t, rest, err := parseTargetFlagsLenient(args)
-	if err != nil {
-		return err
-	}
-	providers := Discover()
-	p, err := selectTarget(providers, t)
-	if err != nil {
-		return err
-	}
-	if len(rest) < 1 {
-		return fmt.Errorf("report requires a URL (use 'report off' to disable)")
-	}
-	url := rest[0]
-	if p.StateDir == "" {
-		return fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
-	}
-	if err := writeReportURL(p, url); err != nil {
-		return err
-	}
-	fmt.Printf("report URL for %s set to %q (effective on the reporter's next tick)\n", providerLabel(p), url)
-	return nil
-}
-
-// writeReportURL writes the hub-report override file for a provider.
-// Extracted from cmdReport so the write itself is directly testable with a
-// Provider struct (no live process needed). The provider's bandwidth
-// reporter re-reads this file every tick.
-func writeReportURL(p Provider, url string) error {
-	path := filepath.Join(p.StateDir, "report_url")
-	// 0o644, not 0o600: urnet-tools frequently runs as a different user than
-	// the provider (root tool + urnetwork-beta service — the fleet norm this
-	// codebase supports via -M <user>@ and HOME= overrides). A 0600 file
-	// owned by the tool's user would be unreadable by the provider process,
-	// so the change would silently never take effect (Sonnet review
-	// finding). The sibling override-writers use 0o644 for this reason.
-	if err := os.WriteFile(path, []byte(url+"\n"), 0o644); err != nil {
-		return fmt.Errorf("write %s: %v", path, err)
-	}
-	return nil
 }
 
 // cmdHotRestart implements `urnet-tools hot-restart [target]`: it restarts
@@ -167,7 +119,7 @@ func cmdHotRestart(args []string, force, dryRun bool) error {
 }
 
 // parseDelegationArgs guards -h/--help for the pass-through commands
-// (summary, report, hot-restart) BEFORE any targeting runs: those commands
+// (summary, hot-restart) BEFORE any targeting runs: those commands
 // delegate to the provider binary, so without this guard `--help` would be
 // forwarded and the operation would actually run (the help-never-executes
 // invariant, review finding C1 class). Returns errHelpShown when help was
@@ -231,21 +183,6 @@ Proxy Management [target]:
   proxy traffic                   📈  real-time bandwidth + client session load
   proxy remove-dead               💀  interactively prune dead/degraded/failing
   proxy trim <N>                  ✂   hold running proxies at N, shed worst first (F -> A)
-  report [<url>|off]              📡  set hub report URL at runtime (no restart)
-
-Hub Management [target]:
-  hub set <host:port>             📡  configure hub report URL
-  hub off                         📴  stop reporting to hub (no restart)
-  hub install [--tag=TAG]         📦  install hub as a systemd service
-  hub init [--password PW]        🔐  provision the hub (TLS :8443 + CA cert)
-  hub link <url> [--token]        🔗  fetch hub CA + enable TLS trust
-  hub unlink                      🔓  remove hub trust + stop reporting
-  hub test <url>                  🔍  verify TLS to the hub against saved pin
-  hub onboard-cmd                 📋  mint a fleet onboard-token one-liner
-  hub show-password               👁   print the hub CA password
-  hub update [--tag=TAG]          ⬆   update the hub binary
-  hub open-port <port>            🚪  open a TCP port in firewall (Linux)
-
 Maintenance [target]:
   reinstall                       🔧  reinstall provider
   uninstall                       🗑   uninstall provider
@@ -278,7 +215,7 @@ Force (machines/scripts):
 // parseTargetFlagsLenient is like parseTargetFlags but does NOT reject
 // unknown --flags: it only extracts the known targeting flags and leaves
 // everything else (including provider-binary flags like --force) in rest
-// for pass-through. Used by delegation commands (summary/report/hot-restart,
+// for pass-through. Used by delegation commands (summary/hot-restart,
 // proxy refresh/remove-dead) where trailing args belong to the provider
 // binary, not this tool.
 func parseTargetFlagsLenient(args []string) (Target, []string, error) {

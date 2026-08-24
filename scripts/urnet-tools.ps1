@@ -10,7 +10,7 @@
 
 .DESCRIPTION
     This script helps you manage your URnetwork provider installation.
-    Manages the provider process, proxy configuration, hub linking, and
+    Manages the provider process, proxy configuration, and
     runtime tuning.
 
 .PARAMETER Command
@@ -38,7 +38,7 @@
     Performance & Tuning:
       hot-restart <on|off>        Reuse client JWT identities across restarts
     
-    Proxy & Hub Management:
+    Proxy Management:
       proxy refresh               Re-read configs and hot-reload proxies
       proxy remove-dead [--degraded] [--auth-failures=<N>] [--yes] [--preview]
                                   Interactively prune dead/degraded proxies
@@ -47,13 +47,6 @@
                                   Remove proxies matching a host pattern
       proxy exclude [<pattern>] [--remove]
                                   Exclude patterns from proxy discovery
-      hub install [--tag] [--port] [--token]
-                                  Deploy the hub as a Docker container
-      hub update [--tag] [-f]     Pull latest hub image and recreate container
-      hub link <url> [--token <token>]
-                                  Fetch CA cert and pin the hub's identity
-      hub unlink                  Revert to HTTP (remove pin + CA cert)
-      report [<url>|off]          Show or set hub report URL
       choose_network <api_url> <connect_url>
                                   Save a custom API/connect backend
       choose_network --reset      Clear saved custom network, revert to main network
@@ -78,10 +71,6 @@
     urnet-tools.ps1 hot-restart on
     Enables client JWT reuse across restarts.
 
-.EXAMPLE
-    urnet-tools.ps1 hub link https://hub.example.com:8443 --token <token>
-    Links the provider to a hub with an onboard token.
-
 .OUTPUTS
     String. Status messages, logs, and command output.
 
@@ -94,7 +83,7 @@
 
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("uninstall", "update", "start", "stop", "restart", "status", "version", "reinstall", "auto-update-enable", "auto-update-disable", "auto-update-freq", "auto-start-enable", "auto-start-disable", "proxy", "logs", "hub", "hot-restart", "self-heal", "choose_network", "report")]
+    [ValidateSet("uninstall", "update", "start", "stop", "restart", "status", "version", "reinstall", "auto-update-enable", "auto-update-disable", "auto-update-freq", "auto-start-enable", "auto-start-disable", "proxy", "logs", "hot-restart", "self-heal", "choose_network")]
     [String]$Command,
     [Switch]$Help = $false,
     [String]$InstalledPath = "",
@@ -390,9 +379,8 @@ function Get-ProviderUptime {
 function Test-ProviderIsDocker {
     # Detect deployment model for the *provider* container (-ContainerName):
     # Docker takes priority when a matching container is running; native
-    # $BinaryPath is the fallback. Same detection the "hub" command already
-    # used inline for the hub container — factored out so "proxy",
-    # "choose_network", "report", and "logs" can use it too instead of
+    # $BinaryPath is the fallback. Factored out so "proxy",
+    # "choose_network", and "logs" can use it instead of
     # assuming Docker unconditionally.
     if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
         return $false
@@ -429,48 +417,6 @@ function Get-WarmProxyCount {
         $up = ($state.proxies.PSObject.Properties.Value | Where-Object { $_.health -eq "up" }).Count
         return $up
     } catch { return 0 }
-}
-
-# --- hub (Docker) ---
-#
-# There's no native Windows hub binary (only Linux binaries + a multi-arch
-# Docker image are published — see docs/Hub-Setup.md), so 'hub install' and
-# 'hub update' always deploy the hub as a container. This is a *separate*
-# container from the one -ContainerName refers to elsewhere in this script
-# (which is the provider container, if the provider itself runs in Docker).
-
-$HubImage = "ghcr.io/full-bars/urnetwork-3.23-fix-hub"
-$HubContainerName = "urnetwork-hub"
-$HubVolumeName = "urnetwork-hubdata"
-
-function Get-HubDockerConfPath {
-    $homeDir = if ($IsLinux) { $env:HOME } else { $env:USERPROFILE }
-    return "$homeDir\.urnetwork\hub-docker.conf"
-}
-
-function Test-DockerAvailable {
-    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-        Write-Error "Docker is required to run the hub (no native Windows hub binary exists)."
-        Write-Error "Install Docker Desktop: https://www.docker.com/products/docker-desktop"
-        exit 1
-    }
-    docker info *> $null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "Docker is installed but not running. Start Docker Desktop and try again."
-        exit 1
-    }
-}
-
-function Invoke-HubDockerRun {
-    param([String]$Tag, [String]$Port, [String]$Token)
-    $runArgs = @("run", "-d", "--name", $HubContainerName, "--restart", "unless-stopped",
-        "-p", "${Port}:8080", "-v", "${HubVolumeName}:/data")
-    if ($Token -ne "") {
-        $runArgs += @("-e", "URNETWORK_HUB_TOKEN=$Token")
-    }
-    $runArgs += "${HubImage}:${Tag}"
-    docker @runArgs
-    return $LASTEXITCODE -eq 0
 }
 
 function Test-HotRestartEnabled {
@@ -886,44 +832,6 @@ switch ($Command) {
         break
     }
 
-    "report" {
-        $useDocker = Test-ProviderIsDocker
-        $reportArg = if ($SubArgs) { $SubArgs[0] } else { "" }
-        $reportFile = if ($useDocker) { $null } else { "$env:USERPROFILE\.urnetwork\report_url" }
-
-        if ($reportArg -eq "off") {
-            if ($useDocker) {
-                docker exec $ContainerName sh -c 'rm -f "$HOME/.urnetwork/report_url"'
-            } else {
-                Remove-Item -Path $reportFile -ErrorAction SilentlyContinue
-            }
-            Write-Host "Report URL removed (takes effect on next reporter tick)"
-        }
-        elseif ($reportArg -ne "") {
-            if ($reportArg -notmatch '^https?://') {
-                Write-Error "Report URL must start with http:// or https://"
-                break
-            }
-            if ($useDocker) {
-                $safeUrl = $reportArg -replace "'", "'`"'`"'"
-                docker exec $ContainerName sh -c "echo '$safeUrl' > `"`$HOME/.urnetwork/report_url`""
-            } else {
-                $null = New-Item -ItemType Directory -Force -Path (Split-Path $reportFile)
-                Set-Content -Path $reportFile -Value $reportArg -NoNewline
-            }
-            Write-Host "Report URL set to $reportArg (takes effect on next reporter tick)"
-        }
-        else {
-            if ($useDocker) {
-                $current = docker exec $ContainerName sh -c 'cat "$HOME/.urnetwork/report_url" 2>/dev/null || echo "(not set)"'
-            } else {
-                $current = if (Test-Path $reportFile) { (Get-Content $reportFile -Raw).Trim() } else { "(not set)" }
-            }
-            Write-Host "Report URL: $current"
-        }
-        break
-    }
-
     "logs" {
         $useDocker = Test-ProviderIsDocker
         $n = "0"
@@ -934,276 +842,6 @@ switch ($Command) {
             }
         }
         if ($useDocker) { docker exec $ContainerName provider logs -n $n } else { & $BinaryPath logs -n $n }
-        break
-    }
-
-    "hub" {
-        $hubSubCmd = if ($SubArgs) { $SubArgs[0] } else { "" }
-
-        # Detect deployment model: Docker container takes priority; native
-        # binary is the fallback. Both may coexist on the same machine —
-        # container detection is scoped to $ContainerName so they don't
-        # contaminate each other.
-        $useDocker = Test-ProviderIsDocker
-
-        switch ($hubSubCmd) {
-            "install" {
-                Test-DockerAvailable
-
-                $tag = "latest"; $port = "8080"; $token = ""
-                for ($i = 1; $i -lt $SubArgs.Length; $i++) {
-                    switch ($SubArgs[$i]) {
-                        "--tag"   { $tag = $SubArgs[++$i] }
-                        "--port"  { $port = $SubArgs[++$i] }
-                        "--token" { $token = $SubArgs[++$i] }
-                    }
-                }
-
-                $existingContainers = (docker ps -a --format '{{.Names}}' 2>$null) -split "`n"
-                if ($existingContainers -contains $HubContainerName) {
-                    Write-Error "Hub container '$HubContainerName' already exists. Use 'urnet-tools.ps1 hub update' to upgrade it, or 'docker rm -f $HubContainerName' to remove it first."
-                    break
-                }
-
-                Write-Host "Pulling ${HubImage}:${tag}..."
-                docker pull "${HubImage}:${tag}"
-                if ($LASTEXITCODE -ne 0) { Write-Error "docker pull failed"; break }
-
-                if (-not (Invoke-HubDockerRun -Tag $tag -Port $port -Token $token)) {
-                    Write-Error "Failed to start hub container"
-                    break
-                }
-
-                $confPath = Get-HubDockerConfPath
-                $null = New-Item -ItemType Directory -Force -Path (Split-Path $confPath)
-                Set-Content -Path $confPath -Value "tag=$tag`nport=$port`ntoken=$token"
-
-                Write-Host "Hub container started."
-                Write-Host "  Dashboard: http://localhost:$port"
-                Write-Host "  Data:      docker volume '$HubVolumeName' (persists across updates)"
-                Write-Host ""
-                Write-Host "Next steps:"
-                Write-Host "  urnet-tools.ps1 hub link http://<this-host>:$port   # point your providers at the hub"
-                Write-Host "  docker logs -f $HubContainerName                    # stream hub logs"
-                break
-            }
-
-            "update" {
-                Test-DockerAvailable
-
-                $tag = ""; $force = $false
-                for ($i = 1; $i -lt $SubArgs.Length; $i++) {
-                    switch ($SubArgs[$i]) {
-                        "--tag"   { $tag = $SubArgs[++$i] }
-                        "-f"      { $force = $true }
-                        "--force" { $force = $true }
-                    }
-                }
-
-                $existingContainers = (docker ps -a --format '{{.Names}}' 2>$null) -split "`n"
-                if ($existingContainers -notcontains $HubContainerName) {
-                    Write-Error "No hub container found. Run 'urnet-tools.ps1 hub install' first."
-                    break
-                }
-
-                $confPath = Get-HubDockerConfPath
-                $port = "8080"; $token = ""
-                if (Test-Path $confPath) {
-                    Get-Content $confPath | ForEach-Object {
-                        if ($_ -match '^tag=(.*)$' -and $tag -eq "") { $tag = $Matches[1] }
-                        if ($_ -match '^port=(.*)$') { $port = $Matches[1] }
-                        if ($_ -match '^token=(.*)$') { $token = $Matches[1] }
-                    }
-                }
-                if ($tag -eq "") { $tag = "latest" }
-
-                Write-Host "Pulling ${HubImage}:${tag}..."
-                docker pull "${HubImage}:${tag}"
-                if ($LASTEXITCODE -ne 0) { Write-Error "docker pull failed"; break }
-
-                if (-not $force) {
-                    $runningImage = docker inspect --format '{{.Image}}' $HubContainerName 2>$null
-                    $pulledImage = docker inspect --format '{{.Id}}' "${HubImage}:${tag}" 2>$null
-                    if ($runningImage -and $runningImage -eq $pulledImage) {
-                        Write-Host "Hub is already running ${HubImage}:${tag}. Nothing to do. Use --force to recreate anyway."
-                        break
-                    }
-                }
-
-                Write-Host "Recreating hub container (data volume '$HubVolumeName' is preserved)..."
-                docker stop $HubContainerName *> $null
-                docker rm $HubContainerName *> $null
-
-                if (-not (Invoke-HubDockerRun -Tag $tag -Port $port -Token $token)) {
-                    Write-Error "Failed to start hub container"
-                    break
-                }
-
-                Set-Content -Path $confPath -Value "tag=$tag`nport=$port`ntoken=$token"
-                Write-Host "Hub updated and running ${HubImage}:${tag}."
-                break
-            }
-
-            "link" {
-                if ($SubArgs.Length -lt 2) {
-                    Write-Host "Usage: hub link <https://hub-host:port> [--token <onboard-token>]"
-                    break
-                }
-                $rest = $SubArgs[1..($SubArgs.Length - 1)]
-
-                if ($useDocker) {
-                    docker exec $ContainerName /usr/local/bin/urnet-tools hub link @rest
-                    break
-                }
-
-                $url = $SubArgs[1]
-                $token = ""
-                if ($SubArgs.Length -gt 3 -and $SubArgs[2] -eq "--token") {
-                    $token = $SubArgs[3]
-                }
-
-                if (-not $useDocker) {
-                    if (-not (Test-Path $BinaryPath)) {
-                        Write-Error "No provider found — check -ContainerName (Docker) or install path (native)."
-                        break
-                    }
-                }
-
-                if (-not $useDocker) {
-                    $homeDir = if ($IsLinux) { $env:HOME } else { $env:USERPROFILE }
-                    $reportFile = "$homeDir\.urnetwork\report_url"
-                    $newHost = ($url -replace '^https?://', '') -replace ':.*', '' -replace '^\[', '' -replace '\]$', ''
-                    $newHost = $newHost.ToLower()
-                    if (Test-Path $reportFile) {
-                        $existing = (Get-Content $reportFile -Raw).Trim()
-                        $oldHost = ($existing -replace '^https?://', '') -replace ':.*', '' -replace '^\[', '' -replace '\]$', ''
-                        $oldHost = $oldHost.ToLower()
-                        if ($oldHost -ne $newHost -and $oldHost -ne '') {
-                            Write-Warning "This provider directory is already linked to a different hub host."
-                            Write-Warning "  Current: $oldHost"
-                            Write-Warning "  New:     $newHost"
-                            Write-Warning ""
-                            Write-Warning "Linking to a different host will reconfigure all providers sharing"
-                            Write-Warning "this directory — containers with bind mounts, native installs on"
-                            Write-Warning "the same user, etc."
-                            Write-Warning ""
-                            $hly = if ($env:HUB_LINK_YES) { $env:HUB_LINK_YES.ToLower() } else { "0" }
-                            if ($hly -ne "1" -and $hly -ne "yes" -and $hly -ne "true" -and $hly -ne "y") {
-                                $answer = Read-Host "Proceed? (y/n)"
-                                if ($answer -ne "y") {
-                                    Write-Host "Aborted."
-                                    break
-                                }
-                            }
-                        }
-                    }
-                }
-
-                $hubDir = "$homeDir\.urnetwork"
-                $null = New-Item -ItemType Directory -Force -Path $hubDir
-                $caFile = "$hubDir\hub_ca.pem"
-                $pinFile = "$hubDir\hub.pin"
-                $reportFile = "$hubDir\report_url"
-
-                # -SkipCertificateCheck requires PowerShell 6+ (pwsh)
-
-                try {
-                    if ($token -ne "") {
-                        Write-Host "Fetching hub CA certificate via onboard token..."
-                        $resp = Invoke-RestMethod -Uri "${url}/api/ca-cert?token=${token}" -SkipCertificateCheck -ErrorAction Stop
-                        if (-not $resp.ca_pem) {
-                            Write-Error "Hub responded but did not return a CA certificate."
-                            break
-                        }
-                        Write-Host ""
-                        Write-Host "Hub CA fingerprint: $($resp.ca_fingerprint)"
-                        Write-Host ""
-                        $pem = $resp.ca_pem -replace '\\n', "`n"
-                        Set-Content -Path "$caFile.tmp" -Value $pem -NoNewline
-                        Move-Item -Force "$caFile.tmp" $caFile
-                        Remove-Item -Path $pinFile -ErrorAction SilentlyContinue
-                        Write-Host "CA certificate saved to $caFile"
-                    } else {
-                        Write-Host "Fetching hub CA certificate from $url/api/cert ..."
-                        $resp = Invoke-RestMethod -Uri "${url}/api/cert" -SkipCertificateCheck -ErrorAction Stop
-                        if ($resp.ca_pem) {
-                            Write-Host ""
-                            Write-Host "Hub CA fingerprint: $($resp.ca_fingerprint)"
-                            Write-Host ""
-                            $pem = $resp.ca_pem -replace '\\n', "`n"
-                            Set-Content -Path "$caFile.tmp" -Value $pem -NoNewline
-                            Move-Item -Force "$caFile.tmp" $caFile
-                            Remove-Item -Path $pinFile -ErrorAction SilentlyContinue
-                            Write-Host "CA certificate saved to $caFile"
-                        } elseif ($resp.fingerprint) {
-                            Write-Warning "Hub does not support CA-based trust. Falling back to legacy fingerprint pinning."
-                            Write-Host ""
-                            Write-Host "Hub certificate fingerprint: $($resp.fingerprint)"
-                            Write-Host ""
-                            Set-Content -Path "$pinFile" -Value $resp.fingerprint -NoNewline
-                            Write-Host "Fingerprint pinned to $pinFile"
-                        } else {
-                            Write-Error "Could not extract CA certificate or fingerprint from hub response."
-                            break
-                        }
-                    }
-                } catch {
-                    Write-Error "Failed to reach hub: $_"
-                    break
-                }
-
-                Set-Content -Path "$reportFile" -Value $url -NoNewline
-                Write-Host "Report URL set to $url"
-                Write-Host ""
-                Write-Host "Success. The provider will now send encrypted reports to $url."
-                Write-Host "The change takes effect on the next report tick (no restart needed)."
-                break
-            }
-
-            "unlink" {
-                if ($useDocker) {
-                    docker exec $ContainerName /usr/local/bin/urnet-tools hub unlink
-                    break
-                }
-
-                $homeDir = if ($IsLinux) { $env:HOME } else { $env:USERPROFILE }
-                $hubDir = "$homeDir\.urnetwork"
-                $caFile = "$hubDir\hub_ca.pem"
-                $pinFile = "$hubDir\hub.pin"
-                $reportFile = "$hubDir\report_url"
-
-                Remove-Item -Path $pinFile -ErrorAction SilentlyContinue
-                Remove-Item -Path $caFile -ErrorAction SilentlyContinue
-                Write-Host "Removed $pinFile"
-                Write-Host "Removed $caFile"
-
-                if (Test-Path $reportFile) {
-                    $current = Get-Content $reportFile -Raw
-                    if ($current -match "^https://") {
-                        $hostPort = $current -replace "^https://", ""
-                        $hostOnly = $hostPort -replace ":.*", ""
-                        $newUrl = "http://${hostOnly}:8080"
-                        Set-Content -Path "$reportFile" -Value $newUrl -NoNewline
-                        Write-Host "Report URL changed to $newUrl (insecure)"
-                    } else {
-                        Write-Host "Report URL is $current (not HTTPS, left unchanged)"
-                    }
-                }
-                Write-Host ""
-                Write-Host "Unlinked. Reports are no longer encrypted."
-                Write-Host "To re-link, run: urnet-tools hub link https://<hub-host>:8443"
-                break
-            }
-
-            default {
-                Write-Host "Usage: hub install [--tag <tag>] [--port <port>] [--token <token>]"
-                Write-Host "       hub update [--tag <tag>] [-f|--force]"
-                Write-Host "       hub link <url> [--token <token>]"
-                Write-Host "       hub unlink"
-                Write-Host ""
-                Write-Host "Hub-side commands (onboard-cmd, show-password) must be run on the hub machine."
-            }
-        }
         break
     }
 

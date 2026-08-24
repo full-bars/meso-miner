@@ -66,22 +66,6 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | `proxy remove-dead [target]` | Interactively prune dead and degraded proxies. Honors `--dry-run`. |
 | `proxy summary [target]` | Fleet-style summary of proxy counts by source (url, file, internal). |
 
-### Hub Command Family (v3.23.0-fix.30.4+)
-
-| Command | What it does |
-|---|---|
-| `hub init` | Initialize and configure the bandwidth hub service on this machine. Prompts for password (min 8 chars) or reads from stdin. |
-| `hub link <url>` | Pair provider with a remote bandwidth hub. Verifies TLS CA or SHA-256 certificate fingerprint (TOFU security). Confirm-gated on identity change. |
-| `hub unlink` | Unlink provider from bandwidth hub. |
-| `hub test` | Test reachability and TLS certificate chain validation to the configured hub. |
-| `hub onboard-cmd` | Generate one-line onboarding command with URL-escaped tokens for remote providers. |
-| `hub show-password` | Display current hub admin access password. |
-| `hub open-port` | Configure firewall rules (ufw/iptables/firewalld) to open hub listener port. Confirm-gated. |
-| `hub update` | Update bandwidth hub binary to latest release. |
-| `hub set <url>` | Set raw reporting endpoint URL in `~/.urnetwork/report_url`. |
-| `hub off` | Disable hub reporting by clearing `report_url`. |
-| `hub install` | Install bandwidth hub binary and systemd service. |
-
 ### System & Performance Tuning
 
 | Command | What it does |
@@ -91,7 +75,6 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | `eco [on\|off]` | Enable or disable Eco profile (RAM-constrained hosts). |
 | `turbo [v4\|v8\|off]` | Enable Turbo V4 or Turbo V8 high-throughput modes. |
 | `ramlogs [on\|off]` | Enable or disable RAM-disk logging (`/dev/shm`). |
-| `report <url>` | Set live bandwidth hub reporting URL (`report off` disables). |
 
 ---
 
@@ -157,27 +140,6 @@ urnet-tools session load /path/to/backup.urnsession --allow-different-account
 
 - **Pre-Load Safety Backup:** Automatically creates a timestamped copy of `~/.urnetwork/` (e.g. `~/.urnetwork.bak.1724288000`) before modifying live files.
 - **Permission Hardening:** Unpacks files with `0700` directory permissions and `0600` file permissions, automatically chowning them to the unit owner when run with elevated privileges.
-
-### 3. Hub Setup and Verification
-
-Full lifecycle management for centralized bandwidth reporting:
-
-```bash
-# Initialize hub service on the server
-urnet-tools hub init
-
-# Link a provider to the hub with TOFU TLS verification
-urnet-tools hub link https://hub.example.com:8080
-
-# Verify certificate chain and reachability
-urnet-tools hub test
-
-# Open firewall ports for hub traffic
-urnet-tools hub open-port
-```
-
-- **TLS Pinning:** Verifies TLS against `hub_ca.pem` or pinned SHA-256 public key fingerprints.
-- **Identity Safety:** Prompts with typed confirmation if linking would overwrite existing provider hub registration.
 
 ### 4. Persisted Default Provider
 
