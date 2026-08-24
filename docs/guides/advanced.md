@@ -2,7 +2,7 @@
 
 > **Navigation:** [Guides Index](README.md) · [🐣 Beginner](beginner.md) · [🧭 Intermediate](intermediate.md) · **🚀 Advanced**
 
-This guide covers multi-server fleet management, performance tuning, the hub dashboard, hot-reload, memory management, and troubleshooting production issues. It assumes you already have providers running and want to optimize, monitor, and scale.
+This guide covers multi-server fleet management, performance tuning, hot-reload, memory management, and troubleshooting production issues. It assumes you already have providers running and want to optimize, monitor, and scale.
 
 > [!NOTE]
 > This guide is Linux/Docker-focused because some commands are Linux-specific for hardware reasons:
@@ -18,7 +18,6 @@ This guide covers multi-server fleet management, performance tuning, the hub das
 
 - [Performance Profiles](#-performance-profiles)
 - [Fleet Management](#-fleet-management)
-- [Hub Dashboard](#-hub-dashboard)
 - [Hot-Reload & Proxy Management](#-hot-reload--proxy-management)
 - [Memory & GC Tuning](#-memory--gc-tuning)
 - [Logging & Forensics](#-logging--forensics)
@@ -107,36 +106,6 @@ When enabled, the provider monitors PSI pressure, memory availability, load aver
 - Sheds dead and degraded proxies first, then healthy ones by lowest traffic
 
 The emergency goroutine pin at >= 25000 goroutines provides an extra safety net.
-
----
-
-## 📊 Hub Dashboard
-
-Set up a hub server for fleet-wide visibility:
-
-```sh
-urnet-tools hub install
-urnet-tools hub init
-urnet-tools hub onboard-cmd    # mints a one-time onboard token
-```
-
-Then on each provider node:
-
-```sh
-urnet-tools hub link <https://hub-host:port> --token <onboard-token>
-```
-
-The hub dashboard (port 8080) shows:
-- Live Mbps throughput per node
-- Billable traffic (hourly/daily/monthly)
-- Contract win rates
-- Per-proxy drilldown by address
-- Active client sessions
-
-> 💡 Dashboard is accessible at `http://<hub-ip>:8080/`
-
-> [!WARNING]
-> **Running the hub on the same host as a provider?** The hub defaults to port `:8080`, and a provider's `ENABLE_VNSTAT=true` stats page (on by default) also binds container port `8080`. Colocated on the same machine, whichever starts second fails to bind. Remap one of them — Docker hub: `hub install --docker --port 8081`; Docker provider: publish vnstat on a different host port or set `ENABLE_VNSTAT=false`; bare-metal hub: use a `systemctl --user edit urnetwork-hub.service` drop-in to override `-addr :8080` rather than editing the generated unit directly (a future `hub install` will regenerate it). See [Hub-Dashboard.md](../Hub-Dashboard.md) for the exact drop-in. Separate hosts are unaffected.
 
 ---
 
@@ -278,8 +247,6 @@ tail -f /dev/shm/urnetwork.log
 ### Fleet-wide checks
 
 ```sh
-# Check the hub dashboard
-curl http://<hub-ip>:8080/
 
 # Check a specific node
 ssh user@<node-ip> "urnet-tools proxy summary"

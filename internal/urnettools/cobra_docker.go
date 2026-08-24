@@ -52,9 +52,6 @@ Proxy Management (inside the container):
   proxy summary                   Fleet-style summary (sources, health, counts)
   proxy remove-dead               Prune dead/degraded/failing proxies
 
-Hub Management:
-  hub ...                         hub CA, trust, report set/off, onboard, install, update
-
 Config & Automation:
   auth [<code>]             Authenticate (interactive paste)
   choose-network            Set API/connect endpoints
@@ -62,7 +59,6 @@ Config & Automation:
   set [<k> [<v>|off]]       Show or change runtime tuning overrides
   self-heal [on|off]        Auto-regulate proxies (load gate + cleanup)
   session save|load <file>  Export/import identity + proxy state (encrypted)
-  report <url>|off          Set hub report URL
   help <command>            Show help for a command
 
 Targeting (used when more than one container exists):
@@ -114,14 +110,12 @@ func buildDockerRootCmd() *cobra.Command {
 		newDockerAuthCmd(),
 		newDockerChooseNetworkCmd(),
 		newDockerSummaryCmd(),
-		newDockerReportCmd(),
 		newDockerUpdateCmd(),
 		newDockerVersionCmd(),
 		newDockerProxyCmd(),
 		newDockerSelfHealCmd(),
 		newDockerSetCmd(),
 		newDockerFastAuthCmd(),
-		newDockerHubCmd(),
 		newDockerSessionCmd(),
 		newDockerExecCmd(),
 	)
@@ -191,12 +185,6 @@ func newDockerSummaryCmd() *cobra.Command {
 	return withHelp(newCobraCmd("summary [target]", "activity & performance summary", nil, func(cmd *cobra.Command, args []string) error {
 		return cmdDockerSummary(args)
 	}), "Show an activity and performance summary for the provider inside the targeted container.", "  urnet-docker summary --unit mynetwork-provider")
-}
-
-func newDockerReportCmd() *cobra.Command {
-	return withHelp(newCobraCmd("report <url> [target]", "set hub report URL inside container", nil, func(cmd *cobra.Command, args []string) error {
-		return cmdDockerReport(args)
-	}), "Set the hub report URL used by the provider inside the targeted container, applied without a restart.", "  urnet-docker report https://hub.example.com --unit mynetwork-provider")
 }
 
 func newDockerUpdateCmd() *cobra.Command {
@@ -296,12 +284,6 @@ func newDockerFastAuthCmd() *cobra.Command {
 	return withHelp(newCobraCmd("fast-auth", "manage auth rate limiter bypass marker", []string{"fastauth"}, func(cmd *cobra.Command, args []string) error {
 		return cmdDockerFastAuth(args)
 	}), "Manage the auth rate limiter bypass marker inside the targeted container, delegating to its urnet-tools fast-auth on|off|status.", "  urnet-docker fast-auth status --unit mynetwork-provider\n  urnet-docker fast-auth on --unit mynetwork-provider")
-}
-
-func newDockerHubCmd() *cobra.Command {
-	return withHelp(newCobraCmd("hub", "delegate hub management commands", nil, func(cmd *cobra.Command, args []string) error {
-		return cmdDockerHub(args)
-	}), "Manage the hub for the provider inside the targeted container. set and off point its reporting at a URL or remove it; install and init provision the hub service and its TLS certificate authority; link and unlink trust or untrust a hub; test verifies TLS connectivity; onboard-cmd mints a short-lived onboard token; show-password prints the CA password; update reinstalls the hub binary; open-port opens a firewall port for it. Delegates to the container's own urnet-tools hub.", "  urnet-docker hub set http://192.0.2.10:8080 --unit mynetwork-provider\n  urnet-docker hub link https://hub.example.com:8443 --unit mynetwork-provider\n  urnet-docker hub off --unit mynetwork-provider")
 }
 
 func newDockerSessionCmd() *cobra.Command {
