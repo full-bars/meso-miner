@@ -779,3 +779,41 @@ func TestEnableProviderEncryptionPreservesUnrelatedFields(t *testing.T) {
 		t.Fatalf("IdleTimeout changed: got %v, want %v", settings.EncryptionSettings.IdleTimeout, wantIdleTimeout)
 	}
 }
+
+// TestResolveAlertWebhook_EmptyOverrideDisablesAlerting pins the "off"
+// behavior: an operator clearing ~/.urnetwork/alert_webhook (writing it
+// empty) must disable outage alerting at runtime, not silently fall back to
+// the startup URNETWORK_ALERT_WEBHOOK env value. Regression for the v != ""
+// check that made the empty file fall through to envFallback, leaving no way
+// to turn alerting off once the env var was set.
+func TestResolveAlertWebhook_EmptyOverrideDisablesAlerting(t *testing.T) {
+	home := withTempHome(t)
+	dir := filepath.Join(home, ".urnetwork")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "alert_webhook"), []byte("  \n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := resolveAlertWebhook("https://fallback.example.com"); got != "" {
+		t.Fatalf("expected empty override file to disable alerting (got %q), not fall back to env", got)
+	}
+}
+
+// TestResolveAlertWebhook_NonEmptyOverrideWins: a non-empty override file
+// still takes precedence over the startup env value.
+func TestResolveAlertWebhook_NonEmptyOverrideWins(t *testing.T) {
+	home := withTempHome(t)
+	dir := filepath.Join(home, ".urnetwork")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "alert_webhook"), []byte("https://discord.com/api/webhooks/x\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := resolveAlertWebhook("https://fallback.example.com"); got != "https://discord.com/api/webhooks/x" {
+		t.Fatalf("expected override file to take precedence, got %q", got)
+	}
+}
