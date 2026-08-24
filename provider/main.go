@@ -711,15 +711,15 @@ Usage:
         [--wallet=<coldkey_ss58>]
         [--max-memory=<mem>]
         [-v...]
-    provider wallet set <coldkey_ss58>
+    provider wallet set <coldkey_ss58>  [EXPERIMENTAL]
         [--api_url=<api_url>]
         [-v...]
-    provider claim [--epoch=<epoch>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
+    provider claim [--epoch=<epoch>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]  [EXPERIMENTAL]
         [--api_url=<api_url>]
         [-v...]
-    provider bind-head --hotkey=<hex> --registrant=<registrant> --contract=<contract> [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
+    provider bind-head --hotkey=<hex> --registrant=<registrant> --contract=<contract> [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]  [EXPERIMENTAL]
         [-v...]
-    provider unbind-head --hotkey=<hex> [--contract=<contract>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
+    provider unbind-head --hotkey=<hex> [--contract=<contract>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]  [EXPERIMENTAL]
         [-v...]
     provider proxy auth add [<key>] <proxy_user> <proxy_password> [-f]
     provider proxy auth remove [<key>] [--all]
@@ -766,6 +766,9 @@ Options:
     --key_file=<key_file>            EVM private key file. When given, claim/bind-head/unbind-head sign
                                      and submit the transaction (via --rpc); without it, the ready-to-submit
                                      calldata is printed for the offline/air-gapped snclaim path.
+                                     EXPERIMENTAL: the claim/bind-head/unbind-head/wallet-set commands are
+                                     experimental, the mechanism may change, and they are not recommended
+                                     for production use yet. Ported but not exercised against mainnet.
     --dry-run                        Build and sign the extrinsic but do not submit.
     --hotkey=<hex>                   Head-tier miner hotkey as a 0x-optional 32-byte hex account id.
     --registrant=<registrant>        The EVM address that will submit bindHead via snclaim (0x, 20 bytes).

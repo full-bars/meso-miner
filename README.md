@@ -25,6 +25,13 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 
 ---
 
+> [!WARNING]
+> **Experimental commands:** `provider claim`, `provider bind-head`, `provider unbind-head`, and
+> `provider wallet set` are experimental, the mechanism may change, and they are not recommended
+> for production use yet. Ported but not exercised against mainnet.
+
+---
+
 ## 🗺 Start Here
 
 | If you want to... | Go here |
