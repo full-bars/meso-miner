@@ -30,7 +30,7 @@ Each service needs a unique service name, container name, host port, and vnStat 
 services:
   # Node 1: Handles the initial authentication for the whole stack
   node-1:
-    image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
+    image: ghcr.io/full-bars/meso-miner:latest
     container_name: urfix-1
     restart: unless-stopped
     pull_policy: always
@@ -65,7 +65,7 @@ services:
 
   # Node 2: Uses the JWT created by Node 1
   node-2:
-    image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
+    image: ghcr.io/full-bars/meso-miner:latest
     container_name: urfix-2
     restart: unless-stopped
     pull_policy: always
@@ -94,7 +94,7 @@ services:
 
   # Node 3: Uses the JWT created by Node 1
   node-3:
-    image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
+    image: ghcr.io/full-bars/meso-miner:latest
     container_name: urfix-3
     restart: unless-stopped
     pull_policy: always
@@ -138,7 +138,7 @@ Set `URNETWORK_AUTH_CODE` only on `node-1`. The other nodes wait for `node-1` to
 
 ```yaml
 x-urnetwork-common: &urnetwork-common
-  image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
+  image: ghcr.io/full-bars/meso-miner:latest
   restart: unless-stopped
   pull_policy: always
   cap_add: [NET_ADMIN, NET_RAW]
@@ -252,7 +252,7 @@ volumes:
 
 ```yaml
 x-urnetwork-common: &urnetwork-common
-  image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
+  image: ghcr.io/full-bars/meso-miner:latest
   restart: unless-stopped
   pull_policy: always
   cap_add: [NET_ADMIN, NET_RAW]

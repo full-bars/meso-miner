@@ -1253,12 +1253,12 @@ gh workflow run build.yml --ref feature/dead-proxy-health-report
 gh run watch "$(gh run list --branch feature/dead-proxy-health-report --event workflow_dispatch --limit 1 --json databaseId -q '.[0].databaseId')" --exit-status
 ```
 
-Expected: build succeeds and pushes `ghcr.io/full-bars/urnetwork-3.23-fix:feature-dead-proxy-health-report`.
+Expected: build succeeds and pushes `ghcr.io/full-bars/meso-miner:feature-dead-proxy-health-report`.
 
 - [ ] **Step 4: Deploy to the Detroit test node**
 
 ```bash
-ssh -o StrictHostKeyChecking=no user@100.116.23.13 'docker pull ghcr.io/full-bars/urnetwork-3.23-fix:feature-dead-proxy-health-report && docker stop urtest && docker rm urtest && docker run -d --name urtest --restart unless-stopped -p 9001:8080 --cap-add CAP_NET_ADMIN --cap-add CAP_NET_RAW --sysctl net.ipv4.ip_forward=1 -e ENABLE_VNSTAT=true -e URNETWORK_RAMLOGS=1 -e URNETWORK_PROFILE=auto -e BUILD=jwt -v /home/user/ur-docker/config:/root/.urnetwork -v /home/user/ps1200_combined.txt:/app/proxy.txt ghcr.io/full-bars/urnetwork-3.23-fix:feature-dead-proxy-health-report'
+ssh -o StrictHostKeyChecking=no user@100.116.23.13 'docker pull ghcr.io/full-bars/meso-miner:feature-dead-proxy-health-report && docker stop urtest && docker rm urtest && docker run -d --name urtest --restart unless-stopped -p 9001:8080 --cap-add CAP_NET_ADMIN --cap-add CAP_NET_RAW --sysctl net.ipv4.ip_forward=1 -e ENABLE_VNSTAT=true -e URNETWORK_RAMLOGS=1 -e URNETWORK_PROFILE=auto -e BUILD=jwt -v /home/user/ur-docker/config:/root/.urnetwork -v /home/user/ps1200_combined.txt:/app/proxy.txt ghcr.io/full-bars/meso-miner:feature-dead-proxy-health-report'
 ```
 
 - [ ] **Step 5: Verify the heartbeat output**

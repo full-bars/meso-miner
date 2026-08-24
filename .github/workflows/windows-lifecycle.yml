@@ -11,6 +11,35 @@ on:
   workflow_dispatch:
 
 jobs:
+  ps1-syntax-check:
+    name: PowerShell script syntax check
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Parse scripts/urnet-tools.ps1 and scripts/Provider_Install_Win32.ps1
+        # AST-parse only (no execution) — catches syntax errors (unbalanced
+        # braces/quotes, malformed here-strings, bad param blocks) on a real
+        # Windows PowerShell runtime, without running any install/hub logic.
+        shell: pwsh
+        run: |
+          $files = @("scripts/urnet-tools.ps1", "scripts/Provider_Install_Win32.ps1")
+          $failed = $false
+          foreach ($f in $files) {
+            $errors = $null
+            $tokens = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($f, [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              Write-Host "PARSE ERRORS in ${f}:"
+              foreach ($e in $errors) { Write-Host "  $($e.Message) at line $($e.Extent.StartLineNumber)" }
+              $failed = $true
+            } else {
+              Write-Host "OK: $f parses cleanly"
+            }
+          }
+          if ($failed) { exit 1 }
+
   windows-lifecycle:
     name: urnet-tools Windows lifecycle (schtasks)
     runs-on: windows-latest

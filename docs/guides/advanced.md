@@ -63,7 +63,7 @@ Each server runs its own provider instance. Standard deployment (Linux shown; se
 
 ```sh
 # Per server — same steps:
-curl -fSsL https://dl.fullbars.xyz/install.sh | sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh
 urnetwork auth                       # interactive, prompts for code
 # or: urnetwork auth <your-auth-code>
 ```
