@@ -2,7 +2,7 @@
 # urnet-tools: URnetwork provider manager
 # Author: full-bars (GitHub), onlyinthe707 / "mesocyclone" (Discord)
 # Based on: Ar Rakin, Ryan Mello (original)
-# https://github.com/full-bars/urnetwork-3.23-fix
+# https://github.com/full-bars/meso-miner
 
 me="$0"
 script_rundir="$(pwd)"
@@ -64,7 +64,7 @@ show_help ()
     echo "  -f, --force             Skip confirmation prompts"
     echo "  -B, --no-modify-bashrc  Do not modify ~/.bashrc"
     echo ""
-    echo "Need help? Email support@fullbars.xyz or visit <https://github.com/full-bars/urnetwork-3.23-fix>"
+    echo "Need help? Email support@fullbars.xyz or visit <https://github.com/${REPO}>"
 }
 
 get_arch ()
@@ -98,14 +98,16 @@ has_systemd=0
 no_modify_bashrc=0
 update_timer_oncalendar="Sun *-*-* 00:00:00 UTC"
 
-api_base="https://api.github.com/repos/full-bars/urnetwork-3.23-fix"
+REPO="full-bars/meso-miner"
+
+api_base="https://api.github.com/repos/${REPO}"
 
 install_path="$HOME/.local/share/urnetwork-provider"
 version_file="$install_path/.version"
 
 # Canonical URL for re-running this installer in a freshly created user's context.
 # Overridable via URNET_INSTALL_URL (e.g. to test a branch before it lands on main).
-urnet_install_url="${URNET_INSTALL_URL:-https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_Linux.sh}"
+urnet_install_url="${URNET_INSTALL_URL:-https://raw.githubusercontent.com/${REPO}/refs/heads/main/scripts/Provider_Install_Linux.sh}"
 
 # If no operation is specified and running as a one-off pipe (curl | sh),
 # default to install. The installed urnet-tools binary is handled later
@@ -455,16 +457,10 @@ show_version ()
 
     if [ -z "$latest_version" ]; then
         if command -v curl > /dev/null; then
-            tag_url=$(curl -Ls -o /dev/null -w %{url_effective} "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest")
-            if [ -n "$tag_url" ] && [ "$tag_url" != "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest" ]; then
+            tag_url=$(curl -Ls -o /dev/null -w %{url_effective} "https://github.com/${REPO}/releases/latest")
+            if [ -n "$tag_url" ] && [ "$tag_url" != "https://github.com/${REPO}/releases/latest" ]; then
                 latest_version="${tag_url##*/}"
             fi
-        fi
-    fi
-
-    if [ -z "$latest_version" ]; then
-        if latest_version="$(network_fetch "https://dl.fullbars.xyz/latest-version" 2>/dev/null)"; then
-            latest_version="$(printf "%s" "$latest_version" | tr -d '[:space:]')"
         fi
     fi
 
@@ -1062,8 +1058,8 @@ do_install ()
     # If tag was "latest" and API failed to provide a version, try the redirect trick
     if [ "$tag" = "latest" ] && [ -z "$version_to_install" ]; then
         if command -v curl > /dev/null; then
-            tag_url=$(curl -Ls -o /dev/null -w %{url_effective} "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest")
-            if [ -n "$tag_url" ] && [ "$tag_url" != "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest" ]; then
+            tag_url=$(curl -Ls -o /dev/null -w %{url_effective} "https://github.com/${REPO}/releases/latest")
+            if [ -n "$tag_url" ] && [ "$tag_url" != "https://github.com/${REPO}/releases/latest" ]; then
                 version_to_install="${tag_url##*/}"
             fi
         fi
@@ -1072,13 +1068,6 @@ do_install ()
     # If API failed and a specific tag was requested, just use the requested tag
     if [ "$tag" != "latest" ] && [ -z "$version_to_install" ]; then
         version_to_install="$tag"
-    fi
-
-    # Fallback: try dl.fullbars.xyz latest-version endpoint
-    if [ -z "$version_to_install" ]; then
-        if worker_version="$(network_fetch "https://dl.fullbars.xyz/latest-version" 2>/dev/null)"; then
-            version_to_install="$(printf "%s" "$worker_version" | tr -d '[:space:]')"
-        fi
     fi
 
     if [ -z "$version_to_install" ]; then
@@ -1139,8 +1128,7 @@ do_install ()
         pr_err "Could not resolve 'latest' tag to a specific version. GitHub API might be unreachable."
         exit 1
     fi
-    dl_url="https://dl.fullbars.xyz/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
-    mirror_url="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
+    dl_url="https://github.com/${REPO}/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
     
     pr_info "Downloading: %s" "$dl_url"
     
@@ -1160,11 +1148,8 @@ do_install ()
 
     if [ -z "$URNETWORK_NO_DOWNLOAD_TARBALL" ]; then
         if ! download_asset "$dl_url" "$tarball"; then
-            pr_warn "Primary download failed, trying GitHub mirror..."
-            if ! download_asset "$mirror_url" "$tarball"; then
-                pr_err "Failed to download from both primary and mirror"
-                exit 1
-            fi
+            pr_err "Failed to download release tarball"
+            exit 1
         fi
 
         if ! tar -xf "$tarball" 2>/dev/null; then
@@ -1223,8 +1208,7 @@ do_install ()
     tool_installed=0
     if [ -n "$tag" ] && [ "$tag" != "latest" ]; then
         tool_asset="urnet-tools-linux-$arch"
-        tool_dl_url="https://dl.fullbars.xyz/releases/download/$tag/$tool_asset"
-        tool_mirror_url="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$tag/$tool_asset"
+        tool_dl_url="https://github.com/${REPO}/releases/download/$tag/$tool_asset"
 
         # Resolve the digest from the release API. Empty digest = the release
         # predates tool assets (or the asset is missing) → fall back to shell.
@@ -1247,20 +1231,7 @@ do_install ()
                     pr_warn "urnet-tools sha256 mismatch, falling back to shell script"
                 fi
             else
-                pr_warn "Primary tool download failed, trying GitHub mirror..."
-                if download_asset "$tool_mirror_url" "$workdir/$tool_asset"; then
-                    if verify_sha256_file "$workdir/$tool_asset" "$tool_digest"; then
-                        mv -f "$install_path/bin/urnet-tools" "$install_path/bin/urnet-tools.old" 2>/dev/null || true
-                        cp "$workdir/$tool_asset" "$install_path/bin/urnet-tools" || { pr_err "Failed to install urnet-tools binary"; exit 1; }
-                        chmod 755 "$install_path/bin/urnet-tools" || { pr_err "Failed to install urnet-tools binary"; exit 1; }
-                        rm -f "$install_path/bin/urnet-tools.old" 2>/dev/null || true
-                        tool_installed=1
-                    else
-                        pr_warn "urnet-tools sha256 mismatch (mirror), falling back to shell script"
-                    fi
-                else
-                    pr_warn "Mirror tool download failed, falling back to shell script"
-                fi
+                pr_warn "Tool download failed, falling back to shell script"
             fi
         fi
     fi
