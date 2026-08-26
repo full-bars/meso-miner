@@ -558,7 +558,8 @@ func cmdTune(profile string, args []string, force, dryRun bool) error {
 // cmdOptimize applies golden-fleet kernel/OS limits (best-effort; delegates
 // to the legacy installer script's optimize when present). Platform-aware:
 // Linux uses sysctl, Windows uses netsh/reg (no kernel to tune, but the
-// network stack equivalents matter for proxy-scale connection churn).
+// network stack equivalents matter for proxy-scale connection churn), and
+// macOS uses the BSD net.inet.*/kern.* sysctls via optimizeDarwin.
 //
 // NOTE: optimize is intentionally provider-independent. sysctl/netsh operate
 // on the host kernel, not on a specific provider process. Requiring a
