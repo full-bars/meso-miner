@@ -183,6 +183,7 @@ Proxy Management [target]:
   proxy traffic                   📈  real-time bandwidth + client session load
   proxy remove-dead               💀  interactively prune dead/degraded/failing
   proxy trim <N>                  ✂   hold running proxies at N, shed worst first (F -> A)
+
 Maintenance [target]:
   reinstall                       🔧  reinstall provider
   uninstall                       🗑   uninstall provider
@@ -369,8 +370,15 @@ func cmdProviders(args []string) error {
 			ver = "-"
 		}
 		netID := shortID(p.NetworkID)
+		network := p.Network
+		if p.IdentityRestricted {
+			// Blank-but-valid-looking fields masqueraded as real data on
+			// LA1 (6c): say the identity is unreadable instead.
+			network = "(unreadable: permission denied)"
+			netID = "-"
+		}
 		fmt.Fprintf(w, "%s	%s	%s	%s	%s	%s	%s	%s\n",
-			pid, p.User, p.Unit, p.Network, netID, p.StateDir, p.Binary, ver)
+			pid, p.User, p.Unit, network, netID, p.StateDir, p.Binary, ver)
 	}
 	return w.Flush()
 }
