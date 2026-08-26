@@ -94,7 +94,7 @@ urnet-tools proxy summary
 ```
 
 > [!NOTE]
-> **macOS platform coverage:** `ramlogs on` is Linux-only (it writes logs to `/dev/shm`, which macOS doesn't have). `eco` is a Go runtime profile and works on macOS. `optimize` works on macOS too, applying BSD `net.inet.*`/`kern.*` sysctls (needs sudo; settings don't persist across reboot). All other commands work natively.
+> **macOS platform coverage:** `ramlogs on` is Linux-only (it writes logs to `/dev/shm`, which macOS doesn't have). `eco` is a Go runtime profile and works on macOS. `optimize` currently falls back to the Linux sysctl path on macOS (macOS-specific support lands in a follow-up). All other commands work natively.
 
 ## 🔐 User-Level Systemd Service
 Unlike traditional services that run as root, this build defaults to a **systemd user unit**.
