@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -8,6 +9,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"time"
 )
 
 // This file ports the remaining legacy urnet-tools commands — service
@@ -78,12 +81,19 @@ func isUserUnit(unit string) bool {
 
 // cmdStart starts the provider's owning unit.
 func cmdStart(args []string, force, dryRun bool) error {
-	t, _, err := parseTargetFlags(args)
+	t, err := guardLifecycleArgs("start", args)
 	if err != nil {
 		return err
 	}
-	p, err := selectTarget(Discover(), t)
+	providers := Discover()
+	p, narrowed, err := selectTargetOrSoleAccessible(providers, t)
 	if err != nil {
+		return err
+	}
+	if narrowed {
+		printLifecycleNarrowedNote(len(providers), p, "start")
+	}
+	if err := guardSystemdProvider(p); err != nil {
 		return err
 	}
 	// -n/--dry-run is documented "safe anywhere": print the plan, do
@@ -93,32 +103,58 @@ func cmdStart(args []string, force, dryRun bool) error {
 		fmt.Printf("[dry-run] would start %s (unit=%s, user=%s)\n", providerLabel(p), p.Unit, p.User)
 		return nil
 	}
-	return unitCommand(p, "start")
+	fmt.Printf("starting %s...\n", providerLabel(p))
+	if err := unitCommand(p, "start"); err != nil {
+		fmt.Printf("FAILED to start %s: %v\n", providerLabel(p), err)
+		return err
+	}
+	fmt.Printf("started %s\n", providerLabel(p))
+	return nil
 }
 func cmdStop(args []string, force, dryRun bool) error {
-	t, _, err := parseTargetFlags(args)
+	t, err := guardLifecycleArgs("stop", args)
 	if err != nil {
 		return err
 	}
-	p, err := selectTarget(Discover(), t)
+	providers := Discover()
+	p, narrowed, err := selectTargetOrSoleAccessible(providers, t)
 	if err != nil {
+		return err
+	}
+	if narrowed {
+		printLifecycleNarrowedNote(len(providers), p, "stop")
+	}
+	if err := guardSystemdProvider(p); err != nil {
 		return err
 	}
 	if dryRun {
 		fmt.Printf("[dry-run] would stop %s (unit=%s, user=%s)\n", providerLabel(p), p.Unit, p.User)
 		return nil
 	}
-	return unitCommand(p, "stop")
+	fmt.Printf("stopping %s...\n", providerLabel(p))
+	if err := unitCommand(p, "stop"); err != nil {
+		fmt.Printf("FAILED to stop %s: %v\n", providerLabel(p), err)
+		return err
+	}
+	fmt.Printf("stopped %s\n", providerLabel(p))
+	return nil
 }
 
 // cmdRestart restarts the provider's owning unit (destructive gate applies).
 func cmdRestart(args []string, force, dryRun bool) error {
-	t, _, err := parseTargetFlags(args)
+	t, err := guardLifecycleArgs("restart", args)
 	if err != nil {
 		return err
 	}
-	p, err := selectTarget(Discover(), t)
+	providers := Discover()
+	p, narrowed, err := selectTargetOrSoleAccessible(providers, t)
 	if err != nil {
+		return err
+	}
+	if narrowed {
+		printLifecycleNarrowedNote(len(providers), p, "restart")
+	}
+	if err := guardSystemdProvider(p); err != nil {
 		return err
 	}
 	ok, err := confirmGate("restart "+p.Unit, p, force, dryRun)
@@ -128,7 +164,13 @@ func cmdRestart(args []string, force, dryRun bool) error {
 	if !ok {
 		return nil // dry-run
 	}
-	return unitCommand(p, "restart")
+	fmt.Printf("restarting %s...\n", providerLabel(p))
+	if err := unitCommand(p, "restart"); err != nil {
+		fmt.Printf("FAILED to restart %s: %v\n", providerLabel(p), err)
+		return err
+	}
+	fmt.Printf("restarted %s\n", providerLabel(p))
+	return nil
 }
 
 // discoverDockerFn is the docker-provider discovery function, as a var so
@@ -187,6 +229,46 @@ func cmdLogs(args []string) error {
 	// journalctl is a standalone binary, not a systemctl verb — calling it
 	// through unitCommand would execute `systemctl journalctl` (invalid,
 	// free-review critical). Scope user units explicitly.
+	//
+	// A cross-user `-M <user>@` query from an unprivileged caller can HANG
+	// waiting on machined/polkit instead of failing fast (LA1 6c:
+	// `logs --user=urnetwork-beta` blocked indefinitely). Bound it to 10s
+	// and turn the timeout into an actionable error.
+	if isUserUnit(p.Unit) && p.User != "" && p.User != currentUserName() && os.Geteuid() != 0 {
+		// Cross-user `journalctl -M <user>@` from an unprivileged caller can
+		// HANG waiting on machined/polkit instead of failing fast (LA1 6c:
+		// `logs --user=urnetwork-beta` blocked indefinitely). Detect that hang
+		// WITHOUT cutting off a legitimately-working follow at a fixed cap:
+		// kill the command only if it produces NO output within the window.
+		// Once logs start streaming it is a real follow and runs until the
+		// user stops it (ox-alpha M1, PR #465 — the prior hard 10s cap cut a
+		// working follow and misreported it as requiring root).
+		produced := make(chan struct{})
+		cmd := exec.Command("journalctl", journalctlArgs(p)...)
+		cmd.Stdout = &firstByteWriter{w: os.Stdout, produced: produced}
+		var errBuf bytes.Buffer
+		cmd.Stderr = &errBuf
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("journalctl for %s: %v: %s", providerLabel(p), err, errBuf.String())
+		}
+		select {
+		case <-produced:
+			// Output started within the window: a real follow. Let it run.
+			if err := cmd.Wait(); err != nil {
+				return fmt.Errorf("journalctl for %s: %v: %s", providerLabel(p), err, errBuf.String())
+			}
+			return nil
+		case <-time.After(10 * time.Second):
+			// No output within the window: genuine machined/polkit hang.
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			hint := ""
+			if h := rootHint(); h != "" {
+				hint = fmt.Sprintf(" Try: %s logs --user=%s", strings.TrimPrefix(h, "sudo "), p.User)
+			}
+			return fmt.Errorf("journal access to user %s produced no output within 10s (machined/polkit hang — this account's journal is not readable without root).%s", p.User, hint)
+		}
+	}
 	cmd := exec.Command("journalctl", journalctlArgs(p)...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -205,6 +287,20 @@ func journalctlArgs(p Provider) []string {
 		return []string{"-M", p.User + "@", "--user-unit", p.Unit, "-f"}
 	}
 	return []string{"-fu", p.Unit}
+}
+
+// firstByteWriter forwards writes to w and, on the first byte, closes produced
+// (idempotently). Used to tell a genuinely-working cross-user journal follow
+// (produces output) from a machined/polkit hang (no output within a window).
+type firstByteWriter struct {
+	w        io.Writer
+	produced chan struct{}
+	once     sync.Once
+}
+
+func (f *firstByteWriter) Write(p []byte) (int, error) {
+	f.once.Do(func() { close(f.produced) })
+	return f.w.Write(p)
 }
 
 // providerUsesRamlogs checks the unit's Environment for RAM logging or a
@@ -773,7 +869,8 @@ func cmdTune(profile string, args []string, force, dryRun bool) error {
 // cmdOptimize applies golden-fleet kernel/OS limits (best-effort; delegates
 // to the legacy installer script's optimize when present). Platform-aware:
 // Linux uses sysctl, Windows uses netsh/reg (no kernel to tune, but the
-// network stack equivalents matter for proxy-scale connection churn).
+// network stack equivalents matter for proxy-scale connection churn), and
+// macOS uses the BSD net.inet.*/kern.* sysctls via optimizeDarwin.
 //
 // NOTE: optimize is intentionally provider-independent. sysctl/netsh operate
 // on the host kernel, not on a specific provider process. Requiring a
@@ -814,6 +911,9 @@ func cmdOptimize(args []string, force, dryRun bool) error {
 func optimizeFor(goos string) func() error {
 	if goos == "windows" {
 		return optimizeWindows
+	}
+	if goos == "darwin" {
+		return optimizeDarwin
 	}
 	return optimizeLinux
 }
@@ -881,6 +981,55 @@ func optimizeWindows() error {
 		fmt.Fprintf(os.Stderr, "optimize: warning: reg TcpTimedWaitDelay failed: %v (%s)\n", err, strings.TrimSpace(string(out)))
 	}
 	fmt.Println("optimize: done (TcpTimedWaitDelay takes effect on reboot)")
+	return nil
+}
+
+// optimizeDarwin applies the macOS (BSD) equivalents of the Linux tuning:
+// socket-buffer sizes (net.inet.tcp.recvspace/sendspace), file-descriptor and
+// per-process limits (kern.maxfiles/kern.maxfilesperproc), the ephemeral port
+// pool (net.inet.ip.portrange.first/.last), and TIME_WAIT recycling
+// (net.inet.tcp.msl). These are the darwin-namespace analogs of the
+// net.core/net.ipv4 keys optimizeLinux sets — the OIDs differ, so the Linux
+// keys must NEVER run on macOS (they don't exist there; previously the darwin
+// build fell through to optimizeLinux, warned on every missing key, and still
+// printed a false "done"). Requires root (or sudo); failures are logged, never
+// fatal. All keys apply immediately with sudo but do NOT persist across
+// reboot — persist them with a LaunchDaemon that runs sysctl -w at boot, not
+// /etc/sysctl.conf (modern macOS ignores it).
+func optimizeDarwin() error {
+	var prefix []string
+	if os.Geteuid() != 0 {
+		if _, err := exec.LookPath("sudo"); err == nil {
+			prefix = []string{"sudo"}
+		} else {
+			self, _ := os.Executable()
+			if self == "" {
+				self = "urnet-tools"
+			}
+			return fmt.Errorf("optimize: sysctl requires root (running as uid %d); run: sudo %s optimize", os.Geteuid(), self)
+		}
+	}
+	for _, args := range [][]string{
+		{"-w", "net.inet.tcp.recvspace=4194304", "net.inet.tcp.sendspace=4194304"},
+		{"-w", "kern.maxfiles=200000", "kern.maxfilesperproc=100000"},
+		{"-w", "net.inet.ip.portrange.first=1024", "net.inet.ip.portrange.last=65535"},
+		{"-w", "net.inet.tcp.msl=2000"},
+	} {
+		cmdArgs := append(prefix, append([]string{"sysctl"}, args...)...)
+		cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
+		cmd.Stdin = os.Stdin
+		if out, err := cmd.CombinedOutput(); err != nil {
+			if len(prefix) > 0 && (strings.Contains(string(out), "password") || strings.Contains(string(out), "incorrect") || strings.Contains(string(out), "sudoers")) {
+				self, _ := os.Executable()
+				if self == "" {
+					self = "urnet-tools"
+				}
+				return fmt.Errorf("optimize: sysctl requires root (running as uid %d); run: sudo %s optimize", os.Geteuid(), self)
+			}
+			fmt.Fprintf(os.Stderr, "optimize: warning: sysctl %v failed: %v (%s)\n", args, err, strings.TrimSpace(string(out)))
+		}
+	}
+	fmt.Println("optimize: done (macOS net.inet.*/kern.* equivalents)")
 	return nil
 }
 
