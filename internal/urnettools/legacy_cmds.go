@@ -328,7 +328,7 @@ func providerUsesRamlogs(p Provider) bool {
 		strings.Contains(env, "URNETWORK_PROFILE=eco")
 }
 
-// writeDropinEnv writes// writeDropinEnv writes (or appends) an Environment= line to a drop-in
+// writeDropinEnv writes (or appends) an Environment= line to a drop-in
 // override file for the provider's unit, then reloads/restarts it.
 func writeDropinEnv(p Provider, name, envLine string) error {
 	dropDir, err := unitDropinDir(p)
@@ -552,7 +552,7 @@ func restartAfterDropin(p Provider) error {
 	return exec.Command("systemctl", "restart", p.Unit).Run()
 }
 
-// runtimeGOARCH mirrors// runtimeGOARCH mirrors runtime.GOARCH without importing runtime in helpers.
+// runtimeGOARCH mirrors runtime.GOARCH without importing runtime in helpers.
 func runtimeGOARCH() string {
 	return strings.ToLower(goarch())
 }
