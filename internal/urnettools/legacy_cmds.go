@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 )
 
 // This file ports the remaining legacy urnet-tools commands — service
@@ -114,7 +116,13 @@ func cmdStart(args []string, force, dryRun bool) error {
 		fmt.Printf("[dry-run] would start %s (unit=%s, user=%s)\n", providerLabel(p), p.Unit, p.User)
 		return nil
 	}
-	return unitCommand(p, "start")
+	fmt.Printf("starting %s...\n", providerLabel(p))
+	if err := unitCommand(p, "start"); err != nil {
+		fmt.Printf("FAILED to start %s: %v\n", providerLabel(p), err)
+		return err
+	}
+	fmt.Printf("started %s\n", providerLabel(p))
+	return nil
 }
 func cmdStop(args []string, force, dryRun bool) error {
 	p, err := selectLifecycleTarget("stop", args)
@@ -125,7 +133,13 @@ func cmdStop(args []string, force, dryRun bool) error {
 		fmt.Printf("[dry-run] would stop %s (unit=%s, user=%s)\n", providerLabel(p), p.Unit, p.User)
 		return nil
 	}
-	return unitCommand(p, "stop")
+	fmt.Printf("stopping %s...\n", providerLabel(p))
+	if err := unitCommand(p, "stop"); err != nil {
+		fmt.Printf("FAILED to stop %s: %v\n", providerLabel(p), err)
+		return err
+	}
+	fmt.Printf("stopped %s\n", providerLabel(p))
+	return nil
 }
 
 // cmdRestart restarts the provider's owning unit (destructive gate applies).
@@ -141,7 +155,13 @@ func cmdRestart(args []string, force, dryRun bool) error {
 	if !ok {
 		return nil // dry-run
 	}
-	return unitCommand(p, "restart")
+	fmt.Printf("restarting %s...\n", providerLabel(p))
+	if err := unitCommand(p, "restart"); err != nil {
+		fmt.Printf("FAILED to restart %s: %v\n", providerLabel(p), err)
+		return err
+	}
+	fmt.Printf("restarted %s\n", providerLabel(p))
+	return nil
 }
 
 // lifecycleCandidates is testable without live processes or units.
@@ -234,6 +254,57 @@ func cmdLogs(args []string) error {
 	// journalctl is a standalone binary, not a systemctl verb — calling it
 	// through unitCommand would execute `systemctl journalctl` (invalid,
 	// free-review critical). Scope user units explicitly.
+	//
+	// A cross-user `-M <user>@` query from an unprivileged caller can HANG
+	// waiting on machined/polkit instead of failing fast (LA1 6c:
+	// `logs --user=urnetwork-beta` blocked indefinitely). Bound it to 10s
+	// and turn the timeout into an actionable error.
+	if isUserUnit(p.Unit) && p.User != "" && p.User != currentUserName() && os.Geteuid() != 0 {
+		// Cross-user `journalctl -M <user>@` from an unprivileged caller can
+		// HANG waiting on machined/polkit instead of failing fast (LA1 6c:
+		// `logs --user=urnetwork-beta` blocked indefinitely). Detect that hang
+		// WITHOUT cutting off a legitimately-working follow at a fixed cap:
+		// kill the command only if it produces NO output within the window.
+		// Once logs start streaming it is a real follow and runs until the
+		// user stops it (ox-alpha M1, PR #465 — the prior hard 10s cap cut a
+		// working follow and misreported it as requiring root).
+		produced := make(chan struct{})
+		cmd := exec.Command("journalctl", journalctlArgs(p)...)
+		cmd.Stdout = &firstByteWriter{w: os.Stdout, produced: produced}
+		var errBuf bytes.Buffer
+		cmd.Stderr = &errBuf
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("journalctl for %s: %v: %s", providerLabel(p), err, errBuf.String())
+		}
+		waitCh := make(chan error, 1)
+		go func() { waitCh <- cmd.Wait() }()
+		select {
+		case <-produced:
+			// Output started within the window: a real follow. Let it run
+			// until journalctl itself exits (user interrupt / end of match).
+			if err := <-waitCh; err != nil {
+				return fmt.Errorf("journalctl for %s: %v: %s", providerLabel(p), err, errBuf.String())
+			}
+			return nil
+		case err := <-waitCh:
+			// Exited BEFORE producing any output: report the real outcome
+			// instead of mislabeling it a machined/polkit hang — an empty
+			// journal exits 0 immediately and is legitimate (coderabbit
+			// follow-up, PR #10).
+			_ = cmd.Process.Kill()
+			if err != nil {
+				return fmt.Errorf("journalctl for %s: %v: %s", providerLabel(p), err, errBuf.String())
+			}
+			return nil
+		case <-time.After(10 * time.Second):
+			// Still running, still silent after the window: genuine
+			// machined/polkit hang.
+			_ = cmd.Process.Kill()
+			_ = <-waitCh // reap so there's no zombie
+			return fmt.Errorf("journalctl for %s: cross-user hang (polkit/machined) — run as root or same user: %s",
+				providerLabel(p), rootHint())
+		}
+	}
 	cmd := exec.Command("journalctl", journalctlArgs(p)...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
