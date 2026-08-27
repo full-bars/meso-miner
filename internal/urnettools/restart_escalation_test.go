@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -94,6 +95,9 @@ func TestRestartLadder_NonAuthErrorPropagatesUnchanged(t *testing.T) {
 }
 
 func TestRestartLadder_PasswordlessSudoRetriesThroughStagedTool(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("escalation ladder (sudo/polkit/staged-exec) is linux-only")
+	}
 	stubRestartFn(t, errors.New("Interactive authentication required"))
 	sudoCalled := stubSudo(t, true)
 	tool, unit, user := stubStagedRestart(t, nil)
@@ -111,6 +115,9 @@ func TestRestartLadder_PasswordlessSudoRetriesThroughStagedTool(t *testing.T) {
 }
 
 func TestRestartLadder_NoPasswordlessSudoPrintsGuidance(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("guidance text references linux polkit paths")
+	}
 	stubRestartFn(t, errors.New("Interactive authentication required"))
 	stubSudo(t, false)
 
@@ -135,6 +142,9 @@ func TestRestartLadder_NoPasswordlessSudoPrintsGuidance(t *testing.T) {
 }
 
 func TestRestartLadder_StagedRetryFailureAlsoGuides(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("escalation ladder is linux-only")
+	}
 	stubRestartFn(t, errors.New("Interactive authentication required"))
 	stubSudo(t, true)
 	stubStagedRestart(t, errors.New("boom"))
@@ -246,7 +256,8 @@ func TestDoRestartCmd_RejectsUndiscoveredUnit(t *testing.T) {
 
 // Wiring proof for the acceptance side: a DISCOVERED unit passes validation
 // and reaches unitCommand (which fails here only because the fake unit does
-// not exist — the point is it got PAST the discovery refusal).
+// not exist — the point is it got PAST the discovery refusal). Note the
+// restart targets the DISCOVERED record's user, not the flag value.
 func TestDoRestartCmd_DiscoveredUnitReachesUnitCommand(t *testing.T) {
 	fake := Provider{Unit: "urnet-tools-test-fake-unit.service", User: "user"}
 	orig := discoverForRestart
@@ -264,6 +275,63 @@ func TestDoRestartCmd_DiscoveredUnitReachesUnitCommand(t *testing.T) {
 	// Any remaining error comes from systemctl on the fake unit — expected.
 }
 
+// A --user flag that disagrees with the discovered record must be REJECTED,
+// never silently routed to the flagged account's session via machined
+// (Sonnet review round 2: unit-name-only validation let the restart target a
+// different user's identically-named unit).
+func TestDoRestartCmd_MismatchedUserRejected(t *testing.T) {
+	discovered := Provider{Unit: "urnetwork.service", User: "user-a"}
+	orig := discoverForRestart
+	discoverForRestart = func() []Provider { return []Provider{discovered} }
+	defer func() { discoverForRestart = orig }()
+
+	cmd := newDoRestartCmd()
+	if err := cmd.Flags().Set("unit", "urnetwork.service"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Flags().Set("user", "user-b"); err != nil {
+		t.Fatal(err)
+	}
+	err := cmd.RunE(cmd, nil)
+	if err == nil || !strings.Contains(err.Error(), "no discovered provider") {
+		t.Fatalf("mismatched user must be refused before any systemctl call, got %v", err)
+	}
+
+	// The honest path still works: correct user selects the record.
+	cmd2 := newDoRestartCmd()
+	_ = cmd2.Flags().Set("unit", "urnetwork.service")
+	_ = cmd2.Flags().Set("user", "user-a")
+	if err := cmd2.RunE(cmd2, nil); err != nil && strings.Contains(err.Error(), "no discovered provider") {
+		t.Fatalf("matching user must pass validation, got %v", err)
+	}
+}
+
+// Duplicate units across accounts must never be resolved by silent
+// first-match: without --user the selection is ambiguous and refused
+// (Sonnet review round 3).
+func TestDoRestartCmd_AmbiguousDuplicateUnitsRefused(t *testing.T) {
+	a := Provider{Unit: "urnetwork.service", User: "user-a"}
+	b := Provider{Unit: "urnetwork.service", User: "user-b"}
+	orig := discoverForRestart
+	discoverForRestart = func() []Provider { return []Provider{a, b} }
+	defer func() { discoverForRestart = orig }()
+
+	cmd := newDoRestartCmd()
+	_ = cmd.Flags().Set("unit", "urnetwork.service")
+	err := cmd.RunE(cmd, nil)
+	if err == nil || !strings.Contains(err.Error(), "refusing ambiguous selection") {
+		t.Fatalf("duplicate-unit no-user selection must be refused, got %v", err)
+	}
+
+	// With an explicit user the ambiguity resolves deterministically.
+	cmd2 := newDoRestartCmd()
+	_ = cmd2.Flags().Set("unit", "urnetwork.service")
+	_ = cmd2.Flags().Set("user", "user-b")
+	if err := cmd2.RunE(cmd2, nil); err != nil && strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("explicit user must resolve the ambiguity, got %v", err)
+	}
+}
+
 // --- staging helper (Sonnet review HIGH regression pins) ---
 
 // TestStageToolForEscalation_ChmodsExecutable proves the staged binary gets
@@ -271,6 +339,9 @@ func TestDoRestartCmd_DiscoveredUnitReachesUnitCommand(t *testing.T) {
 // non-executable file EVEN for root, so without the explicit chmod the whole
 // sudo escalation leg could never fire in production.
 func TestStageToolForEscalation_ChmodsExecutable(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("POSIX execute bits do not exist on windows; chmod is a no-op there")
+	}
 	content := []byte("#!/bin/sh\nexit 0\n")
 	sum := sha256.Sum256(content)
 	stageDir := t.TempDir()
