@@ -146,6 +146,7 @@ func buildRootCmd() *cobra.Command {
 		newAutoUpdateCmd(),
 		newAutoStartCmd(),
 		newSelfHealCmd(),
+		newDoRestartCmd(), // HIDDEN internal entry point for the updater's escalated restart
 	)
 	// Force every subcommand (however it was constructed) back to Cobra's
 	// default per-command help page. The root's curated menu must only ever
@@ -287,7 +288,7 @@ func newSessionCmd() *cobra.Command {
 		Use:                "session",
 		Short:              "export/import identity + proxy state",
 		Long:               "Export or import the targeted provider's identity and proxy state as a passphrase-encrypted bundle. 'session save' prompts twice for a passphrase with echo off and writes the file with owner-only permissions. 'session load' backs up the current identity first, refuses a bundle from a different account unless you pass --allow-different-account, and stages the new identity for the provider to pick up on restart.",
-		Example:            "  urnet-tools session save ~/urnet-session.enc\n  urnet-tools session load ~/urnet-session.enc --unit urnetwork-native.service --force",
+		Example:            "  urnet-tools session save ~/urnet-session.enc           # Linux / macOS\n  urnet-tools session save C:\\Users\\<you>\\urnet-session.enc   # Windows (\\ or / separators)\n  urnet-tools session load ~/urnet-session.enc --unit urnetwork-native.service --force",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmdSession(args)
@@ -422,7 +423,7 @@ func newProxyCmd() *cobra.Command {
 		Use:                "proxy",
 		Short:              "Proxy Management",
 		Long:               "Manage proxies for a provider: add from a file, clear, remove, refresh, and inspect health and traffic.",
-		Example:            "  urnet-tools proxy add ~/proxies.txt\n  urnet-tools proxy clear",
+		Example:            "  urnet-tools proxy add ~/proxies.txt           # Linux / macOS\n  urnet-tools proxy add C:\\Users\\<you>\\proxies.txt    # Windows (\\ or / separators)\n  urnet-tools proxy clear",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {

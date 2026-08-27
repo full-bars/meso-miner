@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 )
 
 // This file ports the remaining legacy urnet-tools commands — service
@@ -251,6 +252,20 @@ func journalctlArgs(p Provider) []string {
 		return []string{"-M", p.User + "@", "--user-unit", p.Unit, "-f"}
 	}
 	return []string{"-fu", p.Unit}
+}
+
+// firstByteWriter is the M1 (PR #465) hang-detection helper: it forwards
+// writes to the real destination and closes `produced` once, on the first
+// byte, so a working cross-user journal follow is distinguished from a hang.
+type firstByteWriter struct {
+	w        io.Writer
+	produced chan struct{}
+	once     sync.Once
+}
+
+func (f *firstByteWriter) Write(p []byte) (int, error) {
+	f.once.Do(func() { close(f.produced) })
+	return f.w.Write(p)
 }
 
 // providerUsesRamlogs checks the unit's Environment for RAM logging or a
