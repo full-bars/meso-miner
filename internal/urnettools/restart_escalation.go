@@ -200,21 +200,43 @@ func newDoRestartCmd() *cobra.Command {
 			if unit == "" {
 				return fmt.Errorf("__do-restart requires --unit")
 			}
-			p := Provider{Unit: unit, User: user}
 			// Namespace guard first: a docker:-prefixed target gets the
-			// actionable wrong-tool refusal regardless of discovery state.
-			if err := guardSystemdProvider(p); err != nil {
+			// actionable wrong-tool refusal regardless of discovery state
+			// (the FLAGS are checked here — discovery may not even see
+			// containers).
+			if err := guardSystemdProvider(Provider{Unit: unit, User: user}); err != nil {
 				return err
 			}
+			// Discovery is AUTHORITATIVE: flags may select among discovered
+			// records, never override them. A --user that disagrees with the
+			// discovered record would otherwise route the restart into a
+			// different account's session via machined (-M user@) while
+			// passing a unit-name-only check (Sonnet review round 2). When
+			// more than one record matches (duplicate unit names across
+			// accounts), selection is REFUSED rather than picking a winner
+			// — this command is the last line of defense behind scoped
+			// sudoers grants, so ambiguity must be explicit (round 3).
+			p := Provider{Unit: unit}
 			found := false
+			matches := 0
 			for _, dp := range discoverForRestart() {
-				if dp.Unit == unit {
+				if dp.Unit != unit {
+					continue
+				}
+				if user != "" && dp.User != user {
+					continue
+				}
+				matches++
+				if matches == 1 {
+					p = dp
 					found = true
-					break
 				}
 			}
+			if matches > 1 {
+				return fmt.Errorf("__do-restart: %d discovered providers match unit %q — refusing ambiguous selection (specify the exact target)", matches, unit)
+			}
 			if !found {
-				return fmt.Errorf("__do-restart: no discovered provider with unit %q — refusing", unit)
+				return fmt.Errorf("__do-restart: no discovered provider with unit %q (and matching user) — refusing", unit)
 			}
 			return unitCommand(p, "restart")
 		},
