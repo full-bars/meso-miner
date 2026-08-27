@@ -394,8 +394,8 @@ Emitted on the earning tick once any total is non-zero. Backed by `~/.urnetwork/
 
 Emitted on the earning tick only while transit traffic is actively flowing (silent when idle to avoid duplicating `[traffic]`). Reports what this node carries **as an intermediate hop**: client sessions routed through its proxies and their current rates. Distinct identities behind transit hops are unknowable by design (end-to-end encryption) — volume + serving proxies is the honest transit metric.
 
----
 
+---
 
 ## 💰 Profit Heartbeat (3.23-fix)
 
