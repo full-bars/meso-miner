@@ -1457,8 +1457,8 @@ func runLifetimeCollector(ctx context.Context) {
 			// during the idle window are not smeared into the next active
 			// tick's rate display.
 			for key, b := range bw {
-				*prevRxPerProxy[key] = b.TotalRx.Load()
-				*prevTxPerProxy[key] = b.TotalTx.Load()
+				*u64At(prevRxPerProxy, key) = b.TotalRx.Load()
+				*u64At(prevTxPerProxy, key) = b.TotalTx.Load()
 			}
 		}
 		prevTime = now
