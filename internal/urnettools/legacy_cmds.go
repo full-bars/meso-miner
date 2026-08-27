@@ -14,9 +14,9 @@ import (
 )
 
 // This file ports the remaining legacy urnet-tools commands — service
-// management (start/stop/restart/logs), tuning profiles
-// (turbo/eco/lowmode/ramlogs/auto/optimize), and proxy extras
-// (health/traffic/remove-dead). Unlike the legacy shell tool, every
+// management (start/stop/restart/logs), hub linking (set/off/install),
+// tuning profiles (turbo/eco/lowmode/ramlogs/auto/optimize), and proxy
+// extras (health/traffic/remove-dead). Unlike the legacy shell tool, every
 // command targets the RESOLVED provider (via targeting) — never a
 // hardcoded $HOME path or a guessed unit.
 
@@ -79,21 +79,34 @@ func isUserUnit(unit string) bool {
 	return true
 }
 
-// cmdStart starts the provider's owning unit.
-func cmdStart(args []string, force, dryRun bool) error {
-	t, err := guardLifecycleArgs("start", args)
+// selectLifecycleTarget factors the shared start/stop/restart prologue: guard
+// the lifecycle args, list the systemd candidates, auto-narrow to a sole
+// accessible RUNNING target, print the narrowed note, and confirm it is a
+// systemd (non-docker) provider. One place to change instead of triplicating it
+// across the destructive lifecycle commands (free-review clean-up).
+func selectLifecycleTarget(verb string, args []string) (Provider, error) {
+	t, err := guardLifecycleArgs(verb, args)
 	if err != nil {
-		return err
+		return Provider{}, err
 	}
 	providers := lifecycleCandidates(t)
-	p, narrowed, err := selectTargetOrSoleAccessible(providers, t)
+	p, narrowed, err := selectTargetOrSoleAccessible(providers, t, true)
 	if err != nil {
-		return err
+		return Provider{}, err
 	}
 	if narrowed {
-		printLifecycleNarrowedNote(len(providers), p, "start")
+		printLifecycleNarrowedNote(len(providers), p, verb)
 	}
 	if err := guardSystemdProvider(p); err != nil {
+		return Provider{}, err
+	}
+	return p, nil
+}
+
+// cmdStart starts the provider's owning unit.
+func cmdStart(args []string, force, dryRun bool) error {
+	p, err := selectLifecycleTarget("start", args)
+	if err != nil {
 		return err
 	}
 	// -n/--dry-run is documented "safe anywhere": print the plan, do
@@ -112,19 +125,8 @@ func cmdStart(args []string, force, dryRun bool) error {
 	return nil
 }
 func cmdStop(args []string, force, dryRun bool) error {
-	t, err := guardLifecycleArgs("stop", args)
+	p, err := selectLifecycleTarget("stop", args)
 	if err != nil {
-		return err
-	}
-	providers := lifecycleCandidates(t)
-	p, narrowed, err := selectTargetOrSoleAccessible(providers, t)
-	if err != nil {
-		return err
-	}
-	if narrowed {
-		printLifecycleNarrowedNote(len(providers), p, "stop")
-	}
-	if err := guardSystemdProvider(p); err != nil {
 		return err
 	}
 	if dryRun {
@@ -142,19 +144,8 @@ func cmdStop(args []string, force, dryRun bool) error {
 
 // cmdRestart restarts the provider's owning unit (destructive gate applies).
 func cmdRestart(args []string, force, dryRun bool) error {
-	t, err := guardLifecycleArgs("restart", args)
+	p, err := selectLifecycleTarget("restart", args)
 	if err != nil {
-		return err
-	}
-	providers := lifecycleCandidates(t)
-	p, narrowed, err := selectTargetOrSoleAccessible(providers, t)
-	if err != nil {
-		return err
-	}
-	if narrowed {
-		printLifecycleNarrowedNote(len(providers), p, "restart")
-	}
-	if err := guardSystemdProvider(p); err != nil {
 		return err
 	}
 	ok, err := confirmGate("restart "+p.Unit, p, force, dryRun)
@@ -173,11 +164,6 @@ func cmdRestart(args []string, force, dryRun bool) error {
 	return nil
 }
 
-// discoverDockerFn is the docker-provider discovery function, as a var so
-// errWithDockerHint's docker branch is testable without a live daemon.
-var discoverDockerFn = DiscoverDocker
-
-// discoverSystemdFn is the systemd/process discovery function, as a var so
 // lifecycleCandidates is testable without live processes or units.
 var discoverSystemdFn = Discover
 
@@ -186,8 +172,7 @@ var discoverSystemdFn = Discover
 // positional is NOT an explicit target: guardLifecycleArgs already
 // hard-errors on leftovers before selection runs.
 func hasExplicitTarget(t Target) bool {
-	return t.Unit != "" || t.User != "" || t.Network != "" ||
-		t.NetworkID != "" || t.StateDir != ""
+	return t.Unit != "" || t.User != "" || t.Network != "" || t.NetworkID != "" || t.StateDir != ""
 }
 
 // lifecycleCandidates builds the candidate pool for start/stop/restart.
@@ -213,6 +198,10 @@ func lifecycleCandidates(t Target) []Provider {
 	return append(providers, discoverDockerFn()...)
 }
 
+// discoverDockerFn is the docker-provider discovery function, as a var so
+// errWithDockerHint's docker branch is testable without a live daemon.
+var discoverDockerFn = DiscoverDocker
+
 // errWithDockerHint wraps a no-provider error with a pointer to the docker
 // variant when provider containers exist: the systemd/process tool cannot
 // tail their logs, but `urnet-docker logs` can (its interactive picker
@@ -233,7 +222,7 @@ func errWithDockerHint(err error, systemdProviderCount int) error {
 	fmt.Fprintf(&b, "%v\n", err)
 	fmt.Fprintf(&b, "provider(s) running in docker (use urnet-docker):\n")
 	for _, p := range docker {
-		fmt.Fprintf(&b, "  %s  net=%s\n", p.Unit, p.Network)
+		fmt.Fprintf(&b, "  %s  net=%s\n", p.Unit, p.netLabel())
 	}
 	fmt.Fprintf(&b, "to view their logs: urnet-docker logs\n")
 	return fmt.Errorf("%s", b.String())
@@ -247,7 +236,7 @@ func cmdLogs(args []string) error {
 		return err
 	}
 	providers := Discover()
-	p, narrowed, err := selectTargetOrSoleAccessible(providers, t)
+	p, narrowed, err := selectTargetOrSoleAccessible(providers, t, false)
 	if err != nil {
 		return errWithDockerHint(err, len(providers))
 	}
@@ -311,12 +300,9 @@ func cmdLogs(args []string) error {
 			// Still running, still silent after the window: genuine
 			// machined/polkit hang.
 			_ = cmd.Process.Kill()
-			<-waitCh
-			hint := ""
-			if h := rootHint(); h != "" {
-				hint = fmt.Sprintf(" Try: %s logs --user=%s", strings.TrimPrefix(h, "sudo "), p.User)
-			}
-			return fmt.Errorf("journal access to user %s produced no output within 10s (machined/polkit hang — this account's journal is not readable without root).%s", p.User, hint)
+			_ = <-waitCh // reap so there's no zombie
+			return fmt.Errorf("journalctl for %s: cross-user hang (polkit/machined) — run as root or same user: %s",
+				providerLabel(p), rootHint())
 		}
 	}
 	cmd := exec.Command("journalctl", journalctlArgs(p)...)
@@ -339,9 +325,9 @@ func journalctlArgs(p Provider) []string {
 	return []string{"-fu", p.Unit}
 }
 
-// firstByteWriter forwards writes to w and, on the first byte, closes produced
-// (idempotently). Used to tell a genuinely-working cross-user journal follow
-// (produces output) from a machined/polkit hang (no output within a window).
+// firstByteWriter is the M1 (PR #465) hang-detection helper: it forwards
+// writes to the real destination and closes `produced` once, on the first
+// byte, so a working cross-user journal follow is distinguished from a hang.
 type firstByteWriter struct {
 	w        io.Writer
 	produced chan struct{}
@@ -602,7 +588,6 @@ func restartAfterDropin(p Provider) error {
 	return exec.Command("systemctl", "restart", p.Unit).Run()
 }
 
-// runtimeGOARCH mirrors runtime.GOARCH without importing runtime in helpers.
 func runtimeGOARCH() string {
 	return strings.ToLower(goarch())
 }
