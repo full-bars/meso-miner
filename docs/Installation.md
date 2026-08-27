@@ -94,7 +94,7 @@ urnet-tools proxy summary
 ```
 
 > [!NOTE]
-> macOS doesn't support `ecoramlogs` or `optimize` commands (those tune Linux kernel parameters). All other commands work natively.
+> **macOS platform coverage:** `ramlogs on` is Linux-only (it writes logs to `/dev/shm`, which macOS doesn't have). `eco` is a Go runtime profile and works on macOS. `optimize` currently falls back to the Linux sysctl path on macOS (macOS-specific support lands in a follow-up). All other commands work natively.
 
 ## 🔐 User-Level Systemd Service
 Unlike traditional services that run as root, this build defaults to a **systemd user unit**.
