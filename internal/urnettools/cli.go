@@ -373,11 +373,10 @@ func cmdProviders(args []string) error {
 			ver = "-"
 		}
 		netID := shortID(p.NetworkID)
-		network := p.Network
+		network := p.netLabel()
 		if p.IdentityRestricted {
 			// Blank-but-valid-looking fields masqueraded as real data on
 			// LA1 (6c): say the identity is unreadable instead.
-			network = "(unreadable: permission denied)"
 			netID = "-"
 		}
 		fmt.Fprintf(w, "%s	%s	%s	%s	%s	%s	%s	%s\n",
