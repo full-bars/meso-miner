@@ -73,7 +73,7 @@ func cmdSimpleDelegation(sub string, args []string) error {
 		return err
 	}
 	providers := Discover()
-	p, narrowed, err := selectTargetOrSoleAccessible(providers, t)
+	p, narrowed, err := selectTargetOrSoleAccessible(providers, t, false)
 	if err != nil {
 		return err
 	}
@@ -353,7 +353,7 @@ func cmdProviders(args []string) error {
 		}
 		fmt.Println("no systemd providers found on this box; running in docker (use urnet-docker):")
 		for _, p := range docker {
-			fmt.Printf("  %s  net=%s\n", p.Unit, p.Network)
+			fmt.Printf("  %s  net=%s\n", p.Unit, p.netLabel())
 		}
 		return nil
 	}
@@ -390,7 +390,7 @@ func cmdStatus(args []string) error {
 		return err
 	}
 	providers := Discover()
-	p, narrowed, err := selectTargetOrSoleAccessible(providers, t)
+	p, narrowed, err := selectTargetOrSoleAccessible(providers, t, false)
 	if err != nil {
 		return err
 	}
@@ -419,7 +419,7 @@ func cmdStatus(args []string) error {
 	fmt.Fprintf(w, "state-dir:\t%s\n", p.StateDir)
 	fmt.Fprintf(w, "pid:\t%d\n", p.PID)
 	fmt.Fprintf(w, "running:\t%v\n", p.Running)
-	fmt.Fprintf(w, "network:\t%s\n", p.Network)
+	fmt.Fprintf(w, "network:\t%s\n", p.netLabel())
 	fmt.Fprintf(w, "network-id:\t%s\n", p.NetworkID)
 	exp := "n/a"
 	if !p.JWTExpires.IsZero() {
@@ -456,7 +456,7 @@ func renderStatusPanel(p Provider) {
 		{"version", orDash(p.Version)},
 		{"state dir", orDash(p.StateDir)},
 		{"pid", pidTxt},
-		{"network", orDash(p.Network)},
+		{"network", orDash(p.netLabel())},
 		{"network id", orDash(p.NetworkID)},
 		{"jwt expires", exp},
 	}
@@ -483,7 +483,7 @@ func renderStatusPanel(p Provider) {
 	}
 
 	// Header bar: title + status on the right.
-	title := orDash(p.Network)
+	title := orDash(p.netLabel())
 	if title == "-" {
 		title = orDash(p.User)
 	}
@@ -685,7 +685,7 @@ func confirmStdinRead(prompt string) (string, error) {
 func confirmGateMulti(op string, targets []Provider, force, dryRun bool) (bool, error) {
 	fmt.Fprintf(os.Stderr, "[urnet-tools] %s:\n", op)
 	for _, p := range targets {
-		fmt.Fprintf(os.Stderr, "  %s (user=%s, network=%s, state=%s)\n", providerLabel(p), p.User, p.Network, p.StateDir)
+		fmt.Fprintf(os.Stderr, "  %s (user=%s, network=%s, state=%s)\n", providerLabel(p), p.User, p.netLabel(), p.StateDir)
 	}
 	if dryRun {
 		fmt.Fprintf(os.Stderr, "[dry-run] no changes made\n")

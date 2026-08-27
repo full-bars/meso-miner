@@ -41,6 +41,15 @@ type Provider struct {
 	// Version is the provider binary version ("" if undetermined).
 	Version string
 
+	// IdentityRestricted is true when the provider's JWT could not be read
+	// because the invoking user lacks permission on the state dir (another
+	// account's provider seen via unit/process discovery). Network and
+	// NetworkID are then empty NOT because the provider has no identity
+	// but because it is not readable — the inventory must say so instead
+	// of printing a blank net= field that masquerades as valid data
+	// (LA1 defect 6c, 2026-08-24).
+	IdentityRestricted bool
+
 	// Network is the JWT network_name claim — the identity of the account
 	// this provider serves (e.g. "tacogonzalez3000"). This is the ground
 	// truth used for targeting; paths are only used to locate state.
@@ -49,6 +58,18 @@ type Provider struct {
 	NetworkID string
 	// JWTExpires is the JWT exp claim (zero when absent/unparseable).
 	JWTExpires time.Time
+}
+
+// netLabel returns the provider's network identity for display, or
+// "(restricted)" when the JWT could not be read (IdentityRestricted) so no
+// display ever shows a blank/leading dashes that hides the reason the network
+// is unknown (Sonnet backlog #1b). This is display-only — targeting still
+// matches on the raw Network field.
+func (p Provider) netLabel() string {
+	if p.IdentityRestricted {
+		return "(restricted)"
+	}
+	return p.Network
 }
 
 // jwtPayload is the subset of JWT claims the tool needs.
