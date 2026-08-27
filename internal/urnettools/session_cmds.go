@@ -293,6 +293,11 @@ load restores a bundle, backing up the current state first, and prompts to
 restart. The loaded session must match the same URnetwork account unless
 --allow-different-account is given. -f skips the confirmation prompt; -n prints
 the plan and changes nothing.
+
+Examples:
+  urnet-tools session save ~/urnet-session.enc               # Linux / macOS
+  urnet-tools session save C:\Users\<you>\urnet-session.enc   # Windows (\ or / separators)
+  urnet-tools session load ~/urnet-session.enc --unit urnetwork-native.service
 `)
 		return nil
 	}
@@ -325,8 +330,11 @@ the plan and changes nothing.
 	if len(targetRest) > 0 {
 		return fmt.Errorf("session takes no extra arguments (got %v)", targetRest)
 	}
-	p, err := selectTarget(Discover(), t)
+	p, err := selectTarget(lifecycleCandidates(t), t)
 	if err != nil {
+		return err
+	}
+	if err := guardSystemdProvider(p); err != nil {
 		return err
 	}
 	if p.StateDir == "" {
