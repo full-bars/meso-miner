@@ -478,19 +478,7 @@ jobs:
             release_tmp/darwin/amd64/provider \
             release_tmp/darwin/arm64/provider \
             release_tmp/windows/amd64/provider \
-            release_tmp/windows/arm64/provider \
-            release_tmp/linux/amd64/urnet-tools \
-            release_tmp/linux/arm64/urnet-tools \
-            release_tmp/darwin/amd64/urnet-tools \
-            release_tmp/darwin/arm64/urnet-tools \
-            release_tmp/windows/amd64/urnet-tools \
-            release_tmp/windows/arm64/urnet-tools \
-            release_tmp/linux/amd64/urnet-docker \
-            release_tmp/linux/arm64/urnet-docker \
-            release_tmp/darwin/amd64/urnet-docker \
-            release_tmp/darwin/arm64/urnet-docker \
-            release_tmp/windows/amd64/urnet-docker \
-            release_tmp/windows/arm64/urnet-docker
+            release_tmp/windows/arm64/provider
           # Non-blocking: a FAIL here does NOT cancel the release. It exits
           # non-zero so the job is red, and the comment step below still runs
           # (if: always()) to surface the verdict on the release.
