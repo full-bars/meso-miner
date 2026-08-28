@@ -2934,10 +2934,12 @@ func provide(opts docopt.Opts) {
 							waitTime := globalProxySlowRetryState.TimeUntilNextAttempt(proxySettings.Address)
 							tlog("[proxy][slow-retry] proxy[%d] (%s) auth still failing after %d attempts (%s); already attempted recently, next check in %s\n",
 								proxySettings.Index, proxySettings.Address, authFailures, cause, formatDuration(waitTime))
+							dailyTimer := time.NewTimer(waitTime)
 							select {
 							case <-proxyCtx.Done():
+								dailyTimer.Stop()
 								return "", connect.Id{}, false, proxyCtx.Err()
-							case <-time.After(waitTime):
+							case <-dailyTimer.C:
 								continue
 							}
 						}
@@ -3341,7 +3343,9 @@ func provide(opts docopt.Opts) {
 				// operator gets visibility into persistent failures.
 				if !isURLSourced && proxySettings != nil && globalProxySlowRetryState.WasDropped(proxySettings.Address) {
 					dropAge := time.Since(globalProxySlowRetryState.DropTime(proxySettings.Address))
-					tlog("[proxy][slow-retry] proxy[%d] (%s) previously dropped %s ago; retrying this session\n",
+					// The continuous drop clock means this proxy will likely
+					// be re-dropped on the first slow auth attempt.
+					tlog("[proxy][slow-retry] proxy[%d] (%s) previously dropped %s ago; re-entering slow retry (will likely re-drop)\n",
 						proxySettings.Index, proxySettings.Address, formatDuration(dropAge))
 				}
 				proxyLaunchCount.Add(1)
