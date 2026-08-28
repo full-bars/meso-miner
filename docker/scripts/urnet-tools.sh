@@ -10,10 +10,11 @@ shift
 
 # === Update Logic ===
 do_update() {
-    # Pelican mode: the panel owns updates via image re-pull.
+    # Pelican mode: updates are owned by the panel (image re-pull). A
+    # runtime self-update would bypass the operator's pinned image.
     if [ "${PELICAN:-}" = "yes" ]; then
-        echo "Runtime updates are disabled under Pelican (update by re-pulling the image)"
-        return 1
+        echo "ERROR: runtime updates are disabled under Pelican — update by re-pulling the image."
+        exit 1: harden do_update — PID tracking, ramlog check, trap cleanup)
     fi
     arch="$(uname -m)"
     case "$arch" in
@@ -23,6 +24,9 @@ do_update() {
     esac
 
     provider_bin="/app/urnetwork_${arch}_stable"
+    # The startup loop may launch via symlink; target the symlink too for
+    # pkill/pgrep so old-provider detection works regardless of argv[0].
+    provider_pattern="urnetwork_${arch}_stable provide"
 
     echo "Checking for provider updates..."
 
@@ -37,10 +41,11 @@ do_update() {
     download_url="$(echo "$release_json" | jq -r '.assets[] | select((.name | contains(".tar.gz")) and (.name | contains("linux-'"$arch"'"))) | .browser_download_url // empty' | head -n1)"
     [ -n "$download_url" ] || { echo "ERROR: no download found for linux-$arch in release $version"; exit 1; }
 
-
+    # Use --version for version check (provider/docopt flag, not -v which is verbose).
+    # Strip whitespace/newlines for clean comparison.
     current_version="unknown"
     if [ -x "$provider_bin" ]; then
-        current_version="$($provider_bin --version 2>/dev/null || echo "unknown")"
+        current_version="$($provider_bin --version 2>/dev/null | tr -d '[:space:]' || echo "unknown")"
     fi
     echo "Current version: $current_version"
     echo "Latest version: $version"
@@ -92,6 +97,10 @@ do_update() {
     mkdir -p "$marker_dir" || { echo "ERROR: could not create $marker_dir"; rm -rf "$tmpdir" "$staged_provider"; exit 1; }
     touch "$marker_dir/update-pending" || { echo "ERROR: could not write update-pending marker"; rm -rf "$tmpdir" "$staged_provider"; exit 1; }
 
+    # Trap: remove update-pending marker on any exit after creation.
+    # This prevents stale markers if the script is killed or crashes.
+    trap 'rm -f "'"$marker_dir"'/update-pending"' EXIT
+
     if ! mv -f "$staged_provider" "$provider_bin"; then
         rm -f "$marker_dir/update-pending"
         rm -rf "$tmpdir" "$staged_provider"
@@ -101,27 +110,102 @@ do_update() {
     echo "Provider binary updated to $version."
     rm -rf "$tmpdir"
 
-    rc=0
-    pkill -f "^/app/urnetwork_${arch}_stable provide" 2>/dev/null || rc=$?
-    case $rc in
-        0) echo "Provider process terminated." ;;
-        1) echo "No running provider process found — nothing to terminate." ;;
-        *) echo "WARNING: pkill returned exit code $rc — provider may still be running." ;;
-    esac
+    # Capture old provider PIDs BEFORE sending signals. This prevents
+    # the race where the startup loop respawns a new process before we
+    # finish checking, and we accidentally SIGKILL the new process.
+    old_pids="$(pgrep -f "$provider_pattern" 2>/dev/null || true)"
+    if [ -n "$old_pids" ]; then
+        echo "Sending SIGTERM to old provider PIDs: $old_pids"
+        for pid in $old_pids; do
+            kill -TERM "$pid" 2>/dev/null || true
+        done
+    else
+        echo "No running provider process found — nothing to terminate."
+    fi
 
+    # Wait for the OLD PIDs to exit, not for any process matching the pattern.
     shutdown_timeout=15
     waited=0
-    while pgrep -f "^/app/urnetwork_${arch}_stable provide" >/dev/null 2>&1; do
+    while [ -n "$old_pids" ]; do
+        still_alive=""
+        for pid in $old_pids; do
+            kill -0 "$pid" 2>/dev/null && still_alive="$still_alive $pid"
+        done
+        old_pids="$still_alive"
+        [ -z "$old_pids" ] && break
+
         if [ "$waited" -ge "$shutdown_timeout" ]; then
-            echo "ERROR: provider process still running ${shutdown_timeout}s after termination attempt."
-            rm -f "$marker_dir/update-pending"
-            exit 1
+            # The binary swap ALREADY succeeded; a slow graceful shutdown
+            # must not fail the whole update (LA1 defect 2: exit 1 on
+            # success). Escalate to SIGKILL and re-check briefly.
+            echo "WARNING: old provider still running ${shutdown_timeout}s after SIGTERM — sending SIGKILL."
+            for pid in $old_pids; do
+                kill -KILL "$pid" 2>/dev/null || true
+            done
+            kill_wait=0
+            while [ -n "$old_pids" ]; do
+                if [ "$kill_wait" -ge 5 ]; then
+                    echo "ERROR: old provider processes survived SIGKILL — update not verified."
+                    rm -f "$marker_dir/update-pending"
+                    exit 1
+                fi
+                sleep 1
+                kill_wait=$((kill_wait + 1))
+                still_alive=""
+                for pid in $old_pids; do
+                    kill -0 "$pid" 2>/dev/null && still_alive="$still_alive $pid"
+                done
+                old_pids="$still_alive"
+            done
+            break
         fi
         sleep 1
         waited=$((waited + 1))
     done
 
     echo "Startup loop will respawn provider with the new binary."
+
+    # --- Post-respawn verification ---
+    # The binary swap succeeded but we need to confirm the new binary actually
+    # started. Check the ramlog for the provider's startup version line (strongest
+    # signal — proves the process loaded and initialized). Fall back to pgrep +
+    # -v if ramlog is unavailable (e.g. no RAMLOGS). WARNING only — the
+    # swap already happened, exit 1 doesn't roll anything back.
+    ramlog="/dev/shm/urnetwork.log"
+    respawn_timeout=30
+    waited=0
+    verified=0
+    echo "Waiting for provider to respawn on new binary..."
+    while [ "$waited" -lt "$respawn_timeout" ]; do
+        if pgrep -f "$provider_pattern" >/dev/null 2>&1; then
+            # Check ramlog for startup version line (RAMLOGS mode)
+            # Use grep -F for fixed-string match — version may contain dots
+            # that BRE regex would interpret as "any character".
+            if [ -f "$ramlog" ] && grep -aF "provider version=$version" "$ramlog" >/dev/null 2>&1; then
+                echo "Update verified: provider started with version $version (confirmed via ramlog)."
+                verified=1
+                break
+            fi
+            # Fallback: binary parses -v with expected version
+            running_version="$($provider_bin --version 2>/dev/null | tr -d '[:space:]' || echo "")"
+            if [ "$running_version" = "$version" ]; then
+                echo "Update verified: provider binary reports version $version."
+                verified=1
+                break
+            fi
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
+
+    if [ "$verified" -eq 0 ]; then
+        echo "WARNING: could not confirm version $version within ${respawn_timeout}s."
+        echo "Binary on disk is version $version but the running process could not be verified."
+        echo "Check startup loop logs or run: urnet-tools version"
+    fi
+
+    rm -f "$marker_dir/update-pending"
+    trap - EXIT
     exit 0
 }
 
