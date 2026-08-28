@@ -215,8 +215,8 @@ func LoadProxySlowRetryState() *proxySlowRetryState {
 		return s
 	}
 	if err := json.Unmarshal(data, s); err != nil {
-		tlog("[proxy][slow-retry] warning: corrupt state file, starting fresh: %v\n", err)
-		return s
+		tlog("[proxy][slow-retry] ERROR: corrupt state file, starting fresh: %v\n", err)
+		return newProxySlowRetryState()
 	}
 	if s.Proxies == nil {
 		s.Proxies = make(map[string]*proxySlowRetryEntry)
