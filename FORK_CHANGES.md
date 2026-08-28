@@ -2966,3 +2966,144 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 - A fix corrects restart targeting when a provider unit is owned by another user; the restart runs against the right unit instead of the current user's scope.
 
 **Impact**: CLI help restores the approved styling; restarts hit the correct user unit.
+
+## 137. Docker State-Dir $HOME Resolution (PR #480)
+
+**Purpose**: Eliminate a silent split-brain between auth state and update-pending markers in any container run with `HOME != /root` (e.g. Pelican panel eggs).
+
+**Files Modified**: `Dockerfile`, `docker/scripts/entrypoint.sh`, `docker/scripts/proxy-health.sh`, `docker/scripts/proxy-traffic.sh`, `docker/scripts/start_jwt.sh`, `docker/scripts/start_nightly.sh`, `docker/scripts/start_stable.sh`, `docker/scripts/urnet-tools.sh`.
+
+**Change**:
+- Every `docker/scripts/*.sh` resolves provider state at `$HOME/.urnetwork` instead of the hardcoded `/root/.urnetwork`. Update-pending markers already used `$HOME`; the auth path was the outlier.
+- `pelican_panel.sh` and `urnet-tools.sh` were already `$HOME`-based; the eight other scripts now agree.
+- `Dockerfile` keeps `VOLUME /root/.urnetwork` as the documented host mount point; the comment explains the `$HOME`-based resolution and why the volume target is unchanged for the default image (HOME=/root there).
+- Default-Docker behavior is unchanged: existing volumes keep working because the image still ships with HOME=/root. The change is a no-op for `docker run`-style deployments and a correctness fix for panel/egg deployments.
+
+**Impact**: A single source of truth for provider state across all in-container entrypoints. Pelican eggs (PR #480's second commit) can now read the panel-owned `$HOME/.urnetwork` JWT and the same proxy-health/proxy-traffic/session paths the host-side `urnet-tools` uses.
+
+---
+
+## 138. Pelican Panel Egg Support + PELICAN-Gated Runtime Updates (PR #480)
+
+**Purpose**: Make the hardened provider image importable into the Pelican game-server panel as a one-click egg, and remove the runtime-update attack surface that the panel's own image-publish flow would otherwise reintroduce.
+
+**Files Modified**: `.github/workflows/build.yml`, `docker/scripts/start_nightly.sh`, `docker/scripts/urnet-tools.sh`, `docker/scripts/test_pelican_smoke.sh`, `docker/scripts/test_pelican_gates.sh` (new), `pelican/README.md` (new), `pelican/egg-urnetwork-323fix.json` (new).
+
+**Change**:
+- **`pelican/egg-urnetwork-323fix.json`** — PLCN_v3 egg pointing at `ghcr.io/full-bars/urnetwork-3.23-fix:latest`. `BUILD` (stable/nightly/jwt) is user-editable; `USER_AUTH` user-editable; `PASSWORD` and `AUTHCODE` admin-only. `PELICAN=yes`, `ENABLE_VNSTAT=false`, and `ENABLE_IP_CHECKER=false` are hidden and non-editable in the egg — the image ships with the audit-preferred defaults pinned.
+- **Runtime self-update disabled under `PELICAN=yes`**: `start_nightly.sh` short-circuits the update check (both the bootstrap and the daily watcher), and `urnet-tools update` exits 1 with a refusal message. Under a panel the published image is the single source of truth; a runtime fetch would silently swap the audited fork binary for whatever the release API serves mid-flight. Non-Pelican Docker deployments keep the #477 behavior unchanged.
+- **`docker/scripts/test_pelican_smoke.sh`** — boot smoke driving `pelican_panel.sh` against a fake provider binary. Empty credentials fail fast; jwt mode routes to `auth-provide` with the code; stable mode routes through the auth loop to `provide`.
+- **`docker/scripts/test_pelican_gates.sh`** — 15 behavioral gate tests (mutation-checked). `func_check_update` extracted from `start_nightly.sh` and exercised with stubbed `log/curl/wwt`: `PELICAN=yes` exits 0 with the disabled notice and zero network calls; `PELICAN` unset proceeds past the gate. `do_update` extracted from `urnet-tools.sh`: `PELICAN=yes` exits 1 with the refusal message and never reaches arch detection; unset proceeds. State-dir tests verify `proxy-health.sh` / `proxy-traffic.sh` resolve under `$HOME` and honor `URNETWORK_PROXY_HEALTH_DIR`. Egg-JSON invariants check non-empty rules arrays, known validator tokens, and unique env_variable/sort values.
+- **CI**: egg JSON structure + variable-contract assertions, PELICAN gate greps, the boot smoke, and the new behavioral gate tests all run in `test-and-lint`.
+
+**Impact**: The hardened provider is importable as a Pelican egg in one click. Under a panel, the audit chain stays intact — no runtime binary swap path. Operators running plain `docker run` (or non-Pelican compose stacks) get the same security profile as before, plus the optional PELICAN-gated posture. Requires fleet redeploy of the `:latest` image to pick up `start_nightly.sh` and `urnet-tools.sh` changes (the `PELICAN=yes` gate is no-op without the new image).
+
+---
+
+## 139. Pelican Egg Documentation vnStat Note Correction (PR #480)
+
+**Purpose**: Stop describing `ENABLE_VNSTAT` as a vulnerability fix in user-facing docs; it is a preference, not a security claim.
+
+**Files Modified**: `pelican/README.md`, `pelican/egg-urnetwork-323fix.json`.
+
+**Change**:
+- Reworded the vnStat note: the upstream-hardened image is what the egg defaults to (off); the change records the operator-preference default, not a current exposure. vnStat was patched long ago; the off-by-default posture in the egg is to keep the unauthenticated port 8080 traffic UI out of the panel deployment.
+
+**Impact**: Documentation accuracy. No behavior change.
+
+---
+
+## 140. Docker Self-Update Fetches Fork Releases (PR #477)
+
+**Purpose**: Fix silent binary swap where Docker self-update scripts fetched from upstream urnetwork instead of this fork.
+
+**Files Modified**: `docker/scripts/start_nightly.sh`, `docker/scripts/start_update.sh`.
+
+**Change**:
+- `start_nightly.sh` updated to fetch from `full-bars/urnetwork-3.23-fix` releases instead of `urnetwork/build`.
+- `start_update.sh` updated to fetch from `full-bars/urnetwork-3.23-fix` instead of `urnetwork/connect` and `urnetsetwork/build`.
+- Added digest verification: downloaded binaries are checked against expected SHA256 before swap.
+- Added `urnet-tools.sh` symlink fallback to `/app` for Pelican egg compatibility.
+
+**Impact**: Containers running BUILD=nightly no longer silently replace the fork binary with upstream vanilla. Digest verification prevents tampered downloads.
+
+---
+
+## 141. CFAA Blocklist Sync (PR #478, #484)
+
+**Purpose**: Refresh CFAA IP blocking tables from upstream regen.
+
+**Files Modified**: `ip_security_cfaa_block.go`.
+
+**Change**:
+- PR #478: IPv4 44290→43396, IPv6 550→541
+- PR #484: IPv4 42779→44882, IPv6 537→580
+- Data-only refresh — passive table ships with normal release cycle.
+
+**Impact**: Provider blocks current CFAA-mandated IP ranges. No logic changes.
+
+---
+
+## 142. Pelican Egg CodeRabbit Fixes (PR #482)
+
+**Purpose**: Address 3 actionable CodeRabbit findings from PR #480 (Pelican egg support).
+
+**Files Modified**: `docker/scripts/test_pelican_gates.sh`, `pelican/README.md`, `pelican/egg-urnetwork-323fix.json`.
+
+**Change**:
+- Fixed test harness pipe-outside-assertion bug (same class as #477 harness fix).
+- Added `console` language annotation to code blocks.
+- Minor documentation corrections.
+
+**Impact**: Test reliability improved; documentation accuracy.
+
+---
+
+## 143. Pelican Panel Deployment Guide (PR #483)
+
+**Purpose**: Document Pelican game-server panel deployment, configuration, and authentication modes.
+
+**Files Modified**: `docs/Docker-Deployment.md`.
+
+**Change**:
+- New "Pelican Panel" section covering import steps, configuration variables table, authentication modes (JWT/stable/nightly), resource requirements (NET_ADMIN/NET_RAW, IP forwarding, outbound UDP), update behavior under PELICAN=yes.
+- PELICAN note in Automatic Updates section.
+- Corrected nightly vs stable auth mode: under PELICAN=yes, both use the same stable binary regardless of BUILD value.
+
+**Impact**: Operators can deploy the provider image as a Pelican egg with clear documentation.
+
+---
+
+## 144. Proxy Slow-Retry Cap: 24h Daily Gate + 14-Day Drop (PR #485)
+
+**Purpose**: Cap the infinite proxy retry loop that wasted goroutines and auth rate-limiter slots. One box had 356 proxies stuck for 16 days (1500+ attempts each, retrying every 15min).
+
+**Files Modified**: `provider/proxy_slow_retry.go` (new), `provider/main.go`, `provider/proxy_auth_retry_test.go`.
+
+**Change**:
+- **Slow retry delay**: 5m/10m/15m ramp for first 3 attempts (catches brief flapping), then flat 24h daily retry (96x reduction in retry volume).
+- **14-day drop ceiling**: Proxy dropped from active pool after continuous failure exceeding `slowRetryMaxDuration` (14 days). State persisted to `proxy-slow-retry.json` and survives reboots.
+- **Restart storm guard**: On restart, consults persisted `LastAttemptAt` to skip fast-retry phase — prevents 356×10 unthrottled auth calls.
+- **Thundering-herd semaphore**: Max 4 concurrent slow-retry auth attempts.
+- **Auth-success cleanup**: Clears slow-retry state for recovered proxies.
+- **Proxy refresh recovery**: Dropped proxies cleaned from `proxyCancelMap` so `proxy refresh` can relaunch them.
+- **Corrupt state recovery**: Returns fresh state on unmarshal error instead of partial state.
+- **Timer leak fix**: Uses `time.NewTimer` + `Stop()` instead of `time.After` for 24h waits.
+
+**Impact**: Dead proxies are dropped after 14 days instead of retrying forever. Restart storms eliminated. State persists across reboots. Operators see clear log messages about drop/recovery status.
+
+---
+
+## 145. urnet-tools Update Verification Hardening (PR #486)
+
+**Purpose**: Harden the `do_update()` function against race conditions and edge cases identified by DeepSeek V4 Pro review.
+
+**Files Modified**: `cmd/urnet-tools/main.go` (or equivalent shell script).
+
+**Change**:
+1. PID tracking: Capture old provider PIDs before SIGTERM, wait for those specific PIDs via `kill -0`. Prevents race where startup loop respawns new process and we accidentally SIGKILL it.
+2. Fixed-string grep: Ramlog version check uses `grep -aF` (not BRE regex) to avoid dots matching any character.
+3. Version flag consistency: Uses `-v` instead of `--version`, matching rest of script. Adds `tr -d whitespace` for clean comparison.
+4. Trap cleanup: Ensures temp files are cleaned up on all exit paths.
+
+**Impact**: Update verification is more reliable; fewer false positives/negatives during provider updates.
