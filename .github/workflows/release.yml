@@ -9,6 +9,12 @@ on:
       # way. Compute a tag with scripts/compute-meso-tag.sh.
       - 'v*-meso'
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      tag_name:
+        description: 'Release tag (e.g. v2026.8.28-1031295980-meso)'
+        required: true
+        type: string
 
 jobs:
   build:
@@ -45,7 +51,7 @@ jobs:
 
       - name: Build provider
         run: |
-          VERSION=${GITHUB_REF_NAME:-v2026.1.1-0-meso}
+          VERSION=${{ inputs.tag_name || github.ref_name }}
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
           go build -trimpath \
           -ldflags "-s -w -X main.Version=${VERSION}" \
@@ -53,7 +59,7 @@ jobs:
 
       - name: Build urnet-tools (Go tool)
         run: |
-          VERSION=${GITHUB_REF_NAME:-v2026.1.1-0-meso}
+          VERSION=${{ inputs.tag_name || github.ref_name }}
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
           go build -trimpath \
           -ldflags "-s -w -X main.Version=${VERSION}" \
@@ -61,7 +67,7 @@ jobs:
 
       - name: Build urnet-docker (Go tool, container variant)
         run: |
-          VERSION=${GITHUB_REF_NAME:-v2026.1.1-0-meso}
+          VERSION=${{ inputs.tag_name || github.ref_name }}
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
           go build -trimpath \
           -ldflags "-s -w -X main.Version=${VERSION}" \
@@ -205,7 +211,7 @@ jobs:
 
       - name: Prepare binaries
         run: |
-          VERSION=${GITHUB_REF_NAME:-latest}
+          VERSION=${{ inputs.tag_name || github.ref_name }}
           find release_tmp -name "provider*" -type f -exec chmod +x {} \;
           # Linux providers
           mv release_tmp/linux/amd64/provider-linux-amd64 release_tmp/linux/amd64/provider 2>/dev/null || true
@@ -245,7 +251,7 @@ jobs:
 
       - name: Create provider tarballs
         run: |
-          VERSION=${GITHUB_REF_NAME:-latest}
+          VERSION=${{ inputs.tag_name || github.ref_name }}
 
           # Universal tarball — scripts match this via ^urnetwork-provider-
           cp scripts/Provider_Install_Linux.sh release_tmp/urnet-tools
@@ -286,7 +292,8 @@ jobs:
       - name: Set release body source
         id: body_src
         run: |
-          CUSTOM="releases/${GITHUB_REF_NAME}.md"
+          TAG="${{ inputs.tag_name || github.ref_name }}"
+          CUSTOM="releases/${TAG}.md"
           # Scans moved to the parallel 'scan' job (posts a release comment).
           # The release body is the custom notes, or auto-generated.
           if [ -f "$CUSTOM" ]; then
@@ -299,7 +306,7 @@ jobs:
 
       - name: Release
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || inputs.tag_name
         with:
           files: |
             urnetwork-provider-*.tar.gz
@@ -311,7 +318,7 @@ jobs:
           generate_release_notes: ${{ steps.body_src.outputs.auto }}
 
       - name: Notify Discord on tagged release
-        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.tag_name }}
         env:
           BUILD_NOTIFY: ${{ secrets.BUILD_NOTIFY }}
         run: |
@@ -319,8 +326,8 @@ jobs:
             echo "BUILD_NOTIFY secret is not set, skipping notification"
             exit 0
           fi
-          VERSION="${{ github.ref_name }}"
-          RELEASE_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
+          VERSION="${{ inputs.tag_name || github.ref_name }}"
+          RELEASE_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ inputs.tag_name || github.ref_name }}"
           curl -sf -H "Content-Type: application/json" -d "$(jq -n \
             --arg version "$VERSION" \
             --arg releaseUrl "$RELEASE_URL" \
@@ -458,7 +465,7 @@ jobs:
             echo "VIRUS_TOTAL secret not set on branch run, skipping VirusTotal scan"
             exit 0
           fi
-          VERSION=${GITHUB_REF_NAME:-latest}
+          VERSION=${{ inputs.tag_name || github.ref_name }}
           python3 .github/scripts/vt-scan.py \
             release_tmp/linux/amd64/provider \
             release_tmp/linux/arm64/provider \
@@ -488,7 +495,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          VERSION=${GITHUB_REF_NAME:-latest}
+          VERSION=${{ inputs.tag_name || github.ref_name }}
           if command -v clamscan >/dev/null 2>&1; then
             echo "ClamAV already installed"
           else
@@ -505,7 +512,7 @@ jobs:
           clamscan --no-summary -r release_tmp/ 2>/dev/null | grep "FOUND" && echo "::error::ClamAV found malware in release artifacts" || echo "ClamAV: clean"
 
       - name: Post scan verdict to release
-        if: always() && startsWith(github.ref, 'refs/tags/')
+        if: always() && (startsWith(github.ref, 'refs/tags/') || inputs.tag_name)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

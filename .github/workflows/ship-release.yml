@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: 'Preview tag without pushing (true/false)'
+        description: 'Preview tag without releasing (true/false)'
         required: false
         default: 'false'
         type: boolean
@@ -20,6 +20,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      tag_name: ${{ steps.tag.outputs.tag }}
+      dry_run: ${{ steps.tag.outputs.dry_run }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -61,4 +64,13 @@ jobs:
           git tag "${TAG}"
           git push origin "${TAG}"
           echo "### Tag pushed: ${TAG}" >> "$GITHUB_STEP_SUMMARY"
-          echo "This triggers build.yml (Docker image) and release.yml (binaries + GitHub Release)."
+
+  release:
+    name: Build & Release Binaries
+    needs: ship
+    if: needs.ship.outputs.dry_run == 'false'
+    uses: ./.github/workflows/release.yml
+    with:
+      tag_name: ${{ needs.ship.outputs.tag_name }}
+    permissions:
+      contents: write
