@@ -77,7 +77,10 @@ jobs:
           # guarantees release.yml finds releases/\${TAG}.md at checkout.
           NOTES_SHA="$(git rev-parse HEAD)"
           git push origin "${NOTES_SHA}:main"
-          git tag "${TAG}" "${NOTES_SHA}"
+          # Annotated tag (tagger = the identity that pushed), mirroring the
+          # 3.23-fix convention. GitHub may mark it Verified if the account's
+          # commit-signing setting is on; otherwise it's an ordinary tag.
+          git tag -a "${TAG}" "${NOTES_SHA}" -m "${TAG}"
           git push origin "${TAG}"
           echo "### Tag pushed: ${TAG} @ ${NOTES_SHA}" >> "$GITHUB_STEP_SUMMARY"
 
