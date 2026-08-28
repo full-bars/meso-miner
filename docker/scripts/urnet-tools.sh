@@ -14,7 +14,7 @@ do_update() {
     # runtime self-update would bypass the operator's pinned image.
     if [ "${PELICAN:-}" = "yes" ]; then
         echo "ERROR: runtime updates are disabled under Pelican — update by re-pulling the image."
-        exit 1: harden do_update — PID tracking, ramlog check, trap cleanup)
+        exit 1
     fi
     arch="$(uname -m)"
     case "$arch" in
