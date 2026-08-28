@@ -100,6 +100,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag_name || github.ref || '' }}
 
       - name: Download provider linux amd64 artifact
         uses: actions/download-artifact@v4
@@ -351,6 +353,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag_name || github.ref || '' }}
 
       # Download the same 20 binaries the release ships. (Same download
       # steps as create-release; duplicated here so this job is independent.)
@@ -526,23 +530,25 @@ jobs:
           else
             BODY="${BODY}"$'\n'"VirusTotal scan did not produce a report (see the scan job log)."
           fi
+          # Retry: the release may still be mid-creation when the scan finishes.
           python3 - "$VER" "$BODY" << 'PY'
-          import json, os, sys, urllib.request
+          import json, os, sys, time, urllib.request
           ver, body = sys.argv[1], sys.argv[2]
           token = os.environ["GITHUB_TOKEN"]
           api = "https://api.github.com/repos/" + os.environ["GITHUB_REPOSITORY"]
-          # Find the release id for this tag.
-          req = urllib.request.Request(f"{api}/releases/tags/{ver}", headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
-          with urllib.request.urlopen(req, timeout=30) as resp:
-              rel = json.load(resp)
-          # Post a comment (github API has no release comments via this shape;
-          # use issue-comments on the release's 'discussion' — fallback: update
-          # the release body instead, preserving the original notes).
-          # Append the scan verdict to the EXISTING release body (which
-          # create-release wrote: notes + binary list). Patching body to only
-          # the verdict would destroy the release notes.
-          body_new = (rel.get("body") or "") + "\n\n" + body
-          req2 = urllib.request.Request(f"{api}/releases/{rel['id']}", data=json.dumps({"body": body_new}).encode(), headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "Content-Type": "application/json"}, method="PATCH")
-          with urllib.request.urlopen(req2, timeout=30) as resp2:
-              print("scan verdict appended to release body (HTTP", resp2.status, ")")
+          for attempt in range(5):
+              try:
+                  req = urllib.request.Request(f"{api}/releases/tags/{ver}", headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      rel = json.load(resp)
+                  body_new = (rel.get("body") or "") + "\n\n" + body
+                  req2 = urllib.request.Request(f"{api}/releases/{rel['id']}", data=json.dumps({"body": body_new}).encode(), headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "Content-Type": "application/json"}, method="PATCH")
+                  with urllib.request.urlopen(req2, timeout=30) as resp2:
+                      print("scan verdict appended to release body (HTTP", resp2.status, ")")
+                  break
+              except Exception as e:
+                  if attempt == 4:
+                      raise
+                  print(f"release not ready yet, retrying ({e}); attempt {attempt+1}/5")
+                  time.sleep(10)
           PY
