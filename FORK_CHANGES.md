@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.30.7
+**Current Version**: v3.23.0-fix.30.8
 
 ---
 
@@ -2967,6 +2967,8 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 
 **Impact**: CLI help restores the approved styling; restarts hit the correct user unit.
 
+---
+
 ## 137. Docker State-Dir $HOME Resolution (PR #480)
 
 **Purpose**: Eliminate a silent split-brain between auth state and update-pending markers in any container run with `HOME != /root` (e.g. Pelican panel eggs).
@@ -3021,7 +3023,7 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 
 **Change**:
 - `start_nightly.sh` updated to fetch from `full-bars/urnetwork-3.23-fix` releases instead of `urnetwork/build`.
-- `start_update.sh` updated to fetch from `full-bars/urnetwork-3.23-fix` instead of `urnetwork/connect` and `urnetsetwork/build`.
+- `start_update.sh` updated to fetch from `full-bars/urnetwork-3.23-fix` instead of `urnetwork/connect` and `urnetwork/build`.
 - Added digest verification: downloaded binaries are checked against expected SHA256 before swap.
 - Added `urnet-tools.sh` symlink fallback to `/app` for Pelican egg compatibility.
 

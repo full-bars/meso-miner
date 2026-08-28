@@ -1,11 +1,11 @@
 {
-    "_comment": "UrNetwork provider egg for full-bars/urnetwork-3.23-fix. Updates are owned by the image (re-pull); runtime self-update is disabled inside the container.",
+    "_comment": "UrNetwork provider egg for full-bars/meso-miner. Updates are owned by the image (re-pull); runtime self-update is disabled inside the container.",
     "meta": {
         "version": "PLCN_v3",
         "update_url": null
     },
     "exported_at": "2026-08-27T00:00:00+00:00",
-    "name": "UrNetwork (full-bars 3.23-fix)",
+    "name": "UrNetwork (full-bars meso-miner)",
     "author": "full-bars",
     "uuid": "b1f4a2c8-6d97-4f02-9c31-0e5a77d2f8bb",
     "description": "URnetwork provider (hardened fork). Accepts stable, nightly, or jwt mode. Credentials stay admin-only.",
@@ -17,7 +17,7 @@
     ],
     "features": [],
     "docker_images": {
-        "UrNetwork 3.23-fix": "ghcr.io/full-bars/urnetwork-3.23-fix:latest"
+        "UrNetwork meso-miner": "ghcr.io/full-bars/meso-miner:latest"
     },
     "file_denylist": [],
     "startup_commands": {
