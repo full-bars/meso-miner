@@ -91,5 +91,12 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       tag_name: ${{ needs.ship.outputs.tag_name }}
+    # CRITICAL: pass all caller secrets to the called workflow. Without
+    # this, the reusable workflow (release.yml) sees secrets.* as empty —
+    # which is why every ship-release run has failed the VirusTotal step
+    # with "VIRUS_TOTAL secret not set" and the verdict-post 404'd
+    # (no report file to attach). `inherit` passes every secret the
+    # caller has: VIRUS_TOTAL, GITHUB_TOKEN, BUILD_NOTIFY, etc.
+    secrets: inherit
     permissions:
       contents: write
