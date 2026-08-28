@@ -1,0 +1,64 @@
+name: Ship Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Preview tag without pushing (true/false)'
+        required: false
+        default: 'false'
+        type: boolean
+
+# Prevent concurrent releases — only one at a time.
+concurrency:
+  group: ship-release
+  cancel-in-progress: false
+
+jobs:
+  ship:
+    name: Create Release Tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Compute release tag
+        id: tag
+        run: |
+          TAG=$(scripts/compute-meso-tag.sh)
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "## Release tag: ${TAG}" >> "$GITHUB_STEP_SUMMARY"
+
+          # Sanity check: verify the tag decodes correctly
+          scripts/compute-meso-tag.sh --verify "${TAG}" >> "$GITHUB_STEP_SUMMARY" 2>&1
+
+          if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+            echo "### DRY RUN — tag will NOT be pushed" >> "$GITHUB_STEP_SUMMARY"
+            echo "dry_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "dry_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify release notes exist
+        if: steps.tag.outputs.dry_run == 'false'
+        run: |
+          NOTE_FILE="releases/v3.23.0-fix.30.8.md"
+          if [[ ! -f "$NOTE_FILE" ]]; then
+            echo "::error::Release notes not found at ${NOTE_FILE}"
+            exit 1
+          fi
+          echo "Release notes: ${NOTE_FILE}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Push release tag
+        if: steps.tag.outputs.dry_run == 'false'
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          git tag "${TAG}"
+          git push origin "${TAG}"
+          echo "### Tag pushed: ${TAG}" >> "$GITHUB_STEP_SUMMARY"
+          echo "This triggers build.yml (Docker image) and release.yml (binaries + GitHub Release)."
