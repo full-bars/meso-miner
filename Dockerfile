@@ -61,6 +61,11 @@ RUN ln -sf /app/proxy-health.sh /usr/local/bin/proxy-health
 RUN ln -sf /app/proxy-traffic.sh /usr/local/bin/proxy-traffic
 RUN ln -sf /app/logs.sh /usr/local/bin/logs
 RUN ln -sf /app/urnet-tools.sh /usr/local/bin/urnet-tools
+# update_verify.sh is sourced by urnet-tools for digest verification. Symlink
+# it to /usr/local/bin so the source line resolves regardless of whether the
+# scripts run from /app/ (container entrypoint) or via the /usr/local/bin/
+# symlink (when invoked from a Go exec.Command in a sub-process).
+RUN ln -sf /app/update_verify.sh /usr/local/bin/update_verify.sh
 
 # Expose the provider binary on PATH as `provider` for `docker exec <c> provider <cmd>`
 RUN ln -sf /app/urnetwork_${TARGETARCH}_stable /usr/local/bin/provider

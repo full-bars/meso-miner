@@ -7,7 +7,9 @@ log() {
 }
 
 # Resolve this script's directory (update_verify.sh lives alongside it).
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve the real path so it works whether invoked from /app/ or via a
+# symlink in /usr/local/bin.
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=update_verify.sh
 . "$SCRIPT_DIR/update_verify.sh"
 
