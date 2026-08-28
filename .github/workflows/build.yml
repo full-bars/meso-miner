@@ -229,6 +229,21 @@ jobs:
           chmod +x docker/scripts/test_pelican_gates.sh
           ./docker/scripts/test_pelican_gates.sh
 
+      - name: Shellcheck docker scripts (error severity)
+        run: |
+          # Error-severity gate over every docker script. Pre-existing
+          # findings must be fixed or suppressed inline (# shellcheck
+          # disable=...) with a justification comment — SC2071 in
+          # urnet-tools.sh (intentional uint64 string-compare) is done.
+          sudo apt-get install -y shellcheck >/dev/null 2>&1
+          status=0
+          for f in docker/scripts/*.sh; do
+            if ! shellcheck -S error "$f"; then
+              status=1
+            fi
+          done
+          exit $status
+
       - name: Run vulnerability check
         continue-on-error: true
         run: |
