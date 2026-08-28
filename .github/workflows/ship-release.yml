@@ -47,20 +47,33 @@ jobs:
             echo "dry_run=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Verify release notes exist
+      - name: Stage release notes for tag
         if: steps.tag.outputs.dry_run == 'false'
         run: |
+          TAG="${{ steps.tag.outputs.tag }}"
           NOTE_FILE="releases/v3.23.0-fix.30.8.md"
           if [[ ! -f "$NOTE_FILE" ]]; then
             echo "::error::Release notes not found at ${NOTE_FILE}"
             exit 1
           fi
-          echo "Release notes: ${NOTE_FILE}" >> "$GITHUB_STEP_SUMMARY"
+          # The notes file uses the 3.23-fix historical name, but release.yml
+          # looks up releases/\${TAG}.md. Copy it to the tag-named path so the
+          # release body uses the meso-customized notes, not auto-generated.
+          cp "$NOTE_FILE" "releases/${TAG}.md"
+          git add "releases/${TAG}.md"
+          git config user.name "full-bars"
+          git config user.email "45684698+full-bars@users.noreply.github.com"
+          git commit -m "docs: release notes for \${TAG}" || echo "notes already committed"
+          git push origin HEAD:main
+          echo "Release notes staged at releases/\${TAG}.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Push release tag
         if: steps.tag.outputs.dry_run == 'false'
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
+          # Re-point at the freshly-pushed main (with the notes commit).
+          git fetch origin main
+          git reset --hard origin/main
           git tag "${TAG}"
           git push origin "${TAG}"
           echo "### Tag pushed: ${TAG}" >> "$GITHUB_STEP_SUMMARY"
