@@ -71,12 +71,15 @@ jobs:
         if: steps.tag.outputs.dry_run == 'false'
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
-          # Re-point at the freshly-pushed main (with the notes commit).
-          git fetch origin main
-          git reset --hard origin/main
-          git tag "${TAG}"
+          # Tag the EXACT commit that carries the notes file. `git reset --hard
+          # origin/main` is racy (local origin/main may lag the push), so instead
+          # capture the notes-commit SHA before pushing and tag that. This
+          # guarantees release.yml finds releases/\${TAG}.md at checkout.
+          NOTES_SHA="$(git rev-parse HEAD)"
+          git push origin "${NOTES_SHA}:main"
+          git tag "${TAG}" "${NOTES_SHA}"
           git push origin "${TAG}"
-          echo "### Tag pushed: ${TAG}" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Tag pushed: ${TAG} @ ${NOTES_SHA}" >> "$GITHUB_STEP_SUMMARY"
 
   release:
     name: Build & Release Binaries

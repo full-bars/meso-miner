@@ -458,8 +458,9 @@ jobs:
           set -euo pipefail
           if [ -z "${VT_API_KEY:-}" ]; then
             # A rotated/deleted secret must not silently disable a security
-            # gate. Fail on tag runs so the release comment flags it.
-            if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            # gate. Fail on tag runs so the release comment flags it. A
+            # workflow_call invocation with a tag_name input is a tag run too.
+            if [[ "${GITHUB_REF_TYPE}" == "tag" || -n "${{ inputs.tag_name }}" ]]; then
               echo "::error::VIRUS_TOTAL secret not set — scan cannot run"
               exit 1
             fi
@@ -518,7 +519,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Post the scan result as a release comment. NEVER gates the release.
-          VER=${GITHUB_REF_NAME}
+          VER="${{ inputs.tag_name || github.ref_name }}"
           BODY="## Security Scan (parallel, non-blocking)"
           if [ -f "${GITHUB_WORKSPACE}/vt-scan-report.md" ]; then
             BODY="${BODY}"$'\n'"$(cat "${GITHUB_WORKSPACE}/vt-scan-report.md")"
