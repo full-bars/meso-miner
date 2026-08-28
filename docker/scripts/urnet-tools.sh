@@ -276,7 +276,7 @@ do_update() {
     # release JSON BEFORE downloading. No digest published -> refuse the
     # update rather than install unverified bytes.
     asset_name="$(basename "$download_url")"
-    expected_digest="$(asset_digest_from_json "$release_json" "$asset_name")" || {
+    expected_digest="$(upd_asset_digest_from_json "$release_json" "$asset_name")" || {
         echo "ERROR: release API returned no sha256 digest for $asset_name; refusing to update without verification."
         rm -rf "$tmpdir"
         exit 1
@@ -292,7 +292,7 @@ do_update() {
         }
     fi
 
-    if ! verify_digest "$tarball" "$expected_digest"; then
+    if ! upd_verify_digest "$tarball" "$expected_digest"; then
         echo "ERROR: downloaded tarball failed digest verification; nothing installed."
         rm -rf "$tmpdir"
         exit 1
