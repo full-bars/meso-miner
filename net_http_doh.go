@@ -593,11 +593,13 @@ func (self *DohCache) QueryResult(ctx context.Context, recordType string, domain
 	// resolver outage / exit failover instead of returning SERVFAIL. An
 	// authoritative miss (NXDOMAIN/NODATA) is never served stale.
 	if len(fl.addrs) == 0 && !fl.authoritative {
+		self.stateLock.Lock()
 		if r := self.queryResultExpiration[q]; r != nil && r.staleUsable(now) {
 			fl.addrs = r.Addrs()
 			fl.authoritative = false
 			self.staleServeCount.Add(1)
 		}
+		self.stateLock.Unlock()
 	}
 	return fl.addrs, fl.authoritative
 }
@@ -612,7 +614,8 @@ func (self *DohCache) resolve(ctx context.Context, q DohKey, now time.Time) ([]n
 	// each query normally.
 	dohCtx, dohCancel := context.WithCancel(ctx)
 	if self.lifecycleCtx != nil {
-		context.AfterFunc(self.lifecycleCtx, dohCancel)
+		stopLifecycleWatch := context.AfterFunc(self.lifecycleCtx, dohCancel)
+		defer stopLifecycleWatch()
 	}
 	defer dohCancel()
 
@@ -845,18 +848,20 @@ type MemoryTarget interface {
 	Release(bytes int64)
 }
 
-// ByteBudget is a simple channel-backed MemoryTarget: it admits acquisitions
-// while at least `capacity` bytes are unconsumed, blocking (via ctx) once full.
-// Acquire returns false if ctx ends before bytes free up, so a caller can shed
-// instead of deadlocking under memory pressure.
+// ByteBudget is a simple MemoryTarget backed by a channel-close broadcast:
+// it admits acquisitions while at least `capacity` bytes are unconsumed,
+// blocking (via ctx) once full. Acquire returns false if ctx ends before
+// bytes free up, so a caller can shed instead of deadlocking.
+// Release closes the wake channel, unblocking ALL waiters (no lost wake-ups).
 type ByteBudget struct {
 	used atomic.Int64
 	cap  int64
+	mu   sync.Mutex
 	wait chan struct{}
 }
 
 func NewByteBudget(capacity int64) *ByteBudget {
-	return &ByteBudget{cap: capacity, wait: make(chan struct{}, 1)}
+	return &ByteBudget{cap: capacity, wait: make(chan struct{})}
 }
 
 func (self *ByteBudget) Acquire(ctx context.Context, bytes int64) bool {
@@ -871,22 +876,29 @@ func (self *ByteBudget) Acquire(ctx context.Context, bytes int64) bool {
 			}
 			continue
 		}
-		// full: wait for a release or ctx end
+		// full: snapshot the current wake channel under the mutex so a
+		// concurrent Release that closes+replaces it doesn't leave us
+		// waiting on a stale channel that never fires.
+		self.mu.Lock()
+		w := self.wait
+		self.mu.Unlock()
 		select {
 		case <-ctx.Done():
 			return false
-		case <-self.wait:
+		case <-w:
 		}
 	}
 }
 
 func (self *ByteBudget) Release(bytes int64) {
 	self.used.Add(-bytes)
-	// nudge one waiter (if any); non-blocking
-	select {
-	case self.wait <- struct{}{}:
-	default:
-	}
+	// wake all blocked acquirers by closing the current channel and
+	// replacing it with a fresh one. Every goroutine in Acquire's select
+	// on the old channel is woken, and new arrivals get the new channel.
+	self.mu.Lock()
+	close(self.wait)
+	self.wait = make(chan struct{})
+	self.mu.Unlock()
 }
 
 // serverStat holds one tokenBucket per dohServerWindows span (parallel index),
