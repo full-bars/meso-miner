@@ -3290,6 +3290,13 @@ func provide(opts docopt.Opts) {
 		tlog("[proxy] warning: could not write proxy.state: %v\n", err)
 	}
 
+	// Load persisted DoH server scores and start a warm-up probe so the
+	// server-scorer (P2-2) has signal before real DNS traffic arrives.
+	// Scores are saved periodically and on shutdown; the cache is closed
+	// via deferred cleanup.
+	_, closeDohCache := initPersistentDohCache(ctx)
+	defer closeDohCache()
+
 	// Load persisted slow-retry state so that a restart does not reset
 	// the 14-day drop clock for proxies that were already failing.
 	globalProxySlowRetryState = LoadProxySlowRetryState()
@@ -3440,6 +3447,9 @@ func provide(opts docopt.Opts) {
 	// All goroutines have finished. Log final status before exit.
 	tlog("[provider] exiting\n")
 	critLog("PROVIDER EXIT: normal shutdown (code=0)")
+	// Explicitly close the DoH cache before os.Exit(0) since defers do
+	// not run on os.Exit. idempotent — safe if already called by defer.
+	closeDohCache()
 	os.Exit(0)
 }
 
