@@ -47,7 +47,7 @@ func TestDispatchHelpIsSafe(t *testing.T) {
 // TestParseDelegationArgsHelpIsSafe: summary/report/hot-restart delegate to
 // the provider binary, so -h/--help must short-circuit in parseDelegationArgs
 // (help printed, nothing delegated) — the C1 invariant for pass-through
-// commands (free-review gap: no test pinned this).
+// commands .
 func TestParseDelegationArgsHelpIsSafe(t *testing.T) {
 	for _, args := range [][]string{{"-h"}, {"--help"}, {"--unit", "urnetwork-native.service", "-h"}} {
 		rest, err := parseDelegationArgs(args)
@@ -69,7 +69,7 @@ func TestParseDelegationArgsHelpIsSafe(t *testing.T) {
 }
 
 // TestParseTargetFlagsRejectsUnknownFlags: a typo'd --flag must error, not
-// silently drop (review finding L2).
+// silently drop .
 func TestParseTargetFlagsRejectsUnknownFlags(t *testing.T) {
 	_, _, err := parseTargetFlags([]string{"--netwrok", "foo"})
 	if err == nil {
@@ -174,9 +174,9 @@ func TestInstallBinaryAtomic(t *testing.T) {
 }
 
 // TestBackupNameTimestamped: backup names include a timestamp so repeated
-// updates never collide (review finding M2). Calls the PRODUCTION backupName
+// updates never collide . Calls the PRODUCTION backupName
 // helper — a local copy would pass even if the real format changed
-// (coderabbit trivial finding).
+// .
 func TestBackupNameTimestamped(t *testing.T) {
 	a := backupName("/usr/local/bin/provider", time.Date(2026, 8, 9, 3, 15, 0, 0, time.UTC))
 	b := backupName("/usr/local/bin/provider", time.Date(2026, 8, 9, 3, 15, 1, 0, time.UTC))
@@ -280,7 +280,7 @@ func TestRunVersionCommand(t *testing.T) {
 	ToolVersion = "test-version"
 	for _, args := range [][]string{{"version"}, {"--version"}, {"-v"}} {
 		// Capture stdout so we can pin the printed content, not just the
-		// nil error (Sonnet review finding: output must be verified).
+		// nil error .
 		oldOut := os.Stdout
 		r, w, err := os.Pipe()
 		if err != nil {
@@ -353,7 +353,7 @@ func TestCmdHotRestartBuildsSystemctl(t *testing.T) {
 		t.Errorf("Run([hot-restart --help]) = %v, want nil", err)
 	}
 	// The confirm gate must exist: a non-force restart with no stdin (EOF)
-	// must be refused, not silently restart (Sonnet review finding). Test
+	// must be refused, not silently restart . Test
 	// confirmGate directly — deterministic, no discovery dependency (CI has
 	// no provider; Run(["hot-restart"]) would error at discovery before the
 	// gate, which is env-dependent). cmdHotRestart calls this same gate.

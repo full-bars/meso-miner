@@ -3,13 +3,13 @@ package urnettools
 // Tests for lifecycleCandidates (explicit-target-only merged discovery).
 //
 // Contract under test:
-//   - No explicit target: the candidate pool is Discover() ALONE — every
-//     default-selection path behaves exactly as before this change, even on
-//     boxes running docker containers alongside host providers.
-//   - Explicit flag target (--unit/--user/--network/--network-id/--state-dir):
-//     docker containers join the pool so a mistyped/mistargeted container
-//     name gets the actionable guardSystemdProvider refusal (with the
-//     urnet-docker hint) instead of a plain not-found.
+// - No explicit target: the candidate pool is Discover() ALONE — every
+// default-selection path behaves exactly as before this change, even on
+// boxes running docker containers alongside host providers.
+// - Explicit flag target (--unit/--user/--network/--network-id/--state-dir):
+// docker containers join the pool so a mistyped/mistargeted container
+// name gets the actionable guardSystemdProvider refusal (with the
+// urnet-docker hint) instead of a plain not-found.
 //
 // All commands run with dryRun=true: selection + guards execute for real,
 // but nothing is started/stopped/restarted and no systemctl is invoked.
@@ -24,8 +24,8 @@ import (
 func TestMain(m *testing.M) {
 	// Isolate every platform-specific config location this package reads,
 	// so no developer/runner state leaks into selection behavior:
-	//   unix:  $HOME + $XDG_CONFIG_HOME (UserHomeDir/UserConfigDir)
-	//   win:   %USERPROFILE% (UserHomeDir) + %APPDATA% (UserConfigDir)
+	// unix: $HOME + $XDG_CONFIG_HOME (UserHomeDir/UserConfigDir)
+	// win: %USERPROFILE% (UserHomeDir) + %APPDATA% (UserConfigDir)
 	// Without the Windows pair, os.UserConfigDir() still sees the runner's
 	// real AppData and a stray persisted default silently changes the
 	// selection path (seen as a spurious CI failure).
@@ -220,7 +220,7 @@ func TestLifecycleCmds_ExplicitUnknownTargetStillPlainNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("unknown explicit target must error")
 	}
-	if !strings.Contains(err.Error(), "matches no running provider") {
+	if !strings.Contains(err.Error(), "matches no provider") {
 		t.Fatalf("unexpected error shape: %v", err)
 	}
 }
@@ -358,7 +358,7 @@ func TestLifecycleCandidates_DockerCLIAbsentExplicitTargetCleanFallthrough(t *te
 	if err == nil {
 		t.Fatal("unknown target must still error")
 	}
-	if !strings.Contains(err.Error(), "matches no running provider") {
+	if !strings.Contains(err.Error(), "matches no provider") {
 		t.Fatalf("unexpected error shape: %v", err)
 	}
 }

@@ -43,14 +43,14 @@ func setAutoStart(p Provider, on bool) error {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>Label</key><string>com.urnetwork.provider</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>%s</string>
-        <string>provide</string>
-    </array>
-    <key>RunAtLoad</key><true/>
-    <key>WorkingDirectory</key><string>%s</string>
+ <key>Label</key><string>com.urnetwork.provider</string>
+ <key>ProgramArguments</key>
+ <array>
+ <string>%s</string>
+ <string>provide</string>
+ </array>
+ <key>RunAtLoad</key><true/>
+ <key>WorkingDirectory</key><string>%s</string>
 </dict>
 </plist>
 `, p.Binary, filepath.Dir(p.Binary))
@@ -108,17 +108,17 @@ func writeUpdateAgent(plist, calendarName string) error {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>Label</key><string>com.urnetwork.update</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>%s</string>
-        <string>update</string>
-        <string>-f</string>
-    </array>
-    <key>StartCalendarInterval</key>
-    <dict>
-        %s
-    </dict>
+ <key>Label</key><string>com.urnetwork.update</string>
+ <key>ProgramArguments</key>
+ <array>
+ <string>%s</string>
+ <string>update</string>
+ <string>-f</string>
+ </array>
+ <key>StartCalendarInterval</key>
+ <dict>
+ %s
+ </dict>
 </dict>
 </plist>
 `, exe, calendar)

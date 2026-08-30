@@ -12,10 +12,10 @@ import (
 // This file restores urnet-tools commands that the Go rewrite STRIPPED from
 // the legacy shell tool (Provider_Install_Linux.sh + urnet-tools.ps1):
 //
-//	auth            authenticate a provider (delegates to the provider binary)
-//	choose-network  switch API/connect URLs (delegates to the provider binary)
-//	fast-auth       toggle the auth-rate-limiter bypass marker
-//	set             read/write/clear runtime tunings in ~/.urnetwork
+//	auth authenticate a provider (delegates to the provider binary)
+//	choose-network switch API/connect URLs (delegates to the provider binary)
+//	fast-auth toggle the auth-rate-limiter bypass marker
+//	set read/write/clear runtime tunings in ~/.urnetwork
 //
 // auth and choose-network delegate to the targeted provider binary via
 // providerSubcommand (the same pattern proxy/summary/hot-restart use). They
@@ -90,7 +90,7 @@ func cmdChooseNetwork(args []string) error {
 		fmt.Fprint(os.Stderr, `urnet-tools choose-network — set the network the provider connects to
 
 Usage: urnet-tools choose-network <api_url> <connect_url> [target]
-       urnet-tools choose-network --reset [target]
+ urnet-tools choose-network --reset [target]
 
 Saves an API URL (http/https) and connect URL (ws/wss) as the provider's
 chosen network. --reset clears the saved network and reverts to the main
@@ -151,7 +151,7 @@ func cmdFastAuth(args []string, force, dryRun bool) error {
 	case "on", "off":
 		// Mirrors the audit-trail + confirm convention used by hub set/off and
 		// the tune commands: even -f prints the target line to stderr; without
-		// -f the operator must type an explicit yes (review finding HIGH).
+		// -f the operator must type an explicit yes .
 		ok, err := confirmGate("fast-auth "+sub+" "+providerLabel(p), p, force, dryRun)
 		if err != nil {
 			return err
@@ -220,13 +220,13 @@ var setKeyFiles = map[string]string{
 
 // setKeyHelps describes each key for `set help` / usage.
 var setKeyHelps = []string{
-	"  node-name           <string>    node name reported to the fleet hub (default: hostname)",
-	"  report-interval     <duration>  bandwidth report cadence (default: 5m, min: 10s)",
-	"  proxy-url-max       <int>       max proxies from URL feeds (default: 500)",
-	"  proxy-url-refresh   <duration>  URL proxy list refresh interval (default: 1h, min: 10s)",
-	"  cleanup-scope       none|url|all  dead proxy auto-cleanup scope (default: url)",
-	"  cleanup-interval    <duration>  dead proxy cleanup interval (default: 6h, min: 1m)",
-	"  fast-auth           on|off      bypass auth rate limiter (marker file)",
+	" node-name <string> node name reported to the fleet hub (default: hostname)",
+	" report-interval <duration> bandwidth report cadence (default: 5m, min: 10s)",
+	" proxy-url-max <int> max proxies from URL feeds (default: 500)",
+	" proxy-url-refresh <duration> URL proxy list refresh interval (default: 1h, min: 10s)",
+	" cleanup-scope none|url|all dead proxy auto-cleanup scope (default: url)",
+	" cleanup-interval <duration> dead proxy cleanup interval (default: 6h, min: 1m)",
+	" fast-auth on|off bypass auth rate limiter (marker file)",
 }
 
 func printSetHelp() {
@@ -236,10 +236,10 @@ Usage: urnet-tools set <key> [<value>|off] [target]
 
 Runtime overrides are files the provider reads live from ~/.urnetwork/.
 Changes take effect on the next provider tick (no restart needed).
-Set a value:  urnet-tools set <key> <value>
+Set a value: urnet-tools set <key> <value>
 Show current: urnet-tools set <key>
-Clear it:     urnet-tools set <key> off
-List all:     urnet-tools set
+Clear it: urnet-tools set <key> off
+List all: urnet-tools set
 
 Available keys:
 `)
@@ -441,9 +441,9 @@ func formatSets(p Provider, want string) error {
 		}
 		found++
 		if k == "fast-auth" {
-			fmt.Printf("  %-32s %s\n", setKeyFiles[k], "on")
+			fmt.Printf(" %-32s %s\n", setKeyFiles[k], "on")
 		} else {
-			fmt.Printf("  %-32s %s\n", setKeyFiles[k], strings.TrimSpace(string(b)))
+			fmt.Printf(" %-32s %s\n", setKeyFiles[k], strings.TrimSpace(string(b)))
 		}
 	}
 	if found == 0 {

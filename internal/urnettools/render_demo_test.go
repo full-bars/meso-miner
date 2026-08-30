@@ -60,11 +60,11 @@ func TestStatusPanelStopped(t *testing.T) {
 		t.Errorf("stopped panel should not say RUNNING:\n%s", out)
 	}
 	// pid 0 renders as "-" not literal 0
-	if strings.Contains(out, "pid:         0\n") {
+	if strings.Contains(out, "pid: 0\n") {
 		t.Errorf("pid 0 should render as '-':\n%s", out)
 	}
 	// no state dir -> proxies n/a
-	if !strings.Contains(out, "n/a  (no proxy health state)") {
+	if !strings.Contains(out, "n/a (no proxy health state)") {
 		t.Errorf("expected n/a proxies, got:\n%s", out)
 	}
 }

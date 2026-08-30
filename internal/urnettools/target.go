@@ -66,11 +66,11 @@ var isPrivileged = platformIsPrivileged
 // the single RUNNING provider for the CURRENT OS user. This restores the
 // pre-multi-provider behavior where status/logs/update/etc. just acted on
 // "the" provider on the box. It refrains (returns an error) only when:
-//   - zero running providers belong to the current user (fall back handled
-//     by the caller), OR
-//   - two or more running providers belong to the current user (the
-//     genuine ambiguity guard — same-user providers are indistinguishable
-//     by OS account, so the operator must name one).
+// - zero running providers belong to the current user (fall back handled
+// by the caller), OR
+// - two or more running providers belong to the current user (the
+// genuine ambiguity guard — same-user providers are indistinguishable
+// by OS account, so the operator must name one).
 //
 // Providers owned by OTHER users are ignored: the caller (an unprivileged
 // operator) could not act on them anyway without root, and the old tool
@@ -92,7 +92,7 @@ func defaultProvider(providers []Provider) (Provider, error) {
 		var b strings.Builder
 		fmt.Fprintf(&b, "%d providers found for user %q — specify a target to disambiguate (--unit / --network / --network-id):\n", len(mine), current)
 		for _, p := range mine {
-			fmt.Fprintf(&b, "  %s  net=%s state=%s\n", providerLabel(p), p.netLabel(), p.StateDir)
+			fmt.Fprintf(&b, " %s net=%s state=%s\n", providerLabel(p), p.netLabel(), p.StateDir)
 		}
 		return Provider{}, fmt.Errorf("%s", b.String())
 	}
@@ -101,12 +101,12 @@ func defaultProvider(providers []Provider) (Provider, error) {
 // selectTarget resolves the providers list against a target (or no target).
 //
 // Rules:
-//   - An explicit target must match exactly one provider; zero or multiple
-//     matches is an error.
-//   - No target: if exactly one provider exists it is returned (safe
-//     default); if zero providers exist that is an error; if MULTIPLE
-//     providers exist the operation is REFUSED with the inventory listed —
-//     the operator must say which one (the incident-class guard).
+// - An explicit target must match exactly one provider; zero or multiple
+// matches is an error.
+// - No target: if exactly one provider exists it is returned (safe
+// default); if zero providers exist that is an error; if MULTIPLE
+// providers exist the operation is REFUSED with the inventory listed —
+// the operator must say which one (the incident-class guard).
 func selectTarget(providers []Provider, t Target) (Provider, error) {
 	if t.Unit != "" || t.User != "" || t.Network != "" || t.NetworkID != "" || t.StateDir != "" {
 		var matches []Provider
@@ -119,7 +119,7 @@ func selectTarget(providers []Provider, t Target) (Provider, error) {
 		case 1:
 			return matches[0], nil
 		case 0:
-			return Provider{}, fmt.Errorf("target %s matches no running provider", t)
+			return Provider{}, fmt.Errorf("target %s matches no provider (the pool includes stopped units; use status or providers to list them)", t)
 		default:
 			return Provider{}, fmt.Errorf("target %s is ambiguous (%d matches); use a more specific target", t, len(matches))
 		}
@@ -169,7 +169,7 @@ func selectTarget(providers []Provider, t Target) (Provider, error) {
 			if p.IdentityRestricted {
 				network = "(unreadable: permission denied)"
 			}
-			fmt.Fprintf(&b, "  %s  user=%s net=%s state=%s\n", providerLabel(p), p.User, network, p.StateDir)
+			fmt.Fprintf(&b, " %s user=%s net=%s state=%s\n", providerLabel(p), p.User, network, p.StateDir)
 		}
 		if hint := rootHint(); hint != "" {
 			fmt.Fprintf(&b, "some of these may belong to other accounts you can't see fully without root; to inspect all of them: %s\n", hint)

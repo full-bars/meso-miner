@@ -81,7 +81,7 @@ func cmdSimpleDelegation(sub string, args []string) error {
 		printNarrowedNote(len(providers), p, sub)
 	}
 	// The provider nests summary under the proxy branch: `provider proxy
-	// summary`, not `provider summary` (gauntlet finding BUG-5). Build the
+	// summary`, not `provider summary` . Build the
 	// nested argv; everything else stays flat.
 	cmdArgs := append([]string{"proxy", sub}, rest...)
 	return providerSubcommand(p, cmdArgs...)
@@ -91,7 +91,7 @@ func cmdSimpleDelegation(sub string, args []string) error {
 // the provider's systemd unit. The provider binary has NO hot-restart
 // subcommand — its hot-restart behavior is a config/env toggle
 // (URNETWORK_HOT_RESTART), not a CLI op. Delegating to the provider printed
-// auth usage and did nothing (gauntlet finding BUG-4). A confirmation gate
+// auth usage and did nothing . A confirmation gate
 // mirrors cmdRestart: restarting a provider is a production action and must
 // not happen without --force or an explicit "yes" (Sonnet review finding —
 // the original fix restarted unconditionally).
@@ -149,70 +149,70 @@ func usage() {
 Usage: urnet-tools <command> [flags]
 
 Core Commands:
-  providers                       🌐  list all providers on this box (all users, JWT identity)
-  status [target]                 📊  detailed status of one provider
-  start/stop/restart [target]     ▶   control the provider's systemd unit
-  update [target]                 ⬆   update provider(s) to latest (--tag to pin)
-  self-update                     ⬆   update this tool binary itself
-  logs [target] [N]               📜  show recent provider logs (N lines, default 250)
-  summary [target]                📃  fleet-style summary for one provider
-  version                         ℹ️   print this tool's version
+ providers 🌐 list all providers on this box (all users, JWT identity)
+ status [target] 📊 detailed status of one provider
+ start/stop/restart [target] ▶ control the provider's systemd unit
+ update [target] ⬆ update provider(s) to latest (--tag to pin)
+ self-update ⬆ update this tool binary itself
+ logs [target] [N] 📜 show recent provider logs (N lines, default 250)
+ summary [target] 📃 fleet-style summary for one provider
+ version ℹ️ print this tool's version
 
 Session & defaults:
-  default set|show|clear          🎯  persist a default provider target for this box
-  session save <file>             💾  export identity + proxy state (encrypted)
-  session load <file>             📥  import identity + proxy state, then restart
+ default set|show|clear 🎯 persist a default provider target for this box
+ session save <file> 💾 export identity + proxy state (encrypted)
+ session load <file> 📥 import identity + proxy state, then restart
 
 Performance & Tuning (single target):
-  turbo <v4|v8|off> [target]      🚀  RAISE throughput limits for RAM-rich boxes
-  auto <on|off> [target]          🧠  AUTO-TUNE detect hardware and pick best profile
-  eco <on|off> [target]           🌿  ECO MODE GC-tuned for low-RAM systems
-  lowmode <on|off> [target]       🧊  LOW-MEMORY reduced buffers for max RAM savings
-  ramlogs <on|off> [target]       📝  RAM LOGS zero disk I/O logging
-  optimize [target]               ⚡   apply golden-fleet OS/kernel limits
-  hot-restart [target]            ♻   reuse client_ids across restarts
-  fast-auth <on|off|status>       ⚡   manage the auth rate limiter (marker file)
-  set <key> [<value>|off]         🔧  runtime tuning override, read live (no restart)
+ turbo <v4|v8|off> [target] 🚀 RAISE throughput limits for RAM-rich boxes
+ auto <on|off> [target] 🧠 AUTO-TUNE detect hardware and pick best profile
+ eco <on|off> [target] 🌿 ECO MODE GC-tuned for low-RAM systems
+ lowmode <on|off> [target] 🧊 LOW-MEMORY reduced buffers for max RAM savings
+ ramlogs <on|off> [target] 📝 RAM LOGS zero disk I/O logging
+ optimize [target] ⚡ apply golden-fleet OS/kernel limits
+ hot-restart [target] ♻ reuse client_ids across restarts
+ fast-auth <on|off|status> ⚡ manage the auth rate limiter (marker file)
+ set <key> [<value>|off] 🔧 runtime tuning override, read live (no restart)
 
 Proxy Management [target]:
-  auth [<code>]                   🔑  authenticate (omit for interactive paste)
-  choose-network <api> <connect>  🌐  set API/connect endpoints (--reset reverts)
-  proxy add <file>                🌐  bulk add proxies from a text file
-  proxy clear|remove              🗑   remove all configured proxies
-  proxy refresh                   🔄  re-read configs and hot-reload proxies
-  proxy add-source <url>          ➕   add a URL proxy source
-  proxy remove-source <url>       ➖   remove a URL proxy source
-  proxy health                    ❤   show dead/degraded proxies + live event log
-  proxy traffic                   📈  real-time bandwidth + client session load
-  proxy remove-dead               💀  interactively prune dead/degraded/failing
-  proxy trim <N>                  ✂   hold running proxies at N, shed worst first (F -> A)
+ auth [<code>] 🔑 authenticate (omit for interactive paste)
+ choose-network <api> <connect> 🌐 set API/connect endpoints (--reset reverts)
+ proxy add <file> 🌐 bulk add proxies from a text file
+ proxy clear|remove 🗑 remove all configured proxies
+ proxy refresh 🔄 re-read configs and hot-reload proxies
+ proxy add-source <url> ➕ add a URL proxy source
+ proxy remove-source <url> ➖ remove a URL proxy source
+ proxy health ❤ show dead/degraded proxies + live event log
+ proxy traffic 📈 real-time bandwidth + client session load
+ proxy remove-dead 💀 interactively prune dead/degraded/failing
+ proxy trim <N> ✂ hold running proxies at N, shed worst first (F -> A)
 
 Maintenance [target]:
-  reinstall                       🔧  reinstall provider
-  uninstall                       🗑   uninstall provider
-  auto-update <on|off>            ⏰  manage auto-update schedule
-  auto-start <on|off>             ▶   toggle auto-start on login
+ reinstall 🔧 reinstall provider
+ uninstall 🗑 uninstall provider
+ auto-update <on|off> ⏰ manage auto-update schedule
+ auto-start <on|off> ▶ toggle auto-start on login
 
 Providers are identified three ways (use any; the = form works too,
 e.g. --user=urnet is the same as --user urnet):
-  --unit <name>          systemd unit, e.g. urnetwork-native.service
-  --user <user>          OS user, e.g. urnet
-  --network <name>       JWT network name (account identity), e.g. tacogonzalez3000
-  --network-id <id>      JWT network id - TRUE unique identity; use when two providers
-                         share the same network name (e.g. mainnet + beta copies)
+ --unit <name> systemd unit, e.g. urnetwork-native.service
+ --user <user> OS user, e.g. urnet
+ --network <name> JWT network name (account identity), e.g. tacogonzalez3000
+ --network-id <id> JWT network id - TRUE unique identity; use when two providers
+ share the same network name (e.g. mainnet + beta copies)
 
 Targeting rules:
-  - one provider on box: no flag needed, it is used automatically
-  - multiple providers: MUST pick one (--unit/--user/--network), else REFUSED
-  - same network name on two providers: add --network-id or --unit to break the tie
-  - batch: --include a,b / --exclude a,b / --all (everything)
-  - --select  interactive picker (choose A B C, skip D)
-  - see 'providers' first to learn each provider's unit/user/network
+ - one provider on box: no flag needed, it is used automatically
+ - multiple providers: MUST pick one (--unit/--user/--network), else REFUSED
+ - same network name on two providers: add --network-id or --unit to break the tie
+ - batch: --include a,b / --exclude a,b / --all (everything)
+ - --select interactive picker (choose A B C, skip D)
+ - see 'providers' first to learn each provider's unit/user/network
 
 Force (machines/scripts):
-  -f, --force            skip confirm prompts ONLY - never picks providers
-  -n, --dry-run          print the plan, change nothing (safe anywhere)
-  -h, --help             show help (never executes anything)
+ -f, --force skip confirm prompts ONLY - never picks providers
+ -n, --dry-run print the plan, change nothing (safe anywhere)
+ -h, --help show help (never executes anything)
 `)
 }
 
@@ -230,7 +230,7 @@ func parseTargetFlagsLenient(args []string) (Target, []string, error) {
 // remaining positional args. Unknown -x flags are left in place (subcommands
 // may define their own).
 //
-// Unknown --flags are REJECTED (review finding L2) — a typo like --netwrok
+// Unknown --flags are REJECTED — a typo like --netwrok
 // or --dryrun must not be silently absorbed, because on a single-provider
 // box the command would then proceed as a real action with no notice.
 func parseTargetFlags(args []string) (Target, []string, error) {
@@ -357,7 +357,7 @@ func cmdProviders(args []string) error {
 		}
 		fmt.Println("no systemd providers found on this box; running in docker (use urnet-docker):")
 		for _, p := range docker {
-			fmt.Printf("  %s  net=%s\n", p.Unit, p.netLabel())
+			fmt.Printf(" %s net=%s\n", p.Unit, p.netLabel())
 		}
 		return nil
 	}
@@ -500,17 +500,17 @@ func renderStatusPanel(p Provider) {
 	if color != "" {
 		state = color + state + "\x1b[0m"
 	}
-	fmt.Printf("PROVIDER STATUS   %s", title)
+	fmt.Printf("PROVIDER STATUS %s", title)
 	fmt.Printf(" %s %s\n", badge, state)
 	divW := keyW + 2 + valW
 	if divW < 70 {
 		divW = 70
 	}
-	fmt.Printf("  %s\n", strings.Repeat("-", divW))
+	fmt.Printf(" %s\n", strings.Repeat("-", divW))
 
 	// Rows.
 	for _, r := range rows {
-		fmt.Printf("  %-*s %s\n", keyW+1, r.k+":", clamp(r.v, maxValW))
+		fmt.Printf(" %-*s %s\n", keyW+1, r.k+":", clamp(r.v, maxValW))
 	}
 
 	// Proxies section.
@@ -521,7 +521,7 @@ func renderStatusPanel(p Provider) {
 // proxy_health.state snapshot, and configured URL/file sources. It degrades
 // to "n/a"/"none" if no proxy state or sources exist.
 func printProxyStatus(p Provider) {
-	fmt.Printf("  %s\n", strings.Repeat("-", 70))
+	fmt.Printf(" %s\n", strings.Repeat("-", 70))
 
 	keyW := len("file sources:")
 	// Proxy health state: proxy_health.state in the state dir.
@@ -531,26 +531,26 @@ func printProxyStatus(p Provider) {
 		if up > 0 {
 			b = "UP"
 		}
-		fmt.Printf("  %-*s %d up / %d total   [%s]\n", keyW+1, "PROXIES:", up, total, b)
+		fmt.Printf(" %-*s %d up / %d total [%s]\n", keyW+1, "PROXIES:", up, total, b)
 	} else {
-		fmt.Printf("  %-*s n/a  (no proxy health state)\n", keyW+1, "PROXIES:")
+		fmt.Printf(" %-*s n/a (no proxy health state)\n", keyW+1, "PROXIES:")
 	}
 
 	// URL sources from proxy_url.json (sources list).
 	urlSrc := readProxyURLSources(p.StateDir)
 	if len(urlSrc) > 0 {
-		fmt.Printf("  %-*s %s\n", keyW+1, "URL sources:", strings.Join(urlSrc, ", "))
+		fmt.Printf(" %-*s %s\n", keyW+1, "URL sources:", strings.Join(urlSrc, ", "))
 	} else {
-		fmt.Printf("  %-*s none\n", keyW+1, "URL sources:")
+		fmt.Printf(" %-*s none\n", keyW+1, "URL sources:")
 	}
 
 	// File source: the --proxy_file path from proxy.state / the provider's
 	// config, if discoverable.
 	fileSrc := readProxyFileSource(p)
 	if fileSrc != "" {
-		fmt.Printf("  %-*s %s\n", keyW+1, "file sources:", fileSrc)
+		fmt.Printf(" %-*s %s\n", keyW+1, "file sources:", fileSrc)
 	} else {
-		fmt.Printf("  %-*s none\n", keyW+1, "file sources:")
+		fmt.Printf(" %-*s none\n", keyW+1, "file sources:")
 	}
 }
 
@@ -659,7 +659,7 @@ var stdinIsInteractiveOverride func() bool
 // pipe (cron, CI, MCP exec, a shell that left stdin open) blocks forever — it
 // never sees EOF, so the err != nil path never fires. Non-interactive runs
 // must use -f/--force (or --yes); refusing with a clear message beats hanging
-// (gauntlet finding BUG-14: self-update blocked on read(0) for minutes).
+// for minutes).
 // Uses term.IsTerminal (ioctl-based) rather than ModeCharDevice, which
 // misclassifies /dev/zero and other char devices as terminals (CodeRabbit
 // review finding).
@@ -691,11 +691,11 @@ func confirmStdinRead(prompt string) (string, error) {
 // piped stdout) — even with -f/--force, which only bypasses the interactive
 // prompt. Scripted/cron runs are the primary -f users and the most likely to
 // be replayed unattended; a printed "about to touch: X, Y" line in the log
-// is the audit trail for the incident class (review finding M1).
+// is the audit trail for the incident class .
 func confirmGateMulti(op string, targets []Provider, force, dryRun bool) (bool, error) {
 	fmt.Fprintf(os.Stderr, "[urnet-tools] %s:\n", op)
 	for _, p := range targets {
-		fmt.Fprintf(os.Stderr, "  %s (user=%s, network=%s, state=%s)\n", providerLabel(p), p.User, p.netLabel(), p.StateDir)
+		fmt.Fprintf(os.Stderr, " %s (user=%s, network=%s, state=%s)\n", providerLabel(p), p.User, p.netLabel(), p.StateDir)
 	}
 	if dryRun {
 		fmt.Fprintf(os.Stderr, "[dry-run] no changes made\n")

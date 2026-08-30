@@ -70,12 +70,12 @@ func printLifecycleNarrowedNote(totalFound int, p Provider, action string) {
 // of selectTarget.
 //
 // Resolution order:
-//  1. include (--include a,b) selects exactly those providers; ambiguous
-//     entries are an error.
-//  2. interactive (--select) prompts with a numbered list; the operator
-//     picks entries by number (comma/space separated) or "all".
-//  3. no criteria: single provider → that one; multiple → refuse with the
-//     inventory (same guard as selectTarget).
+// 1. include (--include a,b) selects exactly those providers; ambiguous
+// entries are an error.
+// 2. interactive (--select) prompts with a numbered list; the operator
+// picks entries by number (comma/space separated) or "all".
+// 3. no criteria: single provider → that one; multiple → refuse with the
+// inventory (same guard as selectTarget).
 //
 // exclude (--exclude) subtracts providers from whatever set was chosen; it
 // never expands a set.
@@ -139,7 +139,7 @@ func selectTargets(providers []Provider, t Target, include, exclude []string, in
 		// Build a NEW slice — filtering in place (chosen[:0]) would write
 		// through to the caller's backing array when chosen aliases
 		// providers (single-provider default path), mutating the input
-		// (free-review major).
+		// .
 		filtered := make([]Provider, 0, len(chosen))
 		for _, p := range chosen {
 			if !excluded[matchKey(p)] && !excluded[p.Unit] && !excluded[p.Network] {
@@ -260,7 +260,7 @@ func selectTargetInteractive(providers []Provider, t Target) (Provider, error) {
 func interactivePick(providers []Provider) ([]Provider, error) {
 	fmt.Println("Select providers (comma/space separated numbers, or 'all'):")
 	for i, p := range providers {
-		fmt.Printf("  [%d] %s  user=%s  net=%s  state=%s\n",
+		fmt.Printf(" [%d] %s user=%s net=%s state=%s\n",
 			i+1, providerLabel(p), p.User, p.netLabel(), p.StateDir)
 	}
 	line, err := confirmStdinRead("> ")
@@ -340,7 +340,7 @@ func ambiguousError(providers []Provider) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d providers found — specify a target (--unit / --user / --network / --state-dir) or --include/--select:\n", len(providers))
 	for _, p := range providers {
-		fmt.Fprintf(&b, "  %s  user=%s  net=%s  state=%s\n", providerLabel(p), p.User, p.netLabel(), p.StateDir)
+		fmt.Fprintf(&b, " %s user=%s net=%s state=%s\n", providerLabel(p), p.User, p.netLabel(), p.StateDir)
 	}
 	if hint := rootHint(); hint != "" {
 		fmt.Fprintf(&b, "some of these may belong to other accounts you can't see fully without root; to inspect all of them: %s\n", hint)

@@ -92,7 +92,7 @@ func discoverProcesses() []Provider {
 		if p.StateDir == "" {
 			// No state dir resolvable (HOME unset). Skip the JWT read
 			// entirely rather than falling through to a relative "jwt"
-			// path in the invoker's CWD (review finding L1).
+			// path in the invoker's CWD .
 			out = append(out, p)
 			continue
 		}
@@ -199,7 +199,7 @@ func attachUnits(procs []Provider) {
 // drives them with `systemctl --user`, which the SYSTEM-manager listing
 // below never shows. So this also enumerates per-user managers for users
 // that plausibly run a provider (a user unit that looks like a provider, or
-// a .urnetwork state dir), bounded to those users (opus5 F2).
+// a .urnetwork state dir), bounded to those users .
 func discoverSystemdUnits(running []Provider) []Provider {
 	out := discoverSystemUnits(running)
 	out = append(out, discoverUserUnits(running)...)
