@@ -1272,8 +1272,8 @@ func runLifetimeCollector(ctx context.Context) {
 				a1, a2, a3, a4, a5, a6, fmtBytes(a7))
 		}
 
-		// Transit visibility: what this node carries as an INTERMEDIATE hop.
-		// Silent when idle to avoid duplicating the [traffic] rollup.
+		// Transit visibility: traffic forwarded THROUGH this node to other
+		// peers (as opposed to 🔐 [pqe] which counts tunnels terminating HERE).
 		if clients > 0 && !prevTime.IsZero() {
 			elapsed := now.Sub(prevTime).Seconds()
 			if elapsed < 1 {
@@ -1298,7 +1298,7 @@ func runLifetimeCollector(ctx context.Context) {
 					delete(prevTxPerProxy, key)
 				}
 			}
-			tlog("🛰️ [relay] as-hop: clients=%d on %d proxy(ies) rx=%s tx=%s (bytes we forward for others; tunnels we terminate: 🔐 [pqe], totals: 📈 [traffic])\n",
+			tlog("🛰️ [relay] as-hop: %d clients via %d proxies — %s in, %s out\n",
 				clients, serving,
 				fmtRate(float64(rxDelta)/elapsed),
 				fmtRate(float64(txDelta)/elapsed))
@@ -3322,6 +3322,9 @@ func provide(opts docopt.Opts) {
 	// All goroutines have finished. Log final status before exit.
 	tlog("[provider] exiting\n")
 	critLog("PROVIDER EXIT: normal shutdown (code=0)")
+	// Explicitly close the DoH cache before os.Exit(0) since defers do
+	// not run on os.Exit. idempotent — safe if already called by defer.
+	closeDohCache()
 	os.Exit(0)
 }
 
