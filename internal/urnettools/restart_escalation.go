@@ -21,16 +21,16 @@ import (
 //
 // restartProviderWithFallback closes that gap with a three-step ladder:
 //
-//  1. restartProvider — the normal smart path (correct manager for the unit,
-//     PID signal fallback).
-//  2. On an AUTH-CLASS failure (polkit/sudo denial) with a staged tool
-//     binary available: `sudo -n <staged-tool> __do-restart …`. Passwordless
-//     sudo is detected with `sudo -n true` first — never a surprise password
-//     prompt mid-update — and the RETRY RUNS THE NEW BINARY, so restart-flow
-//     fixes shipped in this very release are live during this very update.
-//  3. Otherwise: print actionable guidance (a scoped one-time polkit rule so
-//     future `update -f` runs need nothing extra, plus the immediate manual
-//     restart command) instead of a bare errno.
+// 1. restartProvider — the normal smart path (correct manager for the unit,
+// PID signal fallback).
+// 2. On an AUTH-CLASS failure (polkit/sudo denial) with a staged tool
+// binary available: `sudo -n <staged-tool> __do-restart …`. Passwordless
+// sudo is detected with `sudo -n true` first — never a surprise password
+// prompt mid-update — and the RETRY RUNS THE NEW BINARY, so restart-flow
+// fixes shipped in this very release are live during this very update.
+// 3. Otherwise: print actionable guidance (a scoped one-time polkit rule so
+// future `update -f` runs need nothing extra, plus the immediate manual
+// restart command) instead of a bare errno.
 
 // isAuthRestartFailure reports whether err looks like systemd/polkit refusing
 // the restart for lack of privileges ("Interactive authentication required",
@@ -134,15 +134,15 @@ func printRestartElevationGuidance(p Provider) {
 	var b strings.Builder
 	b.WriteString("\nThe provider binary was updated, but restarting " + unit + " needs elevated privileges.\n")
 	b.WriteString("\nOne-time permanent fix (grants ONLY this unit restart to ONLY user " + user + ",\nso future 'urnet-tools update -f' runs need nothing extra):\n\n")
-	b.WriteString("  sudo tee /etc/polkit-1/rules.d/50-urnetwork-restart.rules >/dev/null <<'EOF'\n")
+	b.WriteString(" sudo tee /etc/polkit-1/rules.d/50-urnetwork-restart.rules >/dev/null <<'EOF'\n")
 	b.WriteString("polkit.addRule(function(action, subject) {\n")
-	b.WriteString("  if (action.id == \"org.freedesktop.systemd1.manage-units\" &&\n")
-	b.WriteString("      action.lookup(\"unit\") == \"" + unit + "\" &&\n")
-	b.WriteString("      subject.user == \"" + user + "\")\n")
-	b.WriteString("    return polkit.Result.YES;\n")
+	b.WriteString(" if (action.id == \"org.freedesktop.systemd1.manage-units\" &&\n")
+	b.WriteString(" action.lookup(\"unit\") == \"" + unit + "\" &&\n")
+	b.WriteString(" subject.user == \"" + user + "\")\n")
+	b.WriteString(" return polkit.Result.YES;\n")
 	b.WriteString("});\n")
 	b.WriteString("EOF\n")
-	b.WriteString("\nOr restart right now with:\n\n  sudo systemctl restart " + unit + "\n\n")
+	b.WriteString("\nOr restart right now with:\n\n sudo systemctl restart " + unit + "\n\n")
 	fmt.Print(b.String())
 }
 

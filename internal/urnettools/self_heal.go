@@ -15,9 +15,9 @@ import (
 
 // cmdSelfHeal toggles or reports the provider's self-heal marker file.
 //
-//	urnet-tools self-heal on       enable (load gate + auto cleanup)
-//	urnet-tools self-heal off      disable
-//	urnet-tools self-heal status   report current state
+//	urnet-tools self-heal on enable (load gate + auto cleanup)
+//	urnet-tools self-heal off disable
+//	urnet-tools self-heal status report current state
 func cmdSelfHeal(args []string) error {
 	mode := "status"
 	if len(args) > 0 {

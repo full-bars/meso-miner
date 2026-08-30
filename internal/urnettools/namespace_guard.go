@@ -45,10 +45,10 @@ func errLifecycleLeftoverPositional(cmd string, extra []string, providers []Prov
 
 // guardLifecycleArgs enforces the lifecycle-command contract for
 // start/stop/restart:
-//   - leftover bare positionals are a hard error (never a silent default);
-//   - a resolved provider that is a docker container is refused (wrong
-//     tool — urnet-docker owns containers), unless the caller opted into
-//     docker awareness.
+// - leftover bare positionals are a hard error (never a silent default);
+// - a resolved provider that is a docker container is refused (wrong
+// tool — urnet-docker owns containers), unless the caller opted into
+// docker awareness.
 //
 // It returns the parsed Target on success.
 func guardLifecycleArgs(cmd string, args []string) (Target, error) {

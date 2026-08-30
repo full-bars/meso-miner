@@ -83,7 +83,7 @@ func isUserUnit(unit string) bool {
 // the lifecycle args, list the systemd candidates, auto-narrow to a sole
 // accessible RUNNING target, print the narrowed note, and confirm it is a
 // systemd (non-docker) provider. One place to change instead of triplicating it
-// across the destructive lifecycle commands (free-review clean-up).
+// across the destructive lifecycle commands .
 func selectLifecycleTarget(verb string, args []string) (Provider, error) {
 	t, err := guardLifecycleArgs(verb, args)
 	if err != nil {
@@ -222,7 +222,7 @@ func errWithDockerHint(err error, systemdProviderCount int) error {
 	fmt.Fprintf(&b, "%v\n", err)
 	fmt.Fprintf(&b, "provider(s) running in docker (use urnet-docker):\n")
 	for _, p := range docker {
-		fmt.Fprintf(&b, "  %s  net=%s\n", p.Unit, p.netLabel())
+		fmt.Fprintf(&b, " %s net=%s\n", p.Unit, p.netLabel())
 	}
 	fmt.Fprintf(&b, "to view their logs: urnet-docker logs\n")
 	return fmt.Errorf("%s", b.String())
@@ -342,7 +342,7 @@ func (f *firstByteWriter) Write(p []byte) (int, error) {
 // providerUsesRamlogs checks the unit's Environment for RAM logging or a
 // RAM profile (the same check the legacy show_logs does). User units are
 // queried in the owning user's session, not the system manager
-// (free-review major: RAMLOGS detection ignored user units).
+// .
 func providerUsesRamlogs(p Provider) bool {
 	if p.Unit == "" {
 		return false
@@ -471,7 +471,7 @@ func removeDropinEnv(p Provider, name, envKey string) error {
 // isELFExecutable reports whether path starts with the ELF magic bytes
 // (0x7f 'E' 'L' 'F'). Used to sanity-check downloaded binaries WITHOUT
 // executing them — running a freshly downloaded, unverified artifact is
-// code execution of a remote file (coderabbit critical). Linux-only check;
+// code execution of a remote file . Linux-only check;
 // see isRecognizedExecutable for the platform-aware form.
 func isELFExecutable(path string) bool {
 	f, err := os.Open(path)
@@ -571,7 +571,7 @@ func unitDropinDir(p Provider) (string, error) {
 // restartAfterDropin reloads systemd and restarts the provider's unit.
 func restartAfterDropin(p Provider) error {
 	// Same guard as unitCommand: an empty unit must be rejected before any
-	// systemctl invocation (coderabbit minor on the coverage pass).
+	// systemctl invocation .
 	if p.Unit == "" {
 		return fmt.Errorf("provider %s has no owning systemd unit", providerLabel(p))
 	}

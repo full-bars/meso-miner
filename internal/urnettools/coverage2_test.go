@@ -31,7 +31,7 @@ func TestRestartProviderNoResolution(t *testing.T) {
 func TestRestartProviderPIDSignalFailure(t *testing.T) {
 	// Use a REAL dead PID: fork a child that exits immediately and reap it,
 	// then signal its (now-reaped) PID. A guessed PID like 999999 could
-	// theoretically collide on a huge-pid-max system (coderabbit major).
+	// theoretically collide on a huge-pid-max system .
 	dead := exec.Command("true")
 	if err := dead.Start(); err != nil {
 		t.Skipf("cannot spawn helper process: %v", err)
@@ -74,7 +74,7 @@ func TestCmdProxyTrafficTargetReadsSnapshot(t *testing.T) {
 	}
 	p := Provider{StateDir: dir}
 	// Capture stdout so the printed snapshot is asserted, not just the
-	// nil error (coderabbit minor: assert the snapshot output).
+	// nil error .
 	old := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
@@ -211,7 +211,8 @@ func TestRemoveDropinEnvMissingFile(t *testing.T) {
 // dockerCLI stubbed to a nonexistent binary), containerIDByName must return
 // "" rather than panicking or propagating the exec error.
 func TestContainerIDByNameNoDocker(t *testing.T) {
-	t.Setenv("URNET_DOCKER_BIN", "urnet-tools-test-no-such-binary-9f3a")
+	setDockerTestBin("urnet-tools-test-no-such-binary-9f3a")
+	t.Cleanup(func() { setDockerTestBin("") })
 	got := containerIDByName("whatever")
 	if got != "" {
 		t.Errorf("containerIDByName with no docker binary = %q, want empty", got)

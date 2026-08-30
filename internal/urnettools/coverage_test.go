@@ -150,7 +150,7 @@ func TestJournalctlArgsUserVsSystem(t *testing.T) {
 }
 
 // TestTarRelPath covers the forward-slash-always tar path construction
-// (free-review critical): using filepath.Join here would emit backslashes
+// : using filepath.Join here would emit backslashes
 // on a Windows host and the in-archive lookup would never match, since
 // tar headers always use forward slashes regardless of the host OS.
 func TestTarRelPath(t *testing.T) {
@@ -201,7 +201,7 @@ func TestOptimizeForDispatch(t *testing.T) {
 // "sha256:"-prefixed digest resolves to the bare hex digest; a missing
 // asset or an asset with an empty digest both resolve to "" so the caller
 // refuses the download rather than silently skipping verification
-// (free-review critical).
+// .
 func TestDigestForAsset(t *testing.T) {
 	assets := []releaseAsset{
 		{Name: "urnetwork-provider-v1.0.0.tar.gz", Digest: "sha256:abc123"},

@@ -70,7 +70,7 @@ func writeDefaultProvider(t Target) (string, error) {
 		return "", err
 	}
 	path := filepath.Join(dir, DefaultProviderFile)
-	b, err := json.MarshalIndent(t, "", "  ")
+	b, err := json.MarshalIndent(t, "", " ")
 	if err != nil {
 		return "", err
 	}

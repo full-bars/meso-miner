@@ -248,7 +248,7 @@ func decodeJWTFromBytes(raw []byte) (netName, netID string, exp time.Time, err e
 // It requires an interactive terminal: a passphrase must never be scripted from
 // piped stdin, and a second bufio.Reader must not be opened over os.Stdin (the
 // package owns the single stdinReader). Refuse when not interactive rather than
-// block or read a buffered leftover (review finding HIGH).
+// block or read a buffered leftover .
 func readPassphrase(prompt string) (string, error) {
 	fmt.Fprint(os.Stderr, prompt)
 	if !stdinIsInteractive() {
@@ -264,7 +264,7 @@ func readPassphrase(prompt string) (string, error) {
 
 // readYesNo prompts for a y/N answer and returns true only on an explicit yes.
 // Uses the shared confirmStdinRead so it honors the single-reader rule and
-// refuses cleanly on non-interactive stdin (review finding HIGH).
+// refuses cleanly on non-interactive stdin .
 func readYesNo(prompt string) bool {
 	line, err := confirmStdinRead(prompt)
 	if err != nil {
@@ -286,7 +286,7 @@ func cmdSession(args []string) error {
 		fmt.Fprint(os.Stderr, `urnet-tools session — export/import provider identity + proxy state
 
 Usage: urnet-tools session save <file> [target]
-       urnet-tools session load <file> [target] [-f] [-n] [--allow-different-account]
+ urnet-tools session load <file> [target] [-f] [-n] [--allow-different-account]
 
 save bundles the provider's identity and proxy state into an encrypted file.
 load restores a bundle, backing up the current state first, and prompts to
@@ -295,9 +295,9 @@ restart. The loaded session must match the same URnetwork account unless
 the plan and changes nothing.
 
 Examples:
-  urnet-tools session save ~/urnet-session.enc               # Linux / macOS
-  urnet-tools session save C:\Users\<you>\urnet-session.enc   # Windows (\ or / separators)
-  urnet-tools session load ~/urnet-session.enc --unit urnetwork-native.service
+ urnet-tools session save ~/urnet-session.enc # Linux / macOS
+ urnet-tools session save C:\Users\<you>\urnet-session.enc # Windows (\ or / separators)
+ urnet-tools session load ~/urnet-session.enc --unit urnetwork-native.service
 `)
 		return nil
 	}
@@ -373,7 +373,7 @@ func cmdSessionSave(p Provider, outFile string) error {
 	}
 	// Refuse to clobber an existing destination silently (running as root,
 	// os.WriteFile truncates whatever path is named). Require an explicit yes
-	// to overwrite (review finding LOW).
+	// to overwrite .
 	if _, err := os.Stat(outFile); err == nil {
 		if !readYesNo("destination already exists — overwrite? (y/n):") {
 			return fmt.Errorf("aborted; %s already exists", outFile)
@@ -516,7 +516,7 @@ func cmdSessionLoad(p Provider, inFile string, force, dryRun, allowDiff bool) er
 	}
 	// Reinstate the audit + confirm gate the other destructive commands share:
 	// loading stages a full identity replacement. -n prints the plan and does
-	// nothing; -f skips the prompt (review finding MEDIUM).
+	// nothing; -f skips the prompt .
 	ok, err := confirmGate("load session into "+providerLabel(p), p, force, dryRun)
 	if err != nil {
 		return err

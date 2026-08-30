@@ -119,7 +119,7 @@ func TestReadProxyHealth(t *testing.T) {
 
 	t.Run("blank content only", func(t *testing.T) {
 		dir := t.TempDir()
-		writeFile(t, dir, "proxy_health.state", "\n\n   \n")
+		writeFile(t, dir, "proxy_health.state", "\n\n \n")
 		_, _, ok := readProxyHealth(dir)
 		if ok {
 			t.Errorf("ok = true for all-blank content, want false (total stays 0)")
@@ -256,7 +256,7 @@ func TestPrintProxyStatus(t *testing.T) {
 	t.Run("no state at all", func(t *testing.T) {
 		p := Provider{StateDir: t.TempDir()}
 		out := captureStdout(t, func() { printProxyStatus(p) })
-		if !strings.Contains(out, "n/a  (no proxy health state)") {
+		if !strings.Contains(out, "n/a (no proxy health state)") {
 			t.Errorf("missing proxies n/a line:\n%s", out)
 		}
 		if !strings.Contains(out, "URL sources:") || !strings.Contains(out, "none") {
@@ -344,7 +344,7 @@ func TestRenderStatusPanelTitleFallsBackToUser(t *testing.T) {
 		StateDir: t.TempDir(),
 	}
 	out := capturePanel(t, p)
-	if !strings.Contains(out, "PROVIDER STATUS   user") {
+	if !strings.Contains(out, "PROVIDER STATUS user") {
 		t.Errorf("expected title to fall back to the configured user:\n%s", out)
 	}
 }

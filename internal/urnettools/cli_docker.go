@@ -63,53 +63,53 @@ func usageDocker() {
 Usage: urnet-docker <command> [flags]
 
 Core Commands:
-  providers               list all provider containers (identified by in-container JWT)
-  status [target]         detailed status of one container
-  start|stop|restart [target]   control container lifecycle (docker start/stop/restart)
-  logs [target] [N]       follow container logs (RAMLOGS-aware /dev/shm fallback)
-  auth [<code>] [target]  authenticate provider inside container
-  choose-network <api> <connect> [target]  set API/connect endpoints inside container
-  summary [target]        activity & performance summary for container
-  update [<container>]     update a container's provider in place (no recreate), or the host binary
-  version                 print tool version
+ providers list all provider containers (identified by in-container JWT)
+ status [target] detailed status of one container
+ start|stop|restart [target] control container lifecycle (docker start/stop/restart)
+ logs [target] [N] follow container logs (RAMLOGS-aware /dev/shm fallback)
+ auth [<code>] [target] authenticate provider inside container
+ choose-network <api> <connect> [target] set API/connect endpoints inside container
+ summary [target] activity & performance summary for container
+ update [<container>] update a container's provider in place (no recreate), or the host binary
+ version print tool version
 
 Proxy Management [target]:
-  proxy add <file>          copy host file and bulk add proxies to container
-  proxy clear|remove        remove configured proxies
-  proxy refresh             hot-reload proxy sources inside container
-  proxy add-source <url>    add URL proxy source
-  proxy remove-source <url> remove URL proxy source
-  proxy health              show dead/degraded proxy health and live event log
-  proxy traffic             real-time bandwidth & client session load
-  proxy remove-dead         prune dead/degraded proxies
-  proxy trim <N>            hold running proxies at N, shed worst first (F -> A)
-  proxy exclude [<pattern>] exclude proxies matching pattern
+ proxy add <file> copy host file and bulk add proxies to container
+ proxy clear|remove remove configured proxies
+ proxy refresh hot-reload proxy sources inside container
+ proxy add-source <url> add URL proxy source
+ proxy remove-source <url> remove URL proxy source
+ proxy health show dead/degraded proxy health and live event log
+ proxy traffic real-time bandwidth & client session load
+ proxy remove-dead prune dead/degraded proxies
+ proxy trim <N> hold running proxies at N, shed worst first (F -> A)
+ proxy exclude [<pattern>] exclude proxies matching pattern
 
 Performance & Tuning [target]:
-  self-heal <on|off|status> manage automatic proxy self-healing
-  set <key> [<value>|off]   runtime tuning override in container state
-  fast-auth <on|off|status> manage auth rate limiter bypass marker
+ self-heal <on|off|status> manage automatic proxy self-healing
+ set <key> [<value>|off] runtime tuning override in container state
+ fast-auth <on|off|status> manage auth rate limiter bypass marker
 
 Session Management [target]:
-  session save <file>       export encrypted identity+proxy bundle
-  session load <file>       import encrypted bundle into container
+ session save <file> export encrypted identity+proxy bundle
+ session load <file> import encrypted bundle into container
 
 Advanced:
-  exec [target] [--] <cmd...> run arbitrary command inside container; target flags
-                          (--unit/--network/etc) must precede the command; use "--" to
-                          forward inner flags verbatim, e.g.
-                          urnet-docker exec --unit <name> -- urnet-tools proxy add --proxy_file=/tmp/p.txt
+ exec [target] [--] <cmd...> run arbitrary command inside container; target flags
+ (--unit/--network/etc) must precede the command; use "--" to
+ forward inner flags verbatim, e.g.
+ urnet-docker exec --unit <name> -- urnet-tools proxy add --proxy_file=/tmp/p.txt
 
 Targeting flags (required when more than one provider container exists):
-  --unit <name>          container name (mapped to Unit)
-  --network <name>       JWT network name, e.g. tacogonzalez3000
-  --network-id <id>      JWT network id
-  --state-dir <path>     state dir INSIDE the container (rarely needed)
+ --unit <name> container name (mapped to Unit)
+ --network <name> JWT network name, e.g. tacogonzalez3000
+ --network-id <id> JWT network id
+ --state-dir <path> state dir INSIDE the container (rarely needed)
 
 Global flags:
-  -f, --force            bypass the confirm gate (for scripts/cron)
-  -n, --dry-run          show what would happen without doing it
-  -h, --help             show help (never executes anything)
+ -f, --force bypass the confirm gate (for scripts/cron)
+ -n, --dry-run show what would happen without doing it
+ -h, --help show help (never executes anything)
 `)
 }
 
@@ -256,7 +256,7 @@ func splitExecArgs(args []string) (pre, rest []string, err error) {
 		case "--unit", "--user", "--network", "--network-id", "--state-dir":
 			// A recognized target flag MUST have a value; a trailing flag
 			// (nothing after it) would push split past len(args) and panic
-			// on the slice below (coderabbit critical).
+			// on the slice below .
 			if split+1 >= len(args) {
 				return nil, nil, fmt.Errorf("target flag %q requires a value (e.g. %q <name>)", args[split], args[split])
 			}
@@ -312,7 +312,7 @@ func cmdDockerUpdate(args []string, force, dryRun bool) error {
 			var b strings.Builder
 			fmt.Fprintf(&b, "%d provider containers found — name one (e.g. `update <container>`), or use `self-update` for the host tool:\n", len(providers))
 			for _, p := range providers {
-				fmt.Fprintf(&b, "  %s\n", p.Unit)
+				fmt.Fprintf(&b, " %s\n", p.Unit)
 			}
 			return fmt.Errorf("%s", b.String())
 		}
@@ -373,7 +373,7 @@ func cmdDockerUpdate(args []string, force, dryRun bool) error {
 		// recovery window as waitForLiveVersion below instead of a single
 		// check: a freshly started container takes a few seconds to boot its
 		// provider, and one immediate probe reported a false "could not
-		// confirm" (coderabbit follow-up, PR #10).
+		// confirm" .
 		for i := 0; i < 60; i++ {
 			if containerProviderAlive(p.Unit) {
 				fmt.Printf("update applied to %s (could not read pre-update version; provider process is up).\n", p.Unit)
@@ -468,12 +468,12 @@ func waitForLiveVersion(name, prev string, timeoutSec int) (string, bool) {
 // repairContainerUpdateScript applies two safe, idempotent fixes to a
 // container's in-place update routine (/app/urnet-tools.sh) so it works on any
 // image, including ones built before the fixes landed upstream:
-//  1. busybox mktemp: the template must END in X, so a trailing ".tar.gz"
-//     suffix fails with "Invalid argument". The tarball path is rewritten to
-//     the mktemp-valid form.
-//  2. pkill comm truncation: Linux truncates a process's comm to 15 chars, so
-//     `pkill -x "urnetwork_<arch>_stable"` matches nothing. It is replaced with
-//     `pkill -f "^/app/urnetwork_<arch>_stable provide"` (full command line).
+// 1. busybox mktemp: the template must END in X, so a trailing ".tar.gz"
+// suffix fails with "Invalid argument". The tarball path is rewritten to
+// the mktemp-valid form.
+// 2. pkill comm truncation: Linux truncates a process's comm to 15 chars, so
+// `pkill -x "urnetwork_<arch>_stable"` matches nothing. It is replaced with
+// `pkill -f "^/app/urnetwork_<arch>_stable provide"` (full command line).
 //
 // sed is invoked directly via exec.Command (no host or container /bin/sh layer),
 // so the literal ${arch} is passed through untampered; only sed's own \$ escape

@@ -526,7 +526,8 @@ func TestLatestReleaseCache(t *testing.T) {
 // docker CLI stubbed to a nonexistent binary — deterministic error paths
 // without a real daemon.
 func TestContainerHelpersNoDocker(t *testing.T) {
-	t.Setenv("URNET_DOCKER_BIN", "urnet-tools-test-no-such-binary-9f3a")
+	setDockerTestBin("urnet-tools-test-no-such-binary-9f3a")
+	t.Cleanup(func() { setDockerTestBin("") })
 
 	if err := containerExecByName("whatever", "status"); err == nil {
 		t.Error("containerExecByName with no docker binary should error")

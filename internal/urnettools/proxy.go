@@ -78,21 +78,21 @@ func cmdProxy(args []string, force, dryRun bool) error {
 Usage: urnet-tools proxy <subcommand> [target] [flags]
 
 Subcommands:
-  add <file>             add proxies from a proxy file (host:port[:user:pass])
-  clear                  remove ALL proxies (unconditional)
-  remove                 remove proxies: addresses or --match= given -> those
-                         only; nothing given -> ALL proxies on the target
-  refresh                re-read the proxy source (--force to force)
-  add-source <url>       add a URL proxy source (fetched + cached)
-  remove-source <url>    remove a URL proxy source
-  health                 proxy health from state files (single target)
-  traffic                proxy traffic from state files (single target)
-  remove-dead            remove dead/degraded proxies (single target)
-  trim <N>               hold running proxies at N, shed the A-F-worst (single target)
+ add <file> add proxies from a proxy file (host:port[:user:pass])
+ clear remove ALL proxies (unconditional)
+ remove remove proxies: addresses or --match= given -> those
+ only; nothing given -> ALL proxies on the target
+ refresh re-read the proxy source (--force to force)
+ add-source <url> add a URL proxy source (fetched + cached)
+ remove-source <url> remove a URL proxy source
+ health proxy health from state files (single target)
+ traffic proxy traffic from state files (single target)
+ remove-dead remove dead/degraded proxies (single target)
+ trim <N> hold running proxies at N, shed the A-F-worst (single target)
 
 Examples (proxy add):
-  urnet-tools proxy add ~/proxies.txt                 # Linux / macOS
-  urnet-tools proxy add C:\Users\<you>\proxies.txt     # Windows (\ or / separators)
+ urnet-tools proxy add ~/proxies.txt # Linux / macOS
+ urnet-tools proxy add C:\Users\<you>\proxies.txt # Windows (\ or / separators)
 
 Targets and batch flags work as for other commands (--unit/--user/--network,
 --all/--include/--exclude/--select). See 'urnet-tools help' for targeting.
@@ -104,7 +104,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 	// batch flags (--all/--select/--include/--exclude) consumed below, and
 	// refresh/remove-dead additionally pass provider-binary flags through
 	// (e.g. --force). Strict parsing here rejected those as unknown before
-	// the loop ran (opus5 F1: `proxy clear --all` was dead). Leftover
+	// the loop ran . Leftover
 	// unknown --flags are rejected after the loop, except for the
 	// pass-through subcommands.
 	t, rest, err := parseTargetFlagsLenient(rest)
@@ -129,7 +129,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 			exclude = splitLabels(strings.TrimPrefix(a, "--exclude="))
 		case a == "--include" || a == "--exclude":
 			// Also accept the space-separated form (--include a,b), matching
-			// update's syntax (opus5 F1 note: the two commands disagreed).
+			// update's syntax .
 			if i+1 < len(rest) {
 				if a == "--include" {
 					include = splitLabels(rest[i+1])
@@ -144,7 +144,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 			// Unknown --flag: pass through only for refresh/remove-dead
 			// (provider-binary flags like --force); reject elsewhere so a
 			// typo like --netwrok cannot be silently absorbed on a
-			// destructive op (review finding L2; opus5 F1).
+			// destructive op .
 			if strings.HasPrefix(a, "-") && sub != "refresh" && sub != "remove-dead" && sub != "remove" {
 				return fmt.Errorf("unknown flag %q for proxy %s", a, sub)
 			}
@@ -156,7 +156,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 	var chosen []Provider
 	if all {
 		// --all conflicts with an explicit target — error rather than
-		// silently discarding it (review finding M4).
+		// silently discarding it .
 		if t.Unit != "" || t.User != "" || t.Network != "" || t.NetworkID != "" || t.StateDir != "" {
 			return fmt.Errorf("--all conflicts with an explicit target (%s); use one or the other", t)
 		}
@@ -191,8 +191,8 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 		opArgs = []string{"proxy", "remove", "--all"}
 	case "remove":
 		// The provider binary supports per-address and per-pattern removal:
-		//   provider proxy remove [<key_address>...] [--all]
-		//   provider proxy remove --match=<pattern> [--yes] [--preview]
+		// provider proxy remove [<key_address>...] [--all]
+		// provider proxy remove --match=<pattern> [--yes] [--preview]
 		// Pass through any addresses / --match given; ONLY when nothing is
 		// specified do we default to --all. This fixes the old behavior
 		// that unconditionally sent --all (silently wiping every proxy
@@ -208,7 +208,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 		// GLOBAL force flag before cmdProxy runs, so a `refresh --force`
 		// invocation never forwards --force to the provider binary — the
 		// provider's warmup gate then refuses (exit 52) even though the
-		// operator asked to force (gauntlet finding BUG-9). Re-add it
+		// operator asked to force . Re-add it
 		// when the global force flag was set.
 		if force {
 			opArgs = append(opArgs, "--force")
@@ -216,7 +216,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 		// Positional args after refresh are passed through (e.g. --force).
 		opArgs = append(opArgs, positionals...)
 	case "add-source", "remove-source":
-		// URL-source management (gauntlet finding BUG-8): the provider
+		// URL-source management : the provider
 		// binary implements `provider proxy add-source <url>` /
 		// `remove-source <url>`, but the Go tool previously had no such
 		// subcommand, so URL proxies (a core fleet feature) were
@@ -309,7 +309,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 	} else if dryRun {
 		fmt.Printf("[dry-run] would %s on %d provider(s)\n", strings.Join(opArgs, " "), len(chosen))
 		for _, p := range chosen {
-			fmt.Printf("  %s (user=%s, network=%s)\n", providerLabel(p), p.User, p.netLabel())
+			fmt.Printf(" %s (user=%s, network=%s)\n", providerLabel(p), p.User, p.netLabel())
 		}
 		return nil
 	}

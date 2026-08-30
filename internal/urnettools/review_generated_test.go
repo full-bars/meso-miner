@@ -118,7 +118,7 @@ func TestErrWithDockerHint_SystemdPresentSuppressesHint(t *testing.T) {
 		return []Provider{{Unit: "urfix"}}
 	}
 
-	msg := `target unit "urnetwork.service" matches no running provider`
+	msg := `target unit "urnetwork.service" matches no provider`
 	got := errWithDockerHint(&testErrAmbiguous{msg: msg}, 1)
 	if got.Error() != msg {
 		t.Fatalf("hint must be suppressed when systemd providers exist, got %q", got.Error())
