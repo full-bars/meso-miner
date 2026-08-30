@@ -4,6 +4,33 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.30.9]
+
+### Added
+- **Persistent DoH cache (PR #34)**: cached DNS resolutions and per-server scores persist across restarts, so a reboot no longer cold-starts the resolver.
+- **Upstream production DoH optimizations P1-P3 (PR #34)**: server scoring, serve-stale (RFC 8767), staggered launch, single-flight coalescing, memory budget, TLS resumption, and warm-up on resolver failure.
+- **Client JWT hot-restart v2 (PR #35)**: expired client JWTs are renewed on startup and identities are snapshotted before restart, gated on network compatibility. A provider restarts with a working identity instead of re-authenticating from scratch.
+- **Provider version in `urnet-tools status` **: each provider's actual running version is shown.
+- **Subprocess timeouts (PR #41)**: every discovery and systemctl call is bounded (5s/10s) so a hung process cannot wedge the tool.
+
+### Changed
+- **urnet-tools security audit remediation (PR #41)**: version strings are read from Go build info / ELF header instead of executing discovered binaries (removes a privilege-escalation vector); `set`/`fast-auth`/`self-heal` chown created state files to the provider user instead of leaving them root-owned; secure hub install verification via release digest and exclusive temp download; `runtime.GOARCH` arch detection; atomic drop-in writes with `%%` escaping.
+- **Reliable provider updates **: post-restart verification instead of assumed success; redundant reinstall for stale on-disk binaries.
+- **restart safety (PR #41)**: a bare process is no longer SIGINT'd (which killed it permanently); the tool asks the operator to restart the unit instead. Restart scope (user vs system) resolved via systemctl rather than filesystem guesswork.
+- **Bounded DNS resolution (upstream)**: DNS lookups capped at 3s and abort on the winning server.
+
+### Fixed
+- **Uninstall path guard (PR #41)**: `uninstall` refuses to delete well-known system directories; no longer removes arbitrary absolute paths.
+- **update confirm no longer hangs (PR #41)**: the non-TTY confirm path returns an error instead of blocking on stdin forever (cron/CI-safe).
+- **Chown of state dir (PR #41)**: `chownLikeStateOwner` no longer a self-referential no-op; the provider's state dir is correctly owned.
+- **DoH concurrent-map race (PR #41 / upstream)**: `stateLock` restored around the stale-cache read.
+- **Outage watcher removed (parity)**: the unreliable alert-webhook outage watcher and its stale references are gone.
+
+### Removed
+- **Unreliable outage watcher**: the alert-webhook-based outage signaling feature was removed (parity with meso-miner). It produced false outage signals.
+---
+
+
 ## [v3.23.0-fix.30.7]
 
 ### Added
