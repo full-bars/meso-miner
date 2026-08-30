@@ -173,7 +173,11 @@ func decryptUntar(bundle, pass string) (map[string][]byte, error) {
 		if err != nil {
 			return nil, errors.New("invalid passphrase or corrupt bundle (bad archive)")
 		}
-		data, err := io.ReadAll(tr)
+		// Cap the decompressed size of each entry — a corrupted bundle with a
+		// misleading tar header cannot exhaust memory. 64 MiB is far above any
+		// real session file.
+		const maxEntry = 64 << 20
+		data, err := io.ReadAll(io.LimitReader(tr, maxEntry))
 		if err != nil {
 			return nil, err
 		}

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // setAutoStart enables or disables login auto-start for the provider's
@@ -22,6 +23,20 @@ func setAutoStart(p Provider, on bool) error {
 		action = "enable"
 	}
 	if isUserUnit(p.Unit) && p.User != "" {
+		// When enabling a user unit, ensure the user session manager starts
+		// at boot. Without loginctl enable-linger, a non-login service
+		// account's user manager does not start at boot, and systemctl
+		// enable reports success but the unit never runs. The linger check
+		// is only relevant on the enable path — disabling does not need it.
+		if on {
+			if linger, err := execWithTimeout(5*time.Second, "loginctl", "show-user", p.User, "-p", "Linger", "--value"); err == nil {
+				if strings.TrimSpace(string(linger)) != "yes" {
+					return fmt.Errorf("linger is not enabled for %s; run sudo loginctl enable-linger %s before enabling this unit", p.User, p.User)
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "setAutoStart: warning: cannot check linger for %s: %v\n", p.User, err)
+			}
+		}
 		args := append(systemctlUserArgs(p.User), action, p.Unit)
 		return exec.Command("systemctl", args...).Run()
 	}
@@ -46,10 +61,10 @@ func setAutoUpdateSchedule(p Provider, label, interval string) error {
 		if isUserUnit(timer) && p.User != "" {
 			args := append(systemctlUserArgs(p.User), "disable", "--now", timer)
 			if err := exec.Command("systemctl", args...).Run(); err != nil {
-				fmt.Fprintf(os.Stderr, "auto-update off: warning: disable %s: %v (timer file still removed)\n", timer, err)
+				return fmt.Errorf("auto-update off: disable %s: %w", timer, err)
 			}
 		} else if err := exec.Command("systemctl", "disable", "--now", timer).Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "auto-update off: warning: disable %s: %v (timer file still removed)\n", timer, err)
+			return fmt.Errorf("auto-update off: disable %s: %w", timer, err)
 		}
 		return removeTimerFile(p, timer)
 	case "daily":
