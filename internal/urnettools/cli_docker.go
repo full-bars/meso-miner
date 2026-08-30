@@ -32,8 +32,28 @@ func RunDocker(args []string) error {
 	// `-v junk` still prints the version (Sonnet/Muse review).
 	if len(args) >= 1 {
 		switch args[0] {
-		case "version", "--version", "-v":
+		case "-v", "--version":
 			fmt.Println(ToolVersion)
+			return nil
+		case "version":
+			fmt.Printf("urnet-tools %s\n", ToolVersion)
+			providers := Discover()
+			if len(providers) == 0 {
+				fmt.Println("  no providers discovered")
+				return nil
+			}
+			for _, p := range providers {
+				status := "running"
+				if !p.Running {
+					status = "stopped"
+				}
+				stale := ""
+				if p.BinaryDeleted {
+					stale = " (disk binary stale \xe2\x80\x94 restart needed)"
+				}
+				fmt.Printf("  %s: %s (%s, pid %d)%s\n",
+					providerLabel(p), p.Version, status, p.PID, stale)
+			}
 			return nil
 		}
 	}
@@ -202,7 +222,7 @@ func cmdDockerStatus(args []string) error {
 // delegation path (e.g. `urnet-docker exec urnet-tools proxy add ...`).
 // Target flags come BEFORE the command; everything from the first
 // positional onward is the in-container command and must pass through
-// verbatim, including its own --flags (opus5 F1: strict parsing rejected
+// verbatim, including its own --flags (strict parsing previously rejected
 // `--proxy_file=` before delegation).
 func cmdDockerExec(args []string) error {
 	// Split at the first non-flag token: target flags before it, command
@@ -259,7 +279,7 @@ func splitExecArgs(args []string) (pre, rest []string, err error) {
 		case "--unit", "--user", "--network", "--network-id", "--state-dir":
 			// A recognized target flag MUST have a value; a trailing flag
 			// (nothing after it) would push split past len(args) and panic
-			// on the slice below (coderabbit critical).
+			// on the slice below.
 			if split+1 >= len(args) {
 				return nil, nil, fmt.Errorf("target flag %q requires a value (e.g. %q <name>)", args[split], args[split])
 			}
@@ -376,7 +396,7 @@ func cmdDockerUpdate(args []string, force, dryRun bool) error {
 		// recovery window as waitForLiveVersion below instead of a single
 		// check: a freshly started container takes a few seconds to boot its
 		// provider, and one immediate probe reported a false "could not
-		// confirm" (coderabbit follow-up, PR #10).
+		// confirm".
 		for i := 0; i < 60; i++ {
 			if containerProviderAlive(p.Unit) {
 				fmt.Printf("update applied to %s (could not read pre-update version; provider process is up).\n", p.Unit)
