@@ -420,11 +420,11 @@ func cmdSelfUpdate(args []string, force, dryRun bool) error {
 func confirmVersion(tag string, providers []Provider) (bool, error) {
 	fmt.Printf("Latest release: %s", tag)
 	if len(providers) > 0 {
-		fmt.Printf(" (targeting %d provider(s))", len(providers))
+		fmt.Printf("  (targeting %d provider(s))", len(providers))
 	}
 	fmt.Println()
 	for _, p := range providers {
-		fmt.Printf(" %s current=%s\n", providerLabel(p), orDash(p.Version))
+		fmt.Printf("  %s  current=%s\n", providerLabel(p), orDash(p.Version))
 	}
 	line, err := confirmStdinRead("Update to this version? [Y/n]: ")
 	if err != nil {
@@ -480,14 +480,14 @@ func updateProviderWithRestart(p Provider, cfg updateConfig, stagedTool string) 
 }
 
 // updateProvider performs the surgical binary swap for one provider:
-// 1. Stage the tarball on real disk (never /tmp tmpfs).
-// 2. Verify sha256 against the release digest when provided.
-// 3. Extract ONLY linux/$arch/provider — not the whole multi-platform
-// tarball (bloat + the tmpfs overflow root cause).
-// 4. Back up the current binary.
-// 5. Swap with the provider user's ownership.
-// 6. Restart the unit that OWNS the running process (systemd unit name, or
-// fall back to restarting by user-level unit, or plain process signal).
+//  1. Stage the tarball on real disk (never /tmp tmpfs).
+//  2. Verify sha256 against the release digest when provided.
+//  3. Extract ONLY linux/$arch/provider — not the whole multi-platform
+//     tarball (bloat + the tmpfs overflow root cause).
+//  4. Back up the current binary.
+//  5. Swap with the provider user's ownership.
+//  6. Restart the unit that OWNS the running process (systemd unit name, or
+//     fall back to restarting by user-level unit, or plain process signal).
 //
 // This is the exact recipe proven on 2026-08-09 for taco's fleet.
 func updateProvider(p Provider, cfg updateConfig) error {
@@ -795,6 +795,14 @@ func installBinary(src, dst, user string) error {
 	}
 	if err := os.Rename(newPath, dst); err != nil {
 		return fmt.Errorf("rename %s -> %s: %w", newPath, dst, err)
+	}
+	// Sync the parent directory so the rename survives a crash before
+	// the directory's own metadata is committed. Without this, a power
+	// loss after rename but before the dir entry is persisted can lose
+	// the new binary path.
+	if dir, err := os.Open(filepath.Dir(dst)); err == nil {
+		dir.Sync()
+		dir.Close()
 	}
 	return nil
 }

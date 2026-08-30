@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -27,7 +28,12 @@ func unitCommand(p Provider, action string, extra ...string) error {
 	if p.Unit == "" {
 		return fmt.Errorf("provider %s has no owning systemd unit", providerLabel(p))
 	}
-	cmd := exec.Command(unitCommandArgs(p, action, extra...)[0], unitCommandArgs(p, action, extra...)[1:]...)
+	// Compute the argv once. unitCommandArgs consults isUserUnit (and
+	// therefore systemctl show) on every call, so the prior implementation
+	// triggered two independent filesystem-/systemd-aware evaluations for a
+	// single command — once for the exec name, once for the rest.
+	args := unitCommandArgs(p, action, extra...)
+	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -63,14 +69,43 @@ func unitCommandArgs(p Provider, action string, extra ...string) []string {
 	return append(args, extra...)
 }
 
-// isUserUnit reports whether a unit name is user-level (no systemd system
-// unit file, or in the user's config dir). System units are the norm for
-// fleet deployments; user units are the legacy install model.
+// isUserUnit reports whether a unit name is user-level by asking systemd
+// directly (via `systemctl show -p LoadState`) instead of guessing from
+// filesystem paths. System units are the norm for fleet deployments; user
+// units are the legacy install model. Memoized per-unit for the process
+// lifetime to avoid repeated systemctl calls. The cache is mutex-guarded
+// because batch per-provider loops in this package are trivially
+// parallelizable and the discovery path can already call this concurrently.
+var (
+	isUserUnitCache   = map[string]bool{}
+	isUserUnitCacheMu sync.RWMutex
+)
+
 func isUserUnit(unit string) bool {
-	// The legacy installer places units under ~/.config/systemd/user/.
-	// Heuristic: if it's NOT a system unit file, treat as user unit.
-	// Check both the admin dir and the vendor/package dir — units shipped
-	// by a package live under /usr/lib/systemd/system (free-review MEDIUM).
+	isUserUnitCacheMu.RLock()
+	cached, ok := isUserUnitCache[unit]
+	isUserUnitCacheMu.RUnlock()
+	if ok {
+		return cached
+	}
+	result := isUserUnitCompute(unit)
+	isUserUnitCacheMu.Lock()
+	isUserUnitCache[unit] = result
+	isUserUnitCacheMu.Unlock()
+	return result
+}
+
+func isUserUnitCompute(unit string) bool {
+	// Ask the system manager if it can load this unit.
+	out, err := exec.Command("systemctl", "show", unit, "-p", "LoadState", "--value").Output()
+	if err == nil {
+		ls := strings.TrimSpace(string(out))
+		// LoadState != "not-found" means the system manager knows this unit.
+		if ls != "not-found" && ls != "" {
+			return false
+		}
+	}
+	// Fall back to the directory heuristic when systemctl is unavailable.
 	for _, dir := range []string{"/etc/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system"} {
 		if _, err := os.Stat(filepath.Join(dir, unit)); err == nil {
 			return false
@@ -83,7 +118,7 @@ func isUserUnit(unit string) bool {
 // the lifecycle args, list the systemd candidates, auto-narrow to a sole
 // accessible RUNNING target, print the narrowed note, and confirm it is a
 // systemd (non-docker) provider. One place to change instead of triplicating it
-// across the destructive lifecycle commands .
+// across the destructive lifecycle commands.
 func selectLifecycleTarget(verb string, args []string) (Provider, error) {
 	t, err := guardLifecycleArgs(verb, args)
 	if err != nil {
@@ -110,8 +145,7 @@ func cmdStart(args []string, force, dryRun bool) error {
 		return err
 	}
 	// -n/--dry-run is documented "safe anywhere": print the plan, do
-	// nothing (free-review HIGH: start/stop previously discarded it and
-	// executed for real).
+	// nothing.
 	if dryRun {
 		fmt.Printf("[dry-run] would start %s (unit=%s, user=%s)\n", providerLabel(p), p.Unit, p.User)
 		return nil
@@ -164,6 +198,11 @@ func cmdRestart(args []string, force, dryRun bool) error {
 	return nil
 }
 
+// discoverDockerFn is the docker-provider discovery function, as a var so
+// errWithDockerHint's docker branch is testable without a live daemon.
+var discoverDockerFn = DiscoverDocker
+
+// discoverSystemdFn is the systemd/process discovery function, as a var so
 // lifecycleCandidates is testable without live processes or units.
 var discoverSystemdFn = Discover
 
@@ -172,7 +211,8 @@ var discoverSystemdFn = Discover
 // positional is NOT an explicit target: guardLifecycleArgs already
 // hard-errors on leftovers before selection runs.
 func hasExplicitTarget(t Target) bool {
-	return t.Unit != "" || t.User != "" || t.Network != "" || t.NetworkID != "" || t.StateDir != ""
+	return t.Unit != "" || t.User != "" || t.Network != "" ||
+		t.NetworkID != "" || t.StateDir != ""
 }
 
 // lifecycleCandidates builds the candidate pool for start/stop/restart.
@@ -198,10 +238,6 @@ func lifecycleCandidates(t Target) []Provider {
 	return append(providers, discoverDockerFn()...)
 }
 
-// discoverDockerFn is the docker-provider discovery function, as a var so
-// errWithDockerHint's docker branch is testable without a live daemon.
-var discoverDockerFn = DiscoverDocker
-
 // errWithDockerHint wraps a no-provider error with a pointer to the docker
 // variant when provider containers exist: the systemd/process tool cannot
 // tail their logs, but `urnet-docker logs` can (its interactive picker
@@ -222,18 +258,26 @@ func errWithDockerHint(err error, systemdProviderCount int) error {
 	fmt.Fprintf(&b, "%v\n", err)
 	fmt.Fprintf(&b, "provider(s) running in docker (use urnet-docker):\n")
 	for _, p := range docker {
-		fmt.Fprintf(&b, " %s net=%s\n", p.Unit, p.netLabel())
+		fmt.Fprintf(&b, "  %s  net=%s\n", p.Unit, p.netLabel())
 	}
 	fmt.Fprintf(&b, "to view their logs: urnet-docker logs\n")
 	return fmt.Errorf("%s", b.String())
 }
 
-// cmdLogs streams logs for the provider: RAMLOGS-aware (reads /dev/shm)
-// when the unit has URNETWORK_RAMLOGS=1 / a RAM profile, else journald.
+// cmdLogs streams logs for the provider: RAMLOGS-aware (reads the provider's
+// own RAM buffer) when the unit has URNETWORK_RAMLOGS=1 / a RAM profile,
+// else journald. An optional trailing positional N (e.g. `logs --unit foo
+// 500`) sets the number of lines to seed the follow with; default is 250.
 func cmdLogs(args []string) error {
-	t, _, err := parseTargetFlags(args)
+	t, rest, err := parseTargetFlags(args)
 	if err != nil {
 		return err
+	}
+	lines := 250
+	for _, a := range rest {
+		if n, err := strconv.Atoi(a); err == nil && n > 0 && n < 1000000 {
+			lines = n
+		}
 	}
 	providers := Discover()
 	p, narrowed, err := selectTargetOrSoleAccessible(providers, t, false)
@@ -244,9 +288,17 @@ func cmdLogs(args []string) error {
 		printNarrowedNote(len(providers), p, "logs")
 	}
 	if providerUsesRamlogs(p) {
-		// Stream from the RAM buffer on the box.
-		fmt.Printf("Streaming from RAM disk (/dev/shm/urnetwork.log) — provider %s\n", providerLabel(p))
-		cmd := exec.Command("tail", "-n", "250", "-f", "/dev/shm/urnetwork.log")
+		// The RAM buffer is provider-scoped: each provider gets its own
+		// /dev/shm/<basename>.log so multi-provider boxes don't conflate
+		// outputs (audit M15). Fall back to the legacy shared path only
+		// when the per-provider buffer doesn't exist — that keeps the
+		// transition safe for boxes upgraded mid-flight.
+		ramPath := "/dev/shm/" + filepath.Base(p.Binary) + ".log"
+		if _, err := os.Stat(ramPath); err != nil {
+			ramPath = "/dev/shm/urnetwork.log"
+		}
+		fmt.Printf("Streaming from RAM disk (%s, %d lines) — provider %s\n", ramPath, lines, providerLabel(p))
+		cmd := exec.Command("tail", "-n", strconv.Itoa(lines), "-f", ramPath)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
@@ -289,8 +341,7 @@ func cmdLogs(args []string) error {
 		case err := <-waitCh:
 			// Exited BEFORE producing any output: report the real outcome
 			// instead of mislabeling it a machined/polkit hang — an empty
-			// journal exits 0 immediately and is legitimate (coderabbit
-			// follow-up, PR #10).
+			// journal exits 0 immediately and is legitimate.
 			_ = cmd.Process.Kill()
 			if err != nil {
 				return fmt.Errorf("journalctl for %s: %v: %s", providerLabel(p), err, errBuf.String())
@@ -300,9 +351,12 @@ func cmdLogs(args []string) error {
 			// Still running, still silent after the window: genuine
 			// machined/polkit hang.
 			_ = cmd.Process.Kill()
-			_ = <-waitCh // reap so there's no zombie
-			return fmt.Errorf("journalctl for %s: cross-user hang (polkit/machined) — run as root or same user: %s",
-				providerLabel(p), rootHint())
+			<-waitCh
+			hint := ""
+			if h := rootHint(); h != "" {
+				hint = fmt.Sprintf(" Try: %s logs --user=%s", strings.TrimPrefix(h, "sudo "), p.User)
+			}
+			return fmt.Errorf("journal access to user %s produced no output within 10s (machined/polkit hang — this account's journal is not readable without root).%s", p.User, hint)
 		}
 	}
 	cmd := exec.Command("journalctl", journalctlArgs(p)...)
@@ -325,9 +379,9 @@ func journalctlArgs(p Provider) []string {
 	return []string{"-fu", p.Unit}
 }
 
-// firstByteWriter is the M1 (PR #465) hang-detection helper: it forwards
-// writes to the real destination and closes `produced` once, on the first
-// byte, so a working cross-user journal follow is distinguished from a hang.
+// firstByteWriter forwards writes to w and, on the first byte, closes produced
+// (idempotently). Used to tell a genuinely-working cross-user journal follow
+// (produces output) from a machined/polkit hang (no output within a window).
 type firstByteWriter struct {
 	w        io.Writer
 	produced chan struct{}
@@ -342,7 +396,6 @@ func (f *firstByteWriter) Write(p []byte) (int, error) {
 // providerUsesRamlogs checks the unit's Environment for RAM logging or a
 // RAM profile (the same check the legacy show_logs does). User units are
 // queried in the owning user's session, not the system manager
-// .
 func providerUsesRamlogs(p Provider) bool {
 	if p.Unit == "" {
 		return false
@@ -364,6 +417,158 @@ func providerUsesRamlogs(p Provider) bool {
 		strings.Contains(env, "URNETWORK_PROFILE=eco")
 }
 
+// cmdHub implements hub set/off/install: writes the URNETWORK_REPORT_URL
+// drop-in for the targeted provider's unit, or installs the hub binary.
+func cmdHub(args []string, force, dryRun bool) error {
+	if len(args) == 0 {
+		return fmt.Errorf("hub requires a subcommand: set <url> | off | install | init | link | unlink | test | onboard-cmd | show-password | open-port | update")
+	}
+	sub := args[0]
+	rest := args[1:]
+	// LENIENT target parse: `hub install` defines its own --tag= flag
+	// strict parsing previously rejected --tag= before cmdHubInstall saw
+	// it). Unknown --flags are rejected per-subcommand below.
+	t, rest, err := parseTargetFlagsLenient(rest)
+	if err != nil {
+		return err
+	}
+	p, err := selectTarget(Discover(), t)
+	if err != nil {
+		return err
+	}
+
+	switch sub {
+	case "set":
+		if len(rest) < 1 {
+			return fmt.Errorf("hub set requires a URL, e.g. urnet-tools hub set http://192.0.2.10:8080")
+		}
+		url := rest[0]
+		if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+			return fmt.Errorf("invalid URL %q: must begin with http:// or https://", url)
+		}
+		ok, err := confirmGate(fmt.Sprintf("set hub report URL on %s to %s", providerLabel(p), url), p, force, dryRun)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		return writeDropinEnv(p, "hub.conf", "URNETWORK_REPORT_URL="+url)
+	case "off":
+		ok, err := confirmGate("remove hub report URL from "+providerLabel(p), p, force, dryRun)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		return removeDropinEnv(p, "hub.conf", "URNETWORK_REPORT_URL")
+	case "install":
+		return cmdHubInstall(p, rest)
+	case "init":
+		password := ""
+		for i := 0; i < len(rest); i++ {
+			if rest[i] == "--password" || rest[i] == "-p" {
+				if i+1 < len(rest) {
+					password = rest[i+1]
+					i++
+				} else {
+					return fmt.Errorf("--password requires a value")
+				}
+			} else if rest[i] == "--password-stdin" {
+				// Read the CA password from stdin so it never appears in argv
+				// (visible to every local user via ps) (review LOW).
+				b, err := io.ReadAll(os.Stdin)
+				if err != nil {
+					return fmt.Errorf("read --password-stdin: %v", err)
+				}
+				password = strings.TrimRight(string(b), "\r\n")
+			} else {
+				return fmt.Errorf("unknown hub init argument %q", rest[i])
+			}
+		}
+		ok, err := confirmGate("init hub on "+providerLabel(p), p, force, dryRun)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		return cmdHubInit(p, password)
+	case "show-password":
+		return cmdHubShowPassword(p)
+	case "onboard-cmd":
+		return cmdHubOnboardCmd(p)
+	case "link":
+		url, token := "", ""
+		for i := 0; i < len(rest); i++ {
+			if rest[i] == "--token" {
+				if i+1 < len(rest) {
+					token = rest[i+1]
+					i++
+				} else {
+					return fmt.Errorf("--token requires a value")
+				}
+			} else if url == "" {
+				url = rest[i]
+			} else {
+				return fmt.Errorf("unexpected hub link argument %q", rest[i])
+			}
+		}
+		if url == "" {
+			return fmt.Errorf("hub link requires a URL: hub link <https://hub-host:port> [--token <onboard-token>]")
+		}
+		// Gate like the other mutating hub subcommands: --dry-run must not write
+		// trust, and neither should an unconfirmed --force run (review MEDIUM).
+		ok, gerr := confirmGate("link hub "+providerLabel(p), p, force, dryRun)
+		if gerr != nil {
+			return gerr
+		}
+		if !ok {
+			return nil // dry-run or declined
+		}
+		return cmdHubLink(p, url, token, force)
+	case "test":
+		url := ""
+		if len(rest) > 0 {
+			url = rest[0]
+		}
+		return cmdHubTest(p, url)
+	case "unlink":
+		ok, err := confirmGate("unlink hub from "+providerLabel(p), p, force, dryRun)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		return cmdHubUnlink(p, force)
+	case "update":
+		ok, err := confirmGate("update hub on "+providerLabel(p), p, force, dryRun)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		return cmdHubUpdate(p, rest)
+	case "open-port":
+		if len(rest) < 1 {
+			return fmt.Errorf("hub open-port requires a port, e.g. hub open-port 8443")
+		}
+		ok, err := confirmGate("open port "+rest[0]+"/tcp on "+providerLabel(p), p, force, dryRun)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		return cmdHubOpenPort(rest[0])
+	default:
+		return fmt.Errorf("unknown hub subcommand %q (set|off|install|init|link|unlink|test|onboard-cmd|show-password|open-port|update)", sub)
+	}
+}
+
 // writeDropinEnv writes (or appends) an Environment= line to a drop-in
 // override file for the provider's unit, then reloads/restarts it.
 func writeDropinEnv(p Provider, name, envLine string) error {
@@ -375,8 +580,18 @@ func writeDropinEnv(p Provider, name, envLine string) error {
 		return err
 	}
 	path := filepath.Join(dropDir, name)
-	content := mergeDropinEnvFile(path, envLine)
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	content, err := mergeDropinEnvFile(path, envLine)
+	if err != nil {
+		return err
+	}
+	// Atomic write (temp + rename) so a crash never leaves a half-written
+	// drop-in that systemd refuses to load .
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
 		return err
 	}
 	fmt.Printf("Wrote %s\n", path)
@@ -387,15 +602,20 @@ func writeDropinEnv(p Provider, name, envLine string) error {
 // Environment= line: it reads the existing file, keeps lines whose env key
 // differs, replaces same-key lines, and always re-emits exactly one
 // [Service] header. Pure (no I/O beyond the read) so tests can pin the
-// merge semantics without a real unit (coderabbit: tests must call
-// production logic).
-func mergeDropinEnvFile(path, envLine string) string {
+// merge semantics without a real unit.
+func mergeDropinEnvFile(path, envLine string) (string, error) {
 	newKey := envLine
 	if i := strings.IndexByte(envLine, '='); i > 0 {
 		newKey = envLine[:i]
 	}
 	var kept []string
-	if b, err := os.ReadFile(path); err == nil {
+	b, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		// Transient read error (EACCES, EIO, NFS) must not silently
+		// drop every existing override .
+		return "", fmt.Errorf("read %s: %w", path, err)
+	}
+	if err == nil {
 		for _, ln := range strings.Split(string(b), "\n") {
 			trimmed := strings.TrimSpace(ln)
 			if trimmed == "" || trimmed == "[Service]" {
@@ -412,8 +632,9 @@ func mergeDropinEnvFile(path, envLine string) string {
 			kept = append(kept, trimmed)
 		}
 	}
-	kept = append(kept, fmt.Sprintf("Environment=%q", envLine))
-	return "[Service]\n" + strings.Join(kept, "\n") + "\n"
+	escaped := strings.ReplaceAll(envLine, "%", "%%")
+	kept = append(kept, fmt.Sprintf("Environment=%q", escaped))
+	return "[Service]\n" + strings.Join(kept, "\n") + "\n", nil
 }
 
 // removeDropinEnv removes a matching Environment line from a drop-in file
@@ -433,7 +654,7 @@ func removeDropinEnv(p Provider, name, envKey string) error {
 		return err
 	}
 	// Exact-key removal, NOT substring: envKey "URNETWORK_PROFILE" must not
-	// drop a sibling "URNETWORK_PROFILE_EXTRA" line (free-review MAJOR).
+	// drop a sibling "URNETWORK_PROFILE_EXTRA" line.
 	var kept []string
 	for _, ln := range strings.Split(string(b), "\n") {
 		trimmed := strings.TrimSpace(ln)
@@ -460,7 +681,12 @@ func removeDropinEnv(p Provider, name, envKey string) error {
 		fmt.Printf("Removed %s\n", path)
 	} else {
 		content := "[Service]\n" + strings.Join(kept, "\n") + "\n"
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		tmp := path + ".tmp"
+		if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
+			return err
+		}
+		if err := os.Rename(tmp, path); err != nil {
+			os.Remove(tmp)
 			return err
 		}
 		fmt.Printf("Updated %s (removed %s)\n", path, envKey)
@@ -471,7 +697,7 @@ func removeDropinEnv(p Provider, name, envKey string) error {
 // isELFExecutable reports whether path starts with the ELF magic bytes
 // (0x7f 'E' 'L' 'F'). Used to sanity-check downloaded binaries WITHOUT
 // executing them — running a freshly downloaded, unverified artifact is
-// code execution of a remote file . Linux-only check;
+// code execution of a remote file. Linux-only check;
 // see isRecognizedExecutable for the platform-aware form.
 func isELFExecutable(path string) bool {
 	f, err := os.Open(path)
@@ -538,8 +764,7 @@ func isPEExecutable(path string) bool {
 // isRecognizedExecutable is the platform-aware structural check for a
 // downloaded binary: ELF on linux, Mach-O on darwin, PE on windows. It
 // never executes the file — it only confirms the magic matches the platform
-// we are about to install for (coderabbit critical: the provider path
-// guards with this same ceiling). A wrong-format artifact (a shell script,
+// we are about to install for. A wrong-format artifact (a shell script,
 // a corrupt download, or a binary built for another OS) is refused before
 // it can be swapped into place.
 func isRecognizedExecutable(path string) bool {
@@ -571,58 +796,126 @@ func unitDropinDir(p Provider) (string, error) {
 // restartAfterDropin reloads systemd and restarts the provider's unit.
 func restartAfterDropin(p Provider) error {
 	// Same guard as unitCommand: an empty unit must be rejected before any
-	// systemctl invocation .
+	// systemctl invocation.
 	if p.Unit == "" {
 		return fmt.Errorf("provider %s has no owning systemd unit", providerLabel(p))
 	}
 	if isUserUnit(p.Unit) && p.User != "" {
 		argsReload := append(systemctlUserArgs(p.User), "daemon-reload")
-		_ = exec.Command("systemctl", argsReload...).Run()
+		if err := exec.Command("systemctl", argsReload...).Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: daemon-reload failed (%v) — drop-in override may not take effect\n", err)
+		}
 		// Propagate the restart error like the system-unit branch below —
 		// an operator writing a drop-in override must learn when the
 		// provider never actually restarted (Sonnet MEDIUM-2).
 		argsRestart := append(systemctlUserArgs(p.User), "restart", p.Unit)
 		return exec.Command("systemctl", argsRestart...).Run()
 	}
-	_ = exec.Command("systemctl", "daemon-reload").Run()
+	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: daemon-reload failed (%v) — drop-in override may not take effect\n", err)
+	}
 	return exec.Command("systemctl", "restart", p.Unit).Run()
 }
 
-func runtimeGOARCH() string {
-	return strings.ToLower(goarch())
-}
-
-// goarch returns the build GOARCH (amd64/arm64) for asset naming.
-func goarch() string {
-	// runtime.GOARCH is the cleanest source; keep this as a tiny wrapper
-	// so tests can stub it if needed.
-	return goArchValue
-}
-
-// goArchValue is set at init from the runtime.
-var goArchValue = func() string {
-	switch os.Getenv("GOARCH") {
-	case "amd64", "arm64", "386", "arm":
-		return os.Getenv("GOARCH")
+// cmdHubInstall downloads and installs the hub binary + user unit.
+func cmdHubInstall(p Provider, rest []string) error {
+	// The hub binary asset follows the provider release pattern.
+	tag := ""
+	if len(rest) > 0 {
+		tag = strings.TrimPrefix(rest[0], "--tag=")
 	}
-	// Fall back to uname -m (best effort, avoids importing runtime).
-	out, err := exec.Command("uname", "-m").Output()
+	rel := (*releaseInfo)(nil)
+	if tag == "" {
+		var err error
+		rel, err = latestRelease()
+		if err != nil {
+			return err
+		}
+		tag = rel.Tag
+	} else {
+		var err error
+		rel, err = fetchReleaseByTag(tag)
+		if err != nil {
+			return err
+		}
+	}
+	arch := runtimeGOARCH()
+	goos := runtime.GOOS
+	assetName := fmt.Sprintf("urnetwork-hub-%s-%s-%s", tag, goos, arch)
+	wantDigest := digestForAsset(rel.Assets, assetName)
+	if wantDigest == "" {
+		return fmt.Errorf("release %s: hub asset %s has no sha256 digest; refusing unverified download", tag, assetName)
+	}
+	url := fmt.Sprintf("https://github.com/full-bars/urnetwork-3.23-fix/releases/download/%s/%s", tag, assetName)
+	binDir := filepath.Dir(p.Binary)
+	hubBin := filepath.Join(binDir, "urnetwork-hub")
+	fmt.Printf("Downloading hub %s -> %s\n", url, hubBin)
+	// Download to an exclusive staging temp file to prevent a pre-existing
+	// symlink from redirecting the download to an attacker-chosen path.
+	// os.CreateTemp with the 0o644 mode creates a new file (O_CREATE|O_EXCL),
+	// rejecting any file that already exists — including a symlink planted by
+	// a provider-scoped attacker.
+	stageF, err := os.CreateTemp(binDir, "urnetwork-hub-*.stage")
 	if err != nil {
-		return "amd64"
+		return fmt.Errorf("hub staging: %w", err)
 	}
-	switch strings.TrimSpace(string(out)) {
-	case "x86_64":
-		return "amd64"
-	case "aarch64":
-		return "arm64"
-	case "armv7l":
-		return "arm"
-	case "i386", "i686":
-		return "386"
-	default:
-		return "amd64"
+	stage := stageF.Name()
+	stageF.Close()
+	if err := downloadFile(url, stage); err != nil {
+		return fmt.Errorf("hub download: %w", err)
 	}
-}()
+	if err := verifySHA256(stage, wantDigest); err != nil {
+		os.Remove(stage)
+		return fmt.Errorf("hub digest: %w", err)
+	}
+	if err := os.Chmod(stage, 0o755); err != nil {
+		os.Remove(stage)
+		return err
+	}
+	if !isRecognizedExecutable(stage) {
+		os.Remove(stage)
+		return fmt.Errorf("hub download: %s is not a %s executable (corrupted or wrong asset)", stage, goos)
+	}
+	if err := os.Rename(stage, hubBin); err != nil {
+		os.Remove(stage)
+		return err
+	}
+	// User-level systemd unit for the hub.
+	home := homeForUser(p.User)
+	if home == "" {
+		return fmt.Errorf("cannot resolve home for user %s", p.User)
+	}
+	unitPath := filepath.Join(home, ".config/systemd/user/urnetwork-hub.service")
+	content := fmt.Sprintf(`[Unit]
+Description=URnetwork Hub
+
+[Service]
+ExecStart=%s
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=default.target
+`, hubBin)
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(unitPath, []byte(content), 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("Installed %s\n", unitPath)
+	return nil
+}
+
+// runtimeGOARCH returns the host architecture from the Go runtime.
+// The previous implementation read $GOARCH from the environment, which
+// could select the wrong architecture on cross-compile boxes or CI
+// jobs . runtime.GOARCH is always correct for the
+// running binary.
+func runtimeGOARCH() string {
+	return runtime.GOARCH
+}
 
 // cmdTune implements the tuning profile commands (turbo/eco/lowmode/ramlogs/
 // auto/optimize) by writing URNETWORK_PROFILE / env drop-ins for the
@@ -764,7 +1057,7 @@ func optimizeLinux() error {
 	for _, args := range [][]string{
 		{"-w", "net.core.rmem_max=134217728", "net.core.wmem_max=134217728"},
 		{"-w", "fs.file-max=1000000"},
-		{"-w", "net.ipv4.ip_local_port_range=1024 65535"},
+		{"-w", "net.ipv4.ip_local_port_range=10240 65535"},
 		{"-w", "net.ipv4.tcp_fin_timeout=15"},
 	} {
 		cmdArgs := append(prefix, append([]string{"sysctl"}, args...)...)
@@ -780,6 +1073,22 @@ func optimizeLinux() error {
 			}
 			fmt.Fprintf(os.Stderr, "optimize: warning: sysctl %v failed: %v (%s)\n", args, err, strings.TrimSpace(string(out)))
 		}
+	}
+	// Persist settings across reboot. Writing /etc/sysctl.d/ on a fleet of
+	// production boxes is a one-shot per box; non-fatal if it fails (the
+	// live sysctl -w applied the settings for this boot).
+	sysctlConf := "/etc/sysctl.d/99-urnetwork.conf"
+	conf := `# URnetwork golden-fleet kernel limits — applied by urnet-tools optimize
+# Ephemeral port pool: lower bound raised from the kernel default (32768)
+# so outbound proxy connections don't collide with well-known service ports.
+net.ipv4.ip_local_port_range = 10240 65535
+net.core.rmem_max = 134217728
+net.core.wmem_max = 134217728
+fs.file-max = 1000000
+net.ipv4.tcp_fin_timeout = 15
+`
+	if err := os.WriteFile(sysctlConf, []byte(conf), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "optimize: warning: write %s: %v (settings are live but will not survive reboot)\n", sysctlConf, err)
 	}
 	fmt.Println("optimize: done")
 	return nil
