@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"encoding/pem"
@@ -41,8 +40,6 @@ import (
 
 const DefaultApiUrl = "https://api.bringyour.com"
 const DefaultConnectUrl = "wss://connect.bringyour.com"
-
-var webhookClient = &http.Client{Timeout: 5 * time.Second}
 
 // proxyLaunchCount tracks how many proxy goroutines have passed the stagger
 // delay and entered provideWithProxy. Used by paceMonitor for progress logging.
@@ -711,15 +708,15 @@ Usage:
         [--wallet=<coldkey_ss58>]
         [--max-memory=<mem>]
         [-v...]
-    provider wallet set <coldkey_ss58>  [EXPERIMENTAL]
+    provider wallet set <coldkey_ss58>
         [--api_url=<api_url>]
         [-v...]
-    provider claim [--epoch=<epoch>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]  [EXPERIMENTAL]
+    provider claim [--epoch=<epoch>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
         [--api_url=<api_url>]
         [-v...]
-    provider bind-head --hotkey=<hex> --registrant=<registrant> --contract=<contract> [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]  [EXPERIMENTAL]
+    provider bind-head --hotkey=<hex> --registrant=<registrant> --contract=<contract> [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
         [-v...]
-    provider unbind-head --hotkey=<hex> [--contract=<contract>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]  [EXPERIMENTAL]
+    provider unbind-head --hotkey=<hex> [--contract=<contract>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
         [-v...]
     provider proxy auth add [<key>] <proxy_user> <proxy_password> [-f]
     provider proxy auth remove [<key>] [--all]
@@ -764,11 +761,8 @@ Options:
     --rpc=<rpc_url>                  EVM json-rpc endpoint used to check the payout root on-chain.
                                      May be repeated; endpoints are tried in order until one answers.
     --key_file=<key_file>            EVM private key file. When given, claim/bind-head/unbind-head sign
-                                     and submit the transaction (via --rpc); without it, the ready-to-submit
-                                     calldata is printed for the offline/air-gapped snclaim path.
-                                     EXPERIMENTAL: the claim/bind-head/unbind-head/wallet-set commands are
-                                     experimental, the mechanism may change, and they are not recommended
-                                     for production use yet. Ported but not exercised against mainnet.
+                                      and submit the transaction (via --rpc); without it, the ready-to-submit
+                                      calldata is printed for the offline/air-gapped snclaim path.
     --dry-run                        Build and sign the extrinsic but do not submit.
     --hotkey=<hex>                   Head-tier miner hotkey as a 0x-optional 32-byte hex account id.
     --registrant=<registrant>        The EVM address that will submit bindHead via snclaim (0x, 20 bytes).
@@ -1014,150 +1008,6 @@ func auth(opts docopt.Opts) {
 			shmLogFatal(17, "could not write jwt to %s: %v", jwtPath, err)
 		}
 		fmt.Printf("Jwt written to %s\n", jwtPath)
-	}
-}
-
-// runOutageWatcher polls IsBackendDegraded every 30 seconds and logs a line on
-// state transitions. If URNETWORK_ALERT_WEBHOOK is set it also POSTs a JSON
-// payload so operators can receive push notifications.
-// "Start" requires startConfirm consecutive degraded polls (5 minutes at the
-// 30s poll interval) before firing, so a brief blip never raises a false alarm —
-// the backend must fail continuously with zero successful connects or OOB calls
-// for the whole window. "Clear" requires two consecutive healthy polls to avoid
-// premature all-clears during brief lulls mid-outage. A 5-minute per-event
-// cooldown prevents webhook spam if the backend flickers at a boundary.
-// alertWebhookOverridePath returns ~/.urnetwork/alert_webhook, the outage
-// watcher's equivalent of reportURLOverridePath: a file an operator can
-// write to set, change, or clear URNETWORK_ALERT_WEBHOOK without restarting
-// the provider.
-func alertWebhookOverridePath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".urnetwork", "alert_webhook"), nil
-}
-
-// resolveAlertWebhook mirrors resolveReportURL: the override file takes
-// precedence over envFallback (URNETWORK_ALERT_WEBHOOK captured at startup).
-// A readable-but-empty override file means "alerting off" and resolves to ""
-// so the outage watcher stops firing; only an unreadable file (missing,
-// permission error) falls back to the startup env value.
-func resolveAlertWebhook(envFallback string) string {
-	path, err := alertWebhookOverridePath()
-	if err == nil {
-		if b, err := os.ReadFile(path); err == nil {
-			return strings.TrimSpace(string(b))
-		}
-	}
-	return envFallback
-}
-
-func runOutageWatcher(ctx context.Context, nodeName, envWebhookURL string) {
-	const pollInterval = 30 * time.Second
-	const cooldown = 5 * time.Minute
-	const clearConfirm = 2
-	const startConfirm = 10 // 10 * 30s = 5 minutes of continuous degradation
-
-	degraded := false
-	degradedCount := 0
-	clearCount := 0
-	var lastStartFire, lastClearFire time.Time
-
-	webhookURL := resolveAlertWebhook(envWebhookURL)
-	if webhookURL != "" {
-		tlog("👀 [outage] watcher active node=%s webhook=configured\n", nodeName)
-	} else {
-		tlog("👀 [outage] watcher active node=%s\n", nodeName)
-	}
-
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-
-		// Re-resolve every tick so writing ~/.urnetwork/alert_webhook can
-		// turn outage alerting on, off, or repoint it without a restart.
-		if resolved := resolveAlertWebhook(envWebhookURL); resolved != webhookURL {
-			webhookURL = resolved
-			if webhookURL != "" {
-				tlog("[outage] webhook updated node=%s webhook=configured\n", nodeName)
-			} else {
-				tlog("[outage] webhook disabled node=%s\n", nodeName)
-			}
-		}
-
-		if connect.IsBackendDegraded() {
-			clearCount = 0
-			if !degraded {
-				degradedCount++
-				if degradedCount >= startConfirm {
-					degraded = true
-					tlog("🚨 [outage] backend degraded — holding existing connections, not accepting new ones\n")
-					if webhookURL != "" && time.Since(lastStartFire) >= cooldown {
-						lastStartFire = time.Now()
-						go fireWebhook(webhookURL, nodeName, "outage_start",
-							"Backend unreachable — provider holding existing connections but not accepting new ones.")
-					}
-				}
-			}
-		} else {
-			degradedCount = 0
-			if degraded {
-				clearCount++
-				if clearCount >= clearConfirm {
-					degraded = false
-					clearCount = 0
-					tlog("🚨 [outage] backend recovered\n")
-					if webhookURL != "" && time.Since(lastClearFire) >= cooldown {
-						lastClearFire = time.Now()
-						go fireWebhook(webhookURL, nodeName, "outage_clear", "Backend connectivity restored.")
-					}
-				}
-			}
-		}
-	}
-}
-
-func fireWebhook(url, nodeName, event, message string) {
-	// Format the body per service. Discord requires "content" and Slack requires
-	// "text"; a generic {event,node,...} body is rejected by both (HTTP 400). Any
-	// other endpoint (ntfy, custom) gets the structured JSON it can parse.
-	var payload []byte
-	var err error
-	switch {
-	case strings.Contains(url, "discord.com"), strings.Contains(url, "discordapp.com"):
-		line := fmt.Sprintf("URnetwork [%s] node=%s: %s", event, nodeName, message)
-		payload, err = json.Marshal(map[string]string{"content": line})
-	case strings.Contains(url, "hooks.slack.com"):
-		line := fmt.Sprintf("URnetwork [%s] node=%s: %s", event, nodeName, message)
-		payload, err = json.Marshal(map[string]string{"text": line})
-	default:
-		payload, err = json.Marshal(map[string]string{
-			"event":     event,
-			"node":      nodeName,
-			"timestamp": time.Now().UTC().Format(time.RFC3339),
-			"message":   message,
-		})
-	}
-	if err != nil {
-		tlog("[webhook] marshal failed: %v\n", err)
-		return
-	}
-	resp, err := webhookClient.Post(url, "application/json", bytes.NewReader(payload))
-	if err != nil {
-		tlog("📡 [webhook] delivery failed (%s): %v\n", event, err)
-		return
-	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		tlog("[webhook] non-2xx response (%s): %d\n", event, resp.StatusCode)
 	}
 }
 
@@ -1455,7 +1305,12 @@ func runLifetimeCollector(ctx context.Context) {
 		} else {
 			// Idle tick: re-anchor per-proxy rate baselines so bytes moved
 			// during the idle window are not smeared into the next active
-			// tick's rate display.
+			// tick's rate display. Use u64At to create the baseline slot (the
+			// active branch does the same): on the FIRST tick prevRxPerProxy is
+			// empty while bw is populated with every known proxy, so a bare
+			// index dereference panics (nil *uint64) and — with the collector
+			// launched as a bare `go` — crashes the whole provider process
+			// (Sonnet CRITICAL, 2026-08-27).
 			for key, b := range bw {
 				*u64At(prevRxPerProxy, key) = b.TotalRx.Load()
 				*u64At(prevTxPerProxy, key) = b.TotalTx.Load()
@@ -2634,7 +2489,6 @@ func provide(opts docopt.Opts) {
 		}
 	}
 
-	go runOutageWatcher(ctx, watcherName, os.Getenv("URNETWORK_ALERT_WEBHOOK"))
 	go runHealthHeartbeat(ctx, provideStartTime, os.Getenv("URNETWORK_PROFILE"))
 	go runJWTRefresher(ctx, apiUrl)
 	go runEarningWindows(ctx)
@@ -2767,6 +2621,17 @@ func provide(opts docopt.Opts) {
 				maxAuthFailures = unprovenMaxAuthFailures
 			}
 			authFailures := 0
+
+			// Restart storm guard: if persisted slow-retry state shows
+			// this proxy was recently attempted (or is dropped), skip the
+			// fast-retry phase entirely. Without this, 356 dead proxies
+			// would each run 10 fast auth attempts on restart — 3,560
+			// unthrottled calls before any slow-retry code runs.
+			if proxySettings != nil && !isURLSourced {
+				if globalProxySlowRetryState.WasDropped(proxySettings.Address) || globalProxySlowRetryState.TimeUntilNextAttempt(proxySettings.Address) > 0 {
+					authFailures = maxAuthFailures
+				}
+			}
 			for {
 				var err error
 				var byClientJwt string
@@ -2919,8 +2784,14 @@ func provide(opts docopt.Opts) {
 						if globalProxySlowRetryState.ShouldDrop(proxySettings.Address) {
 							globalProxySlowRetryState.MarkDropped(proxySettings.Address)
 							dropAge := time.Since(startedAt)
-							tlog("[proxy][slow-retry] proxy[%d] (%s) dropped after %s of continuous failure (%d total attempts); retry on next restart\n",
+							tlog("[proxy][slow-retry] proxy[%d] (%s) dropped after %s of continuous failure (%d total attempts); removed from active pool\n",
 								proxySettings.Index, proxySettings.Address, formatDuration(dropAge), authFailures)
+							// Clean up proxyCancelMap so the reloader can
+							// relaunch this proxy if the operator refreshes
+							// the proxy list (Opus HIGH-2 fix).
+							proxyCancelMu.Lock()
+							delete(proxyCancelMap, proxySettings.Address)
+							proxyCancelMu.Unlock()
 							return "", connect.Id{}, false, fmt.Errorf("proxy dropped after %s of continuous failure — %s", formatDuration(dropAge), cause)
 						}
 						// The 24h daily gate only applies after the first 3
@@ -3348,10 +3219,10 @@ func provide(opts docopt.Opts) {
 				}
 				// Log previously-dropped proxies on restart so the
 				// operator gets visibility into persistent failures.
+				// The continuous drop clock means this proxy will likely
+				// be re-dropped on the first slow auth attempt.
 				if !isURLSourced && proxySettings != nil && globalProxySlowRetryState.WasDropped(proxySettings.Address) {
 					dropAge := time.Since(globalProxySlowRetryState.DropTime(proxySettings.Address))
-					// The continuous drop clock means this proxy will likely
-					// be re-dropped on the first slow auth attempt.
 					tlog("[proxy][slow-retry] proxy[%d] (%s) previously dropped %s ago; re-entering slow retry (will likely re-drop)\n",
 						proxySettings.Index, proxySettings.Address, formatDuration(dropAge))
 				}
@@ -3827,7 +3698,6 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	// restarts get a clean match and any later account/network swap is
 	// detected by the mismatch guard above rather than silently reusing
 	// a stale identity.
-	//
 	// Compute description early — needed for both the renewal fallback path
 	// (reuse an expired stored identity) and the fresh-mint path below.
 	description := providerDescription(nodeName)
@@ -3866,9 +3736,14 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 				tlog("🔥 [hot-restart] %s: stored client_id %q failed to parse (%v), minting fresh\n", identityKey, entry.ClientID, parseErr)
 			} else {
 				reused = true
-				// Self-heal: a legacy entry with NetworkID="" gets stamped so
-				// a future account swap is detected.
-				if entry.NetworkID == "" && haveCurrentNetworkId {
+				// Self-heal: stamp the current network_id onto legacy
+				// entries (stored with NetworkID="") so a future
+				// account/network swap is detected by the mismatch guard
+				// above instead of silently reusing a stale identity. Only
+				// fires for entries whose NetworkID differs from the
+				// current one — after the first reuse they match, so this
+				// is a one-time write per proxy at startup, not per-auth.
+				if entry.NetworkID != currentNetworkId {
 					if putErr := globalClientJWTStore.Put(identityKey, clientJWTEntry{
 						ByClientJWT: entry.ByClientJWT,
 						ClientID:    entry.ClientID,
