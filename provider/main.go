@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"encoding/pem"
@@ -41,8 +40,6 @@ import (
 
 const DefaultApiUrl = "https://api.bringyour.com"
 const DefaultConnectUrl = "wss://connect.bringyour.com"
-
-var webhookClient = &http.Client{Timeout: 5 * time.Second}
 
 // proxyLaunchCount tracks how many proxy goroutines have passed the stagger
 // delay and entered provideWithProxy. Used by paceMonitor for progress logging.
@@ -1011,124 +1008,6 @@ func auth(opts docopt.Opts) {
 			shmLogFatal(17, "could not write jwt to %s: %v", jwtPath, err)
 		}
 		fmt.Printf("Jwt written to %s\n", jwtPath)
-	}
-}
-
-// runOutageWatcher polls IsBackendDegraded every 30 seconds and logs a line on
-// state transitions. If URNETWORK_ALERT_WEBHOOK is set it also POSTs a JSON
-// payload so operators can receive push notifications.
-// "Start" requires startConfirm consecutive degraded polls (5 minutes at the
-// 30s poll interval) before firing, so a brief blip never raises a false alarm —
-// the backend must fail continuously with zero successful connects or OOB calls
-// for the whole window. "Clear" requires two consecutive healthy polls to avoid
-// premature all-clears during brief lulls mid-outage. A 5-minute per-event
-// cooldown prevents webhook spam if the backend flickers at a boundary.
-func runOutageWatcher(ctx context.Context, nodeName, envWebhookURL string) {
-	const pollInterval = 30 * time.Second
-	const cooldown = 5 * time.Minute
-	const clearConfirm = 2
-	const startConfirm = 10 // 10 * 30s = 5 minutes of continuous degradation
-
-	degraded := false
-	degradedCount := 0
-	clearCount := 0
-	var lastStartFire, lastClearFire time.Time
-
-	webhookURL := resolveAlertWebhook(envWebhookURL)
-	if webhookURL != "" {
-		tlog("👀 [outage] watcher active node=%s webhook=configured\n", nodeName)
-	} else {
-		tlog("👀 [outage] watcher active node=%s\n", nodeName)
-	}
-
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-
-		// Re-resolve every tick so writing ~/.urnetwork/alert_webhook can
-		// turn outage alerting on, off, or repoint it without a restart —
-		// same reasoning as the hub report URL in bandwidth_reporter.go.
-		if resolved := resolveAlertWebhook(envWebhookURL); resolved != webhookURL {
-			webhookURL = resolved
-			if webhookURL != "" {
-				tlog("[outage] webhook updated node=%s webhook=configured\n", nodeName)
-			} else {
-				tlog("[outage] webhook disabled node=%s\n", nodeName)
-			}
-		}
-
-		if connect.IsBackendDegraded() {
-			clearCount = 0
-			if !degraded {
-				degradedCount++
-				if degradedCount >= startConfirm {
-					degraded = true
-					tlog("🚨 [outage] backend degraded — holding existing connections, not accepting new ones\n")
-					if webhookURL != "" && time.Since(lastStartFire) >= cooldown {
-						lastStartFire = time.Now()
-						go fireWebhook(webhookURL, nodeName, "outage_start",
-							"Backend unreachable — provider holding existing connections but not accepting new ones.")
-					}
-				}
-			}
-		} else {
-			degradedCount = 0
-			if degraded {
-				clearCount++
-				if clearCount >= clearConfirm {
-					degraded = false
-					clearCount = 0
-					tlog("🚨 [outage] backend recovered\n")
-					if webhookURL != "" && time.Since(lastClearFire) >= cooldown {
-						lastClearFire = time.Now()
-						go fireWebhook(webhookURL, nodeName, "outage_clear", "Backend connectivity restored.")
-					}
-				}
-			}
-		}
-	}
-}
-
-func fireWebhook(url, nodeName, event, message string) {
-	// Format the body per service. Discord requires "content" and Slack requires
-	// "text"; a generic {event,node,...} body is rejected by both (HTTP 400). Any
-	// other endpoint (ntfy, custom) gets the structured JSON it can parse.
-	var payload []byte
-	var err error
-	switch {
-	case strings.Contains(url, "discord.com"), strings.Contains(url, "discordapp.com"):
-		line := fmt.Sprintf("URnetwork [%s] node=%s: %s", event, nodeName, message)
-		payload, err = json.Marshal(map[string]string{"content": line})
-	case strings.Contains(url, "hooks.slack.com"):
-		line := fmt.Sprintf("URnetwork [%s] node=%s: %s", event, nodeName, message)
-		payload, err = json.Marshal(map[string]string{"text": line})
-	default:
-		payload, err = json.Marshal(map[string]string{
-			"event":     event,
-			"node":      nodeName,
-			"timestamp": time.Now().UTC().Format(time.RFC3339),
-			"message":   message,
-		})
-	}
-	if err != nil {
-		tlog("[webhook] marshal failed: %v\n", err)
-		return
-	}
-	resp, err := webhookClient.Post(url, "application/json", bytes.NewReader(payload))
-	if err != nil {
-		tlog("📡 [webhook] delivery failed (%s): %v\n", event, err)
-		return
-	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		tlog("[webhook] non-2xx response (%s): %d\n", event, resp.StatusCode)
 	}
 }
 
@@ -2612,7 +2491,6 @@ func provide(opts docopt.Opts) {
 
 	bootstrapHubCA(ctx, os.Getenv("URNETWORK_REPORT_URL"), os.Getenv("URNETWORK_HUB_TOKEN"))
 
-	go runOutageWatcher(ctx, watcherName, os.Getenv("URNETWORK_ALERT_WEBHOOK"))
 	go runHealthHeartbeat(ctx, provideStartTime, os.Getenv("URNETWORK_PROFILE"))
 	go runBandwidthReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
 	go runHeartbeatReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
@@ -2747,6 +2625,17 @@ func provide(opts docopt.Opts) {
 				maxAuthFailures = unprovenMaxAuthFailures
 			}
 			authFailures := 0
+
+			// Restart storm guard: if persisted slow-retry state shows
+			// this proxy was recently attempted (or is dropped), skip the
+			// fast-retry phase entirely. Without this, 356 dead proxies
+			// would each run 10 fast auth attempts on restart — 3,560
+			// unthrottled calls before any slow-retry code runs.
+			if proxySettings != nil && !isURLSourced {
+				if globalProxySlowRetryState.WasDropped(proxySettings.Address) || globalProxySlowRetryState.TimeUntilNextAttempt(proxySettings.Address) > 0 {
+					authFailures = maxAuthFailures
+				}
+			}
 			for {
 				var err error
 				var byClientJwt string
@@ -2801,8 +2690,22 @@ func provide(opts docopt.Opts) {
 					if proxySettings != nil {
 						admitFailureCount = globalProxyFailureHistory.FailureCount(proxySettings.Address)
 					}
+					// Acquire slow-retry semaphore before admission gate so
+					// at most slowRetryMaxConcurrent slow-retry proxies can
+					// be in the auth pipeline at once. Select on proxyCtx
+					// so a cancelled proxy doesn't hang on the semaphore.
+					if !isURLSourced && authFailures >= maxAuthFailures {
+						select {
+						case slowRetrySemaphore <- struct{}{}:
+						case <-proxyCtx.Done():
+							return "", connect.Id{}, false, proxyCtx.Err()
+						}
+					}
 					release, waitErr := globalProxyAdmissionGate.Admit(proxyCtx, admitFailureCount)
 					if waitErr != nil {
+						if !isURLSourced && authFailures >= maxAuthFailures {
+							<-slowRetrySemaphore
+						}
 						return "", connect.Id{}, false, waitErr
 					}
 					identityKey := "direct"
@@ -2811,10 +2714,23 @@ func provide(opts docopt.Opts) {
 					}
 					byClientJwt, clientId, reused, err = provideAuth(proxyCtx, clientStrategy, apiUrl, opts, nodeName, identityKey)
 					release()
+					// Limit concurrent slow-retry auth attempts to avoid
+					// thundering-herd: a box with hundreds of dead proxies
+					// would otherwise overwhelm the auth API on each daily
+					// cycle, potentially causing genuine proxies to fail too.
+					// Release immediately after auth — the slot must not be
+					// held across the 24h sleep in the slow-retry block below.
+					if !isURLSourced && authFailures >= maxAuthFailures {
+						<-slowRetrySemaphore
+					}
 					if proxySettings != nil {
 						if err == nil {
 							globalProvenProxies.MarkSucceeded(proxySettings.Address)
 							globalProxyFailureHistory.Reset(proxySettings.Address)
+							// Clear any slow-retry state for a proxy that
+							// just recovered — prevents stale "previously
+							// dropped" log messages on next restart.
+							globalProxySlowRetryState.ClearDropped(proxySettings.Address)
 						}
 						globalAuthRateLimiter.ReportResultForProxy(err, globalProvenProxies.HasSucceeded(proxySettings.Address))
 					} else {
@@ -2854,14 +2770,54 @@ func provide(opts docopt.Opts) {
 					cause := classifyAuthFailureCause(err)
 					// URL-sourced (free lists) keep the short leash: give up and let
 					// the requeue path bring them back later, so a huge mostly-dead
-					// list does not pin a goroutine per entry. Operator-curated
-					// proxies (file/internal/direct) must never give up — a paid or
-					// direct endpoint that is briefly unreachable at boot, or a
-					// transient API error, should not cost the proxy until the next
-					// full restart (which wipes everyone's 8-12h warmup). Fall back to
-					// a slow, capped retry instead and keep trying.
+					// list does not pin a goroutine per entry.
+					// Operator-curated proxies (file/internal) get a slow retry
+					// with a 14-day ceiling: daily attempts give brief outages a
+					// chance to recover, but truly dead proxies are dropped from
+					// the active pool after two weeks. The proxy remains in the
+					// config file and will be retried fresh on the next provider
+					// restart. The native direct connection (proxySettings == nil)
+					// is excluded — it is a single endpoint, not a paid proxy list.
 					if isURLSourced {
 						return "", connect.Id{}, false, fmt.Errorf("authentication failed after %d attempts — %s: %w", maxAuthFailures, cause, err)
+					}
+					// Persist slow-retry start time (survives reboots) and
+					// check if this proxy has exceeded the 14-day drop window.
+					if proxySettings != nil {
+						startedAt := globalProxySlowRetryState.RecordSlowRetryStart(proxySettings.Address)
+						if globalProxySlowRetryState.ShouldDrop(proxySettings.Address) {
+							globalProxySlowRetryState.MarkDropped(proxySettings.Address)
+							dropAge := time.Since(startedAt)
+							tlog("[proxy][slow-retry] proxy[%d] (%s) dropped after %s of continuous failure (%d total attempts); removed from active pool\n",
+								proxySettings.Index, proxySettings.Address, formatDuration(dropAge), authFailures)
+							// Clean up proxyCancelMap so the reloader can
+							// relaunch this proxy if the operator refreshes
+							// the proxy list (Opus HIGH-2 fix).
+							proxyCancelMu.Lock()
+							delete(proxyCancelMap, proxySettings.Address)
+							proxyCancelMu.Unlock()
+							return "", connect.Id{}, false, fmt.Errorf("proxy dropped after %s of continuous failure — %s", formatDuration(dropAge), cause)
+						}
+						// The 24h daily gate only applies after the first 3
+						// slow retries (which use the 5m/10m/15m ramp via
+						// proxyAuthSlowRetryDelay). Before that, fall through
+						// to the ramp delay directly.
+						slowRetryAttempt := authFailures - maxAuthFailures + 1
+						if slowRetryAttempt > slowRetryRampAttempts && !globalProxySlowRetryState.RecordSlowRetryAttempt(proxySettings.Address) {
+							// Not time yet — sleep precisely until the
+							// daily interval elapses from the last attempt.
+							waitTime := globalProxySlowRetryState.TimeUntilNextAttempt(proxySettings.Address)
+							tlog("[proxy][slow-retry] proxy[%d] (%s) auth still failing after %d attempts (%s); already attempted recently, next check in %s\n",
+								proxySettings.Index, proxySettings.Address, authFailures, cause, formatDuration(waitTime))
+							dailyTimer := time.NewTimer(waitTime)
+							select {
+							case <-proxyCtx.Done():
+								dailyTimer.Stop()
+								return "", connect.Id{}, false, proxyCtx.Err()
+							case <-dailyTimer.C:
+								continue
+							}
+						}
 					}
 					slowDelay := proxyAuthSlowRetryDelay(authFailures - maxAuthFailures + 1)
 					if proxySettings != nil {
@@ -3129,6 +3085,11 @@ func provide(opts docopt.Opts) {
 
 	// Select the proxy source: external file (Workflow A) or internal config (Workflow B).
 	proxyFile, _ := opts.String("--proxy_file")
+	// Also accept PROXY_FILE env var (for Docker/Pelican where CLI flags
+	// cannot be set by the user — the env var is the only knob).
+	if proxyFile == "" {
+		proxyFile = os.Getenv("PROXY_FILE")
+	}
 	var allProxySettings []*connect.ProxySettings
 	if proxyFile != "" {
 		settings, err := readProxySettingsFromFile(proxyFile)
@@ -3204,6 +3165,17 @@ func provide(opts docopt.Opts) {
 		tlog("[proxy] warning: could not write proxy.state: %v\n", err)
 	}
 
+	// Load persisted DoH server scores and start a warm-up probe so the
+	// server-scorer (P2-2) has signal before real DNS traffic arrives.
+	// Scores are saved periodically and on shutdown; the cache is closed
+	// via deferred cleanup.
+	_, closeDohCache := initPersistentDohCache(ctx)
+	defer closeDohCache()
+
+	// Load persisted slow-retry state so that a restart does not reset
+	// the 14-day drop clock for proxies that were already failing.
+	globalProxySlowRetryState = LoadProxySlowRetryState()
+
 	if 0 < len(allProxySettings) {
 		fmt.Printf("Using %d proxy servers:\n", len(allProxySettings))
 
@@ -3248,6 +3220,15 @@ func provide(opts docopt.Opts) {
 				now := time.Now()
 				if !backoffPacer(proxyIdx, staggerMs, now, proxyCtx) {
 					return
+				}
+				// Log previously-dropped proxies on restart so the
+				// operator gets visibility into persistent failures.
+				// The continuous drop clock means this proxy will likely
+				// be re-dropped on the first slow auth attempt.
+				if !isURLSourced && proxySettings != nil && globalProxySlowRetryState.WasDropped(proxySettings.Address) {
+					dropAge := time.Since(globalProxySlowRetryState.DropTime(proxySettings.Address))
+					tlog("[proxy][slow-retry] proxy[%d] (%s) previously dropped %s ago; re-entering slow retry (will likely re-drop)\n",
+						proxySettings.Index, proxySettings.Address, formatDuration(dropAge))
 				}
 				proxyLaunchCount.Add(1)
 
@@ -3519,16 +3500,22 @@ func proxyURLGiveUpRetryDelay(giveUpCount int) time.Duration {
 
 // proxyAuthSlowRetryDelay is the backoff for an operator-curated proxy
 // (file/internal/direct) that has exhausted its fast retries. Rather than give
-// up, it keeps trying on a slow, capped schedule: 5m, 10m, then 15m for every
-// attempt after that. Jitter (up to 30s) spreads a large batch so they do not
-// all re-hit the API on the same tick.
+// up, it keeps trying on a slow schedule:
+//
+//   - Attempts 1-3: 5m, 10m, 15m (original ramp — catches brief flapping)
+//   - Attempt 4+:    24h (daily — one attempt per day until 14-day drop)
+//
+// Jitter spreads a large batch so they do not all re-hit the API on the
+// same tick.
 func proxyAuthSlowRetryDelay(slowAttempt int) time.Duration {
 	if slowAttempt < 1 {
 		slowAttempt = 1
 	}
-	base := time.Duration(slowAttempt) * 5 * time.Minute
-	if base > 15*time.Minute {
-		base = 15 * time.Minute
+	var base time.Duration
+	if slowAttempt <= slowRetryRampAttempts {
+		base = time.Duration(slowAttempt) * 5 * time.Minute
+	} else {
+		base = slowRetryDailyInterval
 	}
 	return base + time.Duration(mathrand.Intn(30000))*time.Millisecond
 }
@@ -3655,6 +3642,11 @@ func renewClientJWT(ctx context.Context, apiUrl, byJwt string, clientId connect.
 	return result.Result.ByClientJwt, nil
 }
 
+// renewClientJWTFn is the injectable renewal entry point. It defaults to the
+// real network-backed renewClientJWT but can be overridden in tests to exercise
+// the renew-on-expiry branch of provideAuth deterministically.
+var renewClientJWTFn = renewClientJWT
+
 func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, apiUrl string, opts docopt.Opts, nodeName string, identityKey string) (byClientJwt string, clientId connect.Id, reused bool, returnErr error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -3693,24 +3685,75 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	// default for credential reuse.
 	//
 	// Hot restart (reuse of persisted client JWTs across process restarts)
-	// is opt-in and defaults off: it's an experimental feature (not yet
-	// confirmed reliable across repeated restarts in live testing) and a
-	// fleet-wide behavior change, so operators choose it explicitly via
-	// `urnet-tools hot-restart on` (Docker: URNETWORK_HOT_RESTART=1) rather
-	// than inheriting it silently from an upgrade.
+	// has been ON by default since v3.23.0-fix.26 (URNETWORK_HOT_RESTART
+	// != "0"). Explicitly set URNETWORK_HOT_RESTART=0 to disable.
+	//
+	// Legacy entries (stored with NetworkID="") may lack the network_id
+	// field because they predate the field being added, or because the
+	// account JWT at the time of storage had no network_id claim. These
+	// are treated as compatible when the current account JWT DOES carry
+	// a network_id (assumed same network, minted under the same account).
+	// If the current JWT has no network_id claim, we always mint fresh
+	// since we can't verify safe reuse. The first successful reuse or
+	// renewal stamps the current NetworkID into the store, so subsequent
+	// restarts get a clean match and any later account/network swap is
+	// detected by the mismatch guard above rather than silently reusing
+	// a stale identity.
+	// Compute description early — needed for both the renewal fallback path
+	// (reuse an expired stored identity) and the fresh-mint path below.
+	description := providerDescription(nodeName)
+
 	currentNetworkId, haveCurrentNetworkId := jwtNetworkId(byJwt)
 	if hotRestartEnabled() {
 		if entry, ok := globalClientJWTStore.Get(identityKey); ok {
-			if reuseErr := validateJWTExpiry(entry.ByClientJWT); reuseErr != nil {
-				tlog("🔥 [hot-restart] %s: stored client JWT expired, minting fresh\n", identityKey)
+			if !haveCurrentNetworkId || (entry.NetworkID != "" && entry.NetworkID != currentNetworkId) {
+				tlog("🔥 [hot-restart] %s: network_id mismatch (stored=%q current=%q have_current=%v), minting fresh\n", identityKey, entry.NetworkID, currentNetworkId, haveCurrentNetworkId)
+			} else if reuseErr := validateJWTExpiry(entry.ByClientJWT); reuseErr != nil {
+				// Stored client JWT expired: try renewal-with-same-client_id
+				// before falling through to fresh mint, so the operator's
+				// identities (and their server-side reliability reputation)
+				// survive even when the JWT has aged out of its 24h window.
+				if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr == nil && jwtContainsClientId(entry.ByClientJWT) {
+					renewedJwt, renewErr := renewClientJWTFn(ctx, apiUrl, byJwt, parsedId, description, clientStrategy)
+					if renewErr == nil {
+						tlog("🔥 [hot-restart] %s: stored client JWT expired, renewed identity %s\n", identityKey, parsedId)
+						if putErr := globalClientJWTStore.Put(identityKey, clientJWTEntry{
+							ByClientJWT: renewedJwt,
+							ClientID:    entry.ClientID,
+							NetworkID:   currentNetworkId,
+							MintedAt:    time.Now(),
+						}); putErr != nil {
+							tlog("⚠️ [jwt-store] failed to persist renewed client JWT for %s: %v\n", identityKey, putErr)
+						}
+						return renewedJwt, parsedId, true, nil
+					}
+					tlog("🔥 [hot-restart] %s: stored client JWT expired, renewal attempt failed (%v), minting fresh\n", identityKey, renewErr)
+				} else {
+					tlog("🔥 [hot-restart] %s: stored client JWT expired, minting fresh\n", identityKey)
+				}
 			} else if !jwtContainsClientId(entry.ByClientJWT) {
 				tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, minting fresh\n", identityKey)
-			} else if !haveCurrentNetworkId || entry.NetworkID != currentNetworkId {
-				tlog("🔥 [hot-restart] %s: network_id mismatch (stored=%q current=%q have_current=%v), minting fresh\n", identityKey, entry.NetworkID, currentNetworkId, haveCurrentNetworkId)
 			} else if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr != nil {
 				tlog("🔥 [hot-restart] %s: stored client_id %q failed to parse (%v), minting fresh\n", identityKey, entry.ClientID, parseErr)
 			} else {
 				reused = true
+				// Self-heal: stamp the current network_id onto legacy
+				// entries (stored with NetworkID="") so a future
+				// account/network swap is detected by the mismatch guard
+				// above instead of silently reusing a stale identity. Only
+				// fires for entries whose NetworkID differs from the
+				// current one — after the first reuse they match, so this
+				// is a one-time write per proxy at startup, not per-auth.
+				if entry.NetworkID != currentNetworkId {
+					if putErr := globalClientJWTStore.Put(identityKey, clientJWTEntry{
+						ByClientJWT: entry.ByClientJWT,
+						ClientID:    entry.ClientID,
+						NetworkID:   currentNetworkId,
+						MintedAt:    entry.MintedAt,
+					}); putErr != nil {
+						tlog("⚠️ [jwt-store] failed to self-heal network_id for %s: %v\n", identityKey, putErr)
+					}
+				}
 				return entry.ByClientJWT, parsedId, true, nil
 			}
 		}
@@ -3725,7 +3768,6 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	// Final Description: "Identity [Version]" — computed by the shared helper
 	// so mint (here) and in-process renewal (runProxyJWTWatcher) always send
 	// the same string; the server UPDATEs the row's description on renewal.
-	description := providerDescription(nodeName)
 
 	authClientArgs := &connect.AuthNetworkClientArgs{
 		Description: description,
