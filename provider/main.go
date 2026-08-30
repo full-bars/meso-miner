@@ -711,15 +711,15 @@ Usage:
         [--wallet=<coldkey_ss58>]
         [--max-memory=<mem>]
         [-v...]
-    provider wallet set <coldkey_ss58>  [EXPERIMENTAL]
+    provider wallet set <coldkey_ss58>
         [--api_url=<api_url>]
         [-v...]
-    provider claim [--epoch=<epoch>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]  [EXPERIMENTAL]
+    provider claim [--epoch=<epoch>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
         [--api_url=<api_url>]
         [-v...]
-    provider bind-head --hotkey=<hex> --registrant=<registrant> --contract=<contract> [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]  [EXPERIMENTAL]
+    provider bind-head --hotkey=<hex> --registrant=<registrant> --contract=<contract> [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
         [-v...]
-    provider unbind-head --hotkey=<hex> [--contract=<contract>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]  [EXPERIMENTAL]
+    provider unbind-head --hotkey=<hex> [--contract=<contract>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
         [-v...]
     provider proxy auth add [<key>] <proxy_user> <proxy_password> [-f]
     provider proxy auth remove [<key>] [--all]
@@ -764,11 +764,8 @@ Options:
     --rpc=<rpc_url>                  EVM json-rpc endpoint used to check the payout root on-chain.
                                      May be repeated; endpoints are tried in order until one answers.
     --key_file=<key_file>            EVM private key file. When given, claim/bind-head/unbind-head sign
-                                     and submit the transaction (via --rpc); without it, the ready-to-submit
-                                     calldata is printed for the offline/air-gapped snclaim path.
-                                     EXPERIMENTAL: the claim/bind-head/unbind-head/wallet-set commands are
-                                     experimental, the mechanism may change, and they are not recommended
-                                     for production use yet. Ported but not exercised against mainnet.
+                                      and submit the transaction (via --rpc); without it, the ready-to-submit
+                                      calldata is printed for the offline/air-gapped snclaim path.
     --dry-run                        Build and sign the extrinsic but do not submit.
     --hotkey=<hex>                   Head-tier miner hotkey as a 0x-optional 32-byte hex account id.
     --registrant=<registrant>        The EVM address that will submit bindHead via snclaim (0x, 20 bytes).
@@ -1455,7 +1452,12 @@ func runLifetimeCollector(ctx context.Context) {
 		} else {
 			// Idle tick: re-anchor per-proxy rate baselines so bytes moved
 			// during the idle window are not smeared into the next active
-			// tick's rate display.
+			// tick's rate display. Use u64At to create the baseline slot (the
+			// active branch does the same): on the FIRST tick prevRxPerProxy is
+			// empty while bw is populated with every known proxy, so a bare
+			// index dereference panics (nil *uint64) and — with the collector
+			// launched as a bare `go` — crashes the whole provider process
+			// (Sonnet CRITICAL, 2026-08-27).
 			for key, b := range bw {
 				*u64At(prevRxPerProxy, key) = b.TotalRx.Load()
 				*u64At(prevTxPerProxy, key) = b.TotalTx.Load()
@@ -2767,6 +2769,17 @@ func provide(opts docopt.Opts) {
 				maxAuthFailures = unprovenMaxAuthFailures
 			}
 			authFailures := 0
+
+			// Restart storm guard: if persisted slow-retry state shows
+			// this proxy was recently attempted (or is dropped), skip the
+			// fast-retry phase entirely. Without this, 356 dead proxies
+			// would each run 10 fast auth attempts on restart — 3,560
+			// unthrottled calls before any slow-retry code runs.
+			if proxySettings != nil && !isURLSourced {
+				if globalProxySlowRetryState.WasDropped(proxySettings.Address) || globalProxySlowRetryState.TimeUntilNextAttempt(proxySettings.Address) > 0 {
+					authFailures = maxAuthFailures
+				}
+			}
 			for {
 				var err error
 				var byClientJwt string
@@ -2919,8 +2932,14 @@ func provide(opts docopt.Opts) {
 						if globalProxySlowRetryState.ShouldDrop(proxySettings.Address) {
 							globalProxySlowRetryState.MarkDropped(proxySettings.Address)
 							dropAge := time.Since(startedAt)
-							tlog("[proxy][slow-retry] proxy[%d] (%s) dropped after %s of continuous failure (%d total attempts); retry on next restart\n",
+							tlog("[proxy][slow-retry] proxy[%d] (%s) dropped after %s of continuous failure (%d total attempts); removed from active pool\n",
 								proxySettings.Index, proxySettings.Address, formatDuration(dropAge), authFailures)
+							// Clean up proxyCancelMap so the reloader can
+							// relaunch this proxy if the operator refreshes
+							// the proxy list (Opus HIGH-2 fix).
+							proxyCancelMu.Lock()
+							delete(proxyCancelMap, proxySettings.Address)
+							proxyCancelMu.Unlock()
 							return "", connect.Id{}, false, fmt.Errorf("proxy dropped after %s of continuous failure — %s", formatDuration(dropAge), cause)
 						}
 						// The 24h daily gate only applies after the first 3
@@ -3348,10 +3367,10 @@ func provide(opts docopt.Opts) {
 				}
 				// Log previously-dropped proxies on restart so the
 				// operator gets visibility into persistent failures.
+				// The continuous drop clock means this proxy will likely
+				// be re-dropped on the first slow auth attempt.
 				if !isURLSourced && proxySettings != nil && globalProxySlowRetryState.WasDropped(proxySettings.Address) {
 					dropAge := time.Since(globalProxySlowRetryState.DropTime(proxySettings.Address))
-					// The continuous drop clock means this proxy will likely
-					// be re-dropped on the first slow auth attempt.
 					tlog("[proxy][slow-retry] proxy[%d] (%s) previously dropped %s ago; re-entering slow retry (will likely re-drop)\n",
 						proxySettings.Index, proxySettings.Address, formatDuration(dropAge))
 				}
@@ -3827,7 +3846,6 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	// restarts get a clean match and any later account/network swap is
 	// detected by the mismatch guard above rather than silently reusing
 	// a stale identity.
-	//
 	// Compute description early — needed for both the renewal fallback path
 	// (reuse an expired stored identity) and the fresh-mint path below.
 	description := providerDescription(nodeName)
@@ -3866,9 +3884,14 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 				tlog("🔥 [hot-restart] %s: stored client_id %q failed to parse (%v), minting fresh\n", identityKey, entry.ClientID, parseErr)
 			} else {
 				reused = true
-				// Self-heal: a legacy entry with NetworkID="" gets stamped so
-				// a future account swap is detected.
-				if entry.NetworkID == "" && haveCurrentNetworkId {
+				// Self-heal: stamp the current network_id onto legacy
+				// entries (stored with NetworkID="") so a future
+				// account/network swap is detected by the mismatch guard
+				// above instead of silently reusing a stale identity. Only
+				// fires for entries whose NetworkID differs from the
+				// current one — after the first reuse they match, so this
+				// is a one-time write per proxy at startup, not per-auth.
+				if entry.NetworkID != currentNetworkId {
 					if putErr := globalClientJWTStore.Put(identityKey, clientJWTEntry{
 						ByClientJWT: entry.ByClientJWT,
 						ClientID:    entry.ClientID,
