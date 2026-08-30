@@ -4,6 +4,53 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.30.9]
+
+### Added
+- **Persistent DoH cache**: cached DNS resolutions and per-server scores persist across restarts, so a reboot no longer cold-starts the resolver.
+- **Upstream production DoH optimizations P1-P3**: server scoring, serve-stale (RFC 8767), staggered launch, single-flight coalescing, memory budget, TLS resumption, and warm-up on resolver failure.
+- **Client JWT hot-restart v2 (PR #35)**: expired client JWTs are renewed on startup and identities are snapshotted before restart, gated on network compatibility. A provider restarts with a working identity instead of re-authenticating from scratch.
+- **Provider version in `urnet-tools status` (PR #40)**: each provider's actual running version is shown.
+- **Subprocess timeouts (PR #40)**: every discovery and systemctl call is bounded (5s/10s) so a hung process cannot wedge the tool.
+
+### Changed
+- **urnet-tools security audit remediation (PR #40)**: version strings are read from Go build info / ELF header instead of executing discovered binaries (removes a privilege-escalation vector); `set`/`fast-auth`/`self-heal` chown created state files to the provider user instead of leaving them root-owned; `runtime.GOARCH` arch detection; atomic drop-in writes with `%%` escaping.
+- **Reliable provider updates (PR #40)**: post-restart verification instead of assumed success; redundant reinstall for stale on-disk binaries.
+- **restart safety (PR #40)**: a bare process is no longer SIGINT'd (which killed it permanently); the tool asks the operator to restart the unit instead. Restart scope (user vs system) resolved via systemctl rather than filesystem guesswork.
+- **Bounded DNS resolution**: DNS lookups capped at 3s and abort on the winning server.
+
+### Fixed
+- **Uninstall path guard (PR #40)**: `uninstall` refuses to delete well-known system directories; no longer removes arbitrary absolute paths.
+- **update confirm no longer hangs (PR #40)**: the non-TTY confirm path returns an error instead of blocking on stdin forever (cron/CI-safe).
+- **Chown of state dir (PR #40)**: `chownLikeStateOwner` no longer a self-referential no-op; the provider's state dir is correctly owned.
+- **DoH concurrent-map race (PR #36)**: `stateLock` restored around the stale-cache read.
+- **Outage watcher removed (PR #36)**: the unreliable alert-webhook outage watcher and its stale references are gone.
+
+### Removed
+- **Unreliable outage watcher**: the alert-webhook-based outage signaling feature was removed. It produced false outage signals.
+
+---
+
+## [v3.23.0-fix.30.8]
+
+### Added
+- **Pelican panel egg support (PR #21)**: the hardened provider image is now importable into the Pelican game-server panel as a one-click egg (`pelican/egg-urnetwork-323fix.json`, PLCN_v3). `BUILD` (stable/nightly/jwt) is user-editable; `PASSWORD` and `AUTHCODE` are admin-only. `PELICAN=yes` pins security defaults (vnStat off, IP checker off) and disables runtime self-update under a panel. `urnet-tools.sh` symlink fallback to `/app` for Pelican egg compatibility.
+- **urnet-tools update verification hardening (PR #23)**: PID tracking captures old PIDs before SIGTERM and waits for those specific PIDs (prevents accidental SIGKILL of a new process); fixed-string grep (`grep -aF`) for the ramlog version check; `-v` instead of `--version` for consistency; trap cleanup on all exit paths.
+
+### Changed
+- **Proxy slow-retry cap (PR #24)**: operator-curated proxies that exhaust `maxAuthFailures` enter a ramp of 5m/10m/15m then a flat 24h daily retry instead of retrying every 15 minutes forever; dead proxies are dropped after 14 days of continuous failure; state persists to `~/.urnetwork/proxy-slow-retry.json`; restart storm guard consults `LastAttemptAt`; max 4 concurrent slow-retry auth attempts; dropped proxies cleaned from `proxyCancelMap` so `proxy refresh` can relaunch them.
+- **Corrupt-state recovery (PR #26, meso-only)**: `proxy_slow_retry.go` returns fresh state on JSON unmarshal failure instead of partially-parsed state that could cause undefined behavior.
+
+### Fixed
+- **Docker self-update fetches fork releases (PR #28)**: `start_nightly.sh` and `start_update.sh` now fetch from `full-bars/meso-miner` releases instead of silently replacing the fork binary with upstream vanilla; downloaded binaries verified against expected SHA256 before swap.
+- **Parity fixes (PR #29, #30)**: timer leak fix, log wording, drop-clock comment; urnet-tools function names match `update_verify.sh` exports.
+- **Docs corrections (PR #27)**: wrong env var defaults and eviction threshold corrected.
+
+### Changed
+- **CFAA blocklist sync (PR #22)**: IPv4 blocked prefixes refreshed 42779 → 44882 (+2103); IPv6 prefixes 537 → 580 (+43). Data-only change.
+
+---
+
 ## [v3.23.0-fix.30.7]
 
 ### Added
@@ -19,7 +66,7 @@ All notable changes to this project are documented here.
 - **Restart targeting for user-owned units (PR #459)**: a fix corrects restart targeting when a provider unit is owned by another user. The restart runs against the right unit instead of the current user's scope.
 - **Suite test hardening (PR #460)**: the provider test suite replaces a fixed-wait flake with an adaptive wait and makes a paid-grader test hermetic. No production behavior change.
 
----
+------
 
 ## [v3.23.0-fix.30.6]
 
