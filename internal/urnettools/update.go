@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path"
@@ -135,6 +136,16 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 			} else {
 				return fmt.Errorf("unexpected argument %q for update", rest[i])
 			}
+		}
+	}
+
+	// Validate tag unconditionally — even when --digest is also supplied,
+	// so the tag cannot contain path traversal (../../) that reaches
+	// os.RemoveAll on a derived path. Before this fix, --tag+--digest
+	// skipped fetchReleaseByTag (and its validateTag call) entirely.
+	if cfg.Tag != "" {
+		if err := validateTag(cfg.Tag); err != nil {
+			return err
 		}
 	}
 
@@ -357,6 +368,13 @@ func cmdSelfUpdate(args []string, force, dryRun bool) error {
 			return nil
 		default:
 			return fmt.Errorf("unknown flag %q for self-update (--tag/--digest/--url)", args[i])
+		}
+	}
+
+	// Validate tag unconditionally (same reason as cmdUpdate).
+	if cfg.Tag != "" {
+		if err := validateTag(cfg.Tag); err != nil {
+			return err
 		}
 	}
 
@@ -594,18 +612,38 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	}
 
 	// Verify the restart took effect: wait for the process to be on the
-	// new version. The on-disk binary IS the new version (we just swapped
-	// it), so we re-discover and check that the running PID changed and
-	// the new process reports the expected version.
+	// new version. We must check the RUNNING process's image, not the
+	// on-disk binary (which we just swapped — reading its version is
+	// tautological and proves nothing about what the process executes).
+	// /proc/<PID>/exe resolves to the image the running process actually
+	// loaded; compare its embedded version against cfg.Tag, and require the
+	// on-disk binary is not deleted/stale.
+	// Verification loop: bounded at 15 iterations (~30s), one Discover() per
+	// iteration; no extra early-break needed because the first successful
+	// match (running PID changed, image not deleted, /proc/<pid>/exe build
+	// info reports cfg.Tag) returns nil immediately.
 	oldPID := p.PID
+	// NOTE: returns nil (exits) on the first matching provider — the full 15
+	// iterations only run when no match is ever found.
 	for i := 0; i < 15; i++ { // up to ~30s
 		time.Sleep(2 * time.Second)
 		providers := Discover()
 		for _, rp := range providers {
-			if rp.Unit == p.Unit && rp.User == p.User && rp.PID != 0 && rp.PID != oldPID && rp.Version == cfg.Tag {
-				fmt.Printf("verified %s running %s (pid %d)\n", providerLabel(p), cfg.Tag, rp.PID)
-				pruneBackups(p.Binary, 2)
-				return nil
+			// StateDir identity check: both sides come from the same discovery
+			// logic (unitStateDir on unix, windowsStateDir on Windows), so
+			// string equality is consistent per platform. Platform risk: on
+			// Windows this is a case-sensitive string compare of paths, so a
+			// drive-letter case or separator mismatch between derivations
+			// would fail to match (same physical dir under a different
+			// spelling = symlink/~ expansion/container mapping = no match).
+			if rp.StateDir == p.StateDir && rp.StateDir != "" && rp.PID != 0 && rp.PID != oldPID && !rp.BinaryDeleted {
+				// Version of the image the RUNNING process is executing.
+				procExe := fmt.Sprintf("/proc/%d/exe", rp.PID)
+				if procVersion := providerVersionFromBuildinfo(procExe); procVersion == cfg.Tag {
+					fmt.Printf("verified %s running %s (pid %d; /proc/%d/exe matches)\n", providerLabel(p), cfg.Tag, rp.PID, rp.PID)
+					pruneBackups(p.Binary, 2)
+					return nil
+				}
 			}
 		}
 	}
@@ -770,30 +808,55 @@ func extractSingleFile(tarball, relPath, dst string) error {
 // installBinary copies src to dst preserving ownership for the given user,
 // then atomically renames into place.
 //
-// The write goes to dst+".new" (same directory, so same filesystem) and is
-// os.Rename'd over dst — never O_TRUNC in place. The running provider may
-// still be executing from dst during an update; overwriting that inode in
-// place risks SIGBUS/SIGSEGV on demand-paging, while
-// rename(2) leaves the old inode serving already-open processes and only
-// new execve's see the new file.
+// installBinary stages a new binary from src to dst using an unpredictable
+// temp name (os.CreateTemp) to prevent symlink-planting attacks. The write
+// goes to a temp file (same filesystem) and is os.Rename'd over dst — never
+// O_TRUNC in place. The running provider may still be executing from dst
+// during an update; overwriting that inode in place risks SIGBUS/SIGSEGV on
+// demand-paging, while rename(2) leaves the old inode serving already-open
+// processes and only new execve's see the new file.
 func installBinary(src, dst, user string) error {
-	newPath := dst + ".new"
-	if err := copyFile(src, newPath); err != nil {
+	// M1 fix: use unpredictable temp name instead of predictable dst+".new"
+	// to prevent symlink-planting attacks by a lower-privileged user.
+	tmpFile, err := os.CreateTemp(filepath.Dir(dst), "urnetwork-new-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp: %w", err)
+	}
+	newPath := tmpFile.Name()
+	// Keep the fd open and write through it — closing then reopening by
+	// path leaves a TOCTOU window where an attacker can swap the file for
+	// a symlink. Writing through the held fd writes to the real inode.
+	if err := copyFileToFd(src, tmpFile); err != nil {
+		tmpFile.Close()
+		os.Remove(newPath)
+		return err
+	}
+	if err := fsyncFile(tmpFile); err != nil {
+		tmpFile.Close()
+		os.Remove(newPath)
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(newPath)
 		return err
 	}
 	if err := os.Chmod(newPath, 0o755); err != nil {
+		os.Remove(newPath)
 		return err
 	}
 	if user != "" && os.Geteuid() == 0 {
 		uid, gid, err := lookupUserIDs(user)
 		if err != nil {
+			os.Remove(newPath)
 			return fmt.Errorf("resolve uid/gid for %s: %w", user, err)
 		}
 		if err := os.Chown(newPath, uid, gid); err != nil {
+			os.Remove(newPath)
 			return fmt.Errorf("chown %s: %w", newPath, err)
 		}
 	}
 	if err := os.Rename(newPath, dst); err != nil {
+		os.Remove(newPath)
 		return fmt.Errorf("rename %s -> %s: %w", newPath, dst, err)
 	}
 	// Sync the parent directory so the rename survives a crash before
@@ -869,6 +932,22 @@ func copyFile(src, dst string) error {
 	return nil
 }
 
+// copyFileToFd copies src into an already-open file descriptor. This avoids
+// the TOCTOU between close and reopen that copyFile(src, dst) has when dst
+// was created with os.CreateTemp — an attacker can swap the file for a
+// symlink in the window between close and the OpenFile reopen.
+func copyFileToFd(src string, out *os.File) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return nil
+}
+
 // toolAssetName returns the release asset name for a tool binary:
 // <base>-<os>-<arch> (e.g. urnet-tools-linux-amd64). Release assets are
 // bare binaries — never a .exe suffix, even on Windows.
@@ -917,7 +996,8 @@ func runningToolAssetName() (string, error) {
 
 // toolAssetURL is the release download URL for a tool asset.
 func toolAssetURL(tag, asset string) string {
-	return fmt.Sprintf("https://github.com/full-bars/urnetwork-3.23-fix/releases/download/%s/%s", tag, asset)
+	// M3 fix: escape tag in download URL to prevent path traversal.
+	return fmt.Sprintf("https://github.com/full-bars/urnetwork-3.23-fix/releases/download/%s/%s", url.PathEscape(tag), asset)
 }
 
 // selfUpdateTool updates the running tool binary (urnet-tools or

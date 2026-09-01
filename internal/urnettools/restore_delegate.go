@@ -90,10 +90,12 @@ func cmdChooseNetwork(args []string) error {
 		fmt.Fprint(os.Stderr, `urnet-tools choose-network — set the network the provider connects to
 
 Usage: urnet-tools choose-network <api_url> <connect_url> [target]
+       urnet-tools choose-network main|beta [target]
        urnet-tools choose-network --reset [target]
 
 Saves an API URL (http/https) and connect URL (ws/wss) as the provider's
-chosen network. --reset clears the saved network and reverts to the main
+chosen network. A preset name (main or beta) selects the built-in network
+without typing URLs. --reset clears the saved network and reverts to the main
 network. Delegates to the provider binary and streams its output.
 `)
 		return nil
@@ -353,18 +355,21 @@ func applySetOverride(p Provider, key, value string, dryRun bool) error {
 	}
 	// When run as root, MkdirAll creates the dir owned by root. Fix
 	// ownership so the provider process can write its own state.
+	// Uses Lchown to prevent following symlinks (C2 fix).
 	if uid, gid, _ := lookupUserIDs(p.User); uid >= 0 {
-		_ = os.Chown(p.StateDir, uid, gid)
+		_ = chownStateDir(p.StateDir, uid, gid)
 	}
 	// 0o644, matching the sibling override-writers: the provider often runs
 	// under a different user than the tool, so a 0600 file would be unreadable
 	// and the change would silently never take effect.
-	if err := os.WriteFile(file, []byte(value), 0o644); err != nil {
+	// Uses writeStateFile (O_NOFOLLOW) to prevent symlink-following attacks.
+	if err := writeStateFile(p.StateDir, filename, []byte(value), 0o644); err != nil {
 		return fmt.Errorf("write %s: %v", file, err)
 	}
 	// chown the written file so the provider can read/rewrite it.
+	// Uses Lchown to prevent following symlinks.
 	if uid, gid, _ := lookupUserIDs(p.User); uid >= 0 {
-		_ = os.Chown(file, uid, gid)
+		_ = chownStateFile(file, uid, gid)
 	}
 	fmt.Printf("%s set to %s for %s — takes effect on next provider tick\n", key, value, providerLabel(p))
 	return nil
@@ -397,13 +402,13 @@ func setFastAuthMarker(p Provider, on bool, dryRun bool) error {
 		return err
 	}
 	if uid, gid, _ := lookupUserIDs(p.User); uid >= 0 {
-		_ = os.Chown(p.StateDir, uid, gid)
+		_ = chownStateDir(p.StateDir, uid, gid)
 	}
-	if err := os.WriteFile(file, nil, 0o644); err != nil {
+	if err := writeStateFile(p.StateDir, "fast_auth", nil, 0o644); err != nil {
 		return err
 	}
 	if uid, gid, _ := lookupUserIDs(p.User); uid >= 0 {
-		_ = os.Chown(file, uid, gid)
+		_ = chownStateFile(file, uid, gid)
 	}
 	fmt.Printf("fast-auth: on for %s — auth rate limiter bypassed (effective immediately)\n", providerLabel(p))
 	return nil

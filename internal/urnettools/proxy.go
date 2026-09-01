@@ -31,6 +31,11 @@ func providerSubcommand(p Provider, args ...string) error {
 	cmd := exec.Command(bin, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	// Wire stdin through so interactive subcommands work. `proxy paste` reads
+	// its proxy list from stdin — without this the child sees /dev/null,
+	// readLines gets EOF, and paste always reports "no input received".
+	// Harmless for non-interactive subcommands (they never read stdin).
+	cmd.Stdin = os.Stdin
 	// Run with the provider's HOME so state lands in the right directory.
 	// When homeForUser fails, derive from the state dir's parent.
 	home := homeForUser(p.User)
@@ -87,41 +92,69 @@ func checkReadableAsUser(path, user string) error {
 	if err != nil {
 		return fmt.Errorf("resolve uid/gid for %s: %w", user, err)
 	}
-	fi, err := os.Stat(path)
+	// M8 fix: walk the parent chain checking execute (search) permission
+	// for the target uid. The old code only checked the file's own mode
+	// bits, which passes for world-readable files inside non-traversable
+	// directories (e.g. 0644 file inside 0700 /root).
+	abs, err := filepath.Abs(path)
 	if err != nil {
-		return fmt.Errorf("stat %s: %w", path, err)
+		return err
 	}
-	st := fi.Mode()
-	// World-readable covers it. If not, check owner / group bits.
-	if st.Perm()&0o4 != 0 {
+	dir := filepath.Dir(abs)
+	for {
+		fi, err := os.Stat(dir)
+		if err != nil {
+			return fmt.Errorf("stat %s: %w", dir, err)
+		}
+		sysUID, sysGID := statFileOwnership(fi)
+		perm := fi.Mode().Perm()
+		// Check if user can traverse this directory
+		canTraverse := false
+		if perm&0o1 != 0 {
+			canTraverse = true // world-execute
+		} else if sysGID == int64(gid) && perm&0o10 != 0 {
+			canTraverse = true // group-execute
+		} else if sysUID == int64(uid) && perm&0o100 != 0 {
+			canTraverse = true // owner-execute
+		}
+		if !canTraverse {
+			return fmt.Errorf("proxy file %s is not reachable by user %s: no execute permission on %s", path, user, dir)
+		}
+		if dir == "/" || dir == "." {
+			break
+		}
+		dir = filepath.Dir(dir)
+	}
+	// Now check the file itself
+	fi, err := os.Lstat(abs)
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", abs, err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("proxy file %s is a symlink (refusing to follow)", abs)
+	}
+	st := fi.Mode().Perm()
+	sysUID, sysGID := statFileOwnership(fi)
+	// World-readable covers it
+	if st&0o4 != 0 {
 		return nil
 	}
-	sysUID := int64(-1)
-	sysGID := int64(-1)
-	sysUID, sysGID = statFileOwnership(fi)
-	if sysUID == int64(uid) && st.Perm()&0o4 != 0 {
+	// Group match
+	if sysGID == int64(gid) && st&0o40 != 0 {
 		return nil
 	}
-	if sysUID != int64(uid) && st.Perm()&0o4 == 0 &&
-		(sysGID != int64(gid) || st.Perm()&0o40 == 0) {
-		return fmt.Errorf("proxy file %s is not readable by user %s", path, user)
-	}
-	// Group-bit match.
-	if sysGID == int64(gid) && st.Perm()&0o40 != 0 {
+	// Owner match
+	if sysUID == int64(uid) && st&0o400 != 0 {
 		return nil
 	}
-	// Owner match with owner-read.
-	if sysUID == int64(uid) && st.Perm()&0o400 != 0 {
-		return nil
-	}
-	return fmt.Errorf("proxy file %s is not readable by user %s (owner=%v mode=%s)", path, user, sysUID, st.Perm())
+	return fmt.Errorf("proxy file %s is not readable by user %s (owner=%v mode=%s)", abs, user, sysUID, fi.Mode().Perm())
 }
 
 // cmdProxy dispatches proxy sub-operations to the targeted provider(s).
 // Usage: urnet-tools proxy add <file> | clear | remove | refresh [targets]
 func cmdProxy(args []string, force, dryRun bool) error {
 	if len(args) == 0 {
-		return fmt.Errorf("proxy requires a subcommand: add <file> | clear | remove | refresh | add-source <url> | remove-source <url> | health | traffic | summary | remove-dead | trim <N> | exclude")
+		return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | refresh | add-source <url> | remove-source <url> | health | traffic | summary | remove-dead | trim <N> | exclude")
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -138,6 +171,7 @@ Usage: urnet-tools proxy <subcommand> [target] [flags]
 
 Subcommands:
   add <file>             add proxies from a proxy file (host:port[:user:pass])
+  paste                  paste proxies + source URLs, auto-normalize formats
   clear                  remove ALL proxies (unconditional)
   remove                 remove proxies: addresses or --match= given -> those
                          only; nothing given -> ALL proxies on the target
@@ -204,7 +238,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 			// (provider-binary flags like --force); reject elsewhere so a
 			// typo like --netwrok cannot be silently absorbed on a
 			// destructive op.
-			if strings.HasPrefix(a, "-") && sub != "refresh" && sub != "remove-dead" && sub != "remove" {
+			if strings.HasPrefix(a, "-") && sub != "refresh" && sub != "remove-dead" && sub != "remove" && sub != "paste" {
 				return fmt.Errorf("unknown flag %q for proxy %s", a, sub)
 			}
 			positionals = append(positionals, a)
@@ -342,6 +376,26 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 		}
 		return providerSubcommand(p, append([]string{"proxy", "trim"}, positionals...)...)
 
+	case "paste":
+		// Paste proxies from stdin/file: normalizes formats, fetches URL sources, adds + refreshes.
+		// Single-target — the paste targets one provider at a time.
+		if all || len(include) > 0 || len(exclude) > 0 || interactive != forceInteractive(force) {
+			return fmt.Errorf("proxy paste operates on ONE provider — use --unit/--user/--network to target it")
+		}
+		p, err := selectTarget(providers, t)
+		if err != nil {
+			return err
+		}
+		if dryRun {
+			fmt.Printf("[dry-run] would paste proxies on %s (reads stdin/%s then proxy add + refresh)\n",
+				providerLabel(p), strings.Join(positionals, " "))
+			return nil
+		}
+		// Pass through all args (positionals + flags like --file=<path>)
+		pasteArgs := []string{"proxy", "paste"}
+		pasteArgs = append(pasteArgs, positionals...)
+		return providerSubcommand(p, pasteArgs...)
+
 	case "health", "traffic", "remove-dead":
 		// These are single-target subcommands (selectTarget, not
 		// selectTargets) — batch flags are meaningless here and must not be
@@ -369,7 +423,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 			return providerSubcommand(p, append([]string{"proxy", "remove-dead"}, positionals...)...)
 		}
 	default:
-		return fmt.Errorf("unknown proxy subcommand %q (add|clear|health|traffic|refresh|remove-dead|add-source|remove-source|trim)", sub)
+		return fmt.Errorf("unknown proxy subcommand %q (add|paste|clear|health|traffic|refresh|remove-dead|add-source|remove-source|trim)", sub)
 	}
 
 	// Destructive gate for clear/remove; add/refresh are additive.

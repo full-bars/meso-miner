@@ -3061,6 +3061,13 @@ func (self *RemoteUserNatProvider) Receive(
 	opts := []any{
 		CompanionContract(),
 	}
+	// TCP socket returns are the only recoverable copy of consumed bytes;
+	// retain them past the ack deadline so the resend queue keeps retrying
+	// instead of silently dropping at timeout. UDP and synthesized controls
+	// are regenerable by the peer and need no such lease.
+	if ipPath.Protocol == IpProtocolTcp {
+		opts = append(opts, RetainAfterAckTimeout())
+	}
 	// note udp is sent with ack because because otherwise the delivery reliability will mulitply with the egress
 	c := func() bool {
 		// ack := make(chan error)
@@ -3464,11 +3471,16 @@ func (self *RemoteUserNatClient) LocalSecurityBypass() bool {
 
 type pathTable struct {
 	destinations []MultiHopId
+	mu           sync.Mutex // guards paths4/paths6 (SelectDestination is on the packet path and may run concurrently; #2)
 
-	// TODO clean up entries that haven't been used in some time
+	// paths4/paths6 are capped so multi-hop routing over many short-lived
+	// flows cannot grow memory without bound (known TODO; #1).
 	paths4 map[Ip4Path]MultiHopId
 	paths6 map[Ip6Path]MultiHopId
 }
+
+// pathTableMaxRoutes bounds each path map under multi-hop routing.
+const pathTableMaxRoutes = 4096
 
 func newPathTable(destinations []MultiHopId) *pathTable {
 	return &pathTable{
@@ -3502,6 +3514,12 @@ func (self *pathTable) SelectDestination(packet []byte) (MultiHopId, error) {
 	if err != nil {
 		return MultiHopId{}, err
 	}
+	// Mutex-guard the maps: SelectDestination runs on the packet hot path
+	// and may be invoked concurrently; an unsynchronized read/write would be
+	// a hard "concurrent map writes" crash (#2). The cap prevents unbounded
+	// growth from many short-lived multi-hop flows (#1).
+	self.mu.Lock()
+	defer self.mu.Unlock()
 	switch ipPath.Version {
 	case 4:
 		ip4Path := ipPath.ToIp4Path()
@@ -3511,6 +3529,7 @@ func (self *pathTable) SelectDestination(packet []byte) (MultiHopId, error) {
 		i := mathrand.Intn(len(self.destinations))
 		destination := self.destinations[i]
 		self.paths4[ip4Path] = destination
+		prunePathTableLocked(self.paths4)
 		return destination, nil
 	case 6:
 		ip6Path := ipPath.ToIp6Path()
@@ -3520,10 +3539,27 @@ func (self *pathTable) SelectDestination(packet []byte) (MultiHopId, error) {
 		i := mathrand.Intn(len(self.destinations))
 		destination := self.destinations[i]
 		self.paths6[ip6Path] = destination
+		prunePathTableLocked(self.paths6)
 		return destination, nil
 	default:
 		// no support for this version
 		return MultiHopId{}, fmt.Errorf("No support for ip version %d", ipPath.Version)
+	}
+}
+
+// prunePathTableLocked bounds a path map to pathTableMaxRoutes. Caller holds
+// pathTable.mu. Because entries have no timestamp, evict arbitrary entries
+// once over the cap — a re-inserted flow is simply re-routed to a (random)
+// destination, which is the same behavior as a cache miss.
+func prunePathTableLocked[M ~map[K]V, K comparable, V any](m M) {
+	if len(m) <= pathTableMaxRoutes {
+		return
+	}
+	for k := range m {
+		delete(m, k)
+		if len(m) <= pathTableMaxRoutes {
+			return
+		}
 	}
 }
 

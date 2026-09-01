@@ -53,18 +53,35 @@ var globalPoolMetrics = &PoolMetrics{
 
 var sizeDistMu sync.Mutex
 
-// addSizeDistribution increments the per-size buffer counter for size,
-// creating the entry on first use. The map is guarded so concurrent first-use
-// from different goroutines cannot race.
-func addSizeDistribution(size int) {
+var initSizeDistOnce sync.Once
+
+func initSizeDist() {
 	sizeDistMu.Lock()
-	counter, ok := globalPoolMetrics.SizeDistribution[size]
-	if !ok {
+	defer sizeDistMu.Unlock()
+	for _, size := range []int{2048, 4096, 16384, 32768, 65536} {
+		globalPoolMetrics.SizeDistribution[size] = &atomic.Uint64{}
+	}
+}
+
+// addSizeDistribution increments the per-size buffer counter for size.
+// Lock-free fast path for the 5 known pool sizes (pre-populated by initSizeDist).
+// Unknown sizes fall back to a locked lazy-create (cold path, rare in practice).
+func addSizeDistribution(size int) {
+	initSizeDistOnce.Do(initSizeDist)
+	if counter, ok := globalPoolMetrics.SizeDistribution[size]; ok {
+		counter.Add(1)
+		return
+	}
+	// Cold path: unknown pool size — create entry under lock.
+	sizeDistMu.Lock()
+	defer sizeDistMu.Unlock()
+	if counter, ok := globalPoolMetrics.SizeDistribution[size]; ok {
+		counter.Add(1)
+	} else {
 		counter = &atomic.Uint64{}
 		globalPoolMetrics.SizeDistribution[size] = counter
+		counter.Add(1)
 	}
-	sizeDistMu.Unlock()
-	counter.Add(1)
 }
 
 // new byte allocations in the connect package use pooled message buffers,
@@ -614,6 +631,11 @@ func MessagePoolShareReadOnly(message []byte) []byte {
 				count := binary.BigEndian.Uint16(poolMessage[pool.size+10:])
 				if count == 0 {
 					DefaultLogger().Warningf("[mp]share message[%d] not taken", id)
+				} else if count == ^uint16(0) {
+					// G-M5 fix: refuse share at uint16 max to prevent
+					// overflow wrapping to 0 (which reads as "not taken"
+					// everywhere else → cross-flow data corruption).
+					DefaultLogger().Warningf("[mp]share message[%d] refcount overflow, refusing", id)
 				} else {
 					binary.BigEndian.PutUint16(poolMessage[pool.size+10:], count+1)
 					poolMessage[pool.size+9] |= MessagePoolFlagShared

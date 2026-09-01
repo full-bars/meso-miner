@@ -4,6 +4,46 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.30.9]
+
+### Added
+- **Persistent DoH cache (PR #496)**: cached DNS resolutions and per-server scores persist across restarts, so a reboot no longer cold-starts the resolver.
+- **Upstream production DoH optimizations P1-P3 (PR #495)**: server scoring, serve-stale (RFC 8767), staggered launch, single-flight coalescing, memory budget, TLS resumption, and warm-up on resolver failure.
+- **Client JWT hot-restart v2 (PR #494)**: expired client JWTs are renewed on startup and identities are snapshotted before restart, gated on network compatibility. A provider restarts with a working identity instead of re-authenticating from scratch.
+- **Provider version in `urnet-tools status` (PR #497)**: each provider's actual running version is shown.
+- **Subprocess timeouts (PR #499)**: every discovery and systemctl call is bounded (5s/10s) so a hung process cannot wedge the tool.
+
+### Changed
+- **urnet-tools security audit remediation (PR #499)**: version strings are read from Go build info when recorded; discovered binaries are still executed as a 3s-timeout `--version` fallback when build info lacks a version (e.g. `-trimpath` builds), so this reduces but does not remove the exec-related privilege-escalation surface; `set`/`fast-auth`/`self-heal` chown created state files to the provider user instead of leaving them root-owned; secure hub install verification via release digest and exclusive temp download; `runtime.GOARCH` arch detection; atomic drop-in writes with `%%` escaping.
+- **Reliable provider updates (PR #497)**: post-restart verification instead of assumed success; redundant reinstall for stale on-disk binaries.
+- **restart safety (PR #499)**: a bare process is no longer SIGINT'd (which killed it permanently); the tool asks the operator to restart the unit instead. Restart scope (user vs system) resolved via systemctl rather than filesystem guesswork.
+- **Bounded DNS resolution (upstream)**: DNS lookups capped at 3s and abort on the winning server.
+
+### Fixed
+- **Uninstall path guard (PR #499)**: `uninstall` refuses to delete well-known system directories; no longer removes arbitrary absolute paths.
+- **update confirm no longer hangs (PR #499)**: the non-TTY confirm path returns an error instead of blocking on stdin forever (cron/CI-safe).
+- **Chown of state dir (PR #499)**: `chownLikeStateOwner` no longer a self-referential no-op; the provider's state dir is correctly owned.
+- **DoH concurrent-map race (PR #499 / upstream)**: `stateLock` restored around the stale-cache read.
+- **Outage watcher removed (parity)**: the unreliable alert-webhook outage watcher and its stale references are gone.
+
+### Removed
+- **Unreliable outage watcher**: the alert-webhook-based outage signaling feature was removed (parity with meso-miner). It produced false outage signals.
+---
+
+## [v3.23.0-fix.30.8]
+
+### Added
+- **Pelican panel egg support (PR #480)**: the hardened provider image is now importable into the Pelican game-server panel as a one-click egg (`pelican/egg-urnetwork-323fix.json`, PLCN_v3). `BUILD` (stable/nightly/jwt) and `USER_AUTH` are user-editable; `PASSWORD` and `AUTHCODE` are admin-only. `PELICAN=yes`, `ENABLE_VNSTAT=false`, and `ENABLE_IP_CHECKER=false` are hidden and non-editable in the egg, pinning the audit-preferred defaults.
+- **Pelican boot smoke (PR #480)**: `docker/scripts/test_pelican_smoke.sh` drives `pelican_panel.sh` against a fake provider binary. Empty credentials fail fast, jwt mode routes to `auth-provide` with the code, stable mode routes through the auth loop to `provide`. Runs in `test-and-lint`.
+- **Pelican behavioral gate tests (PR #480)**: `docker/scripts/test_pelican_gates.sh` adds 15 mutation-checked tests covering the PELICAN update gate in `start_nightly.sh`, the `urnet-tools update` refusal, the `$HOME`-based state-dir resolution in `proxy-health.sh` / `proxy-traffic.sh`, and the egg-JSON invariants (non-empty rules arrays, known validator tokens, unique env_variable and sort values). Wired into CI as its own step.
+
+### Changed
+- **Pelican-gated runtime update policy (PR #480)**: under `PELICAN=yes`, `start_nightly.sh` short-circuits the update check (bootstrap and daily watcher) and `urnet-tools update` exits 1 with a refusal message. The published image is the single source of truth under a panel; a runtime fetch would silently swap the audited fork binary for whatever the release API serves mid-flight. Non-Pelican Docker deployments keep the v3.23.0-fix.30.6 behavior unchanged.
+
+### Fixed
+- **Docker state-dir split-brain (PR #480)**: all `docker/scripts/*.sh` now resolve provider state at `$HOME/.urnetwork` instead of the hardcoded `/root/.urnetwork`. Update-pending markers already used `$HOME`; the auth path was the outlier. Any container run with `HOME != /root` (e.g. Pelican eggs) would have silently split auth and marker state across two directories. Default-Docker behavior is unchanged (the image still ships with HOME=/root); the fix is a no-op for `docker run` and a correctness fix for panel/egg deployments.
+- **Pelican egg vnStat note (PR #480)**: reworded the vnStat description in `pelican/README.md` and the egg JSON. The off-by-default posture in the egg is an operator-preference default, not a current-exposure claim; vnStat was patched long ago.
+
 ## [v3.23.0-fix.30.7]
 
 ### Added
