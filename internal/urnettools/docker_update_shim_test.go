@@ -11,7 +11,7 @@ import (
 
 // TestDockerUpdateDispatchViaShim drives cmdDockerUpdate/`update`/`self-update`
 // through a recording `docker` shim (URNET_DOCKER_BIN seam) instead of a real
-// daemon. Covers the paths that regressed and were previously untested (Opus
+// daemon. Covers the paths that regressed and were previously untested.
 // MEDIUM #453): the self-update alias must stay host-only, the in-container
 // update must exec the right argv, dry-run must not exec, and a bare non-flag
 // arg must fall through to the host self-update.

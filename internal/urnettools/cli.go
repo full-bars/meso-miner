@@ -28,7 +28,7 @@ func Run(args []string) error {
 		args = []string{}
 	}
 	// Match on args[0] regardless of trailing args, as the old dispatcher did:
-	// `-v junk` still prints the version (Sonnet/Muse review).
+	// `-v junk` still prints the version.
 	if len(args) >= 1 {
 		switch args[0] {
 		case "version", "--version", "-v":
@@ -93,7 +93,7 @@ func cmdSimpleDelegation(sub string, args []string) error {
 // (URNETWORK_HOT_RESTART), not a CLI op. Delegating to the provider printed
 // auth usage and did nothing . A confirmation gate
 // mirrors cmdRestart: restarting a provider is a production action and must
-// not happen without --force or an explicit "yes" (Sonnet review finding —
+// not happen without --force or an explicit "yes"
 // the original fix restarted unconditionally).
 func cmdHotRestart(args []string, force, dryRun bool) error {
 	t, rest, err := parseTargetFlagsLenient(args)
@@ -644,7 +644,7 @@ func readProxyFileSource(p Provider) string {
 // Each prompt MUST read from this single reader: a second bufio.Reader over
 // the same fd would lose whatever the first already buffered, so piped
 // input (`echo y | urnet-tools update --all`) hangs on the second prompt
-// (free-review HIGH, mimo-v2.5).
+
 var stdinReader = bufio.NewReader(os.Stdin)
 
 // stdinIsInteractiveOverride, when non-nil, replaces the terminal check.
@@ -661,8 +661,7 @@ var stdinIsInteractiveOverride func() bool
 // must use -f/--force (or --yes); refusing with a clear message beats hanging
 // for minutes).
 // Uses term.IsTerminal (ioctl-based) rather than ModeCharDevice, which
-// misclassifies /dev/zero and other char devices as terminals (CodeRabbit
-// review finding).
+// misclassifies /dev/zero and other char devices as terminals.
 func stdinIsInteractive() bool {
 	if stdinIsInteractiveOverride != nil {
 		return stdinIsInteractiveOverride()

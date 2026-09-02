@@ -139,7 +139,6 @@ func selectTargets(providers []Provider, t Target, include, exclude []string, in
 		// Build a NEW slice — filtering in place (chosen[:0]) would write
 		// through to the caller's backing array when chosen aliases
 		// providers (single-provider default path), mutating the input
-		// .
 		filtered := make([]Provider, 0, len(chosen))
 		for _, p := range chosen {
 			if !excluded[matchKey(p)] && !excluded[p.Unit] && !excluded[p.Network] {
@@ -175,7 +174,7 @@ func selectTargetOrSoleAccessible(providers []Provider, t Target, requireRunning
 		if requireRunning {
 			// A sole-accessible-but-STOPPED provider must not be auto-targeted
 			// by this path when it drives destructive stop/restart. Mirror
-			// defaultProvider's Running requirement (Sonnet backlog #1a).
+			// defaultProvider's Running requirement.
 			// Read-only callers (logs/status/summary) pass false so they can
 			// still reach a stopped provider for diagnostics.
 			var accessible []Provider
