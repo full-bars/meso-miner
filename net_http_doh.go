@@ -49,8 +49,8 @@ func DefaultDohSettings() *DohSettings {
 		MaxConcurrentResolutions: 64,
 		// staggered hedge: a slow/dead primary fires one redundant server per
 		// 750ms wave instead of all at once; a winning answer stops the rest.
-		DohServerStagger: 750 * time.Millisecond,
-		DnsResolverSettings:      DefaultDnsResolverSettings(),
+		DohServerStagger:    750 * time.Millisecond,
+		DnsResolverSettings: DefaultDnsResolverSettings(),
 	}
 }
 
@@ -113,7 +113,7 @@ type DohSettings struct {
 	// MemoryTarget, when set, bounds resolution memory under load: each in-flight
 	// DoH query reserves dohQueryReserveByteCount from it and releases on return.
 	// nil = unbounded (the default; safe for typical provider memory).
-	MemoryTarget MemoryTarget
+	MemoryTarget        MemoryTarget
 	DnsResolverSettings *DnsResolverSettings
 }
 
@@ -286,9 +286,9 @@ type DohCache struct {
 	// lifecycleCtx is cancelled by Close(); in-flight DoH queries are derived
 	// from it so a Close aborts them (and the merged h2 connection) promptly
 	// instead of leaving goroutines parked until their own timeout.
-	lifecycleCtx       context.Context
-	lifecycleCancel    context.CancelFunc
-	closeOnce          sync.Once
+	lifecycleCtx    context.Context
+	lifecycleCancel context.CancelFunc
+	closeOnce       sync.Once
 }
 
 // dohFlight is one in-flight resolution shared by every caller waiting on the same query. the
@@ -486,6 +486,7 @@ func (self *DohCache) Close() {
 // silently defeats serve-stale (RFC 8767) for every other key. The caller
 // must hold stateLock.
 func (self *DohCache) pruneCacheLocked(now time.Time, reserve int) {
+	// Phase 1: delete expired + stale entries (O(n))
 	for key, result := range self.queryResultExpiration {
 		if !result.Valid(now, self.settings.MissExpiration) && !result.staleUsable(now) {
 			delete(self.queryResultExpiration, key)
@@ -493,21 +494,26 @@ func (self *DohCache) pruneCacheLocked(now time.Time, reserve int) {
 	}
 
 	maxEntries := self.settings.CacheMaxEntries
-	for maxEntries < len(self.queryResultExpiration)+reserve {
-		var oldestKey DohKey
-		var oldestTime time.Time
-		found := false
-		for key, result := range self.queryResultExpiration {
-			if !found || result.Time.Before(oldestTime) {
-				oldestKey = key
-				oldestTime = result.Time
-				found = true
-			}
-		}
-		if !found {
-			return
-		}
-		delete(self.queryResultExpiration, oldestKey)
+	excess := len(self.queryResultExpiration) + reserve - maxEntries
+	if excess <= 0 {
+		return
+	}
+
+	// Phase 2: collect remaining entries, sort by time, evict oldest.
+	// O(n log n) instead of the previous O(n²) repeated full-scan loop.
+	type timedEntry struct {
+		key  DohKey
+		time time.Time
+	}
+	entries := make([]timedEntry, 0, len(self.queryResultExpiration))
+	for key, result := range self.queryResultExpiration {
+		entries = append(entries, timedEntry{key, result.Time})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].time.Before(entries[j].time)
+	})
+	for i := 0; i < excess && i < len(entries); i++ {
+		delete(self.queryResultExpiration, entries[i].key)
 	}
 }
 

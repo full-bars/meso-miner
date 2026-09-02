@@ -674,6 +674,14 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 				return nil, err
 			}
 
+			// G-H2 fix: set a per-websocket read limit immediately after the
+			// dial succeeds, BEFORE any read (including the auth echo). Without
+			// it, Gorilla WebSocket has no positive limit until SetReadLimit is
+			// called, so the authentication echo could cause an oversized
+			// allocation from a misbehaving peer. 1MB is well above normal
+			// transfer frame sizes (IP packets up to ~64KB).
+			ws.SetReadLimit(1024 * 1024)
+
 			success := false
 			defer func() {
 				if !success {
@@ -960,7 +968,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 							// }
 
 							if len(message) <= 16 {
-								self.log.Infof("[ts]send message must be >16 bytes (%s)\n", len(message))
+								self.log.Infof("[ts]send message must be >16 bytes (%d)\n", len(message))
 								MessagePoolReturn(message)
 							} else if write(message) != nil {
 								return
