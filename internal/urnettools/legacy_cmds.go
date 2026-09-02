@@ -188,7 +188,7 @@ func hasExplicitTarget(t Target) bool {
 // and any container that matches is then refused by guardSystemdProvider
 // with an actionable "use urnet-docker" error — instead of the old plain
 // not-found. This makes guardSystemdProvider reachable on the lifecycle
-// paths (Sonnet HIGH, meso-miner PR #10/#12) without widening any
+// paths without widening any
 // automatic-selection surface.
 func lifecycleCandidates(t Target) []Provider {
 	providers := discoverSystemdFn()
@@ -289,8 +289,7 @@ func cmdLogs(args []string) error {
 		case err := <-waitCh:
 			// Exited BEFORE producing any output: report the real outcome
 			// instead of mislabeling it a machined/polkit hang — an empty
-			// journal exits 0 immediately and is legitimate (coderabbit
-			// follow-up, PR #10).
+			// journal exits 0 immediately and is legitimate.
 			_ = cmd.Process.Kill()
 			if err != nil {
 				return fmt.Errorf("journalctl for %s: %v: %s", providerLabel(p), err, errBuf.String())
@@ -342,7 +341,6 @@ func (f *firstByteWriter) Write(p []byte) (int, error) {
 // providerUsesRamlogs checks the unit's Environment for RAM logging or a
 // RAM profile (the same check the legacy show_logs does). User units are
 // queried in the owning user's session, not the system manager
-// .
 func providerUsesRamlogs(p Provider) bool {
 	if p.Unit == "" {
 		return false
@@ -387,7 +385,7 @@ func writeDropinEnv(p Provider, name, envLine string) error {
 // Environment= line: it reads the existing file, keeps lines whose env key
 // differs, replaces same-key lines, and always re-emits exactly one
 // [Service] header. Pure (no I/O beyond the read) so tests can pin the
-// merge semantics without a real unit (coderabbit: tests must call
+// merge semantics without a real unit (tests must call
 // production logic).
 func mergeDropinEnvFile(path, envLine string) string {
 	newKey := envLine
@@ -538,7 +536,7 @@ func isPEExecutable(path string) bool {
 // isRecognizedExecutable is the platform-aware structural check for a
 // downloaded binary: ELF on linux, Mach-O on darwin, PE on windows. It
 // never executes the file — it only confirms the magic matches the platform
-// we are about to install for (coderabbit critical: the provider path
+// we are about to install for (the provider path
 // guards with this same ceiling). A wrong-format artifact (a shell script,
 // a corrupt download, or a binary built for another OS) is refused before
 // it can be swapped into place.
@@ -580,7 +578,7 @@ func restartAfterDropin(p Provider) error {
 		_ = exec.Command("systemctl", argsReload...).Run()
 		// Propagate the restart error like the system-unit branch below —
 		// an operator writing a drop-in override must learn when the
-		// provider never actually restarted (Sonnet MEDIUM-2).
+		// provider never actually restarted.
 		argsRestart := append(systemctlUserArgs(p.User), "restart", p.Unit)
 		return exec.Command("systemctl", argsRestart...).Run()
 	}

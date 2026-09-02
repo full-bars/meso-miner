@@ -176,7 +176,6 @@ func TestInstallBinaryAtomic(t *testing.T) {
 // TestBackupNameTimestamped: backup names include a timestamp so repeated
 // updates never collide . Calls the PRODUCTION backupName
 // helper — a local copy would pass even if the real format changed
-// .
 func TestBackupNameTimestamped(t *testing.T) {
 	a := backupName("/usr/local/bin/provider", time.Date(2026, 8, 9, 3, 15, 0, 0, time.UTC))
 	b := backupName("/usr/local/bin/provider", time.Date(2026, 8, 9, 3, 15, 1, 0, time.UTC))

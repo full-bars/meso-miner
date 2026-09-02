@@ -138,7 +138,7 @@ func TestCmdAutoUpdateRequiresInterval(t *testing.T) {
 // TestCmdAutoUpdateInvalidInterval: an interval outside the known set must
 // be rejected by cmdAutoUpdate BEFORE targeting (validation moved ahead of
 // selectTarget so this is testable without a live provider — the old test
-// asserted a map literal against itself and could never fail; coderabbit
+// asserted a map literal against itself and could never fail.
 // minor).
 func TestCmdAutoUpdateInvalidInterval(t *testing.T) {
 	err := cmdAutoUpdate([]string{"yearly"}, false, false)
