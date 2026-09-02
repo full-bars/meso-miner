@@ -17,6 +17,8 @@
 "[init]waiting for SYN (%s)\n"
 "[init]window=%d/%d, receive=%d/%d\n"
 "[ip]provider ping <- %s(%d)\n"
+"[ip]client skip bad IpPacketFromProvider frame: %s\n"
+"[ip]provider skip bad IpPacketToProvider frame: %s\n"
 "[multi]%s [%s]: h=%d+%dms/u=%d+%dms effective=%db/s expected=%db/s send=%db sendNack=%db receive=%db\n"
 "[multi]create ping error = %s\n"
 "[multi]exclude tier from window %d>%d\n"
