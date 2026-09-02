@@ -306,6 +306,10 @@ func applyTurboSettings(clientSettings *connect.ClientSettings, localUserNatSett
 	clientSettings.SendBufferSettings.SequenceBufferSize = 64
 	clientSettings.ReceiveBufferSettings.SequenceBufferSize = 64
 
+	// Retention telemetry: wire retained-item ack/drop events to the
+	// persistent health event log so retention data survives restarts.
+	clientSettings.SendBufferSettings.RetentionEventCallback = appendRetentionEvent
+
 	// WebRTC per-peer DataChannel buffer
 	clientSettings.WebRtcSettings.ReceiveBufferSize = connect.ByteCount(windowSize) * 2
 
@@ -611,6 +615,24 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	return os.Rename(tmp, path)
 }
 
+// sessionFilesAllowlist mirrors internal/urnettools/session_cmds.go's
+// sessionFiles. Only these files are promoted from staging to the live
+// identity directory.
+var sessionFilesAllowlist = map[string]bool{
+	".client_jwts.json": true,
+	"jwt":               true,
+	"jwt_last_refresh":  true,
+	".provider.key":     true,
+	".provider.cert":    true,
+	"proxy":             true,
+	"proxy_url.json":    true,
+	"proxy.state":       true,
+}
+
+func isSessionFile(name string) bool {
+	return sessionFilesAllowlist[name]
+}
+
 // applyStagedSession atomically swaps in identity and proxy-list files
 // from ~/.urnetwork/.session-staging/ if a .session-pending marker exists.
 // This is the provider-side counterpart to `urnet-tools session load`:
@@ -638,6 +660,23 @@ func applyStagedSession() {
 		return
 	}
 	for _, e := range entries {
+		// G-M11 fix: only promote files in the session allowlist.
+		// The writer side (session_cmds.go) carefully iterates this
+		// list; the reader side must match to prevent stray files
+		// (older tool versions, manual copies) from landing in the
+		// live identity directory.
+		if !isSessionFile(e.Name()) {
+			continue
+		}
+		// CR: only promote REGULAR files. An allowlisted symlink or
+		// directory in staging must not be promoted — later reads of
+		// ~/.urnetwork/jwt could follow a symlink to an attacker-controlled
+		// target. os.ReadDir's DirEntry.Type() reports the file type without
+		// following symlinks.
+		if info, err := e.Info(); err != nil || !info.Mode().IsRegular() {
+			tlog("[session] skip staged %s: not a regular file\n", e.Name())
+			continue
+		}
 		src := filepath.Join(stagingDir, e.Name())
 		dst := filepath.Join(urNetworkDir, e.Name())
 		if err := os.Rename(src, dst); err != nil {
@@ -650,6 +689,13 @@ func applyStagedSession() {
 }
 
 func main() {
+	// G-M2: sanitize PATH when running as root to prevent hijacking
+	// of exec.Command bare names (systemctl, docker, etc.) via
+	// attacker-writable directories earlier in root's PATH.
+	if os.Getuid() == 0 {
+		os.Setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	}
+
 	profile := os.Getenv("URNETWORK_PROFILE")
 	ramlogs := os.Getenv("URNETWORK_RAMLOGS")
 
@@ -733,7 +779,7 @@ Usage:
     provider proxy trim <count> [--preview]
     provider logs [-n <lines>]
     provider print-network-id <file>
-    provider choose_network <api_url> <connect_url>
+    provider choose_network <api_url> [<connect_url>]
     provider choose_network --reset
 
 Options:
@@ -745,7 +791,8 @@ Options:
                                      By default, existing values will not be overwritten.
     --api_url=<api_url>              Specify a custom API URL to use.
     --connect_url=<connect_url>      Specify a custom connect URL to use.
-    <api_url>                        API URL to save as the chosen network (http:// or https://).
+    <api_url>                        API URL to save as the chosen network (http:// or https://),
+                                     or a preset: main | beta.
     <connect_url>                    Connect URL to save as the chosen network (ws:// or wss://).
     --reset                          With choose_network, clear the saved network and revert to the main network.
     --user_auth=<user_auth>	         Login with a username.
@@ -1834,6 +1881,24 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			}
 		}
 
+		// Prune per-proxy bookkeeping for addresses that left the health
+		// snapshot (hot-reload removal, degraded reaper, URL-proxy churn under
+		// AIMD shed, `proxy remove`). Without this, prevTick/midnightCheckpoint
+		// each leak one entry per departed address for the life of the process
+		// (finding #7) — the same prune runLifetimeCollector and
+		// runBillableRateWriter already do. Live map keys are exactly the
+		// report.Bandwidth set.
+		live := make(map[string]struct{}, len(report.Bandwidth))
+		for key := range report.Bandwidth {
+			live[key] = struct{}{}
+		}
+		for key := range prevTick {
+			if _, ok := live[key]; !ok {
+				delete(prevTick, key)
+				delete(midnightCheckpoint, key)
+			}
+		}
+
 		// peak tracking: update high water marks and freeze elapsed at the time of the peak
 		if totalRx > peakRx {
 			peakRx = totalRx
@@ -1891,6 +1956,18 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		// Entries absent from liveHealth are removed (not marked dead) — they are
 		// either deregistered via hot-reload or stale from a prior run.
 		go func() {
+			// Take the cross-process lock too, so a concurrent CLI run
+			// (`provider proxy remove --all` in another process) can't clobber
+			// this read-modify-write and silently resurrect proxies the CLI
+			// just removed. proxyStateMu alone only serializes in-process
+			// writers (finding #11).
+			lockRelease, lockErr := acquireProxyLockWithRetry()
+			if lockErr != nil {
+				tlog("[proxy] warn: health snapshot could not acquire proxy lock, skipping this tick: %v\n", lockErr)
+				return
+			}
+			defer lockRelease()
+
 			proxyStateMu.Lock()
 			defer proxyStateMu.Unlock()
 			state, err := readProxyState()
@@ -1922,6 +1999,7 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			writeProxyHealthState(dir, report, now)
 			writeProxyHealthEvents(dir, report, now)
 			writeProxyTrafficState(dir, report, now)
+			writeUsageHistory(dir, report, now)
 		}
 	}
 }
@@ -2082,6 +2160,19 @@ func runJWTRefresher(ctx context.Context, apiUrl string) {
 
 	for {
 		byJwtBytes, err := os.ReadFile(jwtPath)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				// Log non-NotExist errors (permission denied, truncated file, etc.)
+				// so operators can diagnose why the refresher is stuck.
+				tlog("[auth] warn: could not read jwt file for refresh: %v\n", err)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				continue
+			}
+		}
 		if err == nil {
 			byJwt := strings.TrimSpace(string(byJwtBytes))
 
@@ -2491,14 +2582,18 @@ func provide(opts docopt.Opts) {
 
 	bootstrapHubCA(ctx, os.Getenv("URNETWORK_REPORT_URL"), os.Getenv("URNETWORK_HUB_TOKEN"))
 
-	go runHealthHeartbeat(ctx, provideStartTime, os.Getenv("URNETWORK_PROFILE"))
-	go runBandwidthReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
-	go runHeartbeatReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
-	go runJWTRefresher(ctx, apiUrl)
-	go runEarningWindows(ctx)
-	go runLifetimeCollector(ctx)
-	go runProfitHeartbeat(ctx)
-	go runBillableRateWriter(ctx)
+	go connect.HandleError(func() { runHealthHeartbeat(ctx, provideStartTime, os.Getenv("URNETWORK_PROFILE")) })
+	go connect.HandleError(func() {
+		runBandwidthReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
+	})
+	go connect.HandleError(func() {
+		runHeartbeatReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
+	})
+	go connect.HandleError(func() { runJWTRefresher(ctx, apiUrl) })
+	go connect.HandleError(func() { runEarningWindows(ctx) })
+	go connect.HandleError(func() { runLifetimeCollector(ctx) })
+	go connect.HandleError(func() { runProfitHeartbeat(ctx) })
+	go connect.HandleError(func() { runBillableRateWriter(ctx) })
 
 	proxyURLs := resolveProxyURLs(opts)
 	proxyURLRefresh := resolveDuration(opts, "--proxy_url_refresh", "PROXY_URL_REFRESH", 1*time.Hour)
@@ -2526,7 +2621,10 @@ func provide(opts docopt.Opts) {
 			}
 		}
 	}
-	go paceMonitor(ctx)
+	// Wrapped in connect.HandleError so a panic in paceMonitor degrades to
+	// "that one loop dies" instead of taking the whole provider process down,
+	// consistent with every other fleet background loop (#12 fault isolation).
+	go connect.HandleError(func() { paceMonitor(ctx) })
 
 	// Declared here (rather than next to the startup loop below) so
 	// provideWithProxy can close over them directly: on a permanent give-up,
@@ -2870,6 +2968,12 @@ func provide(opts docopt.Opts) {
 						// the entry and the merge re-admits it if it clears the
 						// bar.
 						tlog("[proxy][init] proxy[%d] (%s) rejected by stage-1 quality gate: %v. Not counted as a failure; re-graded next fetch cycle.\n",
+							proxySettings.Index, proxySettings.Address, err)
+					} else if errors.Is(err, context.Canceled) || proxyCtx.Err() != nil {
+						// Context cancellation (trim, reaper, reload, drain) is NOT an
+						// auth failure. Do not record give-up — it would permanently
+						// evict a healthy proxy after enough operational cycles.
+						tlog("[proxy][init] proxy[%d] (%s) cancelled (not a give-up): %v\n",
 							proxySettings.Index, proxySettings.Address, err)
 					} else {
 						giveUpCount := globalProxyFailureHistory.RecordGiveUp(proxySettings.Address)
@@ -3256,21 +3360,23 @@ func provide(opts docopt.Opts) {
 	// binds (review finding HIGH).
 	reloader.reload()
 
-	go runProxyURLFetcher(ctx, proxyURLs, proxyURLRefresh, proxyURLMax, apiProbeHost, apiProbePort, selfHealEnabled)
-	go runURLProxyReaper(ctx, apiProbeHost, apiProbePort)
+	go connect.HandleError(func() {
+		runProxyURLFetcher(ctx, proxyURLs, proxyURLRefresh, proxyURLMax, apiProbeHost, apiProbePort, selfHealEnabled)
+	})
+	go connect.HandleError(func() { runURLProxyReaper(ctx, apiProbeHost, apiProbePort) })
 	// Paid/file-list proxy grading: rides the reaper ticker cadence, grades
 	// non-URL proxies read-only on the 1-3h stale sweep (design note).
-	go runPaidProxyGrader(ctx, apiProbeHost, apiProbePort)
+	go connect.HandleError(func() { runPaidProxyGrader(ctx, apiProbeHost, apiProbePort) })
 	// Periodic A-F grade summary of the RUNNING proxy set (design 2026-08-09):
 	// running/per-source/changes/scores lines (important + disk + grades.log)
 	// and a ramlog-only next-probe countdown. Pure-read, never probes.
-	go runProxyGradeSummary(ctx)
-	go pruneURLProxyBlacklist(ctx)
-	go runProxyURLCleanup(ctx, cleanupScope, cleanupInterval, selfHealEnabled)
-	go runPressureMonitor(ctx, selfHealEnabled)
-	go runPoolController(ctx, proxyURLMax, selfHealEnabled)
-	go runDegradedProxyReaper(ctx, proxyCancelMap, &proxyCancelMu)
-	go runReloadReconciler(ctx)
+	go connect.HandleError(func() { runProxyGradeSummary(ctx) })
+	go connect.HandleError(func() { pruneURLProxyBlacklist(ctx) })
+	go connect.HandleError(func() { runProxyURLCleanup(ctx, cleanupScope, cleanupInterval, selfHealEnabled) })
+	go connect.HandleError(func() { runPressureMonitor(ctx, selfHealEnabled) })
+	go connect.HandleError(func() { runPoolController(ctx, proxyURLMax, selfHealEnabled) })
+	go connect.HandleError(func() { runDegradedProxyReaper(ctx, proxyCancelMap, &proxyCancelMu) })
+	go connect.HandleError(func() { runReloadReconciler(ctx) })
 
 	if profileAddr := os.Getenv("URNETWORK_PPROF"); profileAddr != "" {
 		tlog("[profile] enabling diagnostics on %s (loopback only): /debug/pprof/*, /metrics/pool, /metrics/errors\n", profileAddr)
@@ -3801,7 +3907,11 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 			returnErr = fmt.Errorf("client limit exceeded: %s", authClientResult.Result.Error.Message)
 			return
 		}
-		returnErr = fmt.Errorf("%w: %s", ErrTokenInvalid, authClientResult.Result.Error.Message)
+		// Do NOT wrap in ErrTokenInvalid: that sentinel triggers shmLogFatal(78)
+		// which kills the entire provider process. Auth-client rejections (bad
+		// device spec, unrecognized description, temporary server error) should
+		// retry via the normal backoff path, not crash all 120 nodes.
+		returnErr = fmt.Errorf("auth-client rejected: %s", authClientResult.Result.Error.Message)
 		return
 	}
 
@@ -4091,6 +4201,16 @@ func proxyRemove(opts docopt.Opts) {
 
 	if all, _ := opts.Bool("--all"); all {
 		clear(proxyConfig.Servers)
+		// Take the cross-process lock so a concurrent daemon health-snapshot
+		// write can't clobber this reset and silently revive the removed
+		// proxies (finding #11). Proxy config write above is process-local;
+		// this serializes the proxy.state reset against the daemon.
+		stateLockRelease, stateLockErr := acquireProxyLockWithRetry()
+		if stateLockErr != nil {
+			tlog("[proxy] warning: could not acquire proxy lock for state reset: %v\n", stateLockErr)
+			writeProxyConfig(proxyConfig)
+			return
+		}
 		// Reset proxy.state so the next run starts ID assignment from 0.
 		// Without this, the monotonic counter resumes above whatever IDs were
 		// saved from previous runs, producing confusingly high and mixed IDs
@@ -4102,6 +4222,7 @@ func proxyRemove(opts docopt.Opts) {
 				tlog("[proxy] warning: could not reset proxy.state: %v\n", err)
 			}
 		}
+		stateLockRelease()
 		// Also clear the URL cache and source URLs so previously-fetched free
 		// proxies don't reappear after a restart. The user wants only the
 		// proxies they explicitly added; URL sources must be re-added if
