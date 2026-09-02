@@ -92,7 +92,7 @@ func discoverProcesses() []Provider {
 		if p.StateDir == "" {
 			// No state dir resolvable (HOME unset). Skip the JWT read
 			// entirely rather than falling through to a relative "jwt"
-			// path in the invoker's CWD .
+			// path in the invoker's CWD.
 			out = append(out, p)
 			continue
 		}
@@ -177,7 +177,7 @@ func attachUnits(procs []Provider) {
 		// .../system.slice/urnetwork-native.service. Only accept names that
 		// look like a provider unit (isProviderUnit) — on a GH runner the
 		// provider inherits the runner's cgroup, and an unfiltered name would
-		// make hot-restart systemctl-restart the wrong unit (review S3).
+		// make hot-restart systemctl-restart the wrong unit.
 		if idx := strings.LastIndex(s, ".service"); idx >= 0 {
 			start := strings.LastIndex(s[:idx], "/")
 			if start >= 0 {
@@ -199,7 +199,7 @@ func attachUnits(procs []Provider) {
 // drives them with `systemctl --user`, which the SYSTEM-manager listing
 // below never shows. So this also enumerates per-user managers for users
 // that plausibly run a provider (a user unit that looks like a provider, or
-// a .urnetwork state dir), bounded to those users .
+// a .urnetwork state dir), bounded to those users.
 func discoverSystemdUnits(running []Provider) []Provider {
 	out := discoverSystemUnits(running)
 	out = append(out, discoverUserUnits(running)...)

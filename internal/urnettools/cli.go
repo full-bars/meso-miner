@@ -23,7 +23,7 @@ var ToolVersion = "dev"
 
 func Run(args []string) error {
 	// A nil slice must stay nil-free: SetArgs(nil) makes Cobra fall back to
-	// os.Args[1:], so Run(nil) would execute the caller's real argv (review LOW).
+	// os.Args[1:], so Run(nil) would execute the caller's real argv.
 	if args == nil {
 		args = []string{}
 	}
@@ -91,7 +91,7 @@ func cmdSimpleDelegation(sub string, args []string) error {
 // the provider's systemd unit. The provider binary has NO hot-restart
 // subcommand — its hot-restart behavior is a config/env toggle
 // (URNETWORK_HOT_RESTART), not a CLI op. Delegating to the provider printed
-// auth usage and did nothing . A confirmation gate
+// auth usage and did nothing. A confirmation gate
 // mirrors cmdRestart: restarting a provider is a production action and must
 // not happen without --force or an explicit "yes"
 // the original fix restarted unconditionally).
@@ -124,8 +124,7 @@ func cmdHotRestart(args []string, force, dryRun bool) error {
 // parseDelegationArgs guards -h/--help for the pass-through commands
 // (summary, hot-restart) BEFORE any targeting runs: those commands
 // delegate to the provider binary, so without this guard `--help` would be
-// forwarded and the operation would actually run (the help-never-executes
-// invariant, review finding C1 class). Returns errHelpShown when help was
+// forwarded and the operation would actually run. Returns errHelpShown when help was
 // printed; the caller must NOT proceed.
 func parseDelegationArgs(args []string) ([]string, error) {
 	for _, a := range args {
@@ -244,8 +243,7 @@ func parseTargetFlagsInner(args []string, strict bool) (Target, []string, error)
 	var rest []string
 	// Conflicting targeting flags are an error: matchProvider applies the
 	// FIRST set field and silently ignores the rest, so `--unit x --user y`
-	// would act on unit x while pretending to scope by user (free-review
-	// major). Only one selector may be set; a same-field repeat just
+	// would act on unit x while pretending to scope by user. Only one selector may be set; a same-field repeat just
 	// overwrites.
 	setField := func(flag, value string, field *string) error {
 		if value == "" {
@@ -332,9 +330,7 @@ func parseTargetFlagsInner(args []string, strict bool) (Target, []string, error)
 		default:
 			// Reject unknown flags instead of silently dropping them — a
 			// typo like --netwrok or --dryrun would otherwise be absorbed
-			// and the command proceeds as if un-targeted (review finding
-			// L2; on a single-provider box that means a real action with
-			// no dry-run notice).
+			// and the command proceeds as if un-targeted.
 			if strict && strings.HasPrefix(args[i], "--") {
 				return t, nil, fmt.Errorf("unknown flag %q", args[i])
 			}
@@ -690,7 +686,7 @@ func confirmStdinRead(prompt string) (string, error) {
 // piped stdout) — even with -f/--force, which only bypasses the interactive
 // prompt. Scripted/cron runs are the primary -f users and the most likely to
 // be replayed unattended; a printed "about to touch: X, Y" line in the log
-// is the audit trail for the incident class .
+// is the audit trail for the incident class.
 func confirmGateMulti(op string, targets []Provider, force, dryRun bool) (bool, error) {
 	fmt.Fprintf(os.Stderr, "[urnet-tools] %s:\n", op)
 	for _, p := range targets {

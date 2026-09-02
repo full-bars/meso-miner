@@ -70,7 +70,7 @@ func isUserUnit(unit string) bool {
 	// The legacy installer places units under ~/.config/systemd/user/.
 	// Heuristic: if it's NOT a system unit file, treat as user unit.
 	// Check both the admin dir and the vendor/package dir — units shipped
-	// by a package live under /usr/lib/systemd/system (free-review MEDIUM).
+	// by a package live under /usr/lib/systemd/system.
 	for _, dir := range []string{"/etc/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system"} {
 		if _, err := os.Stat(filepath.Join(dir, unit)); err == nil {
 			return false
@@ -83,7 +83,7 @@ func isUserUnit(unit string) bool {
 // the lifecycle args, list the systemd candidates, auto-narrow to a sole
 // accessible RUNNING target, print the narrowed note, and confirm it is a
 // systemd (non-docker) provider. One place to change instead of triplicating it
-// across the destructive lifecycle commands .
+// across the destructive lifecycle commands.
 func selectLifecycleTarget(verb string, args []string) (Provider, error) {
 	t, err := guardLifecycleArgs(verb, args)
 	if err != nil {
@@ -110,8 +110,7 @@ func cmdStart(args []string, force, dryRun bool) error {
 		return err
 	}
 	// -n/--dry-run is documented "safe anywhere": print the plan, do
-	// nothing (free-review HIGH: start/stop previously discarded it and
-	// executed for real).
+	// nothing.
 	if dryRun {
 		fmt.Printf("[dry-run] would start %s (unit=%s, user=%s)\n", providerLabel(p), p.Unit, p.User)
 		return nil
@@ -208,7 +207,7 @@ var discoverDockerFn = DiscoverDocker
 // lists them). Only fires when systemdProviderCount is ZERO — when systemd
 // providers exist, a selectTarget error is a target problem (typo/
 // ambiguity), not a wrong-tool problem, and pointing at docker would
-// mislead (review MEDIUM). The count is threaded from the caller (which
+// mislead. The count is threaded from the caller (which
 // already fetched Discover()) to avoid re-running the discovery pipeline.
 func errWithDockerHint(err error, systemdProviderCount int) error {
 	if systemdProviderCount > 0 {
@@ -253,7 +252,7 @@ func cmdLogs(args []string) error {
 	}
 	// journalctl is a standalone binary, not a systemctl verb — calling it
 	// through unitCommand would execute `systemctl journalctl` (invalid,
-	// free-review critical). Scope user units explicitly.
+	// invalid). Scope user units explicitly.
 	//
 	// A cross-user `-M <user>@` query from an unprivileged caller can HANG
 	// waiting on machined/polkit instead of failing fast (LA1 6c:
@@ -266,7 +265,7 @@ func cmdLogs(args []string) error {
 		// WITHOUT cutting off a legitimately-working follow at a fixed cap:
 		// kill the command only if it produces NO output within the window.
 		// Once logs start streaming it is a real follow and runs until the
-		// user stops it (ox-alpha M1, PR #465 — the prior hard 10s cap cut a
+		// user stops it (the prior hard 10s cap cut a
 		// working follow and misreported it as requiring root).
 		produced := make(chan struct{})
 		cmd := exec.Command("journalctl", journalctlArgs(p)...)
@@ -431,7 +430,7 @@ func removeDropinEnv(p Provider, name, envKey string) error {
 		return err
 	}
 	// Exact-key removal, NOT substring: envKey "URNETWORK_PROFILE" must not
-	// drop a sibling "URNETWORK_PROFILE_EXTRA" line (free-review MAJOR).
+	// drop a sibling "URNETWORK_PROFILE_EXTRA" line.
 	var kept []string
 	for _, ln := range strings.Split(string(b), "\n") {
 		trimmed := strings.TrimSpace(ln)
@@ -469,7 +468,7 @@ func removeDropinEnv(p Provider, name, envKey string) error {
 // isELFExecutable reports whether path starts with the ELF magic bytes
 // (0x7f 'E' 'L' 'F'). Used to sanity-check downloaded binaries WITHOUT
 // executing them — running a freshly downloaded, unverified artifact is
-// code execution of a remote file . Linux-only check;
+// code execution of a remote file. Linux-only check;
 // see isRecognizedExecutable for the platform-aware form.
 func isELFExecutable(path string) bool {
 	f, err := os.Open(path)
@@ -569,7 +568,7 @@ func unitDropinDir(p Provider) (string, error) {
 // restartAfterDropin reloads systemd and restarts the provider's unit.
 func restartAfterDropin(p Provider) error {
 	// Same guard as unitCommand: an empty unit must be rejected before any
-	// systemctl invocation .
+	// systemctl invocation.
 	if p.Unit == "" {
 		return fmt.Errorf("provider %s has no owning systemd unit", providerLabel(p))
 	}

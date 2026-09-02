@@ -19,7 +19,7 @@ import (
 )
 
 // TestDispatchHelpIsSafe: --help on EVERY command must print help and do
-// nothing stateful. This is the regression test for review finding C1 — the
+// nothing stateful. This is the regression test for the
 // legacy `--help`-executes-clear bug class. We exercise the dispatch layer
 // by checking that parseGlobalFlags handles -h/--help on the commands that
 // route through it (start/stop/logs/status/providers were the gap).
@@ -47,7 +47,7 @@ func TestDispatchHelpIsSafe(t *testing.T) {
 // TestParseDelegationArgsHelpIsSafe: summary/report/hot-restart delegate to
 // the provider binary, so -h/--help must short-circuit in parseDelegationArgs
 // (help printed, nothing delegated) — the C1 invariant for pass-through
-// commands .
+// commands.
 func TestParseDelegationArgsHelpIsSafe(t *testing.T) {
 	for _, args := range [][]string{{"-h"}, {"--help"}, {"--unit", "urnetwork-native.service", "-h"}} {
 		rest, err := parseDelegationArgs(args)
@@ -69,7 +69,7 @@ func TestParseDelegationArgsHelpIsSafe(t *testing.T) {
 }
 
 // TestParseTargetFlagsRejectsUnknownFlags: a typo'd --flag must error, not
-// silently drop .
+// silently drop.
 func TestParseTargetFlagsRejectsUnknownFlags(t *testing.T) {
 	_, _, err := parseTargetFlags([]string{"--netwrok", "foo"})
 	if err == nil {
@@ -98,7 +98,7 @@ func TestParseTargetFlagsLenientPreserves(t *testing.T) {
 
 // TestParseTargetFlagsConflictingRejected: --unit + --network together must
 // error (matchProvider would silently apply the first set field). Pins the
-// free-review major on conflicting targeting flags.
+// conflicting-targeting-flags bug.
 func TestParseTargetFlagsConflictingRejected(t *testing.T) {
 	_, _, err := parseTargetFlags([]string{"--unit", "urnetwork-native.service", "--network", "tacogonzalez3000"})
 	if err == nil {
@@ -145,7 +145,7 @@ func TestVerifySHA256Match(t *testing.T) {
 }
 
 // TestInstallBinaryAtomic: installBinary must write to dst+.new and rename
-// (never O_TRUNC the destination in place — review finding H2). Verify the
+// (never O_TRUNC the destination in place). Verify the
 // resulting file is correct and no .new remnant remains.
 func TestInstallBinaryAtomic(t *testing.T) {
 	dir := t.TempDir()
@@ -174,7 +174,7 @@ func TestInstallBinaryAtomic(t *testing.T) {
 }
 
 // TestBackupNameTimestamped: backup names include a timestamp so repeated
-// updates never collide . Calls the PRODUCTION backupName
+// updates never collide. Calls the PRODUCTION backupName
 // helper — a local copy would pass even if the real format changed
 func TestBackupNameTimestamped(t *testing.T) {
 	a := backupName("/usr/local/bin/provider", time.Date(2026, 8, 9, 3, 15, 0, 0, time.UTC))
@@ -193,7 +193,7 @@ func TestBackupNameTimestamped(t *testing.T) {
 // TestUpdateProviderRefusesEmptyDigest: updateProvider must refuse to run
 // when no sha256 digest is available — the staged binary would be executed
 // (version check + install) with no integrity verification. Pins the
-// free-review critical on unverified downloads.
+// unverified-download bug.
 func TestUpdateProviderRefusesEmptyDigest(t *testing.T) {
 	dir := t.TempDir()
 	cfg := updateConfig{
@@ -214,7 +214,7 @@ func TestUpdateProviderRefusesEmptyDigest(t *testing.T) {
 	}
 }
 
-// TestUpdateProviderRefusesNonELFStagedBinary pins the MEDIUM-1 fix: the
+// TestUpdateProviderRefusesNonELFStagedBinary pins the fix: the
 // provider update path must sanity-check the extracted binary
 // STRUCTURALLY (isELFExecutable), never by executing it. A staged file
 // that is not an ELF executable must abort the install — even when the
@@ -279,7 +279,7 @@ func TestRunVersionCommand(t *testing.T) {
 	ToolVersion = "test-version"
 	for _, args := range [][]string{{"version"}, {"--version"}, {"-v"}} {
 		// Capture stdout so we can pin the printed content, not just the
-		// nil error .
+		// nil error.
 		oldOut := os.Stdout
 		r, w, err := os.Pipe()
 		if err != nil {
@@ -352,7 +352,7 @@ func TestCmdHotRestartBuildsSystemctl(t *testing.T) {
 		t.Errorf("Run([hot-restart --help]) = %v, want nil", err)
 	}
 	// The confirm gate must exist: a non-force restart with no stdin (EOF)
-	// must be refused, not silently restart . Test
+	// must be refused, not silently restart. Test
 	// confirmGate directly — deterministic, no discovery dependency (CI has
 	// no provider; Run(["hot-restart"]) would error at discovery before the
 	// gate, which is env-dependent). cmdHotRestart calls this same gate.
