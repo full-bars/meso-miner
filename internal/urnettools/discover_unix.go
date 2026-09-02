@@ -51,7 +51,7 @@ func discoverProcesses() []Provider {
 		// Then strip the kernel's " (deleted)" marker so Provider.Binary stays
 		// the canonical executable path; otherwise installBinary/backup later
 		// write to a literal "... (deleted)" path and the service's real
-		// binary stays missing (CodeRabbit Major).
+		// binary stays missing.
 		_, binaryDeleted := strings.CutSuffix(exe, " (deleted)")
 		exe = strings.TrimSuffix(exe, " (deleted)")
 		env := readEnviron(pid)
@@ -223,7 +223,7 @@ func attachUnits(procs []Provider) {
 		// .../system.slice/urnetwork-native.service. Only accept names that
 		// look like a provider unit (isProviderUnit) — on a GH runner the
 		// provider inherits the runner's cgroup, and an unfiltered name would
-		// make hot-restart systemctl-restart the wrong unit (review S3).
+		// make hot-restart systemctl-restart the wrong unit.
 		if idx := strings.LastIndex(s, ".service"); idx >= 0 {
 			start := strings.LastIndex(s[:idx], "/")
 			if start >= 0 {

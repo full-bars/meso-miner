@@ -86,7 +86,7 @@ func loadLifetimeMetrics(path string) *lifetimeMetrics {
 	lm.BillableBytes = persisted.BillableBytes
 	// Anchor the flush throttle to the last real save (not boot time), so a
 	// quick restart doesn't delay the first persistence of new deltas by a
-	// full throttle window after an already-stale file (Sonnet review LOW).
+	// full throttle window after an already-stale file.
 	if savedAt, perr := time.Parse(time.RFC3339, persisted.SavedAt); perr == nil {
 		lm.lastFlush = savedAt
 	}
@@ -96,7 +96,7 @@ func loadLifetimeMetrics(path string) *lifetimeMetrics {
 // Add applies positive deltas to named totals and marks the store dirty.
 // Callers pass reset-guarded deltas; a fully-zero call is a cheap no-op
 // that does NOT mark the store dirty (so idle nodes never rewrite the
-// state file — ox-alpha review LOW).
+// state file).
 func (lm *lifetimeMetrics) Add(pqeOpens, clasOpens, contractsUp, contractsDeny, proxiesRecov, proxiesLost uint64, billableBytesDelta uint64) {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()

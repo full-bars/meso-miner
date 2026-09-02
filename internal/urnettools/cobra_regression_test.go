@@ -11,8 +11,8 @@ import (
 // executes, and the commands that own their own help keep it.
 
 // TestRunSessionOwnHelp: `session --help` must print the RICH cmdSession usage
-// (save/load + --allow-different-account), NOT a Cobra stub. Guards the review
-// finding that newCobraCmd's broad help interception was hiding it.
+// (save/load + --allow-different-account), NOT a Cobra stub. Guards that
+// newCobraCmd's broad help interception was not hiding it.
 func TestRunSessionOwnHelp(t *testing.T) {
 	out := captureStderr(t, func() {
 		if err := Run([]string{"session", "--help"}); err != nil {
@@ -87,7 +87,7 @@ func TestCobraUnknownCommandErrors(t *testing.T) {
 
 // TestRunVersionWithTrailingArg: `-v`/`--version`/`version` with trailing args
 // still print the version, matching the pre-cobra dispatcher (which matched on
-// args[0] only) - Sonnet/Muse review finding.
+// args[0] only).
 func TestRunVersionWithTrailingArg(t *testing.T) {
 	for _, arg := range []string{"-v", "--version"} {
 		out := captureStdout(t, func() {

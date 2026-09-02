@@ -78,7 +78,7 @@ type rankedProxyCandidate struct {
 // non-socks5-only grades rank A=4..F=0 by letter; everything else (socks5-only,
 // undecidable, ungraded) ranks -1. Used by BOTH the funnel's candidate
 // ranking (collectRankedCandidates) and the merge's candidate-rank closure so
-// the two can never drift (self-review finding).
+// the two can never drift.
 func rankFromGrade(g proxyURLGrade) int {
 	if g.Decidable && !g.Socks5Only {
 		return proxyTierRank(proxyGradeTier(g.Score))
@@ -142,8 +142,7 @@ func mustReadProxyURLState() *ProxyURLState {
 	if err != nil {
 		// A corrupt or unreadable proxy_url.json must not look identical to
 		// a fresh install: log it, or every cached address is treated as new
-		// and re-probed on every cycle with no signal to the operator
-		// (coderabbit review).
+		// and re-probed on every cycle with no signal to the operator.
 		tlog("[proxy][url] warning: could not read proxy_url.json for cached-address snapshot: %v (probing all addresses this cycle)\n", err)
 		return &ProxyURLState{Cache: map[string]ProxyURLEntry{}}
 	}

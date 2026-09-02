@@ -1018,9 +1018,8 @@ func (self *peerEncryptionSession) restartHandshake() {
 	// A FAILED epoch (handshakeErr or identityFailed) is dead, not in flight:
 	// rebuild it, or a parked Required-mode send / rekey path calling this
 	// every poll tick or sealed write would never get a second attempt
-	// (review HIGH — routine once the 60s TlsTimeout fails epochs against
-	// departed peers, whereas the old -1 default rarely produced a failed
-	// epoch at all). Rebuilds are paced: the first rebuild after a failure
+	// (routine once the 60s TlsTimeout fails epochs against departed peers,
+	// whereas the old -1 default rarely produced a failed epoch at all). Rebuilds are paced: the first rebuild after a failure
 	// happens immediately, later ones at most once per restartHandshakeCooldown.
 	if self.epoch != nil && self.epoch != self.establishedEpoch &&
 		(self.epoch.handshakeErr != nil || self.epoch.identityFailed) &&
@@ -1436,7 +1435,7 @@ func (self *peerEncryptionSession) maybeVerifyPendingPeerIdentityProof(e *tlsHan
 		// Report the open only when this epoch actually won promotion (self.epoch
 		// == e). A stale/losing epoch that verifies identity first must not consume
 		// the per-session once-guard or log "e2e session up" for a handshake that
-		// will be superseded (Sonnet MEDIUM #455).
+		// will be superseded.
 		promoted := false
 		self.stateLock.Lock()
 		if self.epoch == e {

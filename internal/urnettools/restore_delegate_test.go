@@ -117,7 +117,7 @@ func TestRestoredHelpRouting(t *testing.T) {
 	}
 }
 
-// TestCmdFastAuthTargetFlagBeforeAction guards the review finding that
+// TestCmdFastAuthTargetFlagBeforeAction guards the case that
 // `fast-auth --unit X on|off` must recognize the action even when a target
 // flag precedes it, instead of erroring misleadingly.
 func TestCmdFastAuthTargetFlagBeforeAction(t *testing.T) {
@@ -156,7 +156,7 @@ func TestSetDryRunNoWrite(t *testing.T) {
 	}
 }
 
-// TestFastAuthInvalidRejected pins the CodeRabbit finding: an invalid
+// TestFastAuthInvalidRejected pins the invariant: an invalid
 // fast-auth value must error, not silently enable the bypass, for both the
 // standalone command and `set fast-auth <value>`.
 func TestFastAuthInvalidRejected(t *testing.T) {
@@ -174,7 +174,7 @@ func TestFastAuthInvalidRejected(t *testing.T) {
 }
 
 // TestValidateSetValue pins the set-value validation: values the provider would
-// silently discard must be rejected before the write (review MEDIUM).
+// silently discard must be rejected before the write.
 func TestValidateSetValue(t *testing.T) {
 	good := [][2]string{
 		{"report-interval", "30s"},

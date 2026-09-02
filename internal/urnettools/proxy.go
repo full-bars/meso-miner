@@ -43,7 +43,7 @@ func providerSubcommand(p Provider, args ...string) error {
 		cmd.Env = os.Environ()
 	}
 	// Also run as that user when we are root, so auth/network files are written
-	// owned by the provider user and remain readable by it (review HIGH).
+	// owned by the provider user and remain readable by it.
 	dropPrivilegesTo(p.User, cmd)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("provider %s: %v", providerLabel(p), err)
@@ -154,7 +154,7 @@ func cmdProxy(args []string, force, dryRun bool) error {
 	sub := args[0]
 	rest := args[1:]
 	// -h/--help anywhere in the proxy args shows proxy help and returns
-	// without executing (gauntlet finding BUG-2 + Sonnet review: help can
+	// without executing: help can
 	// appear at any position, e.g. `proxy add <file> --help` or
 	// `proxy refresh --force -h` — the latter previously reached the
 	// interactive picker and blocked on EOF).

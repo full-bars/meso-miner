@@ -228,7 +228,7 @@ func hasExplicitTarget(t Target) bool {
 // and any container that matches is then refused by guardSystemdProvider
 // with an actionable "use urnet-docker" error — instead of the old plain
 // not-found. This makes guardSystemdProvider reachable on the lifecycle
-// paths (Sonnet HIGH, meso-miner PR #10/#12) without widening any
+// paths without widening any
 // automatic-selection surface.
 func lifecycleCandidates(t Target) []Provider {
 	providers := discoverSystemdFn()
@@ -244,7 +244,7 @@ func lifecycleCandidates(t Target) []Provider {
 // lists them). Only fires when systemdProviderCount is ZERO — when systemd
 // providers exist, a selectTarget error is a target problem (typo/
 // ambiguity), not a wrong-tool problem, and pointing at docker would
-// mislead (review MEDIUM). The count is threaded from the caller (which
+// mislead. The count is threaded from the caller (which
 // already fetched Discover()) to avoid re-running the discovery pipeline.
 func errWithDockerHint(err error, systemdProviderCount int) error {
 	if systemdProviderCount > 0 {
@@ -304,8 +304,8 @@ func cmdLogs(args []string) error {
 		return cmd.Run()
 	}
 	// journalctl is a standalone binary, not a systemctl verb — calling it
-	// through unitCommand would execute `systemctl journalctl` (invalid,
-	// free-review critical). Scope user units explicitly.
+	// through unitCommand would execute `systemctl journalctl` (invalid).
+	// Scope user units explicitly.
 	//
 	// A cross-user `-M <user>@` query from an unprivileged caller can HANG
 	// waiting on machined/polkit instead of failing fast (LA1 6c:
@@ -318,7 +318,7 @@ func cmdLogs(args []string) error {
 		// WITHOUT cutting off a legitimately-working follow at a fixed cap:
 		// kill the command only if it produces NO output within the window.
 		// Once logs start streaming it is a real follow and runs until the
-		// user stops it (ox-alpha M1, PR #465 — the prior hard 10s cap cut a
+		// user stops it (the prior hard 10s cap cut a
 		// working follow and misreported it as requiring root).
 		produced := make(chan struct{})
 		cmd := exec.Command("journalctl", journalctlArgs(p)...)
@@ -477,7 +477,7 @@ func cmdHub(args []string, force, dryRun bool) error {
 				}
 			} else if rest[i] == "--password-stdin" {
 				// Read the CA password from stdin so it never appears in argv
-				// (visible to every local user via ps) (review LOW).
+				// (visible to every local user via ps).
 				b, err := io.ReadAll(os.Stdin)
 				if err != nil {
 					return fmt.Errorf("read --password-stdin: %v", err)
@@ -519,7 +519,7 @@ func cmdHub(args []string, force, dryRun bool) error {
 			return fmt.Errorf("hub link requires a URL: hub link <https://hub-host:port> [--token <onboard-token>]")
 		}
 		// Gate like the other mutating hub subcommands: --dry-run must not write
-		// trust, and neither should an unconfirmed --force run (review MEDIUM).
+		// trust, and neither should an unconfirmed --force run.
 		ok, gerr := confirmGate("link hub "+providerLabel(p), p, force, dryRun)
 		if gerr != nil {
 			return gerr
@@ -606,7 +606,7 @@ func mergeDropinEnvFile(path, envLine string) (string, error) {
 	b, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		// Transient read error (EACCES, EIO, NFS) must not silently
-		// drop every existing override .
+		// drop every existing override.
 		return "", fmt.Errorf("read %s: %w", path, err)
 	}
 	if err == nil {
@@ -797,7 +797,7 @@ func restartAfterDropin(p Provider) error {
 		}
 		// Propagate the restart error like the system-unit branch below —
 		// an operator writing a drop-in override must learn when the
-		// provider never actually restarted (Sonnet MEDIUM-2).
+		// provider never actually restarted.
 		argsRestart := append(systemctlUserArgs(p.User), "restart", p.Unit)
 		return exec.Command("systemctl", argsRestart...).Run()
 	}
