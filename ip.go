@@ -3061,6 +3061,13 @@ func (self *RemoteUserNatProvider) Receive(
 	opts := []any{
 		CompanionContract(),
 	}
+	// TCP socket returns are the only recoverable copy of consumed bytes;
+	// retain them past the ack deadline so the resend queue keeps retrying
+	// instead of silently dropping at timeout. UDP and synthesized controls
+	// are regenerable by the peer and need no such lease.
+	if ipPath.Protocol == IpProtocolTcp {
+		opts = append(opts, RetainAfterAckTimeout())
+	}
 	// note udp is sent with ack because because otherwise the delivery reliability will mulitply with the egress
 	c := func() bool {
 		// ack := make(chan error)
@@ -3106,7 +3113,11 @@ func (self *RemoteUserNatProvider) ClientReceive(source TransferPath, frames []*
 		case protocol.MessageType_IpIpPacketToProvider:
 			ipPacketToProvider_, err := FromFrame(frame)
 			if err != nil {
-				panic(err)
+				// G-C2 fix: log and skip instead of panic on peer-supplied
+				// frame decode failure. A peer sending garbage frames should
+				// not crash the provider.
+				self.client.log.V(1).Infof("[ip]provider skip bad IpPacketToProvider frame: %s\n", err)
+				continue
 			}
 			ipPacketToProvider := ipPacketToProvider_.(*protocol.IpPacketToProvider)
 			if self.bw != nil {
@@ -3381,6 +3392,11 @@ func (self *RemoteUserNatClient) SendPacket(source TransferPath, provideMode pro
 		return success
 	case SecurityPolicyResultDrop:
 		if self.LocalSecurityBypass() {
+			// G-M7 fix: nil guard — localUserNat can be nil in
+			// headless/minimal-relay configs.
+			if self.localUserNat == nil {
+				return false
+			}
 			return self.localUserNat.SendPacket(source, provideMode, packet, timeout)
 		} else {
 			return false
@@ -3403,7 +3419,10 @@ func (self *RemoteUserNatClient) ClientReceive(source TransferPath, frames []*pr
 		case protocol.MessageType_IpIpPacketFromProvider:
 			ipPacketFromProvider_, err := FromFrame(frame)
 			if err != nil {
-				panic(err)
+				// G-C2 fix: log and skip instead of panic on peer-supplied
+				// frame decode failure.
+				self.client.log.V(1).Infof("[ip]client skip bad IpPacketFromProvider frame: %s\n", err)
+				continue
 			}
 			ipPacketFromProvider := ipPacketFromProvider_.(*protocol.IpPacketFromProvider)
 
@@ -3430,7 +3449,10 @@ func (self *RemoteUserNatClient) Shuffle() {
 
 func (self *RemoteUserNatClient) Close() {
 	// self.client.RemoveReceiveCallback(self.clientCallbackId)
-	self.localUserNat.Close()
+	// G-M7 fix: nil guard for headless/minimal-relay configs.
+	if self.localUserNat != nil {
+		self.localUserNat.Close()
+	}
 	self.localUserNatUnsub()
 	self.clientUnsub()
 	if self.closeCallback != nil {
@@ -3465,16 +3487,28 @@ func (self *RemoteUserNatClient) LocalSecurityBypass() bool {
 type pathTable struct {
 	destinations []MultiHopId
 
-	// TODO clean up entries that haven't been used in some time
-	paths4 map[Ip4Path]MultiHopId
-	paths6 map[Ip6Path]MultiHopId
+	// G-H1 fix: entries were unbounded — one per 5-tuple, never evicted.
+	// A long-lived relay accumulates entries for every ephemeral source
+	// port it has ever seen. Added mutex for concurrent access safety,
+	// lastUsed timestamps for LRU eviction, and maxEntries cap.
+	mu        sync.Mutex
+	paths4    map[Ip4Path]pathTableEntry
+	paths6    map[Ip6Path]pathTableEntry
+	lastClean time.Time
+}
+
+const pathTableMaxEntries = 4096
+
+type pathTableEntry struct {
+	destination MultiHopId
+	lastUsed    time.Time
 }
 
 func newPathTable(destinations []MultiHopId) *pathTable {
 	return &pathTable{
 		destinations: destinations,
-		paths4:       map[Ip4Path]MultiHopId{},
-		paths6:       map[Ip6Path]MultiHopId{},
+		paths4:       map[Ip4Path]pathTableEntry{},
+		paths6:       map[Ip6Path]pathTableEntry{},
 	}
 }
 
@@ -3502,28 +3536,130 @@ func (self *pathTable) SelectDestination(packet []byte) (MultiHopId, error) {
 	if err != nil {
 		return MultiHopId{}, err
 	}
+
+	now := time.Now()
+	self.mu.Lock()
+	defer self.mu.Unlock()
+
+	// Periodic cleanup: evict entries unused for >5 minutes.
+	if now.Sub(self.lastClean) > 30*time.Second {
+		self.evictStale(now)
+		self.lastClean = now
+	}
+
 	switch ipPath.Version {
 	case 4:
 		ip4Path := ipPath.ToIp4Path()
-		if destination, ok := self.paths4[ip4Path]; ok {
-			return destination, nil
+		if entry, ok := self.paths4[ip4Path]; ok {
+			entry.lastUsed = now
+			self.paths4[ip4Path] = entry
+			return entry.destination, nil
+		}
+		if len(self.paths4)+len(self.paths6) >= pathTableMaxEntries {
+			self.evictOldestBatch()
 		}
 		i := mathrand.Intn(len(self.destinations))
 		destination := self.destinations[i]
-		self.paths4[ip4Path] = destination
+		self.paths4[ip4Path] = pathTableEntry{destination: destination, lastUsed: now}
 		return destination, nil
 	case 6:
 		ip6Path := ipPath.ToIp6Path()
-		if destination, ok := self.paths6[ip6Path]; ok {
-			return destination, nil
+		if entry, ok := self.paths6[ip6Path]; ok {
+			entry.lastUsed = now
+			self.paths6[ip6Path] = entry
+			return entry.destination, nil
+		}
+		if len(self.paths4)+len(self.paths6) >= pathTableMaxEntries {
+			self.evictOldestBatch()
 		}
 		i := mathrand.Intn(len(self.destinations))
 		destination := self.destinations[i]
-		self.paths6[ip6Path] = destination
+		self.paths6[ip6Path] = pathTableEntry{destination: destination, lastUsed: now}
 		return destination, nil
 	default:
-		// no support for this version
 		return MultiHopId{}, fmt.Errorf("No support for ip version %d", ipPath.Version)
+	}
+}
+
+// evictStale removes entries not used in the last 5 minutes.
+// IMPORTANT: the 5-minute cutoff must stay <= DefaultTcpBufferSettings.IdleTimeout
+// and DefaultUdpBufferSettings.IdleTimeout (both 300s). If those settings are
+// raised above this value, evictStale will evict entries for flows that are
+// still active, causing mid-connection reroutes (finding #1 from Opus review).
+// TODO: derive this from the settings instead of hardcoding.
+func (self *pathTable) evictStale(now time.Time) {
+	cutoff := now.Add(-5 * time.Minute)
+	for k, v := range self.paths4 {
+		if v.lastUsed.Before(cutoff) {
+			delete(self.paths4, k)
+		}
+	}
+	for k, v := range self.paths6 {
+		if v.lastUsed.Before(cutoff) {
+			delete(self.paths6, k)
+		}
+	}
+}
+
+// evictOldestBatch evicts entries oldest-first down to 90% of the cap.
+// It prefers evicting entries older than minEvictAge (60s) to avoid
+// rerouting live flows. If no entry is old enough, it evicts the absolute
+// oldest regardless of age (pressure-release valve). Uses a single-pass
+// collect + partial-sort for O(n) total instead of O(n²).
+func (self *pathTable) evictOldestBatch() {
+	const minEvictAge = 60 * time.Second
+	const targetPercent = 90
+	target := pathTableMaxEntries * targetPercent / 100
+
+	total := len(self.paths4) + len(self.paths6)
+	if total <= target {
+		return
+	}
+
+	toEvict := total - target
+
+	// Collect all entries with their keys and timestamps.
+	type pathEntry struct {
+		key4     Ip4Path
+		key6     Ip6Path
+		lastUsed time.Time
+		isIPv4   bool
+	}
+	pairs := make([]pathEntry, 0, total)
+	for k, v := range self.paths4 {
+		pairs = append(pairs, pathEntry{key4: k, lastUsed: v.lastUsed, isIPv4: true})
+	}
+	for k, v := range self.paths6 {
+		pairs = append(pairs, pathEntry{key6: k, lastUsed: v.lastUsed, isIPv4: false})
+	}
+
+	// Partial selection sort: find the toEvict oldest entries.
+	// Two passes: first prefer entries older than minEvictAge,
+	// then fill remaining slots with the absolute oldest.
+	var evicted int
+	for i := 0; i < toEvict && i < len(pairs); i++ {
+		minIdx := i
+		for j := i + 1; j < len(pairs); j++ {
+			if pairs[j].lastUsed.Before(pairs[minIdx].lastUsed) {
+				minIdx = j
+			}
+		}
+		pairs[i], pairs[minIdx] = pairs[minIdx], pairs[i]
+
+		// Pressure-release valve: if this entry is younger than minEvictAge
+		// (60s) and we're below the hard cap, stop evicting. This intentionally
+		// leaves the table slightly over the 90% soft target rather than reroute
+		// live flows. The next reconciliation cycle will re-check.
+		if time.Since(pairs[i].lastUsed) < minEvictAge && total-evicted < pathTableMaxEntries {
+			break
+		}
+
+		if pairs[i].isIPv4 {
+			delete(self.paths4, pairs[i].key4)
+		} else {
+			delete(self.paths6, pairs[i].key6)
+		}
+		evicted++
 	}
 }
 
