@@ -37,7 +37,7 @@ func RunDocker(args []string) error {
 			return nil
 		case "version":
 			fmt.Printf("urnet-tools %s\n", ToolVersion)
-			providers := Discover()
+			providers := DiscoverDocker()
 			if len(providers) == 0 {
 				fmt.Println("  no providers discovered")
 				return nil
@@ -49,10 +49,19 @@ func RunDocker(args []string) error {
 				}
 				stale := ""
 				if p.BinaryDeleted {
-					stale = " (disk binary stale \xe2\x80\x94 restart needed)"
+					stale = " (disk binary stale \u2014 restart needed)"
 				}
-				fmt.Printf("  %s: %s (%s, pid %d)%s\n",
-					providerLabel(p), p.Version, status, p.PID, stale)
+				ver := p.Version
+				if ver == "" {
+					ver = "-"
+				}
+				pid := p.PID
+				pidStr := fmt.Sprintf("%d", pid)
+				if pid <= 0 {
+					pidStr = "-"
+				}
+				fmt.Printf("  %s: %s (%s, pid %s)%s\n",
+					providerLabel(p), ver, status, pidStr, stale)
 			}
 			return nil
 		}
@@ -885,15 +894,27 @@ func cmdDockerProxy(args []string) error {
 			return fmt.Errorf("proxy add requires exactly one proxy file, e.g. 'urnet-docker proxy add ~/proxies.txt'")
 		}
 		hostFile := rest2[0]
-		// Unique in-container path so concurrent proxy ops cannot collide
-		// (DeepSeek SF4).
-		inPath := fmt.Sprintf("/tmp/urnet-proxies-%d.txt", os.Getpid())
-		if err := dockerCopyInto(container, hostFile, inPath); err != nil {
-			return fmt.Errorf("copy %s into container: %w", hostFile, err)
+		// M9 fix: use mktemp inside the container for an unpredictable
+		// path. The old PID-based name was trivially guessable. Template
+		// ends in XXXXXX (no suffix) for BusyBox compatibility — GNU
+		// coreutils accepts a suffix but BusyBox mkstemp(3) requires
+		// the template to end in Xs.
+		mktempOut, err := exec.Command(dockerCLI(), "exec", container, "mktemp", "/tmp/urnet-proxies-XXXXXXXX").Output()
+		if err != nil {
+			return fmt.Errorf("mktemp in container: %w", err)
 		}
+		inPath := strings.TrimSpace(string(mktempOut))
+		// Validate mktemp output before using it in docker cp / rm commands.
+		if !strings.HasPrefix(inPath, "/tmp/urnet-proxies-") {
+			return fmt.Errorf("mktemp returned unexpected path: %s", inPath)
+		}
+		// Register cleanup BEFORE the copy so a copy failure still cleans up.
 		defer func() {
 			_ = exec.Command(dockerCLI(), "exec", container, "rm", "-f", inPath).Run()
 		}()
+		if err := dockerCopyInto(container, hostFile, inPath); err != nil {
+			return fmt.Errorf("copy %s into container: %w", hostFile, err)
+		}
 		// --proxy_file= is REQUIRED: the in-container urnet-tools is the
 		// shell wrapper (urnet-tools.sh), which forwards a bare path as a
 		// key_address — the path string would be registered as a proxy
