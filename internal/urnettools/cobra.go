@@ -50,6 +50,7 @@ Proxy Management:
  proxy clear Remove all configured proxies
  proxy remove Remove proxies (by addr/match, or all)
  proxy refresh [--force] Re-read configs and hot-reload proxies
+ direct [on|off]         Toggle providing on the machine's direct/local IP
  proxy trim <N> Hold running proxies at N, shed worst first
  proxy health Show dead/degraded proxies + live event log
  proxy traffic Real-time bandwidth & client session load
@@ -146,6 +147,7 @@ func buildRootCmd() *cobra.Command {
 		newAutoUpdateCmd(),
 		newAutoStartCmd(),
 		newSelfHealCmd(),
+		newDirectCmd(),
 		newDoRestartCmd(), // HIDDEN internal entry point for the updater's escalated restart
 	)
 	// Force every subcommand (however it was constructed) back to Cobra's

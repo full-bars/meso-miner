@@ -380,8 +380,49 @@ func (r *ProxyReloader) reload() {
 		}
 		added = append(added, s)
 	}
+	// Hot-toggle the native [direct] transport based on the runtime
+	// toggle (~/.urnetwork/direct). `provider direct off|on` writes the file
+	// and triggers a reload; this block applies the change to the running set.
+	directRunning := running[directProxyKey]
+	// Same precedence as startup: toggle file wins, then env var.
+	directShouldRun := true
+	if directOn, fileExists := readDirectOverride(); fileExists {
+		directShouldRun = directOn
+	} else {
+		directShouldRun = os.Getenv("DISABLE_DIRECT_IP") != "1"
+	}
+	if directRunning && !directShouldRun {
+		// Disable direct: cancel the goroutine.
+		r.cancelMapMu.Lock()
+		if cancel, ok := r.cancelMap[directProxyKey]; ok {
+			cancel()
+			delete(r.cancelMap, directProxyKey)
+		}
+		r.cancelMapMu.Unlock()
+		connect.UnregisterProxy(0)
+		tlog("[direct] native [direct] transport stopped (disable)\n")
+	} else if !directRunning && directShouldRun {
+		// Enable direct: start the goroutine.
+		r.wg.Add(1)
+		directCtx, directCancel := context.WithCancel(r.parentCtx)
+		r.cancelMapMu.Lock()
+		r.cancelMap[directProxyKey] = directCancel
+		r.cancelMapMu.Unlock()
+		go connect.HandleError(func() {
+			defer r.wg.Done()
+			defer directCancel()
+			defer connect.UnregisterProxy(0)
+			connect.RegisterProxy(0, "direct")
+			r.spawnProxy(directCtx, nil, true, false)
+		})
+		tlog("[direct] native [direct] transport started (enable)\n")
+	}
+
 	var removed []string
 	for addr := range running {
+		if addr == directProxyKey {
+			continue // managed by the direct hot-toggle block, not the proxy diff
+		}
 		if _, ok := desiredSet[addr]; !ok {
 			removed = append(removed, addr)
 		}
