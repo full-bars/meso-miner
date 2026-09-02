@@ -209,8 +209,8 @@ func cmdDockerExec(args []string) error {
 	// flags or silently dropped.
 	pre, rest, err := splitExecArgs(args)
 	if err == errHelpShown {
-		// Print the usage on pre-separator help — exiting silently on
-		// `exec --unit x --help` reads as a no-op, not documentation.
+		// Print the usage on pre-separator help — `exec --unit x --help` must
+		// print usage (the help path), not exit silently.
 		usageDocker()
 		return nil
 	}
@@ -255,7 +255,7 @@ func splitExecArgs(args []string) (pre, rest []string, err error) {
 		case "--unit", "--user", "--network", "--network-id", "--state-dir":
 			// A recognized target flag MUST have a value; a trailing flag
 			// (nothing after it) would push split past len(args) and panic
-			// on the slice below .
+			// on the slice below.
 			if split+1 >= len(args) {
 				return nil, nil, fmt.Errorf("target flag %q requires a value (e.g. %q <name>)", args[split], args[split])
 			}
@@ -346,7 +346,7 @@ func cmdDockerUpdate(args []string, force, dryRun bool) error {
 	// swap the on-disk binary is already the new version, so capturing the
 	// baseline here (post-swap) would make the difference check below
 	// unsatisfiable — every real update would falsely fail and force an
-	// unplanned container cycle (ox-alpha C1, PR #465). Read it first so
+	// unplanned container cycle. Read it first so
 	// waitForLiveVersion can detect the bump to the new release.
 	beforeVer := strings.TrimSpace(containerLiveVersion(p.Unit))
 	fmt.Printf("updating provider inside %s in place (urnet-tools update)...\n", p.Unit)
@@ -372,7 +372,7 @@ func cmdDockerUpdate(args []string, force, dryRun bool) error {
 		// recovery window as waitForLiveVersion below instead of a single
 		// check: a freshly started container takes a few seconds to boot its
 		// provider, and one immediate probe reported a false "could not
-		// confirm" .
+		// confirm".
 		for i := 0; i < 60; i++ {
 			if containerProviderAlive(p.Unit) {
 				fmt.Printf("update applied to %s (could not read pre-update version; provider process is up).\n", p.Unit)
@@ -385,7 +385,7 @@ func cmdDockerUpdate(args []string, force, dryRun bool) error {
 	// No-op: the in-container update finished but the live version is
 	// unchanged (the container already ran the target release). Report it and
 	// stop — do not bounce a healthy production container or fail hard
-	// (ox-alpha M2, PR #465).
+
 	if cur := strings.TrimSpace(containerLiveVersion(p.Unit)); cur == beforeVer {
 		fmt.Printf("%s is already at %s (no change).\n", p.Unit, cur)
 		return nil
@@ -509,7 +509,7 @@ func updateTargetFromArgs(args []string, providers []Provider) (Target, []string
 	// Host self-update pinning (--tag/--digest/--url) means the user asked to
 	// update the HOST tool. Its value may coincidentally equal a container
 	// name; never treat it as a container target, and return empty so
-	// cmdDockerUpdate routes to the host self-update (ox-alpha L2, PR #465).
+	// cmdDockerUpdate routes to the host self-update.
 	if hasSelfUpdateArg(args) {
 		return Target{}, nil, nil
 	}
@@ -535,8 +535,7 @@ func updateTargetFromArgs(args []string, providers []Provider) (Target, []string
 		}
 		// A bare container name was given but matches nothing. Refuse instead
 		// of silently falling through to the lone-container auto-select, which
-		// would update a DIFFERENT container than the one named (ox-alpha H1,
-		// PR #465).
+		// would update a DIFFERENT container than the one named.
 		names := make([]string, 0, len(providers))
 		for _, p := range providers {
 			names = append(names, p.Unit)

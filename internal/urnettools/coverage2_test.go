@@ -31,7 +31,7 @@ func TestRestartProviderNoResolution(t *testing.T) {
 func TestRestartProviderPIDSignalFailure(t *testing.T) {
 	// Use a REAL dead PID: fork a child that exits immediately and reap it,
 	// then signal its (now-reaped) PID. A guessed PID like 999999 could
-	// theoretically collide on a huge-pid-max system .
+	// theoretically collide on a huge-pid-max system.
 	dead := exec.Command("true")
 	if err := dead.Start(); err != nil {
 		t.Skipf("cannot spawn helper process: %v", err)
@@ -74,7 +74,7 @@ func TestCmdProxyTrafficTargetReadsSnapshot(t *testing.T) {
 	}
 	p := Provider{StateDir: dir}
 	// Capture stdout so the printed snapshot is asserted, not just the
-	// nil error .
+	// nil error.
 	old := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w

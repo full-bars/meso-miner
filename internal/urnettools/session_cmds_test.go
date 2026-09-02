@@ -160,7 +160,7 @@ func TestStageSessionIgnoresForeignEntries(t *testing.T) {
 		t.Fatalf("stage: %v", err)
 	}
 	// Staging must contain EXACTLY the allowlisted files present in the bundle,
-	// not a crafted ../ name that cleans to somewhere else (review MEDIUM).
+	// not a crafted ../ name that cleans to somewhere else.
 	entries, err := os.ReadDir(filepath.Join(dir, ".session-staging"))
 	if err != nil {
 		t.Fatalf("read staging: %v", err)
@@ -245,7 +245,7 @@ func TestSessionDryRunAccepted(t *testing.T) {
 
 // TestDecryptShortOrMisalignedRejected covers the decryptUntar length guards:
 // a bundle shorter than the Salted__+salt header, and a non-block-multiple
-// ciphertext, must both be rejected (review MEDIUM).
+// ciphertext, must both be rejected.
 func TestDecryptShortOrMisalignedRejected(t *testing.T) {
 	for _, in := range []string{
 		"short",

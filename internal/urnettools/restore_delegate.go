@@ -27,7 +27,7 @@ import (
 
 // stripDryRunFlag extracts -n/--dry-run from args. Used by the delegation
 // commands (auth/choose-network) that must honour dry-run rather than forward
-// it to a provider binary that rejects it (review MEDIUM).
+// it to a provider binary that rejects it.
 func stripDryRunFlag(args []string) (bool, []string) {
 	dry := false
 	var rest []string
@@ -127,7 +127,7 @@ func cmdFastAuth(args []string, force, dryRun bool) error {
 	// token from what remains. This matches cmdSet and means a target flag
 	// placed before the action (e.g. `fast-auth --unit myunit on`) is handled
 	// instead of the action silently dropping and the command erroring
-	// misleadingly (review finding).
+	// misleadingly.
 	t, rest, err := parseTargetFlags(args)
 	if err != nil {
 		return err
@@ -151,7 +151,7 @@ func cmdFastAuth(args []string, force, dryRun bool) error {
 	case "on", "off":
 		// Mirrors the audit-trail + confirm convention used by hub set/off and
 		// the tune commands: even -f prints the target line to stderr; without
-		// -f the operator must type an explicit yes .
+		// -f the operator must type an explicit yes.
 		ok, err := confirmGate("fast-auth "+sub+" "+providerLabel(p), p, force, dryRun)
 		if err != nil {
 			return err
@@ -177,7 +177,7 @@ func cmdFastAuth(args []string, force, dryRun bool) error {
 
 // validateSetValue rejects values the provider would silently discard (it keeps
 // the startup default for an unparseable/out-of-range value), so the command
-// never reports an effect that provably cannot take place (review MEDIUM).
+// never reports an effect that provably cannot take place.
 func validateSetValue(key, value string) error {
 	switch key {
 	case "report-interval", "proxy-url-refresh", "cleanup-interval":

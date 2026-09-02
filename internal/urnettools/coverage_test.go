@@ -87,7 +87,7 @@ func TestUnitStateDirHomeForUserFallback(t *testing.T) {
 }
 
 // TestIsUserUnitVendorDir covers the /usr/lib + /lib systemd system dirs
-// (free-review MEDIUM): a unit shipped by a package (not a fleet install)
+// A unit shipped by a package (not a fleet install)
 // lives there and must be classified as a system unit, not a user unit.
 // systemd-journald.service ships with the systemd core package on any
 // real systemd Linux box; skip if this environment lacks it entirely.
@@ -248,7 +248,7 @@ func TestRestartProviderWithUnitFailsGracefully(t *testing.T) {
 // review: writeTimerCalendar must error cleanly when getent can't resolve
 // the target user's home, rather than silently falling back to a
 // CWD-relative ".config/systemd/user/<timer>" path (the same class of bug
-// fixed elsewhere as "review finding M3").
+// fixed elsewhere).
 func TestWriteTimerCalendarMissingHome(t *testing.T) {
 	bogus := "urnet-tools-test-nonexistent-user-9f3a"
 	if _, err := exec.Command("getent", "passwd", bogus).Output(); err == nil {
