@@ -23,8 +23,7 @@ var importantLogMarkers = []string{
 	// refreshes happen at most a few times a day and are the only record of
 	// how the quality gate behaved. Keep them in the important buffer so
 	// they survive hours of main-log flooding. Markers carry the exact
-	// "[proxy][url] " prefix so unrelated lines cannot match (coderabbit
-	// review).
+	// "[proxy][url] " prefix so unrelated lines cannot match.
 	"[proxy][url] probe grade breakdown",
 	"[proxy][url] admitted by tier",
 	"[proxy][url] cap eviction",
@@ -43,7 +42,7 @@ var importantLogMarkers = []string{
 	// Sibling paid-grader + table-probe lines from #344/#343 also belong
 	// in the important buffer — same low-volume/high-value class. They
 	// were added to the [proxy][grade] namespace by this PR, so curate
-	// them here (NIT-16).
+	// them here.
 	"[proxy][grade] paid",
 	"[proxy][grade] graded",
 }

@@ -1232,7 +1232,7 @@ func runLifetimeCollector(ctx context.Context) {
 	// departedBaselines remembers the last billable counter reading of
 	// proxies that left the health snapshot, so a proxy returning within
 	// tombstoneProxyBaselineTTL resumes against its old baseline instead
-	// of re-counting its whole history as fresh delta (ox-alpha MED).
+	// of re-counting its whole history as fresh delta.
 	type departedBaseline struct {
 		baseline uint64
 		left     time.Time
@@ -1258,7 +1258,7 @@ func runLifetimeCollector(ctx context.Context) {
 		// snapshot (moved to departedBaselines with a timestamp) rather
 		// than deleted: a proxy that returns within tombstoneTTL with an
 		// intact counter resumes against its old baseline — no double-
-		// counting of its history (ox-alpha review MED). If it returns
+		// counting of its history. If it returns
 		// RESET below baseline, that gap contributes zero and the
 		// baseline re-anchors. Tombstones expire after tombstoneTTL so
 		// the map stays bounded; a proxy returning after expiry is
@@ -1326,7 +1326,7 @@ func runLifetimeCollector(ctx context.Context) {
 			if elapsed < 1 {
 				elapsed = 1
 			}
-			// Per-proxy reset guards on the rate sums (ox-alpha MED):
+			// Per-proxy reset guards on the rate sums:
 			// an aggregate-only guard lets a churned proxy's return dump
 			// its whole counter into one tick's rate.
 			var rxDelta, txDelta uint64
@@ -1356,8 +1356,7 @@ func runLifetimeCollector(ctx context.Context) {
 			// active branch does the same): on the FIRST tick prevRxPerProxy is
 			// empty while bw is populated with every known proxy, so a bare
 			// index dereference panics (nil *uint64) and — with the collector
-			// launched as a bare `go` — crashes the whole provider process
-			// (Sonnet CRITICAL, 2026-08-27).
+			// launched as a bare `go` — crashes the whole provider process.
 			for key, b := range bw {
 				*u64At(prevRxPerProxy, key) = b.TotalRx.Load()
 				*u64At(prevTxPerProxy, key) = b.TotalTx.Load()
@@ -1755,8 +1754,7 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		// NewlyDegraded (was up, went down) plus NewlyDead (never-up,
 		// newly confirmed dead). report.Dead is the COMPLETE currently-
 		// dead list rebuilt every tick — counting it here would inflate
-		// the persisted counter on every tick a proxy stays dead
-		// (Sonnet review HIGH).
+		// the persisted counter on every tick a proxy stays dead.
 		lifetimeStore.Add(0, 0, 0, 0,
 			uint64(len(report.Recovered)),
 			uint64(len(report.NewlyDegraded))+uint64(len(report.NewlyDead)), 0)
@@ -2758,7 +2756,7 @@ func provide(opts docopt.Opts) {
 					// reason.
 					cfg := resolveProxyTableProbeConfig()
 					if score, ok := cachedProxyURLScore(proxySettings.Address); ok && cfg.Enabled && score < cfg.PassBar {
-						// QUALITY rejection (review #2): the recorded score is below
+						// QUALITY rejection: the recorded score is below
 						// the bar AND the kill switch is ON. This is a filter, not a
 						// failure of auth or reachability — it must not count in
 						// authFailures, RecordFailure, or RecordGiveUp, and must never
@@ -2890,7 +2888,7 @@ func provide(opts docopt.Opts) {
 								proxySettings.Index, proxySettings.Address, formatDuration(dropAge), authFailures)
 							// Clean up proxyCancelMap so the reloader can
 							// relaunch this proxy if the operator refreshes
-							// the proxy list (Opus HIGH-2 fix).
+							// the proxy list.
 							proxyCancelMu.Lock()
 							delete(proxyCancelMap, proxySettings.Address)
 							proxyCancelMu.Unlock()
@@ -2961,7 +2959,7 @@ func provide(opts docopt.Opts) {
 					proxyCancelMu.Unlock()
 
 					if errors.Is(err, errProxyURLBelowBar) {
-						// Quality rejection (review #2): the proxy was filtered
+						// Quality rejection: the proxy was filtered
 						// by its recorded stage-1 score, not by auth or
 						// reachability failure. No give-up accounting, no
 						// eviction, no backoff — the next fetch cycle re-grades
@@ -3357,7 +3355,7 @@ func provide(opts docopt.Opts) {
 	// Enforce an operator trim cap immediately at startup. The initial launch
 	// loop spawns every entry in the source, so without this the first reload
 	// reconciler tick (up to an hour later) would be the first time the cap
-	// binds (review finding HIGH).
+	// binds.
 	reloader.reload()
 
 	go connect.HandleError(func() {

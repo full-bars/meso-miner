@@ -159,7 +159,7 @@ func readProxyGradesConfig() proxyGradesConfig {
 	if err != nil {
 		// A malformed proxy_grades.json must not fail silently: the parse
 		// error is cached against the new mtime so nothing would ever
-		// surface it again (MEDIUM-5). Log once per cache fill.
+		// surface it again. Log once per cache fill.
 		importantLogf("[proxy][grade] warning: %v (using defaults)\n", err)
 	}
 	return cfg
@@ -226,8 +226,7 @@ func tierName(score float64) string {
 // the paid window (the paid grader refreshes them). The summary's stale
 // ratio must agree with whoever owns the entry's refresh cadence — one
 // shared number would mislabel URL entries as fresh long after their
-// owner would re-probe them, or mislabel paid entries as stale early
-// (independent review finding).
+// owner would re-probe them, or mislabel paid entries as stale early.
 func gradeSummaryStaleAfter(src string, pressure float64) time.Duration {
 	if src == "url" {
 		return reaperStaleThreshold(pressure)
@@ -243,7 +242,7 @@ func gradeSummaryStaleAfter(src string, pressure float64) time.Duration {
 // Returns (summary, false) when the snapshot could not be built (lock
 // contention or unreadable state) — the caller must SKIP the round rather
 // than log an all-zero "fleet collapsed" snapshot that would also poison
-// the delta baseline (HIGH-2).
+// the delta baseline.
 func collectProxyGradeSummary() (gradeSummary, bool) {
 	s := gradeSummary{
 		tiers:   map[string]int{},
@@ -251,7 +250,7 @@ func collectProxyGradeSummary() (gradeSummary, bool) {
 	}
 	// WithRetry (not the fail-fast acquireProxyLock) so a routine reload,
 	// fetch, or reaper apply holding the lock does not make the summary
-	// refuse a concurrent reload via mutual exclusion (MEDIUM-4).
+	// refuse a concurrent reload via mutual exclusion.
 	release, err := acquireProxyLockWithRetry()
 	if err != nil {
 		return s, false
@@ -274,7 +273,7 @@ func collectProxyGradeSummary() (gradeSummary, bool) {
 	// agree with whoever owns each entry's refresh cadence — one shared
 	// number would mislabel URL entries as fresh long after their owner
 	// would re-probe them, or mislabel paid entries as stale hours before
-	// the paid grader would touch them (independent review finding).
+	// the paid grader would touch them.
 	pressure := currentPressure()
 	now := time.Now()
 
@@ -286,13 +285,13 @@ func collectProxyGradeSummary() (gradeSummary, bool) {
 	// into its ProxyEntry. The summary must therefore bucket such an
 	// address by the PAID owner — reading the URL cache grade and URL
 	// window for it would report a grade the paid grader never produced
-	// for that ownership (independent review finding). On a desired-set
+	// for that ownership. On a desired-set
 	// read error the summary falls back to the state tags (read-only;
 	// the worst case is a stale bucket, not a wrong write).
 	// Ownership resolution MUST agree with the paid grader's UNION (file when
 	// set + internal), not an either/or: a mixed file+internal deployment would
 	// otherwise report internal-config addresses as ungraded with the wrong
-	// staleness window (Opus review MEDIUM-2). Uses the same helper as the
+	// staleness window. Uses the same helper as the
 	// grader so the reader cannot drift from the writer.
 	desired := map[string]struct{}{}
 	paidOwned, _ := paidDesiredSet(state)
@@ -330,7 +329,7 @@ func collectProxyGradeSummary() (gradeSummary, bool) {
 		// undecidable must surface as "could not evaluate right now", not
 		// hide behind its old letter tier. Otherwise a DNS-gutted re-probe of
 		// a formerly-B proxy silently keeps it in the B bucket and the
-		// operator never sees it went undecidable (review HIGH).
+		// operator never sees it went undecidable.
 		if entry.Pending {
 			s.tiers["pending"]++
 			if s.sources[src] == nil {
@@ -404,14 +403,14 @@ func (s gradeSummary) scoresLine() string {
 	}
 	// Nearest-rank p95. The unguarded index `int(float64(n)*0.95)` is
 	// exactly `n` when 0.95n is an integer (n%20==0), i.e. the n=20 case
-	// coderabbit flagged — clamp to the last element instead of indexing
-	// out of range or selecting the max by accident.
+	// where the guard clamps to len(s.scores)-1, keeping the index in range
+	// rather than selecting the max by accident.
 	p95i := int(float64(len(s.scores)) * 0.95)
 	if p95i >= len(s.scores) {
 		p95i = len(s.scores) - 1
 	}
 	p95 := s.scores[p95i]
-	// LOW-8: stale ratio is over graded proxies only (s.stale is only ever
+	// Stale ratio is over graded proxies only (s.stale is only ever
 	// incremented for graded entries), so the denominator must be
 	// len(s.scores), not s.running (which includes ungraded proxies).
 	return fmt.Sprintf("scores: median %.2f, p95 %.2f, min %.2f | stale grades: %d/%d",
@@ -502,12 +501,12 @@ func countdownLine() string {
 // reached from three goroutines (summary runner, paid grader, URL reaper);
 // O_APPEND makes the offset update atomic, but a concurrent prune's
 // os.Remove could race an append to the same day file and silently lose
-// the line to an unlinked inode (LOW-12).
+// the line to an unlinked inode.
 var gradesLogMu sync.Mutex
 
 // lastGradesLogPruneDay tracks the UTC day of the last prune so the
 // O(ReadDir) retention scan runs once per day-rollover, not once per
-// written line (MEDIUM-3 — a per-line scan is a full directory read under
+// written line (a per-line scan is a full directory read under
 // the caller's lock on busy boxes).
 var lastGradesLogPruneDay string
 
@@ -528,8 +527,7 @@ func gradesLogWrite(line string) {
 		return
 	}
 	// Private directory + files: they contain per-proxy endpoints and
-	// grades — operational intelligence not for other local users
-	// (coderabbit security major).
+	// grades — operational intelligence not for other local users.
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		tlog("[proxy][grade] warning: grades dir %s: %v\n", dir, err)
 		return
@@ -551,7 +549,7 @@ func gradesLogWrite(line string) {
 	}
 	f.Close()
 	// Prune at most once per UTC day: the retention scan is O(entries) and
-	// must not run per line (MEDIUM-3).
+	// must not run per line.
 	day := time.Now().UTC().Format("2006-01-02")
 	if day != lastGradesLogPruneDay {
 		lastGradesLogPruneDay = day
@@ -600,7 +598,7 @@ func emitProxyGradeDelta(addr, oldTier, newTier string, oldScore, newScore float
 func runProxyGradeSummary(ctx context.Context) {
 	// Read the interval from config so proxy_grades.json interval_sec is
 	// honored; re-read + Reset each tick so a live edit takes effect on
-	// the next round (coderabbit major: the ticker was hardcoded to the
+	// the next round (the ticker was hardcoded to the
 	// default).
 	cur := summaryIntervalFromConfig()
 	ticker := time.NewTicker(cur)
@@ -632,8 +630,8 @@ func summaryIntervalFromConfig() time.Duration {
 // collectGradeSummaryFn is the snapshot collector used by the summary
 // runner. It is a package-level var (not a direct call) so tests can
 // inject a fake that returns ok=false with tracked>0 — the scenario that
-// proves the HIGH-2 guard is load-bearing rather than masked by the
-// tracked==0 skip (Sonnet round-2 Finding A).
+// proves the invalidity guard is load-bearing rather than masked by the
+// tracked==0 skip.
 var collectGradeSummaryFn = collectProxyGradeSummary
 
 // runProxyGradeSummaryOnce computes and logs one snapshot. Split out for
@@ -645,7 +643,7 @@ func runProxyGradeSummaryOnce() {
 	}
 	// Kill switch (proxy_probe.json enabled=false) also silences the
 	// summary: with stage-1 grading off, a running summary would report a
-	// fleet that is now entirely "ungraded" (MEDIUM-6).
+	// fleet that is now entirely "ungraded".
 	if !resolveProxyTableProbeConfig().Enabled {
 		return
 	}
@@ -653,13 +651,13 @@ func runProxyGradeSummaryOnce() {
 	if !ok {
 		// Lock contention or unreadable state: skip the round entirely.
 		// Logging an all-zero snapshot would read as a fleet collapse and
-		// install it as the delta baseline (HIGH-2).
+		// install it as the delta baseline.
 		return
 	}
 	if s.tracked == 0 {
 		// No proxies configured — skip rather than write 4 lines every 5
 		// minutes of "(0 running, 0 tracked)" into important/disk/grades
-		// logs (LOW-11).
+		// logs.
 		return
 	}
 	lines := []string{

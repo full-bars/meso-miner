@@ -60,7 +60,7 @@ func TestEarnTracker_RawKeysPassThrough(t *testing.T) {
 }
 
 // TestEarnTracker_PrunesChurnedAddresses pins the unbounded-map-growth
-// finding (both independent review passes): the lastEarned/prevCum maps
+// finding: the lastEarned/prevCum maps
 // must be pruned to the live snapshot set on every Update, or they grow
 // forever as proxies churn across the box's lifetime.
 func TestEarnTracker_PrunesChurnedAddresses(t *testing.T) {
@@ -204,7 +204,7 @@ func TestEarnTracker_ZeroDeltaTickIsNotEarned(t *testing.T) {
 	}
 }
 
-// TestEarnTracker_EmptySnapshotPrunesAll pins the coderabbit finding:
+// TestEarnTracker_EmptySnapshotPrunesAll pins this behavior:
 // Update with an empty (or nil) snapshot must prune ALL per-address
 // state — this is what the runEarningWindows empty-health-set branch
 // calls so proxies that disappear (health count drops to 0) cannot keep

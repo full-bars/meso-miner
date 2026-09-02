@@ -12,7 +12,7 @@ import (
 // off a RECENT liveness signal, never the raw cumulative BillableRx/Tx
 // counters — a cumulative counter only resets on process restart, so a
 // proxy that earned once early then died would otherwise look "earning"
-// forever and never be re-probed (Sonnet design review finding 2c).
+// forever and never be re-probed.
 type perProxyEarnTracker struct {
 	mu sync.Mutex
 	// lastEarned maps proxy address -> time of the last positive billable
@@ -36,7 +36,7 @@ func newPerProxyEarnTracker() *perProxyEarnTracker {
 // tracker's callers key by the raw address "addr". The tracker must
 // normalize on ingest or EarnedSince(rawAddr) never matches and earn-skip
 // silently never fires — the paid-savings feature would be dead in
-// production (review CRITICAL). Raw-address keys pass through unchanged
+// production. Raw-address keys pass through unchanged
 // (a raw address contains no " (" separator, so parseProxyString returns
 // no address half and the key is used as-is).
 //
@@ -64,7 +64,7 @@ func proxyKeyAddress(key string) string {
 // (ProxyHealthSnapshot) or raw; both are normalized to the raw address.
 // Addresses absent from the snapshot are pruned from both maps, so memory
 // stays bounded by the live proxy set as proxies churn across the box's
-// lifetime (independent review finding).
+// lifetime.
 func (t *perProxyEarnTracker) Update(snapshot map[string]*connect.ProxyBandwidth) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -146,6 +146,6 @@ const paidEarnWindow = 15 * time.Minute
 // suppresses probes for actively-earning proxies, but a proxy that has been
 // "earning" (or just not quiet long enough) must still be force-probed at
 // least this often so the fail-fast path can never be starved indefinitely
-// (Sonnet design review findings 2c/4b — the multiplicative hazard with the
+// (the multiplicative hazard with the
 // persisted-grade cache).
 const paidForceProbeCeiling = 24 * time.Hour
