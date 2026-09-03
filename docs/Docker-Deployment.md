@@ -14,7 +14,7 @@ Install `urnet-docker` once on the host (SHA-256 verified against the release AP
 ```sh
 curl -fSsL https://dl.fullbars.xyz/urnet-docker.sh | sh
 # installs /usr/local/bin/urnet-docker (or ~/.local/bin when not root)
-# GitHub fallback: curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh | sh
+# GitHub fallback: curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/install-urnet-docker.sh | sh
 ```
 
 The tool is self-updating afterwards:
@@ -30,7 +30,12 @@ Common host-side commands:
 ```sh
 urnet-docker providers                          # list provider containers
 urnet-docker status --unit urfix                # status of one container
-urnet-docker proxy add --unit urfix ~/p.txt     # add proxies from host
+urnet-docker direct status --unit urfix         # show direct IP providing state
+urnet-docker direct off --unit urfix            # toggle direct IP (proxies only)
+urnet-docker usage --unit urfix                 # show aggregate billable vs control traffic
+urnet-docker usage graphs --unit urfix          # time-series usage graphs (day/hour/month)
+urnet-docker proxy add --unit urfix ~/p.txt     # add proxies from host (or URL)
+urnet-docker proxy paste --unit urfix < p.txt   # stream raw proxies from stdin
 urnet-docker proxy trim --unit urfix 500        # hold running proxies at cap (A-F worst first)
 urnet-docker proxy refresh --unit urfix         # reload proxies without restart
 urnet-docker restart --unit urfix               # restart a container
@@ -40,21 +45,11 @@ urnet-docker logs --unit urfix 100              # stream logs (RAMLOGS-aware)
 > [!NOTE]
 > `urnet-docker update` with a target flag (such as `--unit`) updates a provider container in place. The container ID stays the same. Plain `urnet-docker update` with no target updates only the host tool binary. Containers can also be updated by pulling a new image and recreating the container (e.g. via Docker Compose or Watchtower).
 
-## 🗄️ Image Registries
-
-Primary image:
+## 🗄️ Image Registry
 
 ```text
-ghcr.io/full-bars/urnetwork-3.23-fix:latest
+ghcr.io/full-bars/meso-miner:latest
 ```
-
-Docker Hub mirror:
-
-```text
-3cape/urnetwork-3.23-fix:latest
-```
-
-Use the Docker Hub mirror if GHCR returns `denied` errors or rate-limiting.
 
 ## 🔑 Persistent JWT
 
@@ -62,7 +57,7 @@ The JWT is stored inside the container at `/root/.urnetwork/jwt`. Without a pers
 
 All examples below mount a config volume at `/root/.urnetwork`. With this volume in place, the startup script detects the existing JWT and skips authentication on later starts. Auth codes are only consumed once: on first run or after manually removing the config volume.
 
-## 🏃 Docker Run - GHCR
+## 🏃 Docker Run
 
 The examples below use `urfix` as the container name.
 
@@ -76,7 +71,7 @@ docker run -d --name urfix \
   -e URNETWORK_PROXY_BENCHMARK=true \
   -e URNETWORK_PROXY_BENCHMARK_ENDPOINT=connect.bringyour.com:443 \
   -e URNETWORK_REPORT_URL=http://hub-server:8080 \
-  ghcr.io/full-bars/urnetwork-3.23-fix:latest
+  ghcr.io/full-bars/meso-miner:latest
 ```
 
 | Env var | Purpose |
@@ -105,13 +100,10 @@ docker run -d \
   --log-opt max-size=10m \
   --log-opt max-file=3 \
   -e BUILD=jwt \
-  -e ENABLE_VNSTAT=true \
   -e HOST_HOSTNAME=$(hostname) \
   -v urfix_config:/root/.urnetwork \
-  -v urfix_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
-  -p 9001:8080 \
-  ghcr.io/full-bars/urnetwork-3.23-fix:latest AUTH_CODE_HERE
+  ghcr.io/full-bars/meso-miner:latest AUTH_CODE_HERE
 ```
 
 Replace `AUTH_CODE_HERE` with your token from [ur.io](https://ur.io). Auth codes are single-use; the token is saved to the `urfix_config` volume on first run and reused on later starts.
@@ -144,71 +136,10 @@ docker run -d \
   -e BUILD=stable \
   -e USER_AUTH=you@example.com \
   -e PASSWORD=yourpassword \
-  -e ENABLE_VNSTAT=true \
   -e HOST_HOSTNAME=$(hostname) \
   -v urfix_config:/root/.urnetwork \
-  -v urfix_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
-  -p 9001:8080 \
-  ghcr.io/full-bars/urnetwork-3.23-fix:latest
-```
-
-## 🏃 Docker Run - Docker Hub
-
-The commands are identical to GHCR except for the image name.
-
-### 🔐 JWT Auth
-
-```bash
-docker run -d \
-  --name=urfix \
-  --pull=always \
-  --restart=unless-stopped \
-  --cap-add=NET_ADMIN \
-  --cap-add=NET_RAW \
-  --sysctl net.ipv4.ip_forward=1 \
-  --log-driver=json-file \
-  --log-opt max-size=10m \
-  --log-opt max-file=3 \
-  -e BUILD=jwt \
-  -e ENABLE_VNSTAT=true \
-  -e HOST_HOSTNAME=$(hostname) \
-  -v urfix_config:/root/.urnetwork \
-  -v urfix_vnstat:/var/lib/vnstat \
-  -v /path/to/proxy.txt:/app/proxy.txt \
-  -p 9001:8080 \
-  3cape/urnetwork-3.23-fix:latest AUTH_CODE_HERE
-```
-
-Alternative method:
-
-```bash
--e URNETWORK_AUTH_CODE=YOUR_CODE
-```
-
-### ✉️ Email/Password Auth
-
-```bash
-docker run -d \
-  --name=urfix \
-  --pull=always \
-  --restart=unless-stopped \
-  --cap-add=NET_ADMIN \
-  --cap-add=NET_RAW \
-  --sysctl net.ipv4.ip_forward=1 \
-  --log-driver=json-file \
-  --log-opt max-size=10m \
-  --log-opt max-file=3 \
-  -e BUILD=stable \
-  -e USER_AUTH=you@example.com \
-  -e PASSWORD=yourpassword \
-  -e ENABLE_VNSTAT=true \
-  -e HOST_HOSTNAME=$(hostname) \
-  -v urfix_config:/root/.urnetwork \
-  -v urfix_vnstat:/var/lib/vnstat \
-  -v /path/to/proxy.txt:/app/proxy.txt \
-  -p 9001:8080 \
-  3cape/urnetwork-3.23-fix:latest
+  ghcr.io/full-bars/meso-miner:latest
 ```
 
 ## 🐙 Docker Compose
@@ -222,7 +153,7 @@ For 3, 5, or 10 nodes in one Compose file, use the [Multi-Container Scaling](Mul
 ```yaml
 services:
   urnetwork:
-    image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
+    image: ghcr.io/full-bars/meso-miner:latest
     container_name: urfix
     restart: unless-stopped
     pull_policy: always
@@ -233,14 +164,10 @@ services:
       - net.ipv4.ip_forward=1
     environment:
       - BUILD=jwt
-      - ENABLE_VNSTAT=true
       - HOST_HOSTNAME=${HOSTNAME}
     volumes:
       - urfix_config:/root/.urnetwork
-      - urfix_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
-    ports:
-      - "9001:8080"
     logging:
       driver: json-file
       options:
@@ -249,7 +176,6 @@ services:
 
 volumes:
   urfix_config:
-  urfix_vnstat:
 ```
 
 On first start, provide your auth code using one of these methods:
@@ -268,7 +194,7 @@ docker compose up -d
 ```yaml
 services:
   urnetwork:
-    image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
+    image: ghcr.io/full-bars/meso-miner:latest
     container_name: urfix
     restart: unless-stopped
     pull_policy: always
@@ -281,14 +207,10 @@ services:
       - BUILD=stable
       - USER_AUTH=you@example.com
       - PASSWORD=yourpassword
-      - ENABLE_VNSTAT=true
       - HOST_HOSTNAME=${HOSTNAME}
     volumes:
       - urfix_config:/root/.urnetwork
-      - urfix_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
-    ports:
-      - "9001:8080"
     logging:
       driver: json-file
       options:
@@ -297,59 +219,8 @@ services:
 
 volumes:
   urfix_config:
-  urfix_vnstat:
 ```
 
-## 🚨 Outage Alerting
-
-Set `URNETWORK_ALERT_WEBHOOK` to receive a push notification when the provider loses contact with the URnetwork backend and when it recovers. The provider posts a JSON payload:
-
-```json
-{
-  "event": "outage_start",
-  "node": "my-server-name (docker)",
-  "timestamp": "2026-05-27T23:48:34Z",
-  "message": "Backend unreachable - provider holding existing connections but not accepting new ones."
-}
-```
-
-`event` is either `outage_start` or `outage_clear`. The provider logs `[outage]` state transitions to stdout regardless of whether a webhook URL is set.
-
-Examples:
-
-```text
-URNETWORK_ALERT_WEBHOOK=https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN
-URNETWORK_ALERT_WEBHOOK=https://hooks.slack.com/services/T.../B.../...
-URNETWORK_ALERT_WEBHOOK=https://ntfy.sh/your-topic
-```
-
-Example Docker Run:
-
-```bash
-docker run -d \
-  --name=urfix \
-  --pull=always \
-  --restart=unless-stopped \
-  --cap-add=NET_ADMIN \
-  --cap-add=NET_RAW \
-  --sysctl net.ipv4.ip_forward=1 \
-  --log-driver=json-file \
-  --log-opt max-size=10m \
-  --log-opt max-file=3 \
-  -e URNETWORK_NODE_NAME=urfix \
-  -e HOST_HOSTNAME=$(hostname) \
-  -e PROXY_URL='https://example.com/your-proxy-list.txt' \
-  -v urfix_config:/root/.urnetwork \
-  -v /path/to/proxy.txt:/app/proxy.txt \
-  -p 9001:8080 \
-  ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE
-```
-
-Startup log:
-
-```text
-[outage] watcher active node=my-server-name (docker) webhook=configured
-```
 
 ## 💾 RAM Logging
 
@@ -385,7 +256,7 @@ docker run -d \
   -v urfix_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
-  ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE
+  ghcr.io/full-bars/meso-miner:latest YOUR_AUTH_CODE
 ```
 
 View logs live:
@@ -445,7 +316,7 @@ docker run -d \
   -v urfix_config:/root/.urnetwork \
   -v urfix_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
-  ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE
+  ghcr.io/full-bars/meso-miner:latest YOUR_AUTH_CODE
 ```
 
 **Status check:**
@@ -511,7 +382,7 @@ docker run -d \
   -v urfix_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
-  ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE
+  ghcr.io/full-bars/meso-miner:latest YOUR_AUTH_CODE
 ```
 
 > [!NOTE]
@@ -535,6 +406,9 @@ docker run -d \
 > The `urfix_config` volume is required when using Watchtower. Without it, Watchtower will pull a new image, recreate the container, and the auth code will be consumed again, which fails because auth codes are single-use. With the volume mounted, the existing JWT is reused.
 > 
 > **JWT Smart Refresh**: As of `v3.23.0-fix.17`, the container includes "smart refresh" logic. If the JWT stored in your volume expires, the provider will automatically detect this, delete the stale file, and attempt to re-authenticate using the `USER_AUTH` and `PASSWORD` environment variables if provided. This ensures your nodes stay online even if a JWT is revoked or corrupted during an update.
+
+> [!NOTE]
+> **Pelican Panel deployments**: When the image runs under a [Pelican panel](#-pelican-panel) with `PELICAN=yes`, the self-update scripts are disabled. The panel manages updates by re-pulling the published image. Runtime fetches are blocked to prevent silently replacing the audited fork binary mid-flight.
 
 ## ⏳ Idle Update
 
@@ -562,4 +436,135 @@ docker exec -it <container> urnet-tools idle-update --window 0
 > [!NOTE]
 > If `billable_rate` isn't available yet (provider predates this feature, or hasn't written its first sample), `idle-update` treats the node as **not idle** rather than assuming it's safe to update — it fails closed.
 
-For multiple containers, give each deployment a different container name, config volume, vnStat volume, and host port.
+## 📊 (Optional) Running with vnStat Bandwidth Monitor
+
+By default, production Docker deployments run with **zero listening ports** and vnStat disabled. The provider establishes all p2p tunnels and relay connections outbound, requiring no inbound port forwarding.
+
+If you specifically want the web-based vnStat traffic monitor to view real-time throughput graphs:
+
+### 1. Configuration Requirements
+- Set `-e ENABLE_VNSTAT=true`
+- Map a host port to container port `8080`: `-p <host_port>:8080`
+- Mount a persistent volume to preserve traffic history across restarts: `-v <name>_vnstat:/var/lib/vnstat`
+
+### 2. Single-Container Example
+
+```bash
+docker run -d \
+  --name=urfix \
+  --pull=always \
+  --restart=unless-stopped \
+  --cap-add=NET_ADMIN \
+  --cap-add=NET_RAW \
+  --sysctl net.ipv4.ip_forward=1 \
+  -e BUILD=jwt \
+  -e ENABLE_VNSTAT=true \
+  -e HOST_HOSTNAME=$(hostname) \
+  -v urfix_config:/root/.urnetwork \
+  -v urfix_vnstat:/var/lib/vnstat \
+  -v /path/to/proxy.txt:/app/proxy.txt \
+  -p 127.0.0.1:9001:8080 \
+  ghcr.io/full-bars/meso-miner:latest AUTH_CODE_HERE
+```
+
+Access the traffic page locally at `http://localhost:9001` (bind to `127.0.0.1` prevents exposing the unauthenticated vnStat web UI to the public internet; use a reverse proxy or SSH tunnel if accessing remotely).
+
+---
+
+### 3. Multi-Container Rules: Offsetting Ports & Volumes
+
+When running more than one provider container on the same host with vnStat enabled, you **must adhere to three mandatory isolation rules**:
+
+> [!CAUTION]
+> **1. Offset Host Ports:** The internal container port is always `:8080`. Every container running on the same Docker host must map to a **unique host port** (e.g. Node 1 on `127.0.0.1:9001`, Node 2 on `127.0.0.1:9002`). Attempting to reuse the same host port will cause a Docker daemon bind error (`bind: address already in use`).
+>
+> **2. Offset vnStat Storage Volumes:** Never point multiple containers at the same vnStat volume. vnStat maintains an active database inside `/var/lib/vnstat`. Sharing a single volume causes concurrent write locks, data clobbering, and database corruption. Each container must have its own isolated volume (e.g. `urfix-1_vnstat`, `urfix-2_vnstat`).
+>
+> **3. Isolate Provider Config Volumes (`/root/.urnetwork`):** Never share `/root/.urnetwork` between multiple running containers. The provider maintains process-local SQLite databases (`proxy.state`, `.client_jwts.json`, `lifetime`) and identity keys inside this directory. Sharing it across containers leads to lock contention and state corruption. Each container requires its own config volume (`ur_config_1`, `ur_config_2`).
+
+#### Multi-Container Compose Snippet:
+
+```yaml
+services:
+  node-1:
+    image: ghcr.io/full-bars/meso-miner:latest
+    container_name: urfix-1
+    environment:
+      - BUILD=jwt
+      - ENABLE_VNSTAT=true
+    volumes:
+      - ur_config_1:/root/.urnetwork    # ISOLATED identity & state volume
+      - urfix-1_vnstat:/var/lib/vnstat # DEDICATED vnStat volume
+      - ./proxy-1.txt:/app/proxy.txt
+    ports:
+      - "127.0.0.1:9001:8080"          # OFFSET host port (localhost bound)
+
+  node-2:
+    image: ghcr.io/full-bars/meso-miner:latest
+    container_name: urfix-2
+    environment:
+      - BUILD=jwt
+      - ENABLE_VNSTAT=true
+    volumes:
+      - ur_config_2:/root/.urnetwork    # ISOLATED identity & state volume
+      - urfix-2_vnstat:/var/lib/vnstat # DEDICATED vnStat volume
+      - ./proxy-2.txt:/app/proxy.txt
+    ports:
+      - "127.0.0.1:9002:8080"          # OFFSET host port (localhost bound)
+
+volumes:
+  ur_config_1:
+  ur_config_2:
+  urfix-1_vnstat:
+  urfix-2_vnstat:
+```
+
+---
+
+## 🐦 Pelican Panel
+
+As of `v3.23.0-fix.30.8`, the provider image is importable into the [Pelican game-server panel](https://github.com/pelican-dev/panel) as a one-click egg. The egg ships with the audit-preferred defaults pinned — vnStat off, IP checker off, and runtime self-update disabled.
+
+### Importing the egg
+
+1. Download the egg JSON from the repo: `pelican/egg-urnetwork-323fix.json`
+2. In Pelican admin, go to **Nests**, select or create a nest, and use **Import Egg** to upload the JSON.
+3. The egg pulls `ghcr.io/full-bars/meso-miner:latest` (multi-arch amd64/arm64).
+
+### Configuration variables
+
+| Variable | Editable | Description |
+|---|---|---|
+| `BUILD` | Yes | `stable`, `nightly`, or `jwt` |
+| `USER_AUTH` | Yes | Email/phone for password-based auth. Required for `stable`/`nightly`, ignored for `jwt` |
+| `PASSWORD` | Admin-only | Password for password-based auth. Required for `stable`/`nightly` |
+| `AUTHCODE` | Admin-only | One-time auth code from [ur.io](https://ur.io). Required for `jwt` |
+| `PELICAN` | Hidden | Always `yes` — set by the egg, not editable |
+| `ENABLE_VNSTAT` | Hidden | Always `false` in the egg |
+| `ENABLE_IP_CHECKER` | Hidden | Always `false` in the egg |
+
+### Authentication modes
+
+- **`BUILD=jwt`**: Uses `AUTHCODE` (one-time auth code from [ur.io](https://ur.io)). `pelican_panel.sh` calls `auth-provide "$AUTHCODE" -f` once; it does not retry on failure.
+- **`BUILD=stable`** or **`BUILD=nightly`**: Uses `USER_AUTH` + `PASSWORD` for password-based authentication, with retry-on-failure and automatic JWT re-auth after 3 crashes.
+
+> [!NOTE]
+> Under Pelican, `BUILD=nightly` currently behaves identically to `BUILD=stable`: the panel always routes through `pelican_panel.sh`, which runs the stable provider binary regardless of `BUILD`. The nightly-vs-stable binary split only applies outside Pelican mode. Don't rely on `BUILD=nightly` to get nightly binary behavior when `PELICAN=yes`.
+
+### Resource requirements
+
+The provider needs raw packet access on the node running the egg:
+
+- Container capability `NET_ADMIN` (and typically `NET_RAW`)
+- IP forwarding enabled on the host
+- Outbound UDP allowed, for WebRTC P2P transport
+
+No inbound ports need to be forwarded — the provider dials out.
+
+### Update behavior
+
+Under Pelican (`PELICAN=yes`), the self-update checks in `start_nightly.sh` and `urnet-tools update` are **disabled**. The published image is the single source of truth; to update, re-pull the image via the panel (**Settings → Reinstall**) or `docker pull`.
+
+### Testing
+
+The egg ships with automated CI checks (`docker/scripts/test_pelican_gates.sh` for egg JSON structure, variable contracts, and PELICAN-gate behavior; `docker/scripts/test_pelican_smoke.sh` for a full boot smoke test against a fake provider binary). For a real-panel import walkthrough and log output to expect, see `pelican/README.md`.
