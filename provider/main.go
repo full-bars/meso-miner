@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"runtime/debug"
@@ -688,12 +689,130 @@ func applyStagedSession() {
 	tlog("[session] staged session applied\n")
 }
 
+// sanitizeRootPath rewrites PATH when running as root. Instead of replacing
+// PATH with a fixed FHS list (which drops reachable entries on NixOS and
+// similar where systemctl lives under /run/current-system/sw/bin), it keeps
+// only existing absolute directories that are not group- or world-writable —
+// NOR any of their ancestor directories (M8: a root-owned leaf inside an
+// attacker-writable parent can be swapped for a malicious binary after
+// sanitization at process start; the leaf's permissions alone don't protect
+// it) — then appends the safe FHS defaults. Missing/relative/attacker-
+// writable entries are dropped.
+func sanitizeRootPath() {
+	seen := map[string]bool{}
+	// Ancestor checks are memoized per sanitized run: PATH entries share
+	// deep prefixes (e.g. /usr/lib/...), and stat-ing the whole chain for
+	// every entry is wasteful. Cached verdicts stay valid for the lifetime
+	// of the call, which is the same window the filter is meant to cover.
+	ancestorSafe := map[string]bool{}
+	isDirWritableByOthers := func(path string) bool {
+		info, err := os.Stat(path)
+		if err != nil {
+			// Missing ancestor: treat as unsafe — it could be created
+			// (and made writable) between now and exec time.
+			return true
+		}
+		if !info.IsDir() {
+			return true
+		}
+		return info.Mode().Perm()&0o022 != 0
+	}
+	ancestorWritable := func(abs string) bool {
+		// Walk from root down to the entry's parent (the leaf itself is
+		// checked separately by the caller). "/" (Clean's stop) is skipped.
+		p := filepath.Clean(abs)
+		var chain []string
+		for {
+			parent := filepath.Dir(p)
+			if parent == p {
+				break
+			}
+			chain = append(chain, p)
+			p = parent
+		}
+		// chain is [leaf, ..., /]; check ancestors only (exclude leaf at 0).
+		for i := len(chain) - 1; i >= 1; i-- {
+			dir := chain[i]
+			if v, ok := ancestorSafe[dir]; ok {
+				if !v {
+					return true
+				}
+				continue
+			}
+			unsafe := isDirWritableByOthers(dir)
+			ancestorSafe[dir] = !unsafe
+			if unsafe {
+				return true
+			}
+		}
+		return false
+	}
+	var filtered []string
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if dir == "" {
+			continue
+		}
+		abs := dir
+		if !filepath.IsAbs(dir) {
+			continue // relative entries are ambiguous for a root child exec
+		}
+		info, err := os.Stat(abs)
+		if err != nil || !info.IsDir() {
+			continue // missing or not a dir
+		}
+		mode := info.Mode()
+		// Drop group/world-writable dirs (attacker-jump targets), keep the rest.
+		if mode.Perm()&0o022 != 0 {
+			continue
+		}
+		if strings.Contains(abs, "..") {
+			continue
+		}
+		// M8 TOCTOU fix: also drop entries whose ANY ancestor directory is
+		// group/world-writable (or missing) — an unprivileged user who can
+		// write to a parent can replace the safe leaf after this filter ran.
+		if ancestorWritable(abs) {
+			continue
+		}
+		key := filepath.Clean(abs)
+		if !seen[key] {
+			seen[key] = true
+			filtered = append(filtered, key)
+		}
+	}
+	// Append safe FHS defaults (dedup) — through the SAME filter as the
+	// existing-PATH loop above. These are well-known paths, but on a host
+	// where one is missing, group/world-writable, or has an unsafe ancestor
+	// (e.g. a container image with a misconfigured /usr/local), appending it
+	// unchecked would re-introduce exactly the class of directory the filter
+	// above exists to remove.
+	for _, dir := range []string{"/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"} {
+		info, err := os.Stat(dir)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		if info.Mode().Perm()&0o022 != 0 {
+			continue
+		}
+		if ancestorWritable(dir) {
+			continue
+		}
+		key := filepath.Clean(dir)
+		if !seen[key] {
+			seen[key] = true
+			filtered = append(filtered, key)
+		}
+	}
+	os.Setenv("PATH", strings.Join(filtered, string(os.PathListSeparator)))
+}
+
 func main() {
 	// G-M2: sanitize PATH when running as root to prevent hijacking
-	// of exec.Command bare names (systemctl, docker, etc.) via
-	// attacker-writable directories earlier in root's PATH.
+	// of exec.Command bare names (systemctl, docker, etc.) via attacker-writable
+	// directories earlier in root's PATH. Filter rather than replace so
+	// reachable entries (e.g. NixOS /run/current-system/sw/bin) survive.
 	if os.Getuid() == 0 {
-		os.Setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+		sanitizeRootPath()
 	}
 
 	profile := os.Getenv("URNETWORK_PROFILE")
@@ -777,6 +896,8 @@ Usage:
     provider proxy exclude [<pattern>] [--remove]
     provider proxy summary
     provider proxy trim <count> [--preview]
+    provider direct <state>
+    provider proxy paste [--file=<file>]
     provider logs [-n <lines>]
     provider print-network-id <file>
     provider choose_network <api_url> [<connect_url>]
@@ -832,6 +953,8 @@ Options:
                                      cache, and excludes the pattern from future URL fetches. See 'proxy exclude'.
     <pattern>                        Host substring for 'proxy exclude' (add). With --remove, deletes the pattern.
                                      With no pattern, 'proxy exclude' lists active patterns.
+    --file=<file>                    Read 'proxy paste' input from a file instead of stdin. Each line is a
+                                     proxy (any common format) or an http(s) URL to fetch as a proxy source.
     <count>                          Max number of running proxies to keep. The A-F worst-graded above it are shed. 0/off clears the cap.
     --force                          Bypass the 8-hour warmup protection gate.
     -n <lines>                       Number of lines to show from the end of the log [default: 0].`,
@@ -867,6 +990,8 @@ Options:
 			}
 		} else if addSource, _ := opts.Bool("add-source"); addSource {
 			proxyAddSource(opts)
+		} else if paste, _ := opts.Bool("paste"); paste {
+			proxyPaste(opts)
 		} else if removeSource, _ := opts.Bool("remove-source"); removeSource {
 			proxyRemoveSource(opts)
 		} else if exclude, _ := opts.Bool("exclude"); exclude {
@@ -909,6 +1034,8 @@ Options:
 		printNetworkIdCmd(opts)
 	} else if chooseNetwork, _ := opts.Bool("choose_network"); chooseNetwork {
 		chooseNetworkCmd(opts)
+	} else if direct_, _ := opts.Bool("direct"); direct_ {
+		cmdDirect(opts)
 	}
 }
 
@@ -2519,6 +2646,9 @@ func provide(opts docopt.Opts) {
 		rawCancel()
 	}
 	defer cancel()
+	// Drain buffered retention events before exit so a shutdown racing the
+	// writer goroutine doesn't drop the tail of the log (proxy_health_log.go).
+	defer flushRetentionEvents()
 
 	// Exit-visibility: log what triggered the shutdown. The wrapped cancel
 	// function captures a stack trace at the moment it is first invoked. If
@@ -2602,23 +2732,9 @@ func provide(opts docopt.Opts) {
 	// via URNETWORK_SELF_HEAL=1 or `urnet-tools self-heal on`.
 	selfHealEnabled := os.Getenv("URNETWORK_SELF_HEAL") == "1"
 
-	// Extract API host:port for the reachability probe
-	apiProbeHost := defaultAPIHost
-	apiProbePort := uint16(defaultAPIPort)
-	if apiUrl != "" {
-		if h, p, err := net.SplitHostPort(strings.TrimPrefix(strings.TrimPrefix(apiUrl, "https://"), "http://")); err == nil {
-			apiProbeHost = h
-			if port, err := strconv.Atoi(p); err == nil && port >= 1 && port <= 65535 {
-				apiProbePort = uint16(port)
-			}
-		} else {
-			// No port in URL, just a hostname
-			cleaned := strings.TrimPrefix(strings.TrimPrefix(apiUrl, "https://"), "http://")
-			if cleaned != "" {
-				apiProbeHost = cleaned
-			}
-		}
-	}
+	// Extract API host:port for the reachability probe (from the chosen
+	// network's API URL, already resolved above via resolveApiUrl).
+	apiProbeHost, apiProbePort := apiProbeHostPort(apiUrl)
 	// Wrapped in connect.HandleError so a panic in paceMonitor degrades to
 	// "that one loop dies" instead of taking the whole provider process down,
 	// consistent with every other fleet background loop (#12 fault isolation).
@@ -3246,20 +3362,53 @@ func provide(opts docopt.Opts) {
 		return false
 	})
 
-	// ALWAYS start the native [direct] connection as proxy[0].
-	// We run this exactly like a proxy so it registers in telemetry and earns bandwidth.
-	wg.Add(1)
-	nativeCtx, nativeCancel := context.WithCancel(ctx)
-	// We don't add nativeCancel to the proxyCancelMap so it is immune to hot-reload deletions.
-	go connect.HandleError(func() {
-		defer wg.Done()
-		defer nativeCancel()
-		defer connect.UnregisterProxy(0)
+	// Start the native [direct] connection as proxy[0] unless the operator
+	// has explicitly disabled it. Precedence (highest to lowest):
+	//   1. Runtime toggle file ~/.urnetwork/direct (set via `provider direct off|on`)
+	//   2. DISABLE_DIRECT_IP=1 env var (startup-only default)
+	// The toggle file always wins — `provider direct on` re-enables direct
+	// even if the env var was set, and vice versa.
+	noDirect := !isDirectEnabled()
+	// Published to the reloader below so a `direct off` before any reload
+	// has hot-toggled direct doesn't skip the bounded wait for this startup
+	// goroutine (it would otherwise unregister proxy[0] out from under a
+	// still-running direct transport).
+	var directStartupDone chan struct{}
+	if !noDirect {
+		// ALWAYS start the native [direct] connection as proxy[0].
+		// We run this exactly like a proxy so it registers in telemetry and earns bandwidth.
+		wg.Add(1)
+		nativeCtx, nativeCancel := context.WithCancel(ctx)
+		// Register nativeCancel in the reloader's cancelMap under the special
+		// key "direct" so reload() can hot-toggle it via `provider direct off|on`.
+		proxyCancelMu.Lock()
+		proxyCancelMap[directProxyKey] = nativeCancel
+		proxyCancelMu.Unlock()
+		directStartupDone = make(chan struct{})
+		go connect.HandleError(func() {
+			defer close(directStartupDone) // first defer = runs last (LIFO)
+			defer wg.Done()
+			defer nativeCancel()
+			// Clean up cancelMap entry AFTER UnregisterProxy so stale-unregister
+			// can't nuke a fresh direct's registration, and so the reloader's
+			// running[] snapshot doesn't leave direct permanently "running" after
+			// the goroutine exits.
+			defer func() {
+				proxyCancelMu.Lock()
+				if cur, ok := proxyCancelMap[directProxyKey]; ok && reflect.ValueOf(cur).Pointer() == reflect.ValueOf(nativeCancel).Pointer() {
+					delete(proxyCancelMap, directProxyKey)
+				}
+				proxyCancelMu.Unlock()
+			}()
+			defer connect.UnregisterProxy(0)
 
-		// Register it early so it shows up in health reports immediately as [direct]
-		connect.RegisterProxy(0, "direct")
-		provideWithProxy(nativeCtx, nil, true, false)
-	})
+			// Register it early so it shows up in health reports immediately as [direct]
+			connect.RegisterProxy(0, "direct")
+			provideWithProxy(nativeCtx, nil, true, false)
+		})
+	} else {
+		tlog("[no-direct] providing on direct/local IP is disabled; using proxy list only\n")
+	}
 
 	// Persist the initial state snapshot now that all IDs are resolved.
 	proxyState.NextID = currentProxyIDCounter()
@@ -3350,6 +3499,7 @@ func provide(opts docopt.Opts) {
 		wg:              &wg,
 		spawnProxy:      provideWithProxy,
 		drainingProxies: make(map[string]context.CancelFunc),
+		directDone:      directStartupDone,
 	}
 	reloader.StartWatcher(ctx)
 	// Enforce an operator trim cap immediately at startup. The initial launch
@@ -3426,9 +3576,12 @@ func provide(opts docopt.Opts) {
 	// All goroutines have finished. Log final status before exit.
 	tlog("[provider] exiting\n")
 	critLog("PROVIDER EXIT: normal shutdown (code=0)")
-	// Explicitly close the DoH cache before os.Exit(0) since defers do
-	// not run on os.Exit. idempotent — safe if already called by defer.
+	// Explicitly close the DoH cache and flush retention events before
+	// os.Exit(0) since defers do not run on os.Exit. Both are idempotent —
+	// safe if already called by their defer (flushRetentionEvents guards on
+	// retentionEventClosed; closeDohCache is safe to call twice).
 	closeDohCache()
+	flushRetentionEvents()
 	os.Exit(0)
 }
 
@@ -4832,7 +4985,9 @@ func proxyAddSource(opts docopt.Opts) {
 	// maxTotal=0 here: the cap configured for the running provide() process
 	// (--proxy_url_max) applies to its own background fetcher, not to this
 	// one-shot CLI fetch. The next scheduled fetch will resume honoring it.
-	fetchAndMergeProxyURLs(context.Background(), []string{url}, 0, defaultAPIHost, defaultAPIPort)
+	// M6: probe the chosen network's API, not a hardcoded main-network host.
+	probeHost, probePort := resolveAPIProbeHostPort()
+	fetchAndMergeProxyURLs(context.Background(), []string{url}, 0, probeHost, probePort)
 	fmt.Println("done.")
 }
 

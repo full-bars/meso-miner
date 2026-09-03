@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -62,16 +63,15 @@ func cmdUsage(args []string) error {
 		switch a {
 		case "graphs":
 			// `usage graphs` = all three views; never treat a following
-			// token (e.g. --unit) as a view.
-			return cmdUsageGraph(args[:i], "")
+			// token (e.g. --unit) as a view. Drop only the subcommand
+			// token itself -- flags before AND after it (e.g.
+			// `usage graphs --unit X`) must still reach target parsing.
+			return cmdUsageGraph(usageGraphsArgs(args, i), "")
 		case "graph":
 			// `usage graph <view>`: consume exactly one non-flag token as
 			// the view; flags before/after still route to target parsing.
-			var view string
-			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
-				view = args[i+1]
-			}
-			return cmdUsageGraph(args[:i], view)
+			targetArgs, view := usageGraphArgs(args, i)
+			return cmdUsageGraph(targetArgs, view)
 		case "-h", "--help":
 			return fmt.Errorf("usage: show aggregate usage (billable vs control)\n\n  urnet-tools usage\n  urnet-tools usage graphs\n  urnet-tools usage graph day|hour|month")
 		}
@@ -79,6 +79,27 @@ func cmdUsage(args []string) error {
 
 	// No subcommand found — treat all args as target flags and show cards.
 	return cmdUsageCards(args)
+}
+
+// usageGraphsArgs computes the target-flag args for `usage graphs`: args
+// with the subcommand token at index i removed. Flags before AND after the
+// subcommand token (e.g. `usage graphs --unit X`) are preserved -- dropping
+// everything from i onward (args[:i]) would silently discard trailing
+// flags.
+func usageGraphsArgs(args []string, i int) []string {
+	return append(append([]string{}, args[:i]...), args[i+1:]...)
+}
+
+// usageGraphArgs computes the target-flag args and view for
+// `usage graph [<view>]`: args with the subcommand token at index i removed,
+// consuming the following token as the view only when it's present and not
+// itself a flag. Flags before AND after the subcommand token (and the
+// consumed view, if any) are preserved.
+func usageGraphArgs(args []string, i int) (targetArgs []string, view string) {
+	if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+		return append(append([]string{}, args[:i]...), args[i+2:]...), args[i+1]
+	}
+	return append(append([]string{}, args[:i]...), args[i+1:]...), ""
 }
 
 // cmdUsageCards renders the summary cards for a targeted provider.
@@ -96,7 +117,9 @@ func cmdUsageCards(targetArgs []string) error {
 	}
 
 	// The reference (latest) snapshot gives "since start" (cumulative-per-process,
-	// which resets on restart). Lifetime is the running max over the file.
+	// which resets on restart). Lifetime is segment-summed from the history
+	// (see usageLifetime): the totals can drop on ordinary proxy churn, so a
+	// running max would discard post-drop growth.
 	ref := snaps[len(snaps)-1]
 	sinceStart := usageAggregates{BillableRX: ref.BillableRX, BillableTX: ref.BillableTX, TotalRX: ref.RX, TotalTX: ref.TX}
 	lifetime := usageLifetime(snaps)
@@ -115,6 +138,14 @@ func cmdUsageCards(targetArgs []string) error {
 	fmt.Println()
 	fmt.Printf("  Lifetime billable share: %.1f%% of %s total\n",
 		pct(lifetime.Billable(), lifetime.Total()), fmtBytes(lifetime.Total()))
+	for title, agg := range map[string]usageAggregates{
+		"LIFETIME": lifetime, "LAST 30D": month, "LAST 7D": week, "LAST 24H": day, "SINCE START": sinceStart,
+	} {
+		if agg.BillableExceedsTotal() {
+			fmt.Fprintf(os.Stderr, "warning: %s: billable (%s) > total (%s) — independent counters (ip.go vs net.go) disagree; control traffic floored to 0\n",
+				title, fmtBytes(agg.Billable()), fmtBytes(agg.Total()))
+		}
+	}
 	fmt.Printf("  Updated with latest hourly snapshot %s\n", ref.TS.UTC().Format(time.RFC3339))
 	return nil
 }
