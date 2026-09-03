@@ -45,21 +45,11 @@ urnet-docker logs --unit urfix 100              # stream logs (RAMLOGS-aware)
 > [!NOTE]
 > `urnet-docker update` with a target flag (such as `--unit`) updates a provider container in place. The container ID stays the same. Plain `urnet-docker update` with no target updates only the host tool binary. Containers can also be updated by pulling a new image and recreating the container (e.g. via Docker Compose or Watchtower).
 
-## 🗄️ Image Registries
-
-Primary image:
+## 🗄️ Image Registry
 
 ```text
 ghcr.io/full-bars/meso-miner:latest
 ```
-
-Docker Hub mirror:
-
-```text
-3cape/urnetwork-3.23-fix:latest
-```
-
-Use the Docker Hub mirror if GHCR returns `denied` errors or rate-limiting.
 
 ## 🔑 Persistent JWT
 
@@ -67,7 +57,7 @@ The JWT is stored inside the container at `/root/.urnetwork/jwt`. Without a pers
 
 All examples below mount a config volume at `/root/.urnetwork`. With this volume in place, the startup script detects the existing JWT and skips authentication on later starts. Auth codes are only consumed once: on first run or after manually removing the config volume.
 
-## 🏃 Docker Run - GHCR
+## 🏃 Docker Run
 
 The examples below use `urfix` as the container name.
 
@@ -150,58 +140,6 @@ docker run -d \
   -v urfix_config:/root/.urnetwork \
   -v /path/to/proxy.txt:/app/proxy.txt \
   ghcr.io/full-bars/meso-miner:latest
-```
-
-## 🏃 Docker Run - Docker Hub
-
-The commands are identical to GHCR except for the image name.
-
-### 🔐 JWT Auth
-
-```bash
-docker run -d \
-  --name=urfix \
-  --pull=always \
-  --restart=unless-stopped \
-  --cap-add=NET_ADMIN \
-  --cap-add=NET_RAW \
-  --sysctl net.ipv4.ip_forward=1 \
-  --log-driver=json-file \
-  --log-opt max-size=10m \
-  --log-opt max-file=3 \
-  -e BUILD=jwt \
-  -e HOST_HOSTNAME=$(hostname) \
-  -v urfix_config:/root/.urnetwork \
-  -v /path/to/proxy.txt:/app/proxy.txt \
-  3cape/meso-miner:latest AUTH_CODE_HERE
-```
-
-Alternative method:
-
-```bash
--e URNETWORK_AUTH_CODE=YOUR_CODE
-```
-
-### ✉️ Email/Password Auth
-
-```bash
-docker run -d \
-  --name=urfix \
-  --pull=always \
-  --restart=unless-stopped \
-  --cap-add=NET_ADMIN \
-  --cap-add=NET_RAW \
-  --sysctl net.ipv4.ip_forward=1 \
-  --log-driver=json-file \
-  --log-opt max-size=10m \
-  --log-opt max-file=3 \
-  -e BUILD=stable \
-  -e USER_AUTH=you@example.com \
-  -e PASSWORD=yourpassword \
-  -e HOST_HOSTNAME=$(hostname) \
-  -v urfix_config:/root/.urnetwork \
-  -v /path/to/proxy.txt:/app/proxy.txt \
-  3cape/meso-miner:latest
 ```
 
 ## 🐙 Docker Compose
