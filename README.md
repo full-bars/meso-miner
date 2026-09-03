@@ -93,13 +93,10 @@ docker run -d \
   -e BUILD=jwt \
   -e URNETWORK_PROFILE=auto \
   -e URNETWORK_RAMLOGS=1 \
-  -e ENABLE_VNSTAT=true \
   -e HOST_HOSTNAME=$(hostname) \
   -e PROXY_URL='https://example.com/your-proxy-list.txt' \
   -v urnetwork_config:/root/.urnetwork \
-  -v urnetwork_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
-  -p 8080:8080 \
   -e URNETWORK_AUTH_CODE='YOUR_AUTH_CODE_HERE' \
   ghcr.io/full-bars/meso-miner:latest
 ```
