@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"golang.org/x/net/proxy"
+	"golang.org/x/sync/singleflight"
 )
 
 type DialContextFunction = func(ctx context.Context, network string, addr string) (net.Conn, error)
@@ -27,46 +28,8 @@ type dnsCacheEntry struct {
 var dnsCache struct {
 	mu  sync.Mutex
 	m   map[string]dnsCacheEntry
-	sg  dnsFlight
+	sg  singleflight.Group
 	neg map[string]time.Time // negative cache: host -> expiry
-}
-
-// dnsFlight coalesces concurrent lookups for the same host — a minimal
-// single-flight. Inlined because golang.org/x/sync is only an indirect
-// dependency on meso-miner and go.mod is frozen.
-type dnsFlight struct {
-	mu    sync.Mutex
-	calls map[string]*dnsFlightCall
-}
-
-type dnsFlightCall struct {
-	wg  sync.WaitGroup
-	ip  string
-	err error
-}
-
-func (g *dnsFlight) Do(host string, fn func() (string, error)) (string, error) {
-	g.mu.Lock()
-	if g.calls == nil {
-		g.calls = make(map[string]*dnsFlightCall)
-	}
-	if c, ok := g.calls[host]; ok {
-		g.mu.Unlock()
-		c.wg.Wait()
-		return c.ip, c.err
-	}
-	c := &dnsFlightCall{}
-	c.wg.Add(1)
-	g.calls[host] = c
-	g.mu.Unlock()
-
-	c.ip, c.err = fn()
-	c.wg.Done()
-
-	g.mu.Lock()
-	delete(g.calls, host)
-	g.mu.Unlock()
-	return c.ip, c.err
 }
 
 const dnsCacheTTL = 60 * time.Second
@@ -136,16 +99,16 @@ func lookupProxyTarget(ctx context.Context, host string) (string, bool) {
 	}
 	dnsCache.mu.Unlock()
 
-	// Use the inlined single-flight to coalesce concurrent lookups for the
-	// same host. Without this, 2000 warmup goroutines that all miss the
-	// cache each issue their own LookupNetIP (finding #3 — resolver stampede).
-	ip, err := dnsCache.sg.Do(host, func() (string, error) {
+	// Use singleflight to coalesce concurrent lookups for the same host.
+	// Without this, 2000 warmup goroutines that all miss the cache each
+	// issue their own LookupNetIP (finding #3 — resolver stampede).
+	result, err, _ := dnsCache.sg.Do(host, func() (any, error) {
 		ips, err := net.DefaultResolver.LookupNetIP(resolveCtx, "ip4", host)
 		if err != nil {
-			return "", fmt.Errorf("dns: %w", err)
+			return nil, fmt.Errorf("dns: %w", err)
 		}
 		if len(ips) == 0 {
-			return "", fmt.Errorf("dns: no addresses for %s", host)
+			return nil, fmt.Errorf("dns: no addresses for %s", host)
 		}
 		return ips[0].String(), nil
 	})
@@ -161,14 +124,19 @@ func lookupProxyTarget(ctx context.Context, host string) (string, bool) {
 			return ip, true
 		}
 		// Cache the negative result for 10s to avoid hammering the resolver
-		// for the same nonexistent hostname (finding #4).
+		// for the same nonexistent hostname (finding #4). Prune here too:
+		// the success path is the only place pruneDNSCacheLocked runs today,
+		// and a workload of distinct failing lookups never reaches it (M7).
 		if dnsCache.neg == nil {
 			dnsCache.neg = make(map[string]time.Time)
 		}
 		dnsCache.neg[host] = time.Now().Add(10 * time.Second)
+		pruneDNSCacheNegLocked(time.Now())
 		dnsCache.mu.Unlock()
 		return "", false
 	}
+
+	ip := result.(string)
 
 	// Re-acquire to store the fresh result; re-check for a concurrent
 	// writer's fresher entry so we don't clobber it.
@@ -199,7 +167,36 @@ func lookupProxyTarget(ctx context.Context, host string) (string, bool) {
 // negPruneCap is the maximum size of the negative DNS cache.
 const negPruneCap = 1024
 
+// pruneDNSCacheNegLocked sweeps expired negative-cache entries and caps the
+// map at negPruneCap by arbitrary eviction. Caller holds dnsCache.mu.
+// Called both on the failure path (M7: a workload of distinct failing
+// lookups never reaches the success path's pruneDNSCacheLocked) and from
+// pruneDNSCacheLocked itself.
+func pruneDNSCacheNegLocked(now time.Time) {
+	if len(dnsCache.neg) == 0 {
+		return
+	}
+	for k, exp := range dnsCache.neg {
+		if now.After(exp) {
+			delete(dnsCache.neg, k)
+		}
+	}
+	for len(dnsCache.neg) > negPruneCap {
+		for k := range dnsCache.neg {
+			delete(dnsCache.neg, k)
+			break
+		}
+	}
+}
+
 func pruneDNSCacheLocked(now time.Time) {
+	// M7: the negative cache is swept on EVERY prune call, independent of
+	// the positive-cache-size early returns below. pruneDNSCacheLocked only
+	// runs on the success path, where a workload of distinct failing lookups
+	// never trips the positive threshold — without this unconditional sweep,
+	// dnsCache.neg would grow without bound.
+	pruneDNSCacheNegLocked(now)
+
 	const targetPercent = 90
 	target := dnsCacheMaxEntries * targetPercent / 100
 
@@ -242,21 +239,6 @@ func pruneDNSCacheLocked(now time.Time) {
 		}
 		pairs[i], pairs[minIdx] = pairs[minIdx], pairs[i]
 		delete(dnsCache.m, pairs[i].key)
-	}
-
-	// Prune the negative cache: drop expired entries, then cap.
-	if len(dnsCache.neg) > 0 {
-		for k, exp := range dnsCache.neg {
-			if now.After(exp) {
-				delete(dnsCache.neg, k)
-			}
-		}
-		for len(dnsCache.neg) > negPruneCap {
-			for k := range dnsCache.neg {
-				delete(dnsCache.neg, k)
-				break
-			}
-		}
 	}
 }
 
