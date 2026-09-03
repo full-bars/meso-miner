@@ -114,11 +114,13 @@ docker run -d \
 See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/password auth, Watchtower, multi-container, and advanced options.
 
 > [!NOTE]
-> **Docker shortcuts** — `urnet-tools` commands work via `docker exec` (same as bare-metal):
-> - `docker exec -it urfix urnet-tools proxy health`
-> - `docker exec -it urfix urnet-tools logs`
-> - `docker exec -it urfix urnet-tools status`
-> - `docker exec -it urfix urnet-tools session save /root/.urnetwork/backup.urnsession`
+> **Docker Management** — Use `urnet-docker` directly on the host (no `docker exec` wrapping needed):
+> - `urnet-docker status`
+> - `urnet-docker direct status` (or `urnet-docker direct off` for proxy-only mode)
+> - `urnet-docker usage` (or `urnet-docker usage graphs` for time-series history)
+> - `urnet-docker proxy add ~/proxies.txt`
+> - `cat proxies.txt | urnet-docker proxy paste`
+> - `urnet-docker proxy traffic`
 
 ---
 
@@ -127,6 +129,11 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 | Command | Use this when... |
 | :--- | :--- |
 | `urnetwork auth` | You need to log in or refresh your identity manually |
+| `urnet-tools direct [on\|off\|status]` | You want to check or toggle native direct IP providing (`off` = proxy-only stealth) |
+| `urnet-tools usage [graphs]` | You want to view persistent traffic accounting (billable relay vs control plane split) |
+| `urnet-tools proxy add <path\|url>` | You want to add proxies from a file (straight path or `--file=`) or URL source |
+| `urnet-tools proxy paste < file` | You want to stream raw proxies from stdin or a pipe into the provider |
+| `urnet-tools proxy trim <count>` | You want to enforce a hard cap, shedding worst A-F reachability graded proxies first |
 | `urnet-tools proxy traffic` | You want to see active clients, bandwidth, and **Max Age** per proxy |
 | `urnet-tools proxy health` | You need to see which proxies are `DEAD` vs `DEGRADED` vs `UP` |
 | `urnet-tools logs` | You want to stream the current RAMLOGS buffer |
@@ -136,12 +143,11 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 | `urnet-tools hot-restart on/off` | Toggle client JWT reuse across restarts (on by default; `off` sets `URNETWORK_HOT_RESTART=0`) |
 | `urnet-tools session save <file>` | Export identity+proxy state as encrypted bundle (cross-machine transfer) |
 | `urnet-tools session load <file>` | Import identity+proxy state, then restart |
-| `urnet-tools report` | You want to check which URL the provider is currently reporting to |
 | `urnetwork choose_network <api_url> <connect_url>` | You run your own API/connect backend and want the provider to default to it |
 | `urnetwork choose_network --reset` | You want to clear a saved custom network and revert to the main network |
 
 > [!TIP]
-> `~/proxies.txt` and `/home/user/proxies.txt` are both valid path formats.
+> `~/proxies.txt` and `/home/user/proxies.txt` are both valid straight path formats across all tools.
 
 ---
 
