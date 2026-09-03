@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/urnetwork/connect"
@@ -15,10 +16,10 @@ import (
 
 // usageHistoryMaxBytes bounds the accumulated usage history file before it
 // rotates to <name>.1. At ~90 bytes/row and hourly snapshots, 512 MiB is
-// ~60+ years of history. The cap guards against a runaway writer. NOTE:
-// the LIFETIME metric (running max over the file) is approximate if the
-// file rotates — old rows beyond the cap are lost, so lifetime may not
-// reflect very early data. Compaction is intentionally not implemented.
+// ~60+ years of history. The cap guards against a runaway writer. NOTE: if
+// the file rotates, readUsageHistory still reads the rotated .1 file, so
+// LIFETIME (segment-summed over the full history, see usageLifetime)
+// continues to include pre-rotation rows.
 const usageHistoryMaxBytes = 512 << 20 // 512 MiB
 
 // usageHistoryPath is the persistent JSONL history of aggregate usage
@@ -305,8 +306,104 @@ func rotateIfNeeded(path string, maxBytes int64) {
 	_ = os.Rename(path, path+".1")
 }
 
-// appendRetentionEvent appends a retention telemetry line to the health event log.
+// retentionEventBuffer bounds the pending retention events before the writer
+// drops new entries under sustained backpressure (events are telemetry, not
+// correctness-critical — dropping is preferable to blocking the transfer
+// sequence goroutine that fires the callback).
+const retentionEventBuffer = 256
+
+// retentionEventCh is the buffered channel feeding the single retention-event
+// writer goroutine. Created lazily on first use so CLI subcommands that never
+// wire RetentionEventCallback pay nothing.
+var (
+	retentionEventOnce sync.Once
+	retentionEventCh   chan string
+	retentionEventDone chan struct{}
+
+	// retentionEventMu guards retentionEventClosed against the race between
+	// flushRetentionEvents closing retentionEventCh and a SendSequence still
+	// draining on shutdown calling appendRetentionEvent concurrently — the
+	// teardown drain (transfer.go Run() exit path) fires RetentionEventCallback
+	// for every retained item, which is exactly the same window flush runs in.
+	// Without this guard a send on the closed channel panics the process
+	// during what should be a graceful shutdown.
+	retentionEventMu     sync.Mutex
+	retentionEventClosed bool
+
+	// retentionEventDropped counts events dropped because the buffer was
+	// full. Incremented with a non-blocking atomic op on the hot path;
+	// reported from the writer goroutine (off the hot path) instead of via
+	// a synchronous stderr write at drop time, which could block on a slow
+	// pipe/log collector and stall the transfer sequence that called
+	// appendRetentionEvent.
+	retentionEventDropped atomic.Uint64
+)
+
+// startRetentionEventWriter launches the single goroutine that performs the
+// per-event file I/O (stat + rotate + open + append + close) off the hot path.
+func startRetentionEventWriter() {
+	retentionEventOnce.Do(func() {
+		retentionEventCh = make(chan string, retentionEventBuffer)
+		retentionEventDone = make(chan struct{})
+		go func() {
+			defer close(retentionEventDone)
+			var lastReportedDropped uint64
+			for event := range retentionEventCh {
+				writeRetentionEventLine(event)
+				if dropped := retentionEventDropped.Load(); dropped != lastReportedDropped {
+					fmt.Fprintf(os.Stderr, "[provider] warn: retention event buffer was full, dropped %d event(s)\n", dropped-lastReportedDropped)
+					lastReportedDropped = dropped
+				}
+			}
+		}()
+	})
+}
+
+// appendRetentionEvent buffers a retention telemetry line and returns
+// immediately; a single writer goroutine performs the file I/O. When the
+// buffer is full the event is dropped (with a stderr note) rather than
+// blocking the caller, which runs on the transfer sequence hot path.
 func appendRetentionEvent(event string) {
+	startRetentionEventWriter()
+	retentionEventMu.Lock()
+	defer retentionEventMu.Unlock()
+	if retentionEventClosed {
+		// Lost the race with shutdown's flush; the writer goroutine has
+		// already been told to drain and exit. Telemetry, not correctness —
+		// drop rather than reopen a closed channel.
+		return
+	}
+	select {
+	case retentionEventCh <- event:
+	default:
+		// Non-blocking: never write to stderr synchronously here. This runs
+		// on the transfer sequence hot path (RetentionEventCallback), and a
+		// blocked stderr write (slow pipe/log collector) would stall
+		// transfer sequences under sustained retention-event backpressure.
+		// The writer goroutine reports the drop count once it next runs.
+		retentionEventDropped.Add(1)
+	}
+}
+
+// flushRetentionEvents drains all buffered events and waits for the writer
+// goroutine to finish, so no pending entries are lost at shutdown. Safe to
+// call multiple times (subsequent calls are no-ops) and safe to race against
+// concurrent appendRetentionEvent calls (retentionEventMu makes the close
+// and the closed-check atomic with respect to each other).
+func flushRetentionEvents() {
+	startRetentionEventWriter()
+	retentionEventMu.Lock()
+	if !retentionEventClosed {
+		retentionEventClosed = true
+		close(retentionEventCh)
+	}
+	retentionEventMu.Unlock()
+	<-retentionEventDone
+}
+
+// writeRetentionEventLine performs the actual append of one retention event
+// to the health event log. Runs only on the writer goroutine.
+func writeRetentionEventLine(event string) {
 	dir, ok := proxyHealthDir()
 	if !ok {
 		return

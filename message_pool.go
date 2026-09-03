@@ -51,20 +51,44 @@ var globalPoolMetrics = &PoolMetrics{
 	LastResetTime:    time.Now(),
 }
 
-var sizeDistMu sync.Mutex
+var sizeDistMu sync.RWMutex
 
-// addSizeDistribution increments the per-size buffer counter for size,
-// creating the entry on first use. The map is guarded so concurrent first-use
-// from different goroutines cannot race.
-func addSizeDistribution(size int) {
+var initSizeDistOnce sync.Once
+
+func initSizeDist() {
 	sizeDistMu.Lock()
+	defer sizeDistMu.Unlock()
+	for _, size := range []int{2048, 4096, 16384, 32768, 65536} {
+		globalPoolMetrics.SizeDistribution[size] = &atomic.Uint64{}
+	}
+}
+
+// addSizeDistribution increments the per-size buffer counter for size.
+// Lock-free fast path for the 5 known pool sizes (pre-populated by initSizeDist).
+// Unknown sizes fall back to a locked lazy-create (cold path, rare in practice).
+func addSizeDistribution(size int) {
+	initSizeDistOnce.Do(initSizeDist)
+	// Fast path (5 known pool sizes): read the pre-populated entry under a
+	// read lock. RLock is required — the map is WRITTEN by the cold path and
+	// the snapshot iterator, so an unlocked read races a concurrent map write
+	// and crashes the process (`fatal: concurrent map read and map write`).
+	sizeDistMu.RLock()
 	counter, ok := globalPoolMetrics.SizeDistribution[size]
-	if !ok {
+	sizeDistMu.RUnlock()
+	if ok {
+		counter.Add(1)
+		return
+	}
+	// Cold path: unknown pool size — create entry under write lock.
+	sizeDistMu.Lock()
+	defer sizeDistMu.Unlock()
+	if counter, ok := globalPoolMetrics.SizeDistribution[size]; ok {
+		counter.Add(1)
+	} else {
 		counter = &atomic.Uint64{}
 		globalPoolMetrics.SizeDistribution[size] = counter
+		counter.Add(1)
 	}
-	sizeDistMu.Unlock()
-	counter.Add(1)
 }
 
 // new byte allocations in the connect package use pooled message buffers,
@@ -93,6 +117,23 @@ const debugTags = false
 // [8 byte id][1 byte tag][1 byte flags][2 byte ref count][1 byte shard index]
 const MessagePoolMetaByteCount = 13
 const MessagePoolFlagShared = uint8(0x01)
+
+// MessagePoolRefusedShareCountMask/Shift address bits 1-7 of the flags byte,
+// holding a saturating count (0-127) of MessagePoolShareReadOnly calls
+// REFUSED on this buffer (refcount at uint16 max). Each refused share marks
+// the buffer as one the caller must NOT pass to MessagePoolReturn without
+// forgiveness: without tracking it, the refused share's eventual Return
+// would over-decrement a legitimate owner's reference (L4 — previously only
+// a log warning, undetectable by the caller). MessagePoolReturn treats a
+// nonzero count as a signal to skip the decrement and consume ONE unit of
+// forgiveness, so each refusal degrades exactly one future Return to a
+// no-op — not just the first. A single bit (the original fix) could only
+// forgive one refusal even when several stacked up on the same buffer,
+// letting later no-op Returns fall through to a real decrement and
+// over-release a legitimate owner's reference.
+const MessagePoolRefusedShareCountShift = 1
+const MessagePoolRefusedShareCountMask = uint8(0xFE)
+const MessagePoolMaxRefusedShareCount = uint8(0x7F) // 127, saturating cap
 
 var InitialMessagePoolByteCount = mib(2)
 
@@ -563,7 +604,22 @@ func MessagePoolReturn(message []byte) bool {
 				defer shard.mutex.Unlock()
 
 				count := binary.BigEndian.Uint16(poolMessage[pool.size+10:])
-				if count == 0 {
+				refusedCount := (poolMessage[pool.size+9] & MessagePoolRefusedShareCountMask) >> MessagePoolRefusedShareCountShift
+				if refusedCount != 0 {
+					// L4: this buffer has one or more refused
+					// MessagePoolShareReadOnly calls outstanding (refcount
+					// overflow). Its refcount does NOT include those failed
+					// shares, so consuming a Return for one would
+					// over-decrement a legitimate owner's reference.
+					// Degrade to a no-op return: consume one unit of
+					// forgiveness and skip the decrement entirely. Only
+					// once every refused share has been forgiven does a
+					// Return resume decrementing for real.
+					refusedCount--
+					poolMessage[pool.size+9] = (poolMessage[pool.size+9] &^ MessagePoolRefusedShareCountMask) |
+						(refusedCount << MessagePoolRefusedShareCountShift)
+					DefaultLogger().Warningf("[mp]return message[%d] flagged no-return (refused share); skipping decrement", id)
+				} else if count == 0 {
 					if debugTags {
 						err := fmt.Errorf("[mp]return message[%d] not taken", id)
 						DefaultLogger().Errorf("[mp]%s", ErrorJson(err, debug.Stack()))
@@ -614,6 +670,28 @@ func MessagePoolShareReadOnly(message []byte) []byte {
 				count := binary.BigEndian.Uint16(poolMessage[pool.size+10:])
 				if count == 0 {
 					DefaultLogger().Warningf("[mp]share message[%d] not taken", id)
+				} else if count == ^uint16(0) {
+					// G-M5 fix: refuse share at uint16 max to prevent
+					// overflow wrapping to 0 (which reads as "not taken"
+					// everywhere else → cross-flow data corruption).
+					//
+					// L4 fix: bump the refused-share count so the (contract-
+					// violating) caller that returns this buffer anyway is
+					// caught by MessagePoolReturn, which skips the decrement
+					// for buffers with outstanding refusals — a no-op
+					// return, not an over-decrement of a legitimate owner's
+					// reference. A saturating counter (not a single bit) so
+					// stacked refusals each get their own forgiveness.
+					flags := poolMessage[pool.size+9]
+					refusedCount := (flags & MessagePoolRefusedShareCountMask) >> MessagePoolRefusedShareCountShift
+					if refusedCount < MessagePoolMaxRefusedShareCount {
+						refusedCount++
+					} else {
+						DefaultLogger().Warningf("[mp]share message[%d] refused-share count saturated at %d", id, MessagePoolMaxRefusedShareCount)
+					}
+					poolMessage[pool.size+9] = (flags &^ MessagePoolRefusedShareCountMask) |
+						(refusedCount << MessagePoolRefusedShareCountShift)
+					DefaultLogger().Warningf("[mp]share message[%d] refcount overflow, refusing (flagged no-return)", id)
 				} else {
 					binary.BigEndian.PutUint16(poolMessage[pool.size+10:], count+1)
 					poolMessage[pool.size+9] |= MessagePoolFlagShared
@@ -730,11 +808,14 @@ func EnhancedMetrics() map[string]any {
 	gcPauses := sampleGCPauses()
 
 	sizeDistribution := map[string]uint64{}
-	sizeDistMu.Lock()
+	// RLock: the snapshot only reads this map; a read lock still excludes the
+	// cold-path writer (which takes Lock), so the iteration never races a map
+	// write, while letting concurrent fast-path readers proceed.
+	sizeDistMu.RLock()
 	for size, count := range globalPoolMetrics.SizeDistribution {
 		sizeDistribution[fmt.Sprintf("%d", size)] = count.Load()
 	}
-	sizeDistMu.Unlock()
+	sizeDistMu.RUnlock()
 
 	return map[string]any{
 		"hits":              globalPoolMetrics.Hits.Load(),

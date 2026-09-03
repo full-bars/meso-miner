@@ -54,8 +54,10 @@ Proxy Management:
  proxy health Show dead/degraded proxies + live event log
  proxy traffic Real-time bandwidth & client session load
  proxy summary Fleet-style summary (sources, health, counts)
- proxy remove-dead Prune dead/degraded/failing proxies interactively
- self-heal [on|off] Auto-regulate proxies (load gate + cleanup)
+  proxy remove-dead       Prune dead/degraded/failing proxies interactively
+  self-heal [on|off]      Auto-regulate proxies (load gate + cleanup)
+  direct [on|off]         Toggle providing on the machine's direct/local IP
+  usage [graph[s] <view>] Traffic accounting: billable vs control, time-series
 
 Maintenance:
  reinstall Reinstall provider
@@ -141,6 +143,8 @@ func buildRootCmd() *cobra.Command {
 		newAuthCmd(),
 		newChooseNetworkCmd(),
 		newProxyCmd(),
+		newDirectCmd(),
+		newUsageCmd(),
 		newReinstallCmd(),
 		newUninstallCmd(),
 		newAutoUpdateCmd(),

@@ -2907,10 +2907,8 @@ func (self *ConnectionState) DataPackets(payload []byte, n int, mtu int) ([][]by
 		// 6691 data-only semantics). But at the MTU boundary our outgoing
 		// timestamp option makes the wire segment larger than the peer's
 		// path MTU budget, risking fragmentation/drop. Subtract our option
-		// bytes from the data budget when clamping (conservative at the boundary); the
-		// floor of 1 guards the case where the option overhead is large enough —
-		// or the remaining budget non-positive — that clamping alone would force a
-		// zero/negative payload.
+		// bytes from the data budget when clamping (conservative at the boundary). Floor at 1 so a tiny
+		// option overhead can never force a zero/negative payload.
 		optionByteCount := headerByteCount - ipHeaderByteCount - TcpHeaderSizeWithoutExtensions
 		packetByteCount = min(packetByteCount, max(1, int(self.peerMss)-optionByteCount))
 	}

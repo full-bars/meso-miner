@@ -4,6 +4,7 @@ import (
 	"context"
 	"math/rand"
 	"net"
+	"net/url"
 	"os"
 	"time"
 
@@ -12,12 +13,40 @@ import (
 	"github.com/urnetwork/connect"
 )
 
-var benchmarkEndpoint = func() string {
+// resolveBenchmarkEndpoint returns the SOCKS5 egress-probe target. The
+// URNETWORK_PROXY_BENCHMARK_ENDPOINT env var wins; otherwise it follows the
+// operator's chosen network (M6) — the connect URL host:port from the saved
+// network config, falling back to the main network's connect endpoint.
+func resolveBenchmarkEndpoint() string {
 	if v := os.Getenv("URNETWORK_PROXY_BENCHMARK_ENDPOINT"); v != "" {
 		return v
 	}
-	return "connect.bringyour.com:443"
-}()
+	connectUrl := DefaultConnectUrl
+	if cfg, ok, err := readNetworkConfig(); err == nil && ok && cfg.ConnectUrl != "" {
+		connectUrl = cfg.ConnectUrl
+	}
+	// Parse rather than manually trim the scheme (matches apiProbeHostPort in
+	// network.go): validateConnectUrl only requires a ws/wss scheme and a
+	// host, so a saved connect_url may carry a path -- manual scheme
+	// trimming would leave that path in the "host:port" result and break
+	// net.SplitHostPort / produce a garbage port.
+	u, err := url.Parse(connectUrl)
+	if err != nil || u.Hostname() == "" {
+		return "connect.bringyour.com:443"
+	}
+	port := u.Port()
+	if port == "" {
+		port = "443"
+	}
+	return net.JoinHostPort(u.Hostname(), port)
+}
+
+// benchmarkEndpoint is resolved lazily (not at package init) so the chosen
+// network config exists by the time a probe runs. The env-var override keeps
+// existing behavior for tests and bespoke deployments.
+var benchmarkEndpoint = func() string {
+	return resolveBenchmarkEndpoint()
+}
 
 // startProxyBenchmarks launches optional latency probes for one proxy, enabled
 // only when URNETWORK_PROXY_BENCHMARK=true. It starts two independent probes
@@ -40,7 +69,7 @@ func startProxyBenchmarks(ctx context.Context, bw *connect.ProxyBandwidth, setti
 	jitter := time.Duration(rand.Int63n(int64(tcpInterval)))
 
 	go runTCPLatencyProbe(ctx, bw, settings.Address, tcpInterval, jitter)
-	go runSocksLatencyProbe(ctx, bw, settings, benchmarkEndpoint, socksInterval, jitter)
+	go runSocksLatencyProbe(ctx, bw, settings, benchmarkEndpoint(), socksInterval, jitter)
 }
 
 func runTCPLatencyProbe(ctx context.Context, bw *connect.ProxyBandwidth, addr string, interval time.Duration, jitter time.Duration) {
