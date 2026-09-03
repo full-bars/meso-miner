@@ -169,6 +169,7 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 - [Log Message Reference](LOG_REFERENCE.md)
 - [Go urnet-tools Reference](docs/urnet-tools-go.md)
 - [Changelog](CHANGELOG.md)
+- [Fleet Dashboard (`dev/hub` branch)](https://github.com/full-bars/meso-miner/tree/dev/hub) · [UrNetwork `dev/hub`](https://github.com/full-bars/urnetwork-3.23-fix/tree/dev/hub)
 
 **Wiki:**
 
