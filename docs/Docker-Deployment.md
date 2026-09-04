@@ -105,12 +105,9 @@ docker run -d \
   --log-opt max-size=10m \
   --log-opt max-file=3 \
   -e BUILD=jwt \
-  -e ENABLE_VNSTAT=true \
   -e HOST_HOSTNAME=$(hostname) \
   -v urfix_config:/root/.urnetwork \
-  -v urfix_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
-  -p 9001:8080 \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest AUTH_CODE_HERE
 ```
 
@@ -144,12 +141,9 @@ docker run -d \
   -e BUILD=stable \
   -e USER_AUTH=you@example.com \
   -e PASSWORD=yourpassword \
-  -e ENABLE_VNSTAT=true \
   -e HOST_HOSTNAME=$(hostname) \
   -v urfix_config:/root/.urnetwork \
-  -v urfix_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
-  -p 9001:8080 \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest
 ```
 
@@ -171,12 +165,9 @@ docker run -d \
   --log-opt max-size=10m \
   --log-opt max-file=3 \
   -e BUILD=jwt \
-  -e ENABLE_VNSTAT=true \
   -e HOST_HOSTNAME=$(hostname) \
   -v urfix_config:/root/.urnetwork \
-  -v urfix_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
-  -p 9001:8080 \
   3cape/urnetwork-3.23-fix:latest AUTH_CODE_HERE
 ```
 
@@ -202,12 +193,9 @@ docker run -d \
   -e BUILD=stable \
   -e USER_AUTH=you@example.com \
   -e PASSWORD=yourpassword \
-  -e ENABLE_VNSTAT=true \
   -e HOST_HOSTNAME=$(hostname) \
   -v urfix_config:/root/.urnetwork \
-  -v urfix_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
-  -p 9001:8080 \
   3cape/urnetwork-3.23-fix:latest
 ```
 
@@ -233,14 +221,10 @@ services:
       - net.ipv4.ip_forward=1
     environment:
       - BUILD=jwt
-      - ENABLE_VNSTAT=true
       - HOST_HOSTNAME=${HOSTNAME}
     volumes:
       - urfix_config:/root/.urnetwork
-      - urfix_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
-    ports:
-      - "9001:8080"
     logging:
       driver: json-file
       options:
@@ -249,7 +233,6 @@ services:
 
 volumes:
   urfix_config:
-  urfix_vnstat:
 ```
 
 On first start, provide your auth code using one of these methods:
@@ -281,14 +264,10 @@ services:
       - BUILD=stable
       - USER_AUTH=you@example.com
       - PASSWORD=yourpassword
-      - ENABLE_VNSTAT=true
       - HOST_HOSTNAME=${HOSTNAME}
     volumes:
       - urfix_config:/root/.urnetwork
-      - urfix_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
-    ports:
-      - "9001:8080"
     logging:
       driver: json-file
       options:
@@ -297,7 +276,6 @@ services:
 
 volumes:
   urfix_config:
-  urfix_vnstat:
 ```
 
 ## 🚨 Outage Alerting
@@ -562,4 +540,40 @@ docker exec -it <container> urnet-tools idle-update --window 0
 > [!NOTE]
 > If `billable_rate` isn't available yet (provider predates this feature, or hasn't written its first sample), `idle-update` treats the node as **not idle** rather than assuming it's safe to update — it fails closed.
 
-For multiple containers, give each deployment a different container name, config volume, vnStat volume, and host port.
+For multiple containers, give each deployment a different container name and config volume.
+
+## 📊 (Optional) Running with vnstat Bandwidth Monitor
+
+> [!NOTE]
+> vnstat is **optional** — providers do not require any listening ports. All traffic is outbound; you only need vnstat if you want a live web bandwidth monitor alongside your provider.
+
+If you want a bandwidth monitor, enable vnstat by adding these lines to any `docker run` command from above (or `environment:` + `volumes:` in Compose):
+
+```bash
+-e ENABLE_VNSTAT=true \
+-v urfix_vnstat:/var/lib/vnstat \
+-p 9001:8080 \
+```
+
+and add `urfix_vnstat:` to the `volumes:` section.
+
+This runs a lightweight vnstat daemon inside the container and exposes the PHP-less `vnstati` web UI on port 9001 (localhost-bound; see [nginx reverse proxy](#optional-binding-vnstat-to-localhost-only) to expose externally).
+
+### Optional: Binding vnstat to localhost only
+
+vnstat listens on `0.0.0.0:9001`. To bind to localhost only, add `--network host` mode or use nginx as a reverse proxy:
+
+```bash
+docker run -d \
+  --name=urfix-vnstat-proxy \
+  --restart=unless-stopped \
+  --network container:urfix \
+  -e ENABLE_VNSTAT=true \
+  ghcr.io/full-bars/urnetwork-3.23-fix:latest
+```
+
+The above shares the network namespace with the `urfix` container. vnstat serves on `9001` accessible from localhost.
+
+### Stopping / removing vnstat
+
+To disable vnstat, simply remove the three lines from your docker command and drop the `urfix_vnstat:` volume. The config volume can stay.
