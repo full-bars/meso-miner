@@ -40,46 +40,6 @@ Core Commands:
   version                   Print this tool's version
 
 Proxy Management (inside the container):
-<<<<<<< HEAD
-  proxy add <file>                Bulk add proxies
-  proxy clear                     Remove all configured proxies
-  proxy remove                    Remove proxies (by addr/match, or all)
-  proxy refresh [--force]         Re-read configs and hot-reload
-  proxy trim <N>                  Hold running proxies at N, shed worst first
-  proxy add-source <url>          Add a URL proxy source
-  proxy remove-source <url>       Remove a URL proxy source
-  proxy health                    Show dead/degraded proxies
-  proxy traffic                   Real-time bandwidth & client session load
-  proxy summary                   Fleet-style summary (sources, health, counts)
-  proxy remove-dead               Prune dead/degraded/failing proxies
-
-Hub Management:
-  hub ...                         hub CA, trust, report set/off, onboard, install, update
-
-Config & Automation:
-=======
-<<<<<<< HEAD
- proxy add <file> Bulk add proxies
- proxy clear Remove all configured proxies
- proxy remove Remove proxies (by addr/match, or all)
- proxy refresh [--force] Re-read configs and hot-reload
- proxy trim <N> Hold running proxies at N, shed worst first
- proxy add-source <url> Add a URL proxy source
- proxy remove-source <url> Remove a URL proxy source
- proxy health Show dead/degraded proxies
- proxy traffic Real-time bandwidth & client session load
- proxy summary Fleet-style summary (sources, health, counts)
- proxy remove-dead Prune dead/degraded/failing proxies
-
-Config & Automation:
- auth [<code>] Authenticate (interactive paste)
- choose-network Set API/connect endpoints
- fast-auth [on|off] Bypass auth rate limiter without restart
- set [<k> [<v>|off]] Show or change runtime tuning overrides
- self-heal [on|off] Auto-regulate proxies (load gate + cleanup)
- session save|load <file> Export/import identity + proxy state (encrypted)
- help <command> Show help for a command
-=======
   proxy add <file>                Bulk add proxies
   proxy paste                     Paste raw proxies from stdin, file, or URL
   proxy clear                     Remove all configured proxies
@@ -97,24 +57,16 @@ Hub Management:
   hub ...                         hub CA, trust, report set/off, onboard, install, update
 
 Config & Automation:
->>>>>>> 1ed11202 (fix(cli): port PR #525 — restore parity across provider, urnet-tools, and urnet-docker)
   auth [<code>]             Authenticate (interactive paste)
   choose-network            Set API/connect endpoints
   fast-auth [on|off]        Bypass auth rate limiter without restart
   set [<k> [<v>|off]]       Show or change runtime tuning overrides
   self-heal [on|off]        Auto-regulate proxies (load gate + cleanup)
-<<<<<<< HEAD
-  session save|load <file>  Export/import identity + proxy state (encrypted)
-  report <url>|off          Set hub report URL
-  help <command>            Show help for a command
-=======
   direct [on|off]           Toggle providing on the machine's direct/local IP
   usage [graph[s] <view>]   Traffic accounting: billable vs control, time-series
   session save|load <file>  Export/import identity + proxy state (encrypted)
   report <url>|off          Set hub report URL
   help <command>            Show help for a command
->>>>>>> 1d68def7 (fix(cli): restore parity across provider, urnet-tools, and urnet-docker (#525))
->>>>>>> 1ed11202 (fix(cli): port PR #525 — restore parity across provider, urnet-tools, and urnet-docker)
 
 Targeting (used when more than one container exists):
   --unit <container>        container name (mapped to Unit)

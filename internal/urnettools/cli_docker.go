@@ -759,8 +759,6 @@ func cmdDockerSummary(args []string) error {
 	return containerExecByName(p.Unit, "urnet-tools", "proxy", "summary")
 }
 
-<<<<<<< HEAD
-=======
 // cmdDockerDirect manages the direct IP toggle inside the container.
 func cmdDockerDirect(args []string) error {
 	providers := DiscoverDocker()
@@ -791,7 +789,6 @@ func cmdDockerUsage(args []string) error {
 	return containerExecByName(p.Unit, inner...)
 }
 
->>>>>>> 1ed11202 (fix(cli): port PR #525 — restore parity across provider, urnet-tools, and urnet-docker)
 // cmdDockerReport configures the hub report URL inside the container.
 func cmdDockerReport(args []string) error {
 	providers := DiscoverDocker()
@@ -806,10 +803,6 @@ func cmdDockerReport(args []string) error {
 	inner := append([]string{"urnet-tools", "report"}, rest...)
 	return containerExecByName(p.Unit, inner...)
 }
-<<<<<<< HEAD
-
-=======
->>>>>>> 1ed11202 (fix(cli): port PR #525 — restore parity across provider, urnet-tools, and urnet-docker)
 // cmdDockerSelfHeal manages the proxy self-heal marker inside the container.
 func cmdDockerSelfHeal(args []string) error {
 	providers := DiscoverDocker()
@@ -933,6 +926,7 @@ func cmdDockerProxy(args []string) error {
 			} else if !strings.HasPrefix(a, "-") {
 				target = a
 			}
+		}
 		if target == "" {
 			return fmt.Errorf("proxy add requires a proxy file or URL, e.g. 'urnet-docker proxy add ~/proxies.txt'")
 		}
