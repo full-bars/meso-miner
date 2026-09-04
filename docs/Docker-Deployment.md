@@ -99,12 +99,9 @@ docker run -d \
   --log-opt max-size=10m \
   --log-opt max-file=3 \
   -e BUILD=jwt \
-  -e ENABLE_VNSTAT=true \
   -e HOST_HOSTNAME=$(hostname) \
   -v urfix_config:/root/.urnetwork \
-  -v urfix_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
-  -p 9001:8080 \
   ghcr.io/full-bars/meso-miner:latest AUTH_CODE_HERE
 ```
 
@@ -138,12 +135,9 @@ docker run -d \
   -e BUILD=stable \
   -e USER_AUTH=you@example.com \
   -e PASSWORD=yourpassword \
-  -e ENABLE_VNSTAT=true \
   -e HOST_HOSTNAME=$(hostname) \
   -v urfix_config:/root/.urnetwork \
-  -v urfix_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
-  -p 9001:8080 \
   ghcr.io/full-bars/meso-miner:latest
 ```
 
@@ -165,12 +159,9 @@ docker run -d \
   --log-opt max-size=10m \
   --log-opt max-file=3 \
   -e BUILD=jwt \
-  -e ENABLE_VNSTAT=true \
   -e HOST_HOSTNAME=$(hostname) \
   -v urfix_config:/root/.urnetwork \
-  -v urfix_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
-  -p 9001:8080 \
   3cape/urnetwork-3.23-fix:latest AUTH_CODE_HERE
 ```
 
@@ -196,12 +187,9 @@ docker run -d \
   -e BUILD=stable \
   -e USER_AUTH=you@example.com \
   -e PASSWORD=yourpassword \
-  -e ENABLE_VNSTAT=true \
   -e HOST_HOSTNAME=$(hostname) \
   -v urfix_config:/root/.urnetwork \
-  -v urfix_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
-  -p 9001:8080 \
   3cape/urnetwork-3.23-fix:latest
 ```
 
@@ -227,14 +215,10 @@ services:
       - net.ipv4.ip_forward=1
     environment:
       - BUILD=jwt
-      - ENABLE_VNSTAT=true
       - HOST_HOSTNAME=${HOSTNAME}
     volumes:
       - urfix_config:/root/.urnetwork
-      - urfix_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
-    ports:
-      - "9001:8080"
     logging:
       driver: json-file
       options:
@@ -243,7 +227,6 @@ services:
 
 volumes:
   urfix_config:
-  urfix_vnstat:
 ```
 
 On first start, provide your auth code using one of these methods:
@@ -275,14 +258,10 @@ services:
       - BUILD=stable
       - USER_AUTH=you@example.com
       - PASSWORD=yourpassword
-      - ENABLE_VNSTAT=true
       - HOST_HOSTNAME=${HOSTNAME}
     volumes:
       - urfix_config:/root/.urnetwork
-      - urfix_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
-    ports:
-      - "9001:8080"
     logging:
       driver: json-file
       options:
@@ -291,7 +270,6 @@ services:
 
 volumes:
   urfix_config:
-  urfix_vnstat:
 ```
 
 ## 💾 RAM Logging
@@ -482,4 +460,83 @@ docker exec -it <container> urnet-tools idle-update --window 0
 > [!NOTE]
 > If `billable_rate` isn't available yet (provider predates this feature, or hasn't written its first sample), `idle-update` treats the node as **not idle** rather than assuming it's safe to update — it fails closed.
 
-For multiple containers, give each deployment a different container name, config volume, vnStat volume, and host port.
+## 📊 (Optional) Running with vnStat Bandwidth Monitor
+
+By default, production Docker deployments run with **zero listening ports** and vnStat disabled. The provider establishes all p2p tunnels and relay connections outbound, requiring no inbound port forwarding.
+
+If you specifically want the web-based vnStat traffic monitor to view real-time throughput graphs:
+
+### 1. Configuration Requirements
+- Set `-e ENABLE_VNSTAT=true`
+- Map a host port to container port `8080`: `-p <host_port>:8080`
+- Mount a persistent volume to preserve traffic history across restarts: `-v <name>_vnstat:/var/lib/vnstat`
+
+### 2. Single-Container Example
+
+```bash
+docker run -d \
+  --name=urfix \
+  --pull=always \
+  --restart=unless-stopped \
+  --cap-add=NET_ADMIN \
+  --cap-add=NET_RAW \
+  --sysctl net.ipv4.ip_forward=1 \
+  -e BUILD=jwt \
+  -e ENABLE_VNSTAT=true \
+  -e HOST_HOSTNAME=$(hostname) \
+  -v urfix_config:/root/.urnetwork \
+  -v urfix_vnstat:/var/lib/vnstat \
+  -v /path/to/proxy.txt:/app/proxy.txt \
+  -p 127.0.0.1:9001:8080 \
+  ghcr.io/full-bars/meso-miner:latest AUTH_CODE_HERE
+```
+
+Access the traffic page locally at `http://localhost:9001` (bind to `127.0.0.1` prevents exposing the unauthenticated vnStat web UI to the public internet).
+
+---
+
+### 3. Multi-Container Rules: Offsetting Ports & Volumes
+
+When running more than one provider container on the same host with vnStat enabled, you **must adhere to two mandatory isolation rules**:
+
+> [!CAUTION]
+> **1. Offset Host Ports:** The internal container port is always `:8080`. Every container running on the same Docker host must map to a **unique host port** (e.g. Node 1 on `127.0.0.1:9001`, Node 2 on `127.0.0.1:9002`). Attempting to reuse the same host port will cause a Docker daemon bind error (`bind: address already in use`).
+>
+> **2. Offset vnStat Storage Volumes:** Never point multiple containers at the same vnStat volume. vnStat maintains an active database inside `/var/lib/vnstat`. Sharing a single volume causes concurrent write locks, data clobbering, and database corruption. Each container must have its own isolated volume (e.g. `urfix-1_vnstat`, `urfix-2_vnstat`).
+
+#### Multi-Container Compose Snippet:
+
+```yaml
+services:
+  node-1:
+    image: ghcr.io/full-bars/meso-miner:latest
+    container_name: urfix-1
+    environment:
+      - BUILD=jwt
+      - ENABLE_VNSTAT=true
+    volumes:
+      - ur_config_1:/root/.urnetwork    # ISOLATED identity & state volume
+      - urfix-1_vnstat:/var/lib/vnstat # DEDICATED vnStat volume
+      - ./proxy-1.txt:/app/proxy.txt
+    ports:
+      - "127.0.0.1:9001:8080"          # OFFSET host port (localhost bound)
+
+  node-2:
+    image: ghcr.io/full-bars/meso-miner:latest
+    container_name: urfix-2
+    environment:
+      - BUILD=jwt
+      - ENABLE_VNSTAT=true
+    volumes:
+      - ur_config_2:/root/.urnetwork    # ISOLATED identity & state volume
+      - urfix-2_vnstat:/var/lib/vnstat # DEDICATED vnStat volume
+      - ./proxy-2.txt:/app/proxy.txt
+    ports:
+      - "127.0.0.1:9002:8080"          # OFFSET host port (localhost bound)
+
+volumes:
+  ur_config_1:
+  ur_config_2:
+  urfix-1_vnstat:
+  urfix-2_vnstat:
+```
