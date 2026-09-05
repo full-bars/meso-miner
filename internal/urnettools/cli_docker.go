@@ -772,6 +772,7 @@ func cmdDockerReport(args []string) error {
 	inner := append([]string{"urnet-tools", "report"}, rest...)
 	return containerExecByName(p.Unit, inner...)
 }
+
 // cmdDockerSelfHeal manages the proxy self-heal marker inside the container.
 func cmdDockerSelfHeal(args []string) error {
 	providers := DiscoverDocker()
