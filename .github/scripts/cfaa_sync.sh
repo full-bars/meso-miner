@@ -1,6 +1,6 @@
 #!/bin/bash
 # CFAA blocklist sync helper: fetches upstream file, creates branch, commits.
-# Args: upstream_sha upstream_v4 upstream_v6 fork_v4 fork_v6
+# Args: upstream_sha upstream_v4 upstream_v6 fork_v4 fork_v6 [target_branch]
 # Uses a STABLE branch name so the workflow's dedup guard can find prior PRs.
 set -euo pipefail
 
@@ -9,15 +9,21 @@ UPSTREAM_V4="$2"
 UPSTREAM_V6="$3"
 FORK_V4="$4"
 FORK_V6="$5"
+TARGET_BRANCH="${6:-main}"
 UPSTREAM_FILE="ip_security_cfaa_block.go"
 
 git config user.name "full-bars"
 git config user.email "45684698+full-bars@users.noreply.github.com"
 
-# Use stable branch name so the dedup guard in the workflow can find existing PRs.
-# If the branch already exists (from a prior run), reset to origin/main first.
-BRANCH_NAME="chore/cfaa-blocklist-sync"
-git reset --hard origin/main --quiet
+# Use stable branch name with branch suffix so main and dev/hub PRs are isolated.
+# If the branch already exists (from a prior run), reset to origin/<target> first.
+if [ "$TARGET_BRANCH" = "main" ]; then
+  BRANCH_NAME="chore/cfaa-blocklist-sync"
+else
+  BRANCH_NAME="chore/cfaa-blocklist-sync-devhub"
+fi
+
+git reset --hard "origin/$TARGET_BRANCH" --quiet
 git checkout -B "$BRANCH_NAME"
 
 # Fetch and overwrite with upstream version
@@ -29,7 +35,7 @@ V6_DELTA=$((UPSTREAM_V6 - FORK_V6))
 git add "$UPSTREAM_FILE"
 git commit -S -m "chore(security): sync CFAA blocklist from upstream ${UPSTREAM_SHA} | IPv4: ${FORK_V4}->${UPSTREAM_V4} (${V4_DELTA}), IPv6: ${FORK_V6}->${UPSTREAM_V6} (${V6_DELTA}) | data-only refresh"
 
-# Write PR body (Fix: workflow previously referenced /tmp/cfaa_pr_body.md which was never created)
+# Write PR body
 cat > /tmp/cfaa_pr_body.md << PRBODY
 Automated CFAA blocklist sync from urnetwork/connect upstream commit ${UPSTREAM_SHA}.
 
