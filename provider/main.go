@@ -3845,7 +3845,6 @@ func providerDescription(nodeName string) string {
 	return fmt.Sprintf("%s [%s]", dashboardLabel, RequireVersion())
 }
 
-
 // ipDetectionDisabledPath returns ~/.urnetwork/disable_ip_autodetect, a file
 // an operator can create to prevent the provider from fetching its public IP
 // at startup/renewal. An empty file or missing file has no effect.
