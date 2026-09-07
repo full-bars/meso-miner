@@ -3824,24 +3824,31 @@ func proxyAuthRetryDelay(err error, attempt int) time.Duration {
 
 // providerDescription builds the display-name string sent as the client
 // description at mint AND renewal time: "Identity [Version]", where Identity
-// is the node name (URNETWORK_NODE_NAME, else HOST_HOSTNAME, else hostname),
-// optionally "Name @ RedactedIP" when URNETWORK_PUBLIC_IP is set, or just the
-// redacted IP for container-id gibberish names. Kept as ONE helper so mint
-// (provideAuth) and in-process renewal (runProxyJWTWatcher) always agree —
-// the server UPDATEs the row's description on renewal, so divergence would
-// silently rename the device in the dashboard.
+// is the node name (URNETWORK_NODE_NAME, else HOST_HOSTNAME, else hostname,
+// then ~/.urnetwork/node_name override), optionally "Name @ RedactedIP" when
+// the public IP is detected. Kept as ONE helper so mint (provideAuth) and
+// in-process renewal (runProxyJWTWatcher) always agree — the server UPDATEs
+// the row's description on renewal, so divergence would silently rename the
+// device in the dashboard.
 func providerDescription(nodeName string) string {
-	displayName := nodeName
-	hostname, _ := os.Hostname()
+	// Check the runtime override file first — this is what
+	// `urnet-tools set node-name` writes, and it can be changed
+	// without restarting the provider.
+	displayName := resolveNodeName(nodeName)
+
+	// If the startup name was empty and no override file exists,
+	// fall back to HOST_HOSTNAME then os.Hostname (same as before).
 	if displayName == "" {
+		hostname, _ := os.Hostname()
 		if hostHostname := strings.TrimSpace(os.Getenv("HOST_HOSTNAME")); hostHostname != "" {
 			displayName = hostHostname
 		} else {
 			displayName = hostname
 		}
 	}
+
 	isContainerID := containerIDRe.MatchString(displayName)
-	publicIP := strings.TrimSpace(os.Getenv("URNETWORK_PUBLIC_IP"))
+	publicIP := resolvePublicIP()
 
 	var dashboardLabel string
 	if ip4 := net.ParseIP(publicIP).To4(); ip4 != nil {
@@ -3860,6 +3867,152 @@ func providerDescription(nodeName string) string {
 		}
 	}
 	return fmt.Sprintf("%s [%s]", dashboardLabel, RequireVersion())
+}
+
+
+// ipDetectionDisabledPath returns ~/.urnetwork/disable_ip_autodetect, a file
+// an operator can create to prevent the provider from fetching its public IP
+// at startup/renewal. An empty file or missing file has no effect.
+func ipDetectionDisabledPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".urnetwork", "disable_ip_autodetect"), nil
+}
+
+// ipDetectionDisabled checks whether the operator has created the disable file.
+// Re-checked on every call so it can be toggled at runtime via:
+//
+//	urnet-tools ip-detect off   (creates the file)
+//	urnet-tools ip-detect on    (removes the file)
+//
+// Binary users can also create/remove the file directly:
+//
+//	touch ~/.urnetwork/disable_ip_autodetect     # disable
+//	rm ~/.urnetwork/disable_ip_autodetect         # re-enable
+func ipDetectionDisabled() bool {
+	path, err := ipDetectionDisabledPath()
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(path)
+	return err == nil
+}
+
+// resolvePublicIP returns the public IP advertised by the provider for
+// dashboard identity. Priority:
+//  1. URNETWORK_PUBLIC_IP env var (operators running Docker/systemd can set this)
+//  2. ~/.urnetwork/disable_ip_autodetect file exists (operator opted out) → ""
+//  3. cached fetch from ip.me (5s timeout) — cached for 60s to avoid hammering
+//     the external service when minting/renewing many proxy identities
+func resolvePublicIP() string {
+	if v := strings.TrimSpace(os.Getenv("URNETWORK_PUBLIC_IP")); v != "" {
+		return v
+	}
+	if ipDetectionDisabled() {
+		return ""
+	}
+	if ip := getCachedPublicIP(); ip != "" {
+		return ip
+	}
+	return ""
+}
+
+// getCachedPublicIP returns the cached public IP if still fresh (60s TTL).
+// Otherwise, it kicks off a background refresh and returns the stale cache
+// (or empty if no cache exists) immediately — the fetch must NEVER block the
+// caller, because resolvePublicIP() runs on the proxy mint/renewal hot path
+// (providerDescription) and serializing behind a blocking HTTP call to ip.me
+// stalls every proxy identity operation on the provider for up to 5s.
+var (
+	cachedIP        string
+	cachedIPTime    time.Time
+	cachedIPMu      sync.Mutex
+	cachedIPRefresh bool // true while a background fetchPublicIP() is in-flight
+	ipCacheTTL      = 60 * time.Second
+)
+
+func getCachedPublicIP() string {
+	cachedIPMu.Lock()
+	now := time.Now()
+	fresh := now.Sub(cachedIPTime) < ipCacheTTL
+	ip := cachedIP
+	// Cache is stale or empty: return what we have immediately and refresh
+	// in the background so the hot path is never blocked. Only the first
+	// caller to observe a stale cache kicks off the fetch — cachedIPRefresh
+	// makes every concurrent/later caller in the same refresh window skip
+	// spawning its own goroutine, so a burst of callers (e.g. every proxy
+	// on this provider hitting a cold or just-expired cache at once) issues
+	// exactly one outbound request to ip.me, not one per caller.
+	shouldFetch := !fresh && !cachedIPRefresh
+	// Capture the fetch func here, under the lock, rather than reading the
+	// fetchPublicIPFunc package var from inside the goroutine below. Tests
+	// swap that var (also under cachedIPMu — see ip_autodetect_test.go) to
+	// avoid hitting the network; reading it unsynchronized from a goroutine
+	// that can easily outlive its triggering test is a real data race, not
+	// just a theoretical one — an earlier test's in-flight background fetch
+	// and a later test's swap have raced under -race in CI.
+	var fetch func() string
+	if shouldFetch {
+		cachedIPRefresh = true
+		fetch = fetchPublicIPFunc
+	}
+	cachedIPMu.Unlock()
+
+	if fresh {
+		return ip
+	}
+
+	if shouldFetch {
+		go func() {
+			newIP := fetch()
+			cachedIPMu.Lock()
+			if newIP != "" {
+				cachedIP = newIP
+				cachedIPTime = time.Now()
+			}
+			cachedIPRefresh = false
+			cachedIPMu.Unlock()
+		}()
+	}
+	return ip
+}
+
+// fetchPublicIPFunc is fetchPublicIP by default; tests override it to avoid
+// depending on real network access.
+var fetchPublicIPFunc = fetchPublicIP
+
+// fetchPublicIP retrieves the public IPv4 address from ip.me.
+// Uses a 5-second timeout context to avoid hanging at startup.
+func fetchPublicIP() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://ip.me", nil)
+	if err != nil {
+		return ""
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 16))
+	if err != nil {
+		return ""
+	}
+	ip := strings.TrimSpace(string(body))
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return ""
+	}
+	// Only accept IPv4 — the provider's redaction logic (first.x.x.last)
+	// assumes a 4-octet address. Ignore IPv6 responses.
+	if parsed.To4() == nil {
+		return ""
+	}
+	return ip
 }
 
 // newProviderAuthClientArgsForRenewal builds the AuthNetworkClientArgs used to
