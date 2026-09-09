@@ -2694,6 +2694,7 @@ func provide(opts docopt.Opts) {
 	// Drain buffered retention events before exit so a shutdown racing the
 	// writer goroutine doesn't drop the tail of the log (proxy_health_log.go).
 	defer flushRetentionEvents()
+	initPersistentErrors()
 
 	// Exit-visibility: log what triggered the shutdown. The wrapped cancel
 	// function captures a stack trace at the moment it is first invoked. If
@@ -3608,6 +3609,26 @@ func provide(opts docopt.Opts) {
 			"Provider %s started\n",
 			RequireVersion(),
 		)
+	}
+
+	// URNETWORK_METRICS binds a Prometheus /metrics endpoint on the given
+	// address (typically a Tailscale IP like "192.200.0.5:9100") so remote
+	// Prometheus can scrape without an agent on the fleet server.
+	if metricsAddr := os.Getenv("URNETWORK_METRICS"); metricsAddr != "" {
+		tlog("[metrics] enabling Prometheus /metrics on %s\n", metricsAddr)
+		connect.SetExtraMetricsProvider(providerExtraMetrics)
+		connect.SetPersistentErrorFunc(IncrPersistentError)
+		metricsServer := &http.Server{
+			Addr:              metricsAddr,
+			Handler:           connect.PrometheusHandler(),
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       30 * time.Second,
+		}
+		go func() {
+			if err := metricsServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				tlog("[metrics] error: %v\n", err)
+			}
+		}()
 	}
 
 	wg.Wait()
