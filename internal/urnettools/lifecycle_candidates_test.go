@@ -385,7 +385,7 @@ func TestLifecycleCmds_NarrowedNoteCountExcludesDocker(t *testing.T) {
 	}
 }
 
-// Documents today's UX on a containers-only box:
+// Documents today's UX on a containers-only box :
 // no-target start says "no providers found on this box" WITHOUT a docker
 // hint. Pinning it so a future hint here is a deliberate decision.
 func TestLifecycleCmds_EmptySystemdBoxNoTargetNoDockerHint(t *testing.T) {

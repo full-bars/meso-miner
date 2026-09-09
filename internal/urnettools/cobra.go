@@ -42,9 +42,9 @@ Session & Identity:
   session save <file>     Export identity + proxy state (encrypted)
   session load <file>     Import identity + proxy state, then restart
   auth [<code>]           Authenticate (omit for interactive paste)
+  sn-status [--json]      Subnet 25 node rank, coldkey & miner status
   choose-network          Set API/connect endpoints
   default                 Persist a default provider target for this box
-  rename <name>           Set dashboard display name (alias: set node-name)
 
 Proxy Management:
   proxy add <file>        Bulk add proxies from a text file
@@ -59,7 +59,6 @@ Proxy Management:
   proxy remove-dead       Prune dead/degraded/failing proxies interactively
   report [<url>|off]      Set hub report URL
   self-heal [on|off]      Auto-regulate proxies (load gate + cleanup)
-  ip-detect [on|off|status] Auto-detect public IP for dashboard identity
   direct [on|off]         Toggle providing on the machine's direct/local IP
   usage [graph[s] <view>] Traffic accounting: billable vs control, time-series
 
@@ -138,6 +137,7 @@ func buildRootCmd() *cobra.Command {
 	rootCmd.AddCommand(
 		newProvidersCmd(),
 		newStatusCmd(),
+		newSnStatusCmd(),
 		newStartCmd(),
 		newStopCmd(),
 		newRestartCmd(),
@@ -171,8 +171,6 @@ func buildRootCmd() *cobra.Command {
 		newAutoStartCmd(),
 		newSelfHealCmd(),
 		newDoRestartCmd(), // HIDDEN internal entry point for the updater's escalated restart
-		newIPDetectCmd(),
-		newRenameCmd(),
 	)
 	// Force every subcommand (however it was constructed) back to Cobra's
 	// default per-command help page. The root's curated menu must only ever
@@ -229,6 +227,14 @@ func newStatusCmd() *cobra.Command {
 			return cmdStatus(rest)
 		})
 	}), "Show detailed status for one provider: user, unit, binary, version, state dir, PID, running state, network identity, and JWT expiry. On Linux this reproduces `systemctl status <unit>`; on Windows and macOS it renders a status panel with a proxy summary. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir.", "  urnet-tools status\n  urnet-tools status --network tacogonzalez3000\n  urnet-tools status --unit urnetwork-native.service")
+}
+
+func newSnStatusCmd() *cobra.Command {
+	return withHelp(newCobraCmd("sn-status [target]", "Subnet 25 node rank, coldkey & miner status", nil, func(cmd *cobra.Command, args []string) error {
+		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
+			return cmdSnStatus(rest)
+		})
+	}), "Show real-time Subnet 25 metrics: global network rank, billable bandwidth, registered Bittensor coldkey, Top 200 cutoff eligibility, contract clock, and payout share. Supports --json for machine-readable automation. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir.", "  urnet-tools sn-status\n  urnet-tools sn-status --json\n  urnet-tools sn-status --unit urnetwork-native.service")
 }
 
 func newStartCmd() *cobra.Command {
@@ -575,51 +581,6 @@ func newSelfHealCmd() *cobra.Command {
 				return cmd.Help()
 			}
 			return cmdSelfHeal(args)
-		},
-	}
-}
-
-func newIPDetectCmd() *cobra.Command {
-	// cmdIPDetect has its own -h handling; building raw preserves it.
-	return &cobra.Command{
-		Use:                "ip-detect",
-		Short:              "toggle public IP autodetection",
-		Long:               "Toggle or report whether the provider auto-detects its public IP (via ip.me) for dashboard identity. Run with on, off, or status (the default with no argument). When off, the provider reports only the node name without an IP unless URNETWORK_PUBLIC_IP is set.",
-		Example:            "  urnet-tools ip-detect status\n  urnet-tools ip-detect off\n  urnet-tools ip-detect on",
-		Aliases:            []string{"ipdetect"},
-		DisableFlagParsing: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if hasHelpFlag(args) {
-				return cmd.Help()
-			}
-			return cmdIPDetect(args)
-		},
-	}
-}
-
-func newRenameCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:                "rename <name>",
-		Short:              "set dashboard display name",
-		Long:               "Set the provider's display name reported to the dashboard. Equivalent to `urnet-tools set node-name <name>`. The change takes effect on the provider's next tick — no restart needed. Clears the override with `urnet-tools rename off` (reverts to hostname).",
-		Example:            "  urnet-tools rename us-west-2\n  urnet-tools rename off\n  urnet-tools rename my-node-3 --unit urnetwork-native.service",
-		Aliases:            []string{"set-node-name"},
-		DisableFlagParsing: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if hasHelpFlag(args) {
-				return cmd.Help()
-			}
-			return parseGlobal(args, func(force, dryRun bool, rest []string) error {
-				if len(rest) == 0 || (rest[0] == "off" && len(rest) > 1) {
-					return fmt.Errorf("rename requires a name argument (or 'off' to clear)")
-				}
-				if rest[0] == "off" {
-					rest = []string{"node-name", "off"}
-				} else {
-					rest = []string{"node-name", rest[0]}
-				}
-				return cmdSet(rest, force, dryRun)
-			})
 		},
 	}
 }
