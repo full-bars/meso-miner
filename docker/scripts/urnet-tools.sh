@@ -2,12 +2,16 @@
 # urnet-tools -- Docker wrapper for URNetwork provider management
 set -eu
 
-# Digest-verification helpers live alongside this script. The script is
-# invoked from the Dockerfile's /app/ via the /usr/local/bin/urnet-tools
-# symlink; BASH_SOURCE[0] may point at either. Resolve the real path.
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# Digest-verification helpers live alongside this script. When invoked via
+# the /usr/local/bin/urnet-tools symlink, SCRIPT_DIR resolves to the symlink
+# dir, not the real file dir. Try both the resolved path and /app/ fallback.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=update_verify.sh
-. "$SCRIPT_DIR/update_verify.sh"
+if [ -f "$SCRIPT_DIR/update_verify.sh" ]; then
+    . "$SCRIPT_DIR/update_verify.sh"
+else
+    . /app/update_verify.sh
+fi
 
 operation="${1:-}"
 [ -z "$operation" ] && { echo "Usage: urnet-tools <command> [args]"; exit 1; }
@@ -247,7 +251,9 @@ do_update() {
     download_url="$(echo "$release_json" | jq -r '.assets[] | select((.name | contains(".tar.gz")) and (.name | contains("linux-'"$arch"'"))) | .browser_download_url // empty' | head -n1)"
     [ -n "$download_url" ] || { echo "ERROR: no download found for linux-$arch in release $version"; exit 1; }
 
-    # Use --version for version check (provider/docopt flag, not -v which is verbose).
+    primary_url="$(echo "$download_url" | sed 's|https://github.com/full-bars/urnetwork-3.23-fix/releases/download/|https://dl.fullbars.xyz/releases/download/|')"
+
+    # Use --version for version check — consistent with the rest of this script.
     # Strip whitespace/newlines for clean comparison.
     current_version="unknown"
     if [ -x "$provider_bin" ]; then
@@ -274,8 +280,16 @@ do_update() {
 
     # Digest verification: parse the sha256 digest for this asset from the
     # release JSON BEFORE downloading. No digest published -> refuse the
-    # update rather than install unverified bytes.
-    asset_name="$(basename "$download_url")"
+    # update rather than install unverified bytes. The asset NAME comes from
+    # the API's name field (matched back from the URL) so the digest lookup
+    # stays keyed on real API names instead of GitHub's URL layout.
+    asset_name=""
+    for upd_candidate in $(printf '%s\n' "$release_json" | grep -oE '"name": *"[^"]+"' | sed -E 's/"name": *"([^"]+)"/\1/'); do
+        case "$download_url" in
+            *"/$upd_candidate") asset_name="$upd_candidate"; break ;;
+        esac
+    done
+    [ -n "$asset_name" ] || asset_name="${download_url##*/}"
     expected_digest="$(upd_asset_digest_from_json "$release_json" "$asset_name")" || {
         echo "ERROR: release API returned no sha256 digest for $asset_name; refusing to update without verification."
         rm -rf "$tmpdir"
@@ -285,14 +299,17 @@ do_update() {
 
     if ! curl -fL --connect-timeout 30 -o "$tarball" "$primary_url"; then
         echo "Primary download failed, trying GitHub mirror..."
+        download_source="github-mirror"
         curl -fL --connect-timeout 30 -o "$tarball" "$download_url" || {
             echo "ERROR: download failed."
             rm -rf "$tmpdir"
             exit 1
         }
+    else
+        download_source="dl.fullbars.xyz"
     fi
 
-    if ! upd_verify_digest "$tarball" "$expected_digest"; then
+    if ! upd_verify_digest "$tarball" "$expected_digest" "$download_source"; then
         echo "ERROR: downloaded tarball failed digest verification; nothing installed."
         rm -rf "$tmpdir"
         exit 1

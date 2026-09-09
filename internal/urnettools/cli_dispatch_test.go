@@ -16,7 +16,7 @@ func TestRunHelpEveryCommand(t *testing.T) {
 	cmds := []string{
 		"providers", "list", "ps",
 		"status", "update", "proxy",
-		"summary", "hot-restart", "hotrestart",
+		"summary", "report", "hot-restart", "hotrestart",
 		"start", "stop", "restart", "logs",
 		"turbo", "eco", "lowmode", "ramlogs", "auto",
 		"optimize", "auto-start", "autostart", "auto-update", "autoupdate",
@@ -64,6 +64,7 @@ func TestRunNoProvidersOnBox(t *testing.T) {
 	cmds := [][]string{
 		{"status"},
 		{"summary"},
+		{"report"},
 		{"hot-restart"},
 		{"start"},
 		{"stop"},
@@ -179,7 +180,7 @@ func TestRunForceAndDryRunParsed(t *testing.T) {
 func TestRunDockerHelpEveryCommand(t *testing.T) {
 	for _, cmd := range []string{
 		"providers", "list", "ps", "status", "start", "stop", "restart", "logs",
-		"auth", "choose-network", "choose_network", "summary",
+		"auth", "choose-network", "choose_network", "summary", "report",
 		"self-heal", "selfheal", "set", "fast-auth", "fastauth", "session",
 		"proxy",
 	} {
@@ -504,6 +505,7 @@ func TestUsageContainsExpectedSections(t *testing.T) {
 		"Core Commands",
 		"Performance",
 		"Proxy Management",
+		"Hub Management",
 		"Maintenance",
 		"Targeting rules",
 		"Force",

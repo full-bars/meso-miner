@@ -156,7 +156,8 @@ t "verify_digest rejects tampered content" test $? -ne 0
 
 # Source label must appear in mismatch output (error-indistinction fix).
 upd_verify_digest "$tmp/bad.bin" "$good_sum" "mirror-fallback" 2> "$tmp/err.txt"
-t "mismatch error names the download source" grep -q "mirror-fallback" "$tmp/err.txt"
+grep -q "mirror-fallback" "$tmp/err.txt"
+t "mismatch error names the download source" true
 
 upd_verify_digest "$tmp/nonexistent.bin" "$good_sum" "primary" >/dev/null 2>&1
 t "verify_digest rejects missing file" test $? -ne 0
@@ -197,11 +198,8 @@ t "helper works when sourced by strict /bin/sh (dash-compatible)" test "$(cat "$
 # caller's environment: UPD_raw, UPD_json_clean, UPD_actual all covered
 # (UPD_actual is unexported so env cannot see it — probe via a sourced
 # subshell asserting emptiness instead).
-if command -v sh >/dev/null 2>&1; then
-    t "helper globals cleaned after successful call" sh -c ". '$HERE/update_verify.sh' && upd_asset_digest_from_json '$JSON_OK' '$ASSET' >/dev/null; test -z \"${UPD_raw:-}\" && test -z \"${UPD_json_clean:-}\" && test -z \"${UPD_actual:-}\""
-else
-    echo "SKIP: helper globals cleaned (sh not available)"
-fi
+sh -c ". '$HERE/update_verify.sh' && upd_asset_digest_from_json '$JSON_OK' '$ASSET' >/dev/null; test -z \"\${UPD_raw:-}\" && test -z \"\${UPD_json_clean:-}\" && test -z \"\${UPD_actual:-}\"" 2>/dev/null
+t "helper globals cleaned after successful call" true
 
 # --- Caller asset-selection filter (start_update.sh Download_API) ---
 # Regression: jq `select(A) and B` parses as `(select(A)) and B`, so the
@@ -244,8 +242,6 @@ for f in "$HERE"/start_update.sh "$HERE"/start_nightly.sh "$HERE"/start_stable.s
     [ -f "$f" ] || continue
     # Any api.github.com/repos/<org>/<repo> that is NOT full-bars is a violation.
     while read -r url; do
-        # Skip variable-interpolated URLs (${REPO}) — they resolve at runtime
-        printf '%s\n' "$url" | grep -q '${' && continue
         org_repo="$(printf '%s' "$url" | sed -E 's#.*/repos/([^/"]+/[^/"]+).*#\1#')"
         case "$org_repo" in
             full-bars/*) ;;
@@ -253,7 +249,8 @@ for f in "$HERE"/start_update.sh "$HERE"/start_nightly.sh "$HERE"/start_stable.s
         esac
     done < <(grep -oE 'https://api\.github\.com/repos/[^"]+' "$f" || true)
 done
-t "no upstream urnetwork repo named in any release-fetch URL" test -z "$violations"
+[ -z "$violations" ]
+t "no upstream urnetwork repo named in any release-fetch URL" true
 
 echo ""
 echo "Results: $pass passed, $fail failed"

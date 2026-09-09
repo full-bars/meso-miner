@@ -5,12 +5,12 @@ package urnettools
 import (
 	"fmt"
 	"os"
-	"os/exec"
-	"os/user"
+	osuser "os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // discoverProcesses scans /proc for running provider processes across ALL
@@ -45,11 +45,14 @@ func discoverProcesses() []Provider {
 			exe = args[0] // fall back to argv[0]
 		}
 		// A running binary whose on-disk file was deleted (e.g. a prior
-		// interrupted update) resolves to a "<path> (deleted)" target. Strip
-		// the kernel's " (deleted)" marker so Provider.Binary stays the
-		// canonical executable path; otherwise installBinary/backup later
+		// interrupted update) resolves to a "<path> (deleted)" target. Record
+		// this BEFORE stripping the suffix so the update path can detect a
+		// stale process whose binary was swapped out by a prior partial update.
+		// Then strip the kernel's " (deleted)" marker so Provider.Binary stays
+		// the canonical executable path; otherwise installBinary/backup later
 		// write to a literal "... (deleted)" path and the service's real
 		// binary stays missing.
+		_, binaryDeleted := strings.CutSuffix(exe, " (deleted)")
 		exe = strings.TrimSuffix(exe, " (deleted)")
 		env := readEnviron(pid)
 		user := env["USER"]
@@ -76,17 +79,55 @@ func discoverProcesses() []Provider {
 			}
 		}
 		p := Provider{
-			User:     user,
-			StateDir: stateDir,
-			Binary:   exe,
-			PID:      pid,
-			Running:  true,
+			User:          user,
+			StateDir:      stateDir,
+			Binary:        exe,
+			PID:           pid,
+			Running:       true,
+			BinaryDeleted: binaryDeleted,
 		}
-		// A provider may carry its own --state-dir flag; honor it.
-		for i := 1; i < len(args)-1; i++ {
-			if args[i] == "--state-dir" {
-				p.StateDir = args[i+1]
+		// A provider may carry its own --state-dir flag; honor it. Both
+		// the space ("--state-dir <path>") and equals
+		// ("--state-dir=<path>") forms are accepted; the equals form
+		// is the standard Unix convention and was previously missed
+		// here, leaving state-dir-derived operations (set, fast-auth,
+		// report, session save/load, proxy health/traffic, and
+		// uninstall's RemoveAll) targeting the wrong directory.
+		for i := 1; i < len(args); i++ {
+			a := args[i]
+			if a == "--state-dir" {
+				if i+1 < len(args) {
+					p.StateDir = args[i+1]
+					break
+				}
+				continue
+			}
+			if v, ok := strings.CutPrefix(a, "--state-dir="); ok {
+				p.StateDir = v
 				break
+			}
+		}
+		// H3 fix: validate --state-dir from foreign process argv. An attacker
+		// can launch `exec -a provider ./x --state-dir=/home/victim` and the
+		// tool would pick up that state-dir, leading to root RemoveAll into
+		// an attacker-controlled path. Validate the path is under the
+		// resolved process owner's home directory.
+		//
+		// Use processOwner (kernel uid via /proc/<pid>) instead of
+		// osuser.Lookup(p.User) — the USER/LOGNAME env vars come from the
+		// target process itself and are fully attacker-controlled. Also add
+		// a separator guard so /var/lib/ur doesn't match /var/lib/urnetwork-evil.
+		if p.StateDir != "" && p.PID > 0 {
+			if _, home := processOwner(p.PID); home != "" {
+				cleanHome := filepath.Clean(home)
+				cleanState := filepath.Clean(p.StateDir)
+				// Reject the state-dir if it is the owner's HOME itself (an
+				// uninstall RemoveAll would wipe the entire home dir) OR not
+				// under the home at all.
+				if cleanState == cleanHome || !strings.HasPrefix(cleanState, cleanHome+string(filepath.Separator)) {
+					// Invalid or dangerous state-dir (exact home, outside home).
+					p.StateDir = ""
+				}
 			}
 		}
 		if p.StateDir == "" {
@@ -97,7 +138,12 @@ func discoverProcesses() []Provider {
 			continue
 		}
 		p.Network, p.NetworkID, p.JWTExpires, _ = decodeJWT(filepath.Join(p.StateDir, "jwt"))
-		p.Version = providerVersion(p.Binary)
+		// S-C1 fix: use buildinfo-only version resolution for discovered
+		// processes. providerVersionFromExec execs the binary as root —
+		// a local user can plant a real ELF via `exec -a urnetwork-provider
+		// ./malicious` and the magic-byte check passes. Discovery must never
+		// exec a foreign binary. Accept empty version for -trimpath builds.
+		p.Version = providerVersionFromBuildinfo(p.Binary)
 		out = append(out, p)
 	}
 	return out
@@ -118,7 +164,7 @@ func processOwner(pid int) (username, home string) {
 	if !ok {
 		return "", ""
 	}
-	u, err := user.LookupId(strconv.FormatUint(uint64(st.Uid), 10))
+	u, err := osuser.LookupId(strconv.FormatUint(uint64(st.Uid), 10))
 	if err != nil {
 		return "", ""
 	}
@@ -211,22 +257,20 @@ func discoverSystemUnits(running []Provider) []Provider {
 	// --plain strips the leading "●"/space state column so fields[0] is the
 	// unit name; without it a loaded-failed unit parses as "●" and is never
 	// matched (CI unix-lifecycle: fake unit installed but undiscoverable).
-	cmd := exec.Command("systemctl", "--plain", "list-units", "--all", "--no-legend", "--no-pager")
-	out, err := cmd.Output()
+	out, err := execWithTimeout(5*time.Second, "systemctl", "--plain", "list-units", "--all", "--no-legend", "--no-pager")
 	if err != nil {
 		return nil // no systemd (container/other init) — process scan is enough
 	}
 	// list-units --all misses never-started units that exist on disk;
 	// list-unit-files scans the unit paths and sees them. Merge both so a
 	// freshly-installed (stopped) provider is discoverable.
-	if fb, ferr := exec.Command("systemctl", "--plain", "list-unit-files", "--no-legend", "--no-pager").Output(); ferr == nil {
+	if fb, ferr := execWithTimeout(5*time.Second, "systemctl", "--plain", "list-unit-files", "--no-legend", "--no-pager"); ferr == nil {
 		out = append(out, '\n')
 		out = append(out, fb...)
 	}
 	// unitUser maps unit name -> User= value, resolved on demand.
 	unitUser := func(unit string) string {
-		c := exec.Command("systemctl", "show", unit, "-p", "User", "--value")
-		b, err := c.Output()
+		b, err := execWithTimeout(5*time.Second, "systemctl", "show", unit, "-p", "User", "--value")
 		if err != nil {
 			return ""
 		}
@@ -305,24 +349,25 @@ func discoverUserUnits(running []Provider) []Provider {
 		if user == current {
 			// --plain strips the leading "●"/space state column so
 			// fields[0] is the unit name (see discoverSystemUnits).
-			b, err = exec.Command("systemctl", "--user", "--plain", "list-units", "--all", "--no-legend", "--no-pager").Output()
+			b, err = execWithTimeout(5*time.Second, "systemctl", "--user", "--plain", "list-units", "--all", "--no-legend", "--no-pager")
 			if err == nil {
 				// list-units --all misses never-started units that exist
 				// on disk (a fresh fake/stopped provider); list-unit-files
 				// scans the unit paths and sees them. Merge both.
-				if fb, ferr := exec.Command("systemctl", "--user", "--plain", "list-unit-files", "--no-legend", "--no-pager").Output(); ferr == nil {
+				if fb, ferr := execWithTimeout(5*time.Second, "systemctl", "--user", "--plain", "list-unit-files", "--no-legend", "--no-pager"); ferr == nil {
 					b = append(b, '\n')
 					b = append(b, fb...)
 				}
 			}
 		} else {
-			// Cross-user query goes through machined/loginctl, which can
-			// be unavailable on CI runners even though the local user
-			// manager works. Fall back to the caller's own manager when
-			// the -M form fails so a same-user provider is still found.
-			b, err = exec.Command("systemctl", "--user", "-M", user+"@", "--plain", "list-units", "--all", "--no-legend", "--no-pager").Output()
+			// Cross-user query goes through machined/loginctl. If -M
+			// fails (no machined, no lingering session — the norm for
+			// service accounts), skip this user entirely. The old code
+			// fell back to the current user's manager and labelled every
+			// unit with the wrong user, creating ghost providers.
+			b, err = execWithTimeout(10*time.Second, "systemctl", "--user", "-M", user+"@", "--plain", "list-units", "--all", "--no-legend", "--no-pager")
 			if err != nil {
-				b, err = exec.Command("systemctl", "--user", "--plain", "list-units", "--all", "--no-legend", "--no-pager").Output()
+				continue
 			}
 		}
 		if err != nil {
@@ -335,10 +380,10 @@ func discoverUserUnits(running []Provider) []Provider {
 
 // currentUserName returns the invoking user's login name, used to decide
 // whether a user-manager query needs -M <user>@ (cross-user) or can use the
-// local session bus. os/user.Current() is authoritative; USER/LOGNAME are a
+// local session bus. os/osuser.Current() is authoritative; USER/LOGNAME are a
 // fallback for stripped environments (non-login CI shells often lack them).
 func currentUserName() string {
-	if u, err := user.Current(); err == nil && u.Username != "" {
+	if u, err := osuser.Current(); err == nil && u.Username != "" {
 		return u.Username
 	}
 	if u := os.Getenv("USER"); u != "" {

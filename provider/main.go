@@ -904,6 +904,9 @@ Usage:
     provider wallet set <coldkey_ss58>
         [--api_url=<api_url>]
         [-v...]
+    provider sn-status [--json]
+        [--api_url=<api_url>]
+        [-v...]
     provider claim [--epoch=<epoch>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
         [--api_url=<api_url>]
         [-v...]
@@ -936,6 +939,7 @@ Options:
     --version                        Show version.
     -v...                            Enable verbose mode. -v implies verbose level 1,
     				                 -vv implies level 2... etc.
+    --json                           Output in JSON format for automated tooling.
     -f                               Force overwrite the JWT token store file or proxy value, if exists.
                                      By default, existing values will not be overwritten.
     --api_url=<api_url>              Specify a custom API URL to use.
@@ -1045,6 +1049,8 @@ Options:
 		if set, _ := opts.Bool("set"); set {
 			walletSet(opts)
 		}
+	} else if snStatus, _ := opts.Bool("sn-status"); snStatus {
+		snStatusCmd(opts)
 	} else if claim_, _ := opts.Bool("claim"); claim_ {
 		claim(opts)
 	} else if bindHead_, _ := opts.Bool("bind-head"); bindHead_ {
@@ -2737,7 +2743,15 @@ func provide(opts docopt.Opts) {
 	}()
 
 	nodeName := strings.TrimSpace(os.Getenv("URNETWORK_NODE_NAME"))
-	_ = nodeName // hub reporter display name; hub reporting is stripped on meso-miner
+
+	// Determine a temporary display name for the outage watcher/heartbeat
+	watcherName := nodeName
+	if watcherName == "" {
+		watcherName, _ = os.Hostname()
+		if containerIDRe.MatchString(watcherName) {
+			watcherName = "provider"
+		}
+	}
 
 	go connect.HandleError(func() { runHealthHeartbeat(ctx, provideStartTime, os.Getenv("URNETWORK_PROFILE")) })
 	go connect.HandleError(func() { runJWTRefresher(ctx, apiUrl) })
@@ -3818,10 +3832,11 @@ func proxyAuthRetryDelay(err error, attempt int) time.Duration {
 // providerDescription builds the display-name string sent as the client
 // description at mint AND renewal time: "Identity [Version]", where Identity
 // is the node name (URNETWORK_NODE_NAME, else HOST_HOSTNAME, else hostname),
-// optionally "Name @ RedactedIP" when the public IP is detected. Kept as ONE
-// helper so mint (provideAuth) and in-process renewal (runProxyJWTWatcher)
-// always agree — the server UPDATEs the row's description on renewal, so
-// divergence would silently rename the device in the dashboard.
+// optionally "Name @ RedactedIP" when URNETWORK_PUBLIC_IP is set, or just the
+// redacted IP for container-id gibberish names. Kept as ONE helper so mint
+// (provideAuth) and in-process renewal (runProxyJWTWatcher) always agree —
+// the server UPDATEs the row's description on renewal, so divergence would
+// silently rename the device in the dashboard.
 func providerDescription(nodeName string) string {
 	displayName := nodeName
 	hostname, _ := os.Hostname()

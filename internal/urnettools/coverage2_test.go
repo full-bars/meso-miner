@@ -74,7 +74,7 @@ func TestCmdProxyTrafficTargetReadsSnapshot(t *testing.T) {
 	}
 	p := Provider{StateDir: dir}
 	// Capture stdout so the printed snapshot is asserted, not just the
-	// nil error.
+	// nil error (assert the snapshot output).
 	old := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
@@ -139,7 +139,6 @@ func TestCmdAutoUpdateRequiresInterval(t *testing.T) {
 // be rejected by cmdAutoUpdate BEFORE targeting (validation moved ahead of
 // selectTarget so this is testable without a live provider — the old test
 // asserted a map literal against itself and could never fail.
-// minor).
 func TestCmdAutoUpdateInvalidInterval(t *testing.T) {
 	err := cmdAutoUpdate([]string{"yearly"}, false, false)
 	if err == nil {
