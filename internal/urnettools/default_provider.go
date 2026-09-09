@@ -70,11 +70,12 @@ func writeDefaultProvider(t Target) (string, error) {
 		return "", err
 	}
 	path := filepath.Join(dir, DefaultProviderFile)
-	b, err := json.MarshalIndent(t, "", " ")
+	b, err := json.MarshalIndent(t, "", "  ")
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(path, b, 0o600); err != nil {
+	// M7 fix: atomic write with fsync for crash safety.
+	if err := writeFileAtomic(path, b, 0o600); err != nil {
 		return "", err
 	}
 	return path, nil

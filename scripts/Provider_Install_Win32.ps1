@@ -2,7 +2,7 @@
 # Author: full-bars (GitHub), onlyinthe707 / "mesocyclone" (Discord)
 # Based on: Ar Rakin, Ryan Mello (original)
 # urnet-tools -- URnetwork provider manager (also acts as an installation script)
-# GitHub: <https://github.com/full-bars/meso-miner>
+# GitHub: <https://github.com/full-bars/urnetwork-3.23-fix>
 
 param(
     [String]$Version = "latest",
@@ -125,8 +125,7 @@ function Set-Path {
 
 Print-Settings
 
-$Repo = "full-bars/meso-miner"
-$GithubURLBase = "https://api.github.com/repos/$Repo"
+$GithubURLBase = "https://api.github.com/repos/full-bars/urnetwork-3.23-fix"
 
 if ($Version -eq "latest") {
     $GithubURL = "$GithubURLBase/releases/latest"
@@ -158,17 +157,27 @@ if ($ReleaseInfo) {
         $ReleaseAsset = $ReleaseInfo.assets | Where-Object { $_.name -match "^urnetwork-provider-.*\-${OS}-${Arch}\.tar\.gz$" } | Select-Object -First 1
     }
     if ($ReleaseAsset) {
-        $DownloadURL = $ReleaseAsset.browser_download_url
+        $MirrorURL = $ReleaseAsset.browser_download_url
         $FileName = $ReleaseAsset.name
+        $DownloadURL = "https://dl.fullbars.xyz/releases/download/$ReleaseVersion/$FileName"
     }
 }
 
 # GitHub API failed, was rate-limited, or the release has no matching asset:
-# for an explicit version we already know the tag. Construct the download URL
-# directly — the release tarball layout is fixed (urnetwork-provider-<tag>.tar.gz).
+# for an explicit version we already know the tag; for "latest" fall back to
+# the dl.fullbars.xyz Worker, which mirrors GitHub's latest-release tag at
+# the edge. Either way, construct the download URL directly — the release
+# tarball layout is fixed (urnetwork-provider-<tag>.tar.gz).
 if (-not $DownloadURL) {
     if ($Version -ne "latest") {
         $ReleaseVersion = $Version
+    }
+    else {
+        Write-Warning "GitHub API unavailable, trying dl.fullbars.xyz fallback..."
+        try {
+            $ReleaseVersion = (Invoke-RestMethod -Uri "https://dl.fullbars.xyz/latest-version").Trim()
+        }
+        catch {}
     }
 
     if (-not $ReleaseVersion) {
@@ -177,7 +186,8 @@ if (-not $DownloadURL) {
     }
 
     $FileName = "urnetwork-provider-$ReleaseVersion.tar.gz"
-    $DownloadURL = "https://github.com/$Repo/releases/download/$ReleaseVersion/$FileName"
+    $DownloadURL = "https://dl.fullbars.xyz/releases/download/$ReleaseVersion/$FileName"
+    $MirrorURL = "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$ReleaseVersion/$FileName"
 }
 
 $FilePath = Join-Path -Path $env:TEMP -ChildPath ([string]$FileName)
@@ -187,8 +197,8 @@ if (-not $NoRestartDownload -or -not (Test-Path $FilePath)) {
         Download-File -URL $DownloadURL -Destination $FilePath
     }
     catch {
-        Write-Error "Failed to download release tarball"
-        throw
+        Write-Warning "Primary download failed, trying GitHub mirror..."
+        Download-File -URL $MirrorURL -Destination $FilePath
     }
 }
 
@@ -268,7 +278,7 @@ if ($ReleaseInfo) {
 if ($ToolAsset -and $ToolDigest) {
     # Go tool path: download, verify, swap with .old (Windows cannot delete a
     # running mapped image, but can rename it).
-    $ToolDownloadURL = "https://github.com/$Repo/releases/download/$ReleaseVersion/$ToolAssetName"
+    $ToolDownloadURL = "https://dl.fullbars.xyz/releases/download/$ReleaseVersion/$ToolAssetName"
     $ToolTemp = Join-Path $env:TEMP $ToolAssetName
     Write-Host "Installing Go urnet-tools binary ($ToolAssetName)..."
     try {
@@ -318,7 +328,7 @@ if (-not $ToolGoInstalled) {
         Copy-Item $ToolsScriptPath $InstalledToolsPath
     }
     else {
-        Invoke-RestMethod "https://raw.githubusercontent.com/$Repo/refs/heads/main/scripts/urnet-tools.ps1" -OutFile $InstalledToolsPath
+        Invoke-RestMethod "https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/urnet-tools.ps1" -OutFile $InstalledToolsPath
     }
 
     $InstalledUpdaterPath = Join-Path $Destination -ChildPath "urnetwork-updater.ps1"
@@ -333,7 +343,7 @@ if (-not $ToolGoInstalled) {
         Copy-Item $UpdaterScriptPath $InstalledUpdaterPath
     }
     else {
-        Invoke-RestMethod "https://raw.githubusercontent.com/$Repo/refs/heads/main/scripts/urnetwork-updater.ps1" -OutFile $InstalledUpdaterPath
+        Invoke-RestMethod "https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/urnetwork-updater.ps1" -OutFile $InstalledUpdaterPath
     }
 }
 

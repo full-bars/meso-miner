@@ -17,9 +17,7 @@
 set -e
 
 # Resolve this script's directory (update_verify.sh lives alongside it).
-# Resolve the real path so it works whether invoked as /app/start_nightly.sh
-# or via a symlink.
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=update_verify.sh
 . "$SCRIPT_DIR/update_verify.sh"
 
@@ -30,7 +28,7 @@ JWT_FILE="$HOME/.urnetwork/jwt"
 ENABLE_VNSTAT="${ENABLE_VNSTAT:-true}"
 ENABLE_IP_CHECKER="${ENABLE_IP_CHECKER:-false}"
 IP_CHECKER_URL="https://raw.githubusercontent.com/techroy23/IP-Checker/refs/heads/main/app.sh"
-API_URL="https://api.github.com/repos/full-bars/meso-miner/releases/latest"
+API_URL="https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/latest"
 VERSION_FILE="$APP_DIR/version.txt"
 UPDATE_TIME="12:00"
 
@@ -279,7 +277,7 @@ func_check_update() {
     log "[INFO] Expected digest: $EXPECTED_DIGEST"
 
     LATEST_VERSION="$(printf '%s\n' "$DOWNLOAD_URL" \
-          | sed -E 's#.*/download/v([^/]+)/.*#\1#')"
+      | sed -E 's#.*/download/v([^/]+)/.*#\1#')"
     log "[INFO] Updating provider to ( $LATEST_VERSION )"
 
     ARCHIVE="$UPDATE_TMP/urnetwork-provider.tar.gz"

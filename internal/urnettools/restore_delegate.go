@@ -12,10 +12,10 @@ import (
 // This file restores urnet-tools commands that the Go rewrite STRIPPED from
 // the legacy shell tool (Provider_Install_Linux.sh + urnet-tools.ps1):
 //
-//	auth authenticate a provider (delegates to the provider binary)
-//	choose-network switch API/connect URLs (delegates to the provider binary)
-//	fast-auth toggle the auth-rate-limiter bypass marker
-//	set read/write/clear runtime tunings in ~/.urnetwork
+//	auth            authenticate a provider (delegates to the provider binary)
+//	choose-network  switch API/connect URLs (delegates to the provider binary)
+//	fast-auth       toggle the auth-rate-limiter bypass marker
+//	set             read/write/clear runtime tunings in ~/.urnetwork
 //
 // auth and choose-network delegate to the targeted provider binary via
 // providerSubcommand (the same pattern proxy/summary/hot-restart use). They
@@ -90,10 +90,12 @@ func cmdChooseNetwork(args []string) error {
 		fmt.Fprint(os.Stderr, `urnet-tools choose-network — set the network the provider connects to
 
 Usage: urnet-tools choose-network <api_url> <connect_url> [target]
- urnet-tools choose-network --reset [target]
+       urnet-tools choose-network main|beta [target]
+       urnet-tools choose-network --reset [target]
 
 Saves an API URL (http/https) and connect URL (ws/wss) as the provider's
-chosen network. --reset clears the saved network and reverts to the main
+chosen network. A preset name (main or beta) selects the built-in network
+without typing URLs. --reset clears the saved network and reverts to the main
 network. Delegates to the provider binary and streams its output.
 `)
 		return nil
@@ -220,13 +222,13 @@ var setKeyFiles = map[string]string{
 
 // setKeyHelps describes each key for `set help` / usage.
 var setKeyHelps = []string{
-	" node-name <string> node name reported to the fleet hub (default: hostname)",
-	" report-interval <duration> bandwidth report cadence (default: 5m, min: 10s)",
-	" proxy-url-max <int> max proxies from URL feeds (default: 500)",
-	" proxy-url-refresh <duration> URL proxy list refresh interval (default: 1h, min: 10s)",
-	" cleanup-scope none|url|all dead proxy auto-cleanup scope (default: url)",
-	" cleanup-interval <duration> dead proxy cleanup interval (default: 6h, min: 1m)",
-	" fast-auth on|off bypass auth rate limiter (marker file)",
+	"  node-name           <string>    node name reported to the fleet hub (default: hostname)",
+	"  report-interval     <duration>  bandwidth report cadence (default: 5m, min: 10s)",
+	"  proxy-url-max       <int>       max proxies from URL feeds (default: 500)",
+	"  proxy-url-refresh   <duration>  URL proxy list refresh interval (default: 1h, min: 10s)",
+	"  cleanup-scope       none|url|all  dead proxy auto-cleanup scope (default: url)",
+	"  cleanup-interval    <duration>  dead proxy cleanup interval (default: 6h, min: 1m)",
+	"  fast-auth           on|off      bypass auth rate limiter (marker file)",
 }
 
 func printSetHelp() {
@@ -236,10 +238,10 @@ Usage: urnet-tools set <key> [<value>|off] [target]
 
 Runtime overrides are files the provider reads live from ~/.urnetwork/.
 Changes take effect on the next provider tick (no restart needed).
-Set a value: urnet-tools set <key> <value>
+Set a value:  urnet-tools set <key> <value>
 Show current: urnet-tools set <key>
-Clear it: urnet-tools set <key> off
-List all: urnet-tools set
+Clear it:     urnet-tools set <key> off
+List all:     urnet-tools set
 
 Available keys:
 `)
@@ -351,11 +353,23 @@ func applySetOverride(p Provider, key, value string, dryRun bool) error {
 	if err := os.MkdirAll(p.StateDir, 0o700); err != nil {
 		return err
 	}
+	// When run as root, MkdirAll creates the dir owned by root. Fix
+	// ownership so the provider process can write its own state.
+	// Uses Lchown to prevent following symlinks (C2 fix).
+	if uid, gid, _ := lookupUserIDs(p.User); uid >= 0 {
+		_ = chownStateDir(p.StateDir, uid, gid)
+	}
 	// 0o644, matching the sibling override-writers: the provider often runs
 	// under a different user than the tool, so a 0600 file would be unreadable
 	// and the change would silently never take effect.
-	if err := os.WriteFile(file, []byte(value), 0o644); err != nil {
+	// Uses writeStateFile (O_NOFOLLOW) to prevent symlink-following attacks.
+	if err := writeStateFile(p.StateDir, filename, []byte(value), 0o644); err != nil {
 		return fmt.Errorf("write %s: %v", file, err)
+	}
+	// chown the written file so the provider can read/rewrite it.
+	// Uses Lchown to prevent following symlinks.
+	if uid, gid, _ := lookupUserIDs(p.User); uid >= 0 {
+		_ = chownStateFile(file, uid, gid)
 	}
 	fmt.Printf("%s set to %s for %s — takes effect on next provider tick\n", key, value, providerLabel(p))
 	return nil
@@ -387,8 +401,14 @@ func setFastAuthMarker(p Provider, on bool, dryRun bool) error {
 	if err := os.MkdirAll(p.StateDir, 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(file, nil, 0o644); err != nil {
+	if uid, gid, _ := lookupUserIDs(p.User); uid >= 0 {
+		_ = chownStateDir(p.StateDir, uid, gid)
+	}
+	if err := writeStateFile(p.StateDir, "fast_auth", nil, 0o644); err != nil {
 		return err
+	}
+	if uid, gid, _ := lookupUserIDs(p.User); uid >= 0 {
+		_ = chownStateFile(file, uid, gid)
 	}
 	fmt.Printf("fast-auth: on for %s — auth rate limiter bypassed (effective immediately)\n", providerLabel(p))
 	return nil
@@ -441,9 +461,9 @@ func formatSets(p Provider, want string) error {
 		}
 		found++
 		if k == "fast-auth" {
-			fmt.Printf(" %-32s %s\n", setKeyFiles[k], "on")
+			fmt.Printf("  %-32s %s\n", setKeyFiles[k], "on")
 		} else {
-			fmt.Printf(" %-32s %s\n", setKeyFiles[k], strings.TrimSpace(string(b)))
+			fmt.Printf("  %-32s %s\n", setKeyFiles[k], strings.TrimSpace(string(b)))
 		}
 	}
 	if found == 0 {

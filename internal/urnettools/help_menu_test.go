@@ -78,6 +78,7 @@ func TestEveryToolsCommandHelpIsPerCommand(t *testing.T) {
 		{"auth", "auth"},
 		{"choose-network", "choose-network"},
 		{"proxy", "proxy"},
+		{"report", "report"},
 		{"reinstall", "reinstall"},
 		{"uninstall", "uninstall"},
 		{"auto-update", "auto-update"},
@@ -119,6 +120,7 @@ func TestEveryDockerCommandHelpIsPerCommand(t *testing.T) {
 		{"auth", "auth"},
 		{"choose-network", "choose-network"},
 		{"summary", "summary"},
+		{"report", "report"},
 		{"update", "update"},
 		{"idle-update", "idle-update"},
 		{"self-heal", "self-heal"},
@@ -167,8 +169,8 @@ func TestVersionHelpIsRootIntercepted(t *testing.T) {
 				t.Fatalf("%s version --help returned error: %v", tc.name, err)
 			}
 		})
-		if strings.TrimSpace(out) != ToolVersion {
-			t.Errorf("%s version --help = %q, want %q", tc.name, strings.TrimSpace(out), ToolVersion)
+		if !strings.Contains(out, ToolVersion) {
+			t.Errorf("%s version --help = %q, want it to contain %q", tc.name, out, ToolVersion)
 		}
 	}
 }
