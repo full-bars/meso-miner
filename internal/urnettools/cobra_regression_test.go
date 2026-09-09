@@ -11,8 +11,8 @@ import (
 // executes, and the commands that own their own help keep it.
 
 // TestRunSessionOwnHelp: `session --help` must print the RICH cmdSession usage
-// (save/load + --allow-different-account), NOT a Cobra stub. Guards that
-// newCobraCmd's broad help interception was not hiding it.
+// (save/load + --allow-different-account), NOT a Cobra stub. Guards the review
+// finding that newCobraCmd's broad help interception was hiding it.
 func TestRunSessionOwnHelp(t *testing.T) {
 	out := captureStderr(t, func() {
 		if err := Run([]string{"session", "--help"}); err != nil {

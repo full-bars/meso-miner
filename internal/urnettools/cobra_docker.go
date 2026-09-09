@@ -34,6 +34,7 @@ Core Commands:
   restart                   Restart container
   update                    Update host binary or provider in place (no recreate)
   status                    Detailed status of one container
+  sn-status                 Subnet 25 node rank, coldkey & miner status
   logs                      Follow container logs
   exec <cmd>                Run arbitrary command inside the container
   providers                 List all provider containers
@@ -61,7 +62,6 @@ Config & Automation:
   choose-network            Set API/connect endpoints
   fast-auth [on|off]        Bypass auth rate limiter without restart
   set [<k> [<v>|off]]       Show or change runtime tuning overrides
-  rename <name>            Set dashboard display name (alias: set node-name)
   self-heal [on|off]        Auto-regulate proxies (load gate + cleanup)
   direct [on|off]           Toggle providing on the machine's direct/local IP
   usage [graph[s] <view>]   Traffic accounting: billable vs control, time-series
@@ -111,6 +111,7 @@ func buildDockerRootCmd() *cobra.Command {
 	rootCmd.AddCommand(
 		newDockerProvidersCmd(),
 		newDockerStatusCmd(),
+		newDockerSnStatusCmd(),
 		newDockerStartCmd(),
 		newDockerStopCmd(),
 		newDockerRestartCmd(),
@@ -125,7 +126,6 @@ func buildDockerRootCmd() *cobra.Command {
 		newDockerProxyCmd(),
 		newDockerSelfHealCmd(),
 		newDockerSetCmd(),
-		newDockerRenameCmd(),
 		newDockerFastAuthCmd(),
 		newDockerHubCmd(),
 		newDockerSessionCmd(),
@@ -151,6 +151,12 @@ func newDockerStatusCmd() *cobra.Command {
 	return withHelp(newCobraCmd("status [target]", "detailed status of one container", nil, func(cmd *cobra.Command, args []string) error {
 		return cmdDockerStatus(args)
 	}), "Show detailed status for one provider container: image, running state, in-container state dir, network identity, and JWT expiry. Target it with --unit (the container name), --network, --network-id, --state-dir, or a bare container name.", "  urnet-docker status\n  urnet-docker status mynetwork-provider\n  urnet-docker status --network tacogonzalez3000")
+}
+
+func newDockerSnStatusCmd() *cobra.Command {
+	return withHelp(newCobraCmd("sn-status [target]", "Subnet 25 node rank, coldkey & miner status", nil, func(cmd *cobra.Command, args []string) error {
+		return cmdDockerSnStatus(args)
+	}), "Show real-time Subnet 25 metrics inside the targeted container: global network rank, billable bandwidth, registered Bittensor coldkey, Top 200 cutoff eligibility, contract clock, and payout share. Supports --json.", "  urnet-docker sn-status\n  urnet-docker sn-status --json\n  urnet-docker sn-status --unit mynetwork-provider")
 }
 
 func newDockerStartCmd() *cobra.Command {
@@ -341,12 +347,6 @@ func newDockerSetCmd() *cobra.Command {
 	return withHelp(newCobraCmd("set", "runtime tuning override in container state", nil, func(cmd *cobra.Command, args []string) error {
 		return cmdDockerSet(args)
 	}), "Read or write a runtime tuning override in the container's provider state, delegating to its urnet-tools set. Run with no key to list, a key alone to show a value, a key and value to set it, or a key and \"off\" to clear it.", "  urnet-docker set report-interval 5m --unit mynetwork-provider\n  urnet-docker set cleanup-scope off --unit mynetwork-provider")
-}
-
-func newDockerRenameCmd() *cobra.Command {
-	return withHelp(newCobraCmd("rename", "set dashboard display name in container", nil, func(cmd *cobra.Command, args []string) error {
-		return cmdDockerRename(args)
-	}), "Set the targeted container's provider display name reported to the dashboard. Delegates to the container's own urnet-tools rename.", "  urnet-docker rename us-west-2 --unit mynetwork-provider\n  urnet-docker rename off --unit mynetwork-provider")
 }
 
 func newDockerFastAuthCmd() *cobra.Command {
