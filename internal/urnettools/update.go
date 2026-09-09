@@ -623,14 +623,16 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	// /proc/<PID>/exe resolves to the image the running process actually
 	// loaded; compare its embedded version against cfg.Tag, and require the
 	// on-disk binary is not deleted/stale.
-	// Verification loop: bounded at 15 iterations (~30s), one Discover() per
+	// Verification loop: bounded at 30 iterations (~60s) with 3s settle delay, one Discover() per
 	// iteration; no extra early-break needed because the first successful
 	// match (running PID changed, image not deleted, /proc/<pid>/exe build
 	// info reports cfg.Tag) returns nil immediately.
 	oldPID := p.PID
-	// NOTE: returns nil (exits) on the first matching provider — the full 15
+	// NOTE: returns nil (exits) on the first matching provider — the full 30
 	// iterations only run when no match is ever found.
-	for i := 0; i < 15; i++ { // up to ~30s
+	// Give the old process time to exit before the first check.
+	time.Sleep(3 * time.Second)
+	for i := 0; i < 30; i++ { // up to ~60s (plus 3s settle)
 		time.Sleep(2 * time.Second)
 		providers := Discover()
 		for _, rp := range providers {
