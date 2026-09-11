@@ -209,19 +209,21 @@ func initGlog() {
 		// If explicitly requested via profile or env, just start it.
 		// Auto-detection handover is handled in main() with a countdown.
 		// One-shot CLI subcommands print directly to the terminal instead.
+		fmt.Fprintf(os.Stderr, "[ramlogs] Logs redirected to RAM — view with: urnet-tools logs\n")
 		initSHMLogger()
 	}
 }
 
 func initSHMLoggerWithHandover() {
 	fmt.Printf("\n[audit] Slow disk detected. Moving all subsequent logs to RAM (/dev/shm) for performance.\n")
-	tlog("[audit] >>> To view live logs, run: urnet-tools logs <<<\n")
+	tlog("[audit] >>> Live logs: urnet-tools logs  |  tail -f /dev/shm/urnetwork.log")
 	tlog("[audit] Redirecting in 3...")
 	time.Sleep(1 * time.Second)
 	fmt.Printf(" 2...")
 	time.Sleep(1 * time.Second)
 	fmt.Printf(" 1...\n")
 	time.Sleep(1 * time.Second)
+	os.Setenv("URNETWORK_RAMLOGS", "1")
 	initSHMLogger()
 }
 
@@ -1391,6 +1393,7 @@ func runLifetimeCollector(ctx context.Context) {
 	prevRxPerProxy := map[string]*uint64{}
 	prevTxPerProxy := map[string]*uint64{}
 	var prevTime time.Time
+	var prevA1, prevA2, prevA3, prevA4, prevA5, prevA6, prevA7 uint64
 
 	// departedBaselines remembers the last billable counter reading of
 	// proxies that left the health snapshot, so a proxy returning within
@@ -1475,11 +1478,14 @@ func runLifetimeCollector(ctx context.Context) {
 		)
 		lifetimeStore.MaybeFlush(time.Now())
 
-		// All-time rollup line (only once there is something to show).
+		// All-time rollup line (only once something changed since last tick).
 		a1, a2, a3, a4, a5, a6, a7 := lifetimeStore.Snapshot()
-		if a1|a2|a3|a4|a5|a6|a7 != 0 {
-			tlog("♾️ [lifetime] all-time: post-quantum=%d classical=%d contracts_acquired=%d denied=%d proxies_recovered=%d lost=%d billable_total=%s\n",
-				a1, a2, a3, a4, a5, a6, fmtBytes(a7))
+		if a1 != prevA1 || a2 != prevA2 || a3 != prevA3 || a4 != prevA4 || a5 != prevA5 || a6 != prevA6 || a7 != prevA7 {
+			if a1|a2|a3|a4|a5|a6|a7 != 0 {
+				tlog("♾️ [lifetime] all-time: post-quantum=%d classical=%d contracts_acquired=%d denied=%d proxies_recovered=%d lost=%d billable_total=%s\n",
+					a1, a2, a3, a4, a5, a6, fmtBytes(a7))
+			}
+			prevA1, prevA2, prevA3, prevA4, prevA5, prevA6, prevA7 = a1, a2, a3, a4, a5, a6, a7
 		}
 
 		// Transit visibility: traffic forwarded THROUGH this node to other
@@ -1534,6 +1540,7 @@ func runEarningWindows(ctx context.Context) {
 	deltas := make([]uint64, 0, maxSamples)
 	var prevCum uint64
 	var prevSet bool
+	var prevEarnActive bool
 
 	ticker := time.NewTicker(earnCheckInterval)
 	defer ticker.Stop()
@@ -1602,8 +1609,12 @@ func runEarningWindows(ctx context.Context) {
 				active = "yes"
 			}
 
-			tlog("💰 [earn] billable_1m=%s billable_5m=%s billable_15m=%s billable_60m=%s active=%s\n",
-				fmtBytes(billable1m), fmtBytes(billable5m), fmtBytes(billable15m), fmtBytes(billable60m), active)
+			nowActive := billable1m > 0
+			if nowActive != prevEarnActive || nowActive {
+				tlog("💰 [earn] billable_1m=%s billable_5m=%s billable_15m=%s billable_60m=%s active=%s\n",
+					fmtBytes(billable1m), fmtBytes(billable5m), fmtBytes(billable15m), fmtBytes(billable60m), active)
+				prevEarnActive = nowActive
+			}
 		}
 		prevCum = cum
 		prevSet = true
@@ -3539,6 +3550,20 @@ func provide(opts docopt.Opts) {
 	// reconciler tick (up to an hour later) would be the first time the cap
 	// binds.
 	reloader.reload()
+
+	logsHint := ""
+	if os.Getenv("URNETWORK_RAMLOGS") == "1" {
+		logsHint = " | logs: urnet-tools logs"
+	}
+	readyProfile := os.Getenv("URNETWORK_PROFILE")
+	if readyProfile == "" {
+		readyProfile = "default"
+	}
+	readyVersion := RequireVersion()
+	if readyVersion == "" {
+		readyVersion = "unknown"
+	}
+	tlog("✅ Ready — %s | profile=%s | proxies=%d%s\n", readyVersion, readyProfile, len(allProxySettings), logsHint)
 
 	go connect.HandleError(func() {
 		runProxyURLFetcher(ctx, proxyURLs, proxyURLRefresh, proxyURLMax, apiProbeHost, apiProbePort, selfHealEnabled)
