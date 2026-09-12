@@ -377,10 +377,10 @@ func ParseByteCount(humanReadable string) (ByteCount, error) {
 	// Accepts: tib/ti/tb/tbib, gib/gi/gb/gbib, mib/mi/mb/mbib,
 	//          kib/ki/kb/kbib, b (exact).
 	type suffixRule struct {
-		suffix   string
-		divisor  float64 // bytes = number * divisor
-		cutoff   int     // len(lower) - len(normalized suffix) is the number part
-		strip    string  // what we strip from the end to get the number
+		suffix  string
+		divisor float64 // bytes = number * divisor
+		cutoff  int     // len(lower) - len(normalized suffix) is the number part
+		strip   string  // what we strip from the end to get the number
 	}
 	rules := []suffixRule{
 		// Longest suffixes first — HasSuffix("1536gb", "b") is true,

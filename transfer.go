@@ -3175,6 +3175,11 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 		if isBackendDegraded() {
 			contractRetryInterval = 30 * time.Second
 		}
+		// per-destination denial backoff: re-read before every attempt because
+		// async CreateContract callbacks can trigger noteDenial between retries.
+		if denialBackoff := self.client.ContractManager().getDenialBackoff(self.destination.DestinationId); denialBackoff > contractRetryInterval {
+			contractRetryInterval = denialBackoff
+		}
 
 		if self.sendContract != nil {
 			// there should be a queued up contract
@@ -3211,6 +3216,12 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 					self.contractSeqIndex,
 					ByteCount(32+float32(messageByteCount+messageByteCount+self.sendBufferSettings.MinMessageByteCount)/self.contractFillFraction()),
 				)
+			}
+
+			// Re-read denial backoff each iteration — async callbacks may have
+			// raised it since the last iteration.
+			if denialBackoff := self.client.ContractManager().getDenialBackoff(self.destination.DestinationId); denialBackoff > contractRetryInterval {
+				contractRetryInterval = denialBackoff
 			}
 
 			if traceNextContract(min(timeout, contractRetryInterval)) {

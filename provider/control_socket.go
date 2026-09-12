@@ -689,7 +689,7 @@ func applyMetricsLive(value string) error {
 	if enabled && metricsServer == nil {
 		metricsAddr := os.Getenv("URNETWORK_METRICS")
 		if metricsAddr == "" {
-			return fmt.Errorf("metrics on: URNETWORK_METRICS env var not set")
+			metricsAddr = resolveMetricsAddr()
 		}
 		connect.SetExtraMetricsProvider(providerExtraMetrics)
 		connect.SetPersistentErrorFunc(IncrPersistentError)
@@ -715,6 +715,27 @@ func applyMetricsLive(value string) error {
 		tlog("[metrics] stopped Prometheus /metrics\n")
 	}
 	return nil
+}
+
+// resolveMetricsAddr picks a port for the Prometheus /metrics listener.
+// If URNETWORK_METRICS is set, that address is used as-is (explicit override).
+// Otherwise it probes 9100-9103 and binds the first available port.
+func resolveMetricsAddr() string {
+	if addr := os.Getenv("URNETWORK_METRICS"); addr != "" {
+		return addr
+	}
+	for _, port := range []int{9100, 9101, 9102, 9103} {
+		addr := fmt.Sprintf(":%d", port)
+		ln, err := net.Listen("tcp", addr)
+		if err == nil {
+			ln.Close()
+			tlog("[metrics] port %d is available\n", port)
+			return addr
+		}
+		tlog("[metrics] port %d in use, trying next\n", port)
+	}
+	tlog("[metrics] warning: all ports 9100-9103 in use, falling back to :9100\n")
+	return ":9100"
 }
 
 // applyPersistedRuntimeTuning re-applies gomemlimit/gogc from state via
