@@ -192,7 +192,7 @@ func TestHotSwapPreflightReturnsTheGateSpecificReason(t *testing.T) {
 		if !errors.Is(err, ErrHotSwapNotSupported) {
 			t.Fatalf("hotSwapPreflight = %v, want ErrHotSwapNotSupported", err)
 		}
-		if !strings.Contains(err.Error(), "does not support zero-downtime hotswap") {
+		if !strings.Contains(err.Error(), "below v3.23.0-fix.31.0") {
 			t.Errorf("decline text %q lost the substring shakedown section V1 greps for", err)
 		}
 	})
@@ -203,7 +203,7 @@ func TestHotSwapPreflightReturnsTheGateSpecificReason(t *testing.T) {
 		if !errors.Is(err, ErrHotSwapUnitNotNotify) {
 			t.Fatalf("hotSwapPreflight = %v, want ErrHotSwapUnitNotNotify", err)
 		}
-		for _, want := range []string{"is not Type=notify", "Provider_Install_Linux.sh"} {
+		for _, want := range []string{"Type=simple instead of Type=notify", "Provider_Install_Linux.sh"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("decline text %q lost %q, which shakedown section V2 greps for", err, want)
 			}

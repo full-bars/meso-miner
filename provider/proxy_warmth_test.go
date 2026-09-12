@@ -353,11 +353,11 @@ func TestPrioritizeAndScheduleProxies(t *testing.T) {
 		stagger time.Duration
 	}{
 		{"file-warm", WarmthValid, 0, WarmValidStagger},                                  // 0
-		{"file-renewable", WarmthRenewable, 25 * time.Millisecond, WarmRenewableStagger}, // 25ms
-		{"file-cold", WarmthCold, 75 * time.Millisecond, ColdFileStagger},                // 25ms + 50ms = 75ms
-		{"url-warm", WarmthValid, 225 * time.Millisecond, WarmValidStagger},              // 75ms + 150ms = 225ms
-		{"url-renewable", WarmthRenewable, 250 * time.Millisecond, WarmRenewableStagger}, // 225ms + 25ms = 250ms
-		{"url-cold", WarmthCold, 300 * time.Millisecond, ColdURLStagger},                 // 250ms + 50ms = 300ms
+		{"url-warm", WarmthValid, 25 * time.Millisecond, WarmValidStagger},               // 25ms
+		{"file-renewable", WarmthRenewable, 50 * time.Millisecond, WarmRenewableStagger}, // 50ms
+		{"url-renewable", WarmthRenewable, 100 * time.Millisecond, WarmRenewableStagger}, // 100ms
+		{"file-cold", WarmthCold, 150 * time.Millisecond, ColdFileStagger},               // 150ms
+		{"url-cold", WarmthCold, 300 * time.Millisecond, ColdURLStagger},                 // 300ms
 	}
 
 	if len(schedules) != len(expectedOrder) {

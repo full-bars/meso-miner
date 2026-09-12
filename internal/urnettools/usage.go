@@ -70,27 +70,28 @@ func readUsageHistory(stateDir string) ([]usageSnapshot, error) {
 			lastErr = fmt.Errorf("open %s: %w", name, err)
 			continue
 		}
-		sc := bufio.NewScanner(f)
-		sc.Buffer(make([]byte, 0, 1<<20), 1<<20)
-		for sc.Scan() {
-			line := strings.TrimSpace(sc.Text())
-			if line == "" {
-				continue
+		func() {
+			defer f.Close()
+			sc := bufio.NewScanner(f)
+			sc.Buffer(make([]byte, 0, 1<<20), 1<<20)
+			for sc.Scan() {
+				line := strings.TrimSpace(sc.Text())
+				if line == "" {
+					continue
+				}
+				var s usageSnapshot
+				if err := json.Unmarshal([]byte(line), &s); err != nil {
+					continue // ragged/partial last line — skip
+				}
+				snaps = append(snaps, s)
 			}
-			var s usageSnapshot
-			if err := json.Unmarshal([]byte(line), &s); err != nil {
-				continue // ragged/partial last line — skip
+			if err := sc.Err(); err != nil {
+				// Scanner errors include bufio.ErrTooLong (line exceeds the
+				// 1 MiB buffer cap) — the cap is intentional but the silent
+				// truncation must be visible to the operator.
+				lastErr = fmt.Errorf("scan %s: %w", name, err)
 			}
-			snaps = append(snaps, s)
-		}
-		if err := sc.Err(); err != nil {
-			// Scanner errors include bufio.ErrTooLong (line exceeds the
-			// 1 MiB buffer cap) — the cap is intentional but the silent
-			// truncation must be visible to the operator.
-			f.Close()
-			return snaps, fmt.Errorf("scan %s: %w", name, err)
-		}
-		f.Close()
+		}()
 	}
 	// Callers (usageWindow, usageLifetime) assume chronological order; the
 	// combined .1 + main files and clock skew can violate that, so sort here.

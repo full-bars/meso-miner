@@ -780,11 +780,15 @@ func cmdHistory(args []string) error {
 
 	fmt.Printf("Last %d audit entries:\n\n", len(resp.Entries))
 	for _, e := range resp.Entries {
-		ts := time.Unix(e.Timestamp, 0)
+		ts, parseErr := time.Parse(time.RFC3339, e.Timestamp)
+		tsStr := e.Timestamp
+		if parseErr == nil {
+			tsStr = ts.Local().Format("2006-01-02 15:04:05")
+		}
 		if e.OK {
-			fmt.Printf("[%s] OK  %s %s=%s\n", ts.Format("2006-01-02 15:04:05"), e.Cmd, e.Key, e.Value)
+			fmt.Printf("[%s] OK  %s %s=%s\n", tsStr, e.Cmd, e.Key, e.Value)
 		} else {
-			fmt.Printf("[%s] ERR %s %s=%s  error: %s\n", ts.Format("2006-01-02 15:04:05"), e.Cmd, e.Key, e.Value, e.Error)
+			fmt.Printf("[%s] ERR %s %s=%s  error: %s\n", tsStr, e.Cmd, e.Key, e.Value, e.Error)
 		}
 	}
 	if resp.NextCursor != "" {

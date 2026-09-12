@@ -1,8 +1,10 @@
 package urnettools
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestParseHistoryArgsDefaults: bare `history` returns limit=50, no cursor.
@@ -194,5 +196,81 @@ func TestParseHistoryArgsCursorOnly(t *testing.T) {
 	}
 	if cursor != "abc" {
 		t.Errorf("cursor = %q, want abc", cursor)
+	}
+}
+
+// TestAuditEntryWireFormatRoundTrip verifies that the client's AuditEntry
+// can deserialize the JSON the provider's CommandAudit actually produces
+// over the wire (Timestamp is time.Time -> RFC3339 string, not int64).
+func TestAuditEntryWireFormatRoundTrip(t *testing.T) {
+	// Simulate what the provider sends: a JSON object with an RFC3339 timestamp string.
+	wireJSON := `{"timestamp":"2026-09-12T10:30:00Z","cmd":"set","key":"turbo","value":"v8","ok":true}`
+
+	var entry AuditEntry
+	if err := json.Unmarshal([]byte(wireJSON), &entry); err != nil {
+		t.Fatalf("failed to unmarshal provider wire JSON into AuditEntry: %v", err)
+	}
+	if entry.Cmd != "set" {
+		t.Errorf("Cmd = %q, want set", entry.Cmd)
+	}
+	if entry.Key != "turbo" {
+		t.Errorf("Key = %q, want turbo", entry.Key)
+	}
+	if entry.Value != "v8" {
+		t.Errorf("Value = %q, want v8", entry.Value)
+	}
+	if !entry.OK {
+		t.Error("OK = false, want true")
+	}
+	// Parse the timestamp and verify it round-trips correctly.
+	ts, err := time.Parse(time.RFC3339, entry.Timestamp)
+	if err != nil {
+		t.Fatalf("failed to parse Timestamp %q as RFC3339: %v", entry.Timestamp, err)
+	}
+	want := time.Date(2026, 9, 12, 10, 30, 0, 0, time.UTC)
+	if !ts.Equal(want) {
+		t.Errorf("Timestamp = %v, want %v", ts, want)
+	}
+}
+
+// TestAuditEntryWireFormatFullResponse verifies the full controlResponse
+// deserialization including entries with timestamps.
+func TestAuditEntryWireFormatFullResponse(t *testing.T) {
+	wireJSON := `{
+		"ok": true,
+		"entries": [
+			{"timestamp":"2026-09-12T10:30:00Z","cmd":"set","key":"turbo","value":"v8","ok":true},
+			{"timestamp":"2026-09-12T10:31:00Z","cmd":"clear","key":"turbo","error":"not found","ok":false}
+		],
+		"next_cursor": "2026-09-12T10:31:00Z"
+	}`
+
+	var resp controlResponse
+	if err := json.Unmarshal([]byte(wireJSON), &resp); err != nil {
+		t.Fatalf("failed to unmarshal full response: %v", err)
+	}
+	if !resp.OK {
+		t.Error("OK = false, want true")
+	}
+	if len(resp.Entries) != 2 {
+		t.Fatalf("Entries len = %d, want 2", len(resp.Entries))
+	}
+	if resp.Entries[0].Cmd != "set" {
+		t.Errorf("Entries[0].Cmd = %q, want set", resp.Entries[0].Cmd)
+	}
+	if !resp.Entries[0].OK {
+		t.Error("Entries[0].OK = false, want true")
+	}
+	if resp.Entries[1].Cmd != "clear" {
+		t.Errorf("Entries[1].Cmd = %q, want clear", resp.Entries[1].Cmd)
+	}
+	if resp.Entries[1].OK {
+		t.Error("Entries[1].OK = true, want false")
+	}
+	if resp.Entries[1].Error != "not found" {
+		t.Errorf("Entries[1].Error = %q, want not found", resp.Entries[1].Error)
+	}
+	if resp.NextCursor != "2026-09-12T10:31:00Z" {
+		t.Errorf("NextCursor = %q, want 2026-09-12T10:31:00Z", resp.NextCursor)
 	}
 }

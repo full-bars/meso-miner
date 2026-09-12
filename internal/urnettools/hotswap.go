@@ -55,7 +55,7 @@ func supportsHotSwap(p Provider) bool {
 }
 
 // ErrHotSwapNotSupported is returned when the running provider process does not support zero-downtime hotswap.
-var ErrHotSwapNotSupported = errors.New("running provider does not support zero-downtime hotswap (requires >= v3.23.0-fix.31.0)")
+var ErrHotSwapNotSupported = errors.New("zero-downtime hotswap unavailable: the running provider is below v3.23.0-fix.31.0 and does not support hotswap. Upgrade to v31.0+ to enable zero-downtime updates")
 
 // ErrHotSwapUnitNotNotify is returned when the provider's version supports
 // HotSwap but its owning systemd unit is not Type=notify, so
@@ -68,7 +68,7 @@ var ErrHotSwapNotSupported = errors.New("running provider does not support zero-
 // atomically installs the binary and restarts the unit but never writes a
 // unit file, so neither migrates a Type=simple node. Only re-running
 // install_systemd_units in Provider_Install_Linux.sh does.
-var ErrHotSwapUnitNotNotify = errors.New("provider's systemd unit is not Type=notify, so zero-downtime hotswap cannot complete; re-run the installer script (Provider_Install_Linux.sh) to rewrite the unit with Type=notify. Note neither `urnet-tools update` nor `urnet-tools reinstall` rewrites the unit: both only re-fetch the binary")
+var ErrHotSwapUnitNotNotify = errors.New("zero-downtime hotswap unavailable: the provider's systemd unit uses Type=simple instead of Type=notify. To enable zero-downtime updates, re-run the installer script (Provider_Install_Linux.sh) to migrate the unit to Type=notify. Note: `urnet-tools update` and `urnet-tools reinstall` only replace the binary — they do not rewrite the unit file")
 
 // hotSwapPreflight reports WHY the handoff cannot run, or nil when it can.
 // It is the single source of that decision: triggerHotSwap calls it before

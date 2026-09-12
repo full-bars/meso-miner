@@ -10,6 +10,39 @@ _Nothing yet._
 
 ---
 
+## [v3.23.0-fix.31.1]
+
+### Added
+- **`urnet-tools history` command**: exposes the provider's 1000-entry command audit ring via the control socket. Supports `--limit` and `--cursor` for pagination. Fixed wire-format mismatch (`int64` vs `time.Time` serialization) that broke every invocation.
+- **HotSwap auto-migration (PR #611)**: `urnet-tools update` now automatically rewrites `Type=simple` systemd units to `Type=notify` during the binary swap. Pre-v31.0 fleet nodes that were installed before `Type=notify` became the default now get zero-downtime updates without a full reinstall. Non-fatal by design — migration failure logs a note and falls back to restart.
+- **HotSwap operator-facing decline messages (PR #611)**: every HotSwap decline point now tells the operator what went wrong in plain language and what to do about it, instead of technical jargon. Covers version too old, Type=simple, Windows, Docker non-PID-1, and missing NOTIFY_SOCKET.
+- **HotSwap decline metrics (PR #611)**: new `urnet_hotswap_outcomes_total{reason="..."}` Prometheus counter tracking HotSwap success and decline outcomes by reason (version_old, unit_not_notify, windows, takeover_failed, etc.). Written atomically by `urnet-tools` and scraped by the provider's `/metrics` endpoint.
+- **`ParseByteCount` human suffixes (PR #610)**: `urnet-tools set gomemlimit` now accepts common formats (`1536M`, `2G`, `512MB`, `1g`, `2tib`) in addition to the original lowercase iB variants. Spaces stripped, longest-suffix-first matching.
+- **`urnet-tools set metrics on|off` (PR #611)**: metrics server auto-starts when toggled on — probes ports 9100-9103 for a free port, binds `:9100` by default. No longer requires `URNETWORK_METRICS` env var at boot.
+- **Proxy earnings priority ranking (PR #601)**: proxy launch order now considers earnings history — high-earning URL proxies are promoted into the trusted launch group alongside file proxies. Sort order: warmth first, then provenance, then earnings. Exploration quota interleaves 1 unproven proxy per 5 trusted cold proxies to prevent starvation.
+
+### Fixed
+- **`urnet-tools history` wire-format mismatch**: `AuditEntry.Timestamp` was `int64` on the client but the provider sends `time.Time` (RFC3339 string), causing JSON unmarshal failure on every invocation.
+- **`urnet-tools set metrics on` no-op**: `applyMetricsLive` required `URNETWORK_METRICS` env var at boot — if unset, the server never started and `set metrics on` silently did nothing. Now auto-starts the metrics server with port probing.
+- **HotSwap declined on all pre-v31.0 nodes**: every node installed before v31.0 ran `Type=simple` and HotSwap permanently declined. Now auto-migrated during update.
+- **Proxy earnings priority inversion**: cold promoted URL proxies could jump ahead of warm unpromoted URL proxies because provenance was checked before warmth. Sort order corrected to warmth-first.
+- **Proxy earnings starvation**: unproven URL proxies could be permanently starved behind cumulative cold-proxy ramp delays. Added exploration quota.
+- **Contract denial retry loop re-read**: `getDenialBackoff()` was read before the retry loop, missing async `CreateContract` callbacks that trigger `noteDenial` between retries.
+- **STUN URL cache stale entries**: expired entries were left in the `sync.Map` instead of being atomically removed. Now uses `CompareAndDelete`.
+- **Adaptive proxy `ParallelBlockSize`**: `getAdaptiveBlockSize()` now guards against zero/negative values.
+- **`consecutiveErrors` overflow**: capped at 20 to prevent unbounded growth.
+- **HotSwap Docker non-PID-1**: containers where the provider is not PID 1 now get a clear decline message instead of falling through to the systemd check.
+- **Test harness global mutation**: `withGlobalEarningsStore` now uses `t.Cleanup` to restore state.
+
+### Changed
+- **HotSwap decline messages**: all 5 decline points now include operator-facing guidance with actionable next steps instead of technical error strings.
+- **Proxy warmth test expectations**: updated to reflect warmth-first sort order.
+
+### Test Coverage
+- 26 new tests across 3 features: `TestParseByteCount` (23 cases), `TestParseByteCountErrors` (4 cases), `TestSerialRecencyTiebreak`, `TestAuditEntryWireFormatRoundTrip`, `TestAuditEntryWireFormatFullResponse`, `TestMigrateUnitToNotify_*` (14 cases), hotswap metrics tests (9 cases), proxy earnings priority tests (5 new), provider metrics tests (2 cases).
+
+---
+
 ## [v3.23.0-fix.31.0]
 
 ### Added

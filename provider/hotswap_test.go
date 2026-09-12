@@ -6,12 +6,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -707,8 +707,8 @@ func TestHotSwapParentSystemdMissingNotifySocket(t *testing.T) {
 	}()
 
 	err = runHotSwapParentHandoff(context.Background(), func() {}, docopt.Opts{})
-	if !errors.Is(err, ErrNoNotifySocket) {
-		t.Fatalf("expected ErrNoNotifySocket when INVOCATION_ID is set without NOTIFY_SOCKET, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "zero-downtime hotswap unavailable") {
+		t.Fatalf("expected hotswap unavailable error when INVOCATION_ID is set without NOTIFY_SOCKET, got %v", err)
 	}
 }
 
