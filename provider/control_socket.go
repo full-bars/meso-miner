@@ -194,9 +194,15 @@ func handleControlConn(conn net.Conn, state *controlState) {
 	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 
 	// 2. Peer credential check (Linux): verify connecting process UID
-	//    matches the provider's UID. Defense-in-depth alongside 0600 perms.
+	//    matches the provider UID, or is root. Root can always manage
+	//    any provider (filesystem access + signal ability). Defense-in-depth
+	//    alongside 0600 perms.
 	if uc, ok := conn.(*net.UnixConn); ok {
 		if err := verifyPeerCredentials(uc); err != nil {
+			// Send a structured error so the CLI prints a real
+			// message instead of "connection reset by peer".
+			conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+			_ = json.NewEncoder(conn).Encode(controlResponse{OK: false, Error: err.Error()})
 			tlog("🔒 [control] rejected connection: %s\n", err)
 			return
 		}
@@ -210,6 +216,7 @@ func handleControlConn(conn net.Conn, state *controlState) {
 	for scanner.Scan() {
 		// Reset deadline for each line on a keep-alive connection.
 		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 
 		raw := scanner.Bytes()
 		// 4. Max value size: 4 KiB for the value field alone.
