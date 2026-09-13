@@ -85,10 +85,13 @@ var (
 	getpidFunc         = os.Getpid
 	execInPlaceFunc    = execInPlace
 	spawnCandidateFunc = spawnHotSwapCandidate
-	exitFunc           = os.Exit
-	executableFunc     = os.Executable
-	statFunc           = os.Stat
-	syscallAccess      = checkExecAccess
+	// restoreStdioBeforeExecFunc is overridable so tests can check it runs
+	// before the in-place execve.
+	restoreStdioBeforeExecFunc = restoreStdioBeforeExec
+	exitFunc                   = os.Exit
+	executableFunc             = os.Executable
+	statFunc                   = os.Stat
+	syscallAccess              = checkExecAccess
 )
 
 // installPath is the executable path captured at process start, before any
@@ -569,6 +572,11 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 			rest = os.Args[1:]
 		}
 		args := append([]string{argv0}, sanitizeCandidateArgs(rest)...)
+
+		// Hand stdout/stderr back from the ramlog pipe: its reader is a
+		// goroutine in this process and does not survive exec, so the new
+		// image would die of SIGPIPE on its first write.
+		restoreStdioBeforeExecFunc()
 
 		if err := execInPlaceFunc(exe, args, cleanEnv); err != nil {
 			tlog("CRITICAL [hotswap] syscall.Exec failed: %v\n", err)

@@ -1028,3 +1028,54 @@ func TestHotSwapParentPID1ExecveSanitizesArgs(t *testing.T) {
 		t.Fatal("canary spawn was not called")
 	}
 }
+
+// TestHotSwapParentPID1RestoresStdioBeforeExec: with RAMLOGS on, stdout and
+// stderr are a pipe drained by a goroutine that exec discards. They must be
+// restored before execve or the new image dies of SIGPIPE on its first write.
+func TestHotSwapParentPID1RestoresStdioBeforeExec(t *testing.T) {
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatalf("socketpair: %v", err)
+	}
+	parentFile := os.NewFile(uintptr(fds[0]), "parent")
+	childFile := os.NewFile(uintptr(fds[1]), "child")
+	defer parentFile.Close()
+	defer childFile.Close()
+
+	origGetpid, origExec, origSpawn, origRestore := getpidFunc, execInPlaceFunc, spawnCandidateFunc, restoreStdioBeforeExecFunc
+	defer func() {
+		getpidFunc, execInPlaceFunc, spawnCandidateFunc, restoreStdioBeforeExecFunc = origGetpid, origExec, origSpawn, origRestore
+	}()
+	getpidFunc = func() int { return 1 }
+
+	var order []string
+	done := make(chan struct{}, 1)
+	restoreStdioBeforeExecFunc = func() { order = append(order, "restore") }
+	execInPlaceFunc = func(exe string, args []string, env []string) error {
+		order = append(order, "exec")
+		done <- struct{}{}
+		return nil
+	}
+	spawnCandidateFunc = func(exe string, args []string) (*HotswapParentSession, error) {
+		return &HotswapParentSession{parentFd: parentFile, Reader: bufio.NewReader(parentFile), Writer: parentFile}, nil
+	}
+	ClearCoordinatorClosers()
+
+	go func() {
+		r := bufio.NewReader(childFile)
+		_ = writeHotswapMessage(childFile, HotswapMessage{Type: HotswapMsgReady, PID: 2, Version: "v3.23.0-fix.31.1"})
+		_, _ = readHotswapMessage(r)
+	}()
+
+	if err := runHotSwapParentHandoff(context.Background(), func() {}, docopt.Opts{}); err != nil {
+		t.Fatalf("runHotSwapParentHandoff: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for execve")
+	}
+	if fmt.Sprint(order) != fmt.Sprint([]string{"restore", "exec"}) {
+		t.Fatalf("order = %v, want stdio restored before exec", order)
+	}
+}
