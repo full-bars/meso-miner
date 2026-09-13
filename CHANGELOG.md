@@ -18,7 +18,7 @@ _Nothing yet._
 - **HotSwap operator-facing decline messages (PR #611)**: every HotSwap decline point now tells the operator what went wrong in plain language and what to do about it, instead of technical jargon. Covers version too old, Type=simple, Windows, and missing NOTIFY_SOCKET.
 - **HotSwap decline metrics (PR #611)**: new `urnet_hotswap_outcomes_total{reason="..."}` Prometheus counter tracking HotSwap success and decline outcomes by reason (version_old, unit_not_notify, windows, takeover_failed, etc.). Written atomically by `urnet-tools` and scraped by the provider's `/metrics` endpoint.
 - **`ParseByteCount` human suffixes (PR #610)**: `urnet-tools set gomemlimit` now accepts common formats (`1536M`, `2G`, `512MB`, `1g`, `2tib`) in addition to the original lowercase iB variants. Spaces stripped, longest-suffix-first matching.
-- **`urnet-tools set metrics on|off` (PR #611)**: when `URNETWORK_METRICS` is unset, the listener starts on the first free loopback port in `127.0.0.1:9100-9103`. Set `URNETWORK_METRICS` to serve it on another interface. A persisted `on` is not yet applied at boot without the env var.
+- **`urnet-tools set metrics on|off` (PR #611)**: when `URNETWORK_METRICS` is unset, the listener starts on the first free loopback port in `127.0.0.1:9100-9103`. Set `URNETWORK_METRICS` to serve it on another interface. A persisted `on` is applied at boot.
 - **Proxy earnings priority ranking (PR #611, from #601)**: proxy launch order now considers earnings history — high-earning URL proxies are promoted into the trusted launch group alongside file proxies. Sort order: warmth first, then provenance, then earnings. Exploration quota interleaves 1 unproven proxy per 5 trusted cold proxies to prevent starvation.
 
 ### Fixed
@@ -33,8 +33,12 @@ _Nothing yet._
 - **`writeStateFile` double close**: the fd was closed directly and again by the `*os.File` wrapping it, whose finalizer later closed whatever descriptor had reused the number. Surfaced as intermittent "bad file descriptor" test failures.
 - **HotSwap counter file symlink write**: `urnet-tools` (root) wrote `.hotswap_declines.json.tmp` into the provider-owned state dir with `os.WriteFile`, which follows symlinks. Now written with `O_NOFOLLOW`.
 - **Contract denial backoff cycled instead of climbing**: denial state expired 2 minutes after the last denial, shorter than the 120s+ tiers, so the count reset before reaching the cap. State now survives backoff + 2 minutes. A frame carrying several errors counts as one denial.
-- **Adaptive probe batch shared across proxies**: the success window was process-wide, so one proxy's failing path resized every proxy's batch. Now one window per client strategy, scaled from the configured `ParallelBlockSize`.
+- **Adaptive probe batch shared across proxies**: the success window was process-wide, so one proxy's failing path resized every proxy's batch. Now one window per client strategy; the batch halves when healthy and never exceeds the configured `ParallelBlockSize`.
 - **`gogc` "off" could disable GC**: a set carrying `OFF` (any casing the CLI did not rewrite to a clear) called `SetGCPercent(-1)`. Only `disabled` turns collection off; the CLI clear match is case-insensitive.
+- **Persisted `metrics on` ignored at boot**: without `URNETWORK_METRICS`, a saved `on` was never re-applied at startup, so `set metrics on` did not survive a restart. The auto-selected listener is now held open from probe to serve.
+- **Denial backoff overflow**: a very large denial count overflowed the shift and returned no backoff.
+- **Serial dialer ordering race**: dialer health is snapshotted before sorting, with one comparator shared by both evaluation paths.
+- **Unit migration hardening**: a symlinked unit file is refused, and files root writes into a user's unit directory are handed to that directory's owner.
 - **Test harness global mutation**: `withGlobalEarningsStore` now uses `t.Cleanup` to restore state.
 
 ### Changed

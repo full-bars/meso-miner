@@ -67,26 +67,27 @@ entries, with the lowest scorers evicted first.
 
 Launches are ordered by three rules, in this order:
 
-1. **Trusted provenance.** File-sourced and internal proxies launch first.
-   A URL-sourced proxy joins them once its earnings score passes 64 MiB, at
-   which point it is a known earner rather than an unproven address off a
-   public list. That is the `promoted` count.
-2. **Warmth.** Within a group, a proxy holding a valid client JWT dials
-   before one that must mint a fresh identity. Warmth stays above earnings
-   deliberately: minting is rate limited, so a rich but cold proxy jumping
-   the queue would spend a scarce mint slot and stall warm identities that
-   could have dialled straight through.
-3. **Earnings.** Within one group and warmth tier, the bigger earner dials
-   first.
+1. **Warmth.** A proxy holding a valid client JWT dials before one that must
+   mint a fresh identity. Warmth comes first deliberately: minting is
+   rate-limited, so a rich but cold proxy jumping the queue would spend a
+   scarce mint slot and stall warm identities that could have dialled
+   straight through. A warm URL-sourced proxy therefore launches before a
+   cold file proxy.
+2. **Trusted provenance.** Within a warmth tier, file-sourced and internal
+   proxies launch first. A URL-sourced proxy joins them once its earnings
+   score passes 64 MiB, at which point it is a known earner rather than an
+   unproven address off a public list. That is the `promoted` count.
+3. **Earnings.** Within one tier and group, the bigger earner dials first.
+
+Among cold proxies, one unproven URL-sourced proxy is interleaved after
+every five trusted cold proxies, so unproven addresses still get tried and
+can build a history instead of waiting behind the whole cold list.
 
 > [!NOTE]
-> A node needs roughly a week of uptime before the record means much, so a
-> fresh node orders launches by warmth and source exactly as before and
-> reports `no history yet`.
-
-> [!NOTE]
-> `none yet, still collecting` is expected on a first run and until the
-> provider has observed billable traffic. It is not an error.
+> A node needs roughly a week of uptime before the record means much. A
+> fresh node orders launches by warmth and source only and reports
+> `no history yet`. That is expected on a first run and until the provider
+> has observed billable traffic. It is not an error.
 
 ---
 
