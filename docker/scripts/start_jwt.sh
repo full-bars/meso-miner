@@ -180,7 +180,11 @@ func_start_provider(){
     reauth_attempts=0
     while :; do
         log "[INFO] Starting UrNetwork (attempt #$((failures+1)))"
-        if "$PROVIDER_BIN" provide; then
+        # Capture the real exit code. Reading $? after the `if ... fi` gave
+        # the compound's status, 0 whenever provide failed: every crash logged
+        # code=0 and the code 78 re-auth branch below could never run.
+        if "$PROVIDER_BIN" provide; then code=0; else code=$?; fi
+        if [ "$code" -eq 0 ]; then
             if [ -f "$HOME/.urnetwork/update-pending" ]; then
                 rm -f "$HOME/.urnetwork/update-pending"
                 log "[INFO] Binary updated — restarting provider."
@@ -201,7 +205,6 @@ func_start_provider(){
             log "[INFO] UrNetwork exited cleanly."
             break
         fi
-        code=$?
 
         # Exit code 78 = token invalid/expired. Delete the stale JWT and re-authenticate
         # if URNETWORK_AUTH_CODE is available. This is the only case where we delete the JWT.
