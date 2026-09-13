@@ -72,6 +72,9 @@ type controlResponse struct {
 	// "version" command. Distinct from Version, which is the control
 	// protocol's version, not the binary's.
 	BuildVersion string `json:"build_version,omitempty"`
+	// MetricsAddrs are the addresses /metrics is listening on, answered by
+	// "status". Empty when metrics is off.
+	MetricsAddrs []string `json:"metrics_addrs,omitempty"`
 }
 
 // startControlSocket opens the control socket and serves it until ctx is
@@ -280,6 +283,7 @@ var liveEffectKeys = map[string]bool{
 	"node_name":                   true,
 	"hot_restart":                 true,
 	"metrics":                     true,
+	"metrics_listen":              true,
 }
 
 // needsRestart returns true if setting this key requires a provider restart
@@ -368,6 +372,8 @@ func validateControlValue(key, value string) error {
 		default:
 			return fmt.Errorf("metrics: must be on or off (got %q)", value)
 		}
+	case "metrics_listen":
+		return validateMetricsListen(value)
 	case "node_name":
 		if value == "" {
 			return fmt.Errorf("node_name: must not be empty")
@@ -403,6 +409,9 @@ var liveDefaults = map[string]string{
 	// while the CLI reported success and no restart needed. That is the
 	// control an operator reaches for when scraping goes wrong.
 	"metrics": "off",
+	// Clearing an explicit address goes back to auto, rebinding a running
+	// listener on loopback plus Tailscale.
+	"metrics_listen": "auto",
 }
 
 // applyLiveDefault reapplies the runtime default for a live-applied key.
@@ -574,7 +583,7 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 			}
 			settings[k] = si
 		}
-		return controlResponse{OK: true, Settings: settings, StartupValues: startupValues()}
+		return controlResponse{OK: true, Settings: settings, StartupValues: startupValues(), MetricsAddrs: metricsServedAddrs()}
 
 	case "history":
 		if globalAuditRing == nil {
@@ -687,6 +696,8 @@ func applyLiveSideEffect(key, value string) error {
 		}
 	case "metrics":
 		return applyMetricsLive(value)
+	case "metrics_listen":
+		return applyMetricsListenLive()
 	}
 	return nil
 }
@@ -818,38 +829,6 @@ func listenOrWait(addr string, wait time.Duration) (net.Listener, error) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-}
-
-// listenMetrics binds the Prometheus /metrics listener. If URNETWORK_METRICS
-// is set, that address is used as-is (explicit override). Otherwise it tries
-// 9100-9103 on loopback and keeps the first listener that binds. Loopback
-// because docs/Configuration.md tells operators never to expose the endpoint
-// on a public interface, and a bare ":port" binds every interface; reaching
-// it remotely is an explicit URNETWORK_METRICS choice. The listener comes
-// back open: probing a port, closing it and binding it again let another
-// process take it in between.
-//
-// wait is how long to keep retrying the preferred address (the explicit
-// address, or 127.0.0.1:9100) before giving up or moving on to the next
-// port; a HotSwap candidate uses it while the parent releases its listener.
-func listenMetrics(wait time.Duration) (net.Listener, error) {
-	if addr := os.Getenv("URNETWORK_METRICS"); addr != "" {
-		return listenOrWait(addr, wait)
-	}
-	var lastErr error
-	for i, port := range []int{9100, 9101, 9102, 9103} {
-		portWait := time.Duration(0)
-		if i == 0 {
-			portWait = wait
-		}
-		ln, err := listenOrWait(fmt.Sprintf("127.0.0.1:%d", port), portWait)
-		if err == nil {
-			return ln, nil
-		}
-		lastErr = err
-		tlog("[metrics] port %d in use, trying next\n", port)
-	}
-	return nil, fmt.Errorf("no free port in 127.0.0.1:9100-9103: %w", lastErr)
 }
 
 // applyPersistedRuntimeTuning re-applies gomemlimit, gogc and (when

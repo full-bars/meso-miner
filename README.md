@@ -223,12 +223,11 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 
 UrNetwork Connect provides rich standalone metrics directly via `urnet-tools usage` and `urnet-docker usage` (billable vs control plane accounting with hour/day/month historical graphs).
 
-A Prometheus text-format endpoint is also available. `urnet-tools metrics on`
-enables it on a running provider without a restart. It exposes eleven `urnet_*`
-series covering uptime, active connections, proxy pool size by status,
-per-proxy bytes and clients, errors by category, contracts by result, and Go
-runtime memory and goroutine counts. It binds to loopback by default;
-`URNETWORK_METRICS` binds it on the Tailscale address for remote scraping.
+Prometheus metrics are built in. `urnet-tools metrics on` turns them on without a
+restart and prints the address to scrape: loopback plus the machine's Tailscale
+address by default, or any address you choose with `urnet-tools metrics listen`.
+The `monitoring/` bundle runs Prometheus and Grafana with a ready-made fleet
+dashboard. See [Monitoring](docs/Monitoring.md).
 
 > [!NOTE]
 > **Legacy Central Dashboard:** The multi-node aggregation hub dashboard has been transitioned to an optional add-on. Development and maintenance are tracked on the [`dev/hub`](https://github.com/full-bars/urnetwork-3.23-fix/tree/dev/hub) branch of `urnetwork-3.23-fix` and the [`dev/hub`](https://github.com/full-bars/meso-miner/tree/dev/hub) branch of `meso-miner`. For setup details, see [Hub Setup](docs/Hub-Setup.md).

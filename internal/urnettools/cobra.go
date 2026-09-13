@@ -46,7 +46,7 @@ Performance & Tuning:
   fast-auth [on|off]      Bypass auth rate limiter without restart
   config [--json]         Show all provider settings with source and age
   profile [<name>]        Show or set the memory/GC tuning profile
-  metrics <on|off>        Toggle the Prometheus /metrics endpoint (needs URNETWORK_METRICS)
+  metrics [on|off|listen] Prometheus /metrics: status, toggle, listen address
 
 Session & Identity:
   session save <file>     Export identity + proxy state (encrypted)
@@ -677,8 +677,8 @@ func newHistoryCmd() *cobra.Command {
 
 func newMetricsCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:                "metrics on|off",
-		Short:              "toggle Prometheus /metrics endpoint",
+		Use:                "metrics [status|on|off|listen <ip:port|auto>]",
+		Short:              "show, toggle, or move the Prometheus /metrics endpoint",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if hasHelpFlag(args) {
@@ -811,14 +811,30 @@ func cmdMetrics(args []string, dryRun bool) error {
 	if err != nil {
 		return err
 	}
-	if len(rest) == 0 {
-		return fmt.Errorf("usage: urnet-tools metrics on|off")
+	const usage = "usage: urnet-tools metrics [status|on|off|listen <ip:port|auto>]"
+	action := "status"
+	if len(rest) > 0 {
+		action = strings.ToLower(rest[0])
 	}
-	val := strings.ToLower(rest[0])
-	switch val {
+	var change *controlRequest
+	switch action {
+	case "status":
 	case "on", "off":
+		change = &controlRequest{Cmd: "set", Key: "metrics", Value: action}
+	case "listen":
+		if len(rest) < 2 {
+			return fmt.Errorf("usage: urnet-tools metrics listen <ip:port|auto>")
+		}
+		if err := validateControlValue("metrics_listen", rest[1]); err != nil {
+			return err
+		}
+		if strings.EqualFold(rest[1], "auto") || strings.EqualFold(rest[1], "off") {
+			change = &controlRequest{Cmd: "clear", Key: "metrics_listen"}
+		} else {
+			change = &controlRequest{Cmd: "set", Key: "metrics_listen", Value: rest[1]}
+		}
 	default:
-		return fmt.Errorf("usage: urnet-tools metrics on|off (got %q)", rest[0])
+		return fmt.Errorf("%s (got %q)", usage, rest[0])
 	}
 
 	p, err := selectTarget(Discover(), t)
@@ -828,19 +844,35 @@ func cmdMetrics(args []string, dryRun bool) error {
 	if p.StateDir == "" {
 		return fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
 	}
+	socketPath := filepath.Join(p.StateDir, "provider.sock")
 
-	resp, err := sendMetricsToggle(p, val)
+	if change != nil {
+		if dryRun {
+			fmt.Printf("[dry-run] would send %s %s %s to %s\n", change.Cmd, change.Key, change.Value, providerLabel(p))
+			return nil
+		}
+		var resp controlResponse
+		if change.Key == "metrics" {
+			resp, err = sendMetricsToggle(p, change.Value)
+		} else {
+			resp, err = sendSocketRequest(socketPath, *change)
+		}
+		if err != nil {
+			return err
+		}
+		if !resp.OK {
+			return fmt.Errorf("provider returned error: %s", resp.Error)
+		}
+	}
+
+	status, err := sendSocketRequest(socketPath, controlRequest{Cmd: "status"})
 	if err != nil {
 		return err
 	}
-	if !resp.OK {
-		return fmt.Errorf("provider returned error: %s", resp.Error)
+	if !status.OK {
+		return fmt.Errorf("provider returned error: %s", status.Error)
 	}
-	if resp.NeedsRestart {
-		fmt.Printf("✓ Metrics %s (restart required for full effect)\n", val)
-	} else {
-		fmt.Printf("✓ Metrics %s\n", val)
-	}
+	printMetricsStatus(os.Stdout, status)
 	return nil
 }
 
@@ -1185,7 +1217,7 @@ func cmdDashboard(args []string) error {
 	fmt.Println()
 	fmt.Printf("  urnet-tools set <key> <value>    Change a setting\n")
 	fmt.Printf("  urnet-tools profile <name>       Switch tuning profile\n")
-	fmt.Printf("  urnet-tools metrics on|off       Toggle Prometheus metrics\n")
+	fmt.Printf("  urnet-tools metrics [on|off|listen] Prometheus metrics status and control\n")
 	fmt.Printf("  urnet-tools history              View command audit trail\n")
 	if p.Running && len(changedKeys) > 0 {
 		fmt.Printf("\n  %s⚠ Restart pending: systemctl --user restart %s%s\n", yellow, p.Unit, reset)
