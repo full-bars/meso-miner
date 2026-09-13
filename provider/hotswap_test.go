@@ -960,3 +960,71 @@ func runBatonHandoffOnce(t *testing.T) int {
 	}
 	return -1
 }
+
+// TestHotSwapParentPID1ExecveSanitizesArgs: the Docker in-place execve must
+// drop the auth code and credential flags the same way the spawned canary
+// does. Raw os.Args re-ran `auth-provide <consumed code>` and exited.
+func TestHotSwapParentPID1ExecveSanitizesArgs(t *testing.T) {
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatalf("socketpair: %v", err)
+	}
+	parentFile := os.NewFile(uintptr(fds[0]), "parent")
+	childFile := os.NewFile(uintptr(fds[1]), "child")
+	defer parentFile.Close()
+	defer childFile.Close()
+
+	origArgs := os.Args
+	origGetpid := getpidFunc
+	origExecInPlace := execInPlaceFunc
+	origSpawn := spawnCandidateFunc
+	defer func() {
+		os.Args = origArgs
+		getpidFunc = origGetpid
+		execInPlaceFunc = origExecInPlace
+		spawnCandidateFunc = origSpawn
+	}()
+
+	os.Args = []string{"/app/urnetwork_amd64_stable", "auth-provide", "CONSUMED-CODE", "-f", "--user_auth", "someone", "--password=secret", "--port", "8080"}
+	getpidFunc = func() int { return 1 }
+
+	var spawnArgs []string
+	execArgs := make(chan []string, 1)
+	execInPlaceFunc = func(exe string, args []string, env []string) error {
+		execArgs <- args
+		return nil
+	}
+	spawnCandidateFunc = func(exe string, args []string) (*HotswapParentSession, error) {
+		spawnArgs = args
+		return &HotswapParentSession{
+			childCmd: nil,
+			parentFd: parentFile,
+			Reader:   bufio.NewReader(parentFile),
+			Writer:   parentFile,
+		}, nil
+	}
+	ClearCoordinatorClosers()
+
+	go func() {
+		childReader := bufio.NewReader(childFile)
+		_ = writeHotswapMessage(childFile, HotswapMessage{Type: HotswapMsgReady, PID: 2, Version: "v3.23.0-fix.31.1"})
+		_, _ = readHotswapMessage(childReader)
+	}()
+
+	if err := runHotSwapParentHandoff(context.Background(), func() {}, docopt.Opts{}); err != nil {
+		t.Fatalf("runHotSwapParentHandoff: %v", err)
+	}
+
+	select {
+	case got := <-execArgs:
+		want := []string{"/app/urnetwork_amd64_stable", "provide", "--port", "8080"}
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("execve args = %v, want %v", got, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for in-place execve call")
+	}
+	if len(spawnArgs) == 0 {
+		t.Fatal("canary spawn was not called")
+	}
+}
