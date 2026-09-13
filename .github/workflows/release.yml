@@ -347,6 +347,9 @@ jobs:
 
           rm -rf per-platform
 
+          # Monitoring bundle: Prometheus + Grafana compose stack and dashboard
+          tar -czf urnetwork-monitoring-${VERSION}.tar.gz monitoring
+
       - name: Set release body source
         id: body_src
         run: |
@@ -367,6 +370,7 @@ jobs:
         with:
           files: |
             urnetwork-provider-*.tar.gz
+            urnetwork-monitoring-*.tar.gz
             urnetwork-hub-*-linux-amd64
             urnetwork-hub-*-linux-arm64
             urnet-tools-*
