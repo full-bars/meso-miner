@@ -106,6 +106,7 @@ var controlKeys = map[string]bool{
 	"profile":                     true,
 	"ramlogs":                     true,
 	"metrics":                     true,
+	"metrics_listen":              true,
 }
 
 // globalControlState is the single provider-wide instance. Set by

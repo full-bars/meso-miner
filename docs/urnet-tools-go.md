@@ -101,7 +101,7 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | `ramlogs [on\|off]` | Enable or disable RAM-disk logging (`/dev/shm`). |
 | `report <url>` | Set live bandwidth hub reporting URL (`report off` disables). |
 | `profile [name]` | **(New in 31.0)** Show or set the memory and GC tuning profile (`auto`, `turbo-v4`, `turbo-v8`, `eco`, `lowmem`; `v4` and `v8` are accepted aliases). With no argument, prints the current profile and what each one is for. |
-| `metrics [on\|off]` | **(New in 31.0)** Toggle the Prometheus `/metrics` endpoint on a running provider, without a restart. |
+| `metrics [status\|on\|off\|listen <ip:port\|auto>]` | Show where the Prometheus `/metrics` endpoint listens and the address to scrape, turn it on or off, or choose its listen address. Live, no restart, and persisted. See [Monitoring](Monitoring.md). |
 
 
 ---

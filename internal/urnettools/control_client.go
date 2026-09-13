@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -62,7 +63,11 @@ type controlResponse struct {
 	// BuildVersion is the provider's own release version, answered by the
 	// "version" command. Mirrors the provider-side field of the same name.
 	BuildVersion string `json:"build_version,omitempty"`
-	Raw          []byte `json:"-"`
+	// MetricsAddrs are the addresses the provider's /metrics listens on,
+	// answered by "status". Empty when metrics is off or the provider
+	// predates the field.
+	MetricsAddrs []string `json:"metrics_addrs,omitempty"`
+	Raw          []byte   `json:"-"`
 }
 
 // pendingOp is an entry in ~/.urnetwork/pending_overrides.json.
@@ -106,6 +111,8 @@ var controlKeyCanonical = map[string]string{
 	"ramlogs":                     "ramlogs",
 	"ram-logs":                    "ramlogs",
 	"metrics":                     "metrics",
+	"metrics_listen":              "metrics_listen",
+	"metrics-listen":              "metrics_listen",
 }
 
 // canonicalControlKey resolves any user-supplied key name to the socket's
@@ -159,6 +166,13 @@ func validateControlValue(canonicalKey, value string) error {
 		case "on", "off":
 		default:
 			return fmt.Errorf("metrics: must be on or off (got %q)", value)
+		}
+	case "metrics_listen":
+		if strings.EqualFold(value, "auto") || strings.EqualFold(value, "off") {
+			return nil
+		}
+		if ap, err := netip.ParseAddrPort(value); err != nil || ap.Port() == 0 {
+			return fmt.Errorf("metrics_listen: must be auto or an IP address with a port, like 100.64.0.10:9100 or 0.0.0.0:9100 (got %q)", value)
 		}
 	case "ramlogs":
 		switch strings.ToLower(value) {

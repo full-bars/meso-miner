@@ -470,6 +470,7 @@ func formatSets(p Provider, want string) error {
 		{"profile", "profile"},
 		{"ramlogs", "ramlogs"},
 		{"metrics", "metrics"},
+		{"metrics-listen", "metrics_listen"},
 	}
 
 	for _, item := range orderedKeys {
