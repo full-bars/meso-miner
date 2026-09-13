@@ -399,10 +399,20 @@ func denialBackoffForCount(count int) time.Duration {
 	return d
 }
 
-// DenialCooldownExpiry is the window after which a destination's denial
-// backoff resets to zero. Exported so tests can reference it without
-// duplicating the constant.
+// DenialCooldownExpiry is how long a destination's denial state survives
+// past its current backoff with no new denial. Exported so tests can
+// reference it without duplicating the constant.
 const DenialCooldownExpiry = 2 * time.Minute
+
+// denialCooldownFor is how long denial state at count survives, measured
+// from the last denial. It has to outlast the backoff itself: a flat
+// DenialCooldownExpiry is shorter than the 120s and longer tiers, so the
+// state expired before the retry that backoff was spacing out, the next
+// denial reset the count, and the schedule cycled back to zero instead of
+// climbing to its cap.
+func denialCooldownFor(count int) time.Duration {
+	return denialBackoffForCount(count) + DenialCooldownExpiry
+}
 
 // getDenialBackoff returns the exponential backoff duration for a
 // destination that has been denying contracts. Returns 0 if no cooldown
@@ -414,7 +424,7 @@ func (self *ContractManager) getDenialBackoff(destId Id) time.Duration {
 	if !ok || ds.count == 0 {
 		return 0
 	}
-	if time.Since(ds.lastDenial) > DenialCooldownExpiry {
+	if time.Since(ds.lastDenial) > denialCooldownFor(ds.count) {
 		delete(self.denialCooldowns, destId)
 		return 0
 	}
@@ -431,14 +441,14 @@ func (self *ContractManager) noteDenial(destId Id) {
 	// Purge expired entries to prevent unbounded memory growth.
 	now := time.Now()
 	for id, ds := range self.denialCooldowns {
-		if now.Sub(ds.lastDenial) > DenialCooldownExpiry {
+		if now.Sub(ds.lastDenial) > denialCooldownFor(ds.count) {
 			delete(self.denialCooldowns, id)
 		}
 	}
 
 	ds := self.denialCooldowns[destId]
 	// Reset count if the previous denial has expired.
-	if ds.count > 0 && now.Sub(ds.lastDenial) > DenialCooldownExpiry {
+	if ds.count > 0 && now.Sub(ds.lastDenial) > denialCooldownFor(ds.count) {
 		ds.count = 0
 	}
 	ds.count++
@@ -712,10 +722,14 @@ func (self *ContractManager) HandleControlFrame(contractKey ContractKey, frame *
 				c()
 			}
 		}
+		if 0 < len(contractErrors) {
+			// One refusal per frame. Counting each error in a multi-error
+			// frame skipped backoff tiers.
+			self.noteDenial(contractKey.Destination.DestinationId)
+		}
 		for _, contractError := range contractErrors {
 			self.client.log.Infof("⛔ [contract] denied = %s destination=%s\n", contractError, contractKey.Destination.DestinationId)
 			atomic.AddUint64(&contractsDenied, 1)
-			self.noteDenial(contractKey.Destination.DestinationId)
 			c := func() {
 				contractStatus := &ContractStatus{
 					Key:   contractKey,

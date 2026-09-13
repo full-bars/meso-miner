@@ -567,11 +567,42 @@ func TestDenial_CooldownExpiresAfterInactivity(t *testing.T) {
 	// Manually set the lastDenial to more than DenialCooldownExpiry ago.
 	cm.mutex.Lock()
 	ds := cm.denialCooldowns[dest]
-	ds.lastDenial = time.Now().Add(-(DenialCooldownExpiry + time.Second))
+	ds.lastDenial = time.Now().Add(-(denialCooldownFor(ds.count) + time.Second))
 	cm.denialCooldowns[dest] = ds
 	cm.mutex.Unlock()
 
 	if got := cm.getDenialBackoff(dest); got != 0 {
 		t.Errorf("after expiry: got %v, want 0", got)
+	}
+}
+
+// TestDenial_LongBackoffOutlivesBaseExpiry: state at the 240s tier must
+// survive a gap longer than DenialCooldownExpiry, or the retry that backoff
+// spaced out arrives after expiry, resets the count, and the cap is never
+// reached.
+func TestDenial_LongBackoffOutlivesBaseExpiry(t *testing.T) {
+	clientId := NewId()
+	settings := DefaultClientSettings()
+	client := NewClient(context.Background(), clientId, NewNoContractClientOob(), settings)
+	defer client.Cancel()
+	cm := client.ContractManager()
+
+	dest := NewId()
+	for i := 0; i < 6; i++ {
+		cm.noteDenial(dest)
+	}
+
+	cm.mutex.Lock()
+	ds := cm.denialCooldowns[dest]
+	ds.lastDenial = time.Now().Add(-3 * time.Minute)
+	cm.denialCooldowns[dest] = ds
+	cm.mutex.Unlock()
+
+	if got := cm.getDenialBackoff(dest); got != 240*time.Second {
+		t.Fatalf("3m after 6th denial: got %v, want 240s", got)
+	}
+	cm.noteDenial(dest)
+	if got := cm.getDenialBackoff(dest); got != 5*time.Minute {
+		t.Fatalf("7th denial: got %v, want 5m cap", got)
 	}
 }
