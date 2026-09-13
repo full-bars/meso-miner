@@ -55,20 +55,18 @@ func supportsHotSwap(p Provider) bool {
 }
 
 // ErrHotSwapNotSupported is returned when the running provider process does not support zero-downtime hotswap.
-var ErrHotSwapNotSupported = errors.New("running provider does not support zero-downtime hotswap (requires >= v3.23.0-fix.31.0)")
+var ErrHotSwapNotSupported = errors.New("zero-downtime hotswap unavailable: the running provider is below v3.23.0-fix.31.0 and does not support hotswap. Upgrade to v31.0+ to enable zero-downtime updates")
 
 // ErrHotSwapUnitNotNotify is returned when the provider's version supports
 // HotSwap but its owning systemd unit is not Type=notify, so
 // provider/hotswap.go would abort the in-process handoff internally rather
 // than actually hand off (see hotSwapUnitOK for the mechanism). Naming a
-// version here would be actively misleading: the fix is rewriting the
-// systemd unit, not upgrading the binary. The distinction matters because
-// the two obvious candidate remedies do NOT work. cmdUpdate and
-// cmdReinstall both route through updateProvider, which re-fetches and
-// atomically installs the binary and restarts the unit but never writes a
-// unit file, so neither migrates a Type=simple node. Only re-running
-// install_systemd_units in Provider_Install_Linux.sh does.
-var ErrHotSwapUnitNotNotify = errors.New("provider's systemd unit is not Type=notify, so zero-downtime hotswap cannot complete; re-run the installer script (Provider_Install_Linux.sh) to rewrite the unit with Type=notify. Note neither `urnet-tools update` nor `urnet-tools reinstall` rewrites the unit: both only re-fetch the binary")
+// version here would be actively misleading: upgrading the binary does not
+// change the unit by itself. Provider_Install_Linux.sh writes Type=simple
+// (#546), and updateProvider migrates the unit to Type=notify once the
+// installed binary sends READY=1 at startup, so an operator sees this on the
+// update that performs the migration, or when the migration could not run.
+var ErrHotSwapUnitNotNotify = errors.New("zero-downtime hotswap unavailable: the provider's systemd unit is Type=simple (as Provider_Install_Linux.sh writes it); `urnet-tools update` migrates it to Type=notify, after which updates can hot swap. This update uses a service restart")
 
 // hotSwapPreflight reports WHY the handoff cannot run, or nil when it can.
 // It is the single source of that decision: triggerHotSwap calls it before
@@ -150,10 +148,9 @@ func queryUnitType(p Provider) (string, error) {
 // branch aborts the handoff whenever INVOCATION_ID is set (i.e. systemd
 // started the process) and NOTIFY_SOCKET is empty — that only happens for
 // a unit that isn't Type=notify, since NotifyAccess=all + Type=notify is
-// what puts NOTIFY_SOCKET in the environment. Every pre-existing fleet node
-// still runs Type=simple (only install_systemd_units in
-// Provider_Install_Linux.sh writes Type=notify, and `urnet-tools update`
-// only ever swaps the binary, never the unit), so without this check
+// what puts NOTIFY_SOCKET in the environment. A node runs Type=simple until
+// an update migrates its unit (Provider_Install_Linux.sh writes
+// Type=simple, see #546), so without this check
 // supportsHotSwap said "yes" purely from the version string,
 // triggerHotSwap fired, provider/hotswap.go silently aborted the internal
 // handoff, and update.go's "hotSwapTriggered = true" skipped the
@@ -178,10 +175,9 @@ func hotSwapUnitOK(p Provider) error {
 	}
 	typ, err := unitTypeFunc(p)
 	if err != nil {
-		// Do NOT collapse this into ErrHotSwapUnitNotNotify. That error tells
-		// the operator to re-run the installer to rewrite the unit, which is
-		// the wrong remedy and a false diagnosis when the unit's Type= was
-		// never actually read: systemctl missing, the user bus unreachable,
+		// Do NOT collapse this into ErrHotSwapUnitNotNotify. That error
+		// reports a unit read as Type=simple, which is a false diagnosis
+		// when the unit's Type= was never actually read: systemctl missing, the user bus unreachable,
 		// or a polkit denial all land here. Report what failed instead.
 		return fmt.Errorf("query systemd unit type for %s: %w", p.Unit, err)
 	}

@@ -26,8 +26,10 @@ type controlRequest struct {
 }
 
 // AuditEntry mirrors the provider's CommandAudit for JSON wire format.
+// The provider serialises Timestamp as an RFC3339 string (time.Time),
+// so we accept it as a string here rather than int64.
 type AuditEntry struct {
-	Timestamp int64  `json:"timestamp"`
+	Timestamp string `json:"timestamp"`
 	Cmd       string `json:"cmd"`
 	Key       string `json:"key"`
 	Value     string `json:"value"`

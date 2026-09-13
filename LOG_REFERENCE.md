@@ -43,11 +43,11 @@ Emitted exactly **once per provider process**, early in the startup sequence bef
 
 The existing `client_id` and `instance_id` lines are printed separately, once per proxy, and are unchanged by this log line.
 
-### Earnings history
+### Launch ranking
 
 ```
-💰 [startup] earnings history: 588 of 812 proxies have earned, top earner 203.0.113.9:1080 at 4.1 GB
-💰 [startup] earnings history: none yet, still collecting
+💰 [startup] earnings ranking: 588 of 812 proxies have earnings history, 34 URL-sourced promoted to launch with the file list, top earner 203.0.113.9:1080 at 4.1 GB
+💰 [startup] earnings ranking: no history yet, launching by warmth and source only
 ```
 
 Emitted once per process, after the proxy list is resolved. The provider now
@@ -56,7 +56,7 @@ line reports what that record currently holds.
 
 | Field | Meaning |
 |---|---|
-| `N of M proxies have earned` | How many of this launch set the node has ever observed earning. |
+| `N of M proxies have earnings history` | How many of this launch set the node has ever observed earning. |
 | `top earner` | The highest-scoring proxy and its score. |
 
 The score is billable bytes with a one-week half-life, persisted to
@@ -65,16 +65,29 @@ proxy that stops earning decays out of the record on its own, so it reflects
 what earns now rather than what earned once. The file is capped at 20,000
 entries, with the lowest scorers evicted first.
 
-> [!NOTE]
-> Nothing acts on this record yet. Launch order is still decided by warmth
-> and source provenance exactly as before. The history is being collected so
-> that a future ranking can be judged against real data rather than a
-> hypothesis, which means a node needs roughly a week of uptime before the
-> record means much.
+Launches are ordered by three rules, in this order:
+
+1. **Warmth.** A proxy holding a valid client JWT dials before one that must
+   mint a fresh identity. Warmth comes first deliberately: minting is
+   rate-limited, so a rich but cold proxy jumping the queue would spend a
+   scarce mint slot and stall warm identities that could have dialled
+   straight through. A warm URL-sourced proxy therefore launches before a
+   cold file proxy.
+2. **Trusted provenance.** Within a warmth tier, file-sourced and internal
+   proxies launch first. A URL-sourced proxy joins them once its earnings
+   score passes 64 MiB, at which point it is a known earner rather than an
+   unproven address off a public list. That is the `promoted` count.
+3. **Earnings.** Within one tier and group, the bigger earner dials first.
+
+Among cold proxies, one unproven URL-sourced proxy is interleaved after
+every five trusted cold proxies, so unproven addresses still get tried and
+can build a history instead of waiting behind the whole cold list.
 
 > [!NOTE]
-> `none yet, still collecting` is expected on a first run and until the
-> provider has observed billable traffic. It is not an error.
+> A node needs roughly a week of uptime before the record means much. A
+> fresh node orders launches by warmth and source only and reports
+> `no history yet`. That is expected on a first run and until the provider
+> has observed billable traffic. It is not an error.
 
 ---
 

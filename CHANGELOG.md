@@ -10,6 +10,46 @@ _Nothing yet._
 
 ---
 
+## [v3.23.0-fix.31.1]
+
+### Added
+- **`urnet-tools history` command**: exposes the provider's 1000-entry command audit ring via the control socket. Supports `--limit` and `--cursor` for pagination. Fixed wire-format mismatch (`int64` vs `time.Time` serialization) that broke every invocation.
+- **HotSwap unit migration (PR #611)**: `urnet-tools update` rewrites a `Type=simple` unit to `Type=notify` when the binary it installs sends `READY=1` at startup (v31.0+), so the following update can hot swap; the migrating update itself uses a normal restart. The unit follows the installed binary: installing anything older, or a binary whose version cannot be read, demotes it back to `Type=simple`, as does a HotSwap rollback to such a binary. A `Type=notify` unit is therefore never left paired with a binary that cannot signal readiness, the skew #546 kept the installer on `Type=simple` to avoid. Unit, temp and backup files are written with `O_NOFOLLOW`. Non-fatal: a failed migration logs a note and falls back to restart.
+- **HotSwap operator-facing decline messages (PR #611)**: every HotSwap decline point now tells the operator what went wrong in plain language and what to do about it, instead of technical jargon. Covers version too old, Type=simple, Windows, and missing NOTIFY_SOCKET.
+- **HotSwap decline metrics (PR #611)**: new `urnet_hotswap_outcomes_total{reason="..."}` Prometheus counter tracking HotSwap success and decline outcomes by reason (version_old, unit_not_notify, windows, takeover_failed, etc.). Written atomically by `urnet-tools` and scraped by the provider's `/metrics` endpoint.
+- **`ParseByteCount` human suffixes (PR #610)**: `urnet-tools set gomemlimit` now accepts common formats (`1536M`, `2G`, `512MB`, `1g`, `2tib`) in addition to the original lowercase iB variants. Spaces stripped, longest-suffix-first matching.
+- **`urnet-tools set metrics on|off` (PR #611)**: when `URNETWORK_METRICS` is unset, the listener starts on the first free loopback port in `127.0.0.1:9100-9103`. Set `URNETWORK_METRICS` to serve it on another interface. A persisted `on` is applied at boot.
+- **Proxy earnings priority ranking (PR #611, from #601)**: proxy launch order now considers earnings history — high-earning URL proxies are promoted into the trusted launch group alongside file proxies. Sort order: warmth first, then provenance, then earnings. Exploration quota interleaves 1 unproven proxy per 5 trusted cold proxies to prevent starvation.
+
+### Fixed
+- **`urnet-tools history` wire-format mismatch**: `AuditEntry.Timestamp` was `int64` on the client but the provider sends `time.Time` (RFC3339 string), causing JSON unmarshal failure on every invocation.
+- **`urnet-tools set metrics on` no-op**: `applyMetricsLive` required `URNETWORK_METRICS` env var at boot — if unset, the server never started and `set metrics on` silently did nothing. Now auto-starts the metrics server on a free loopback port.
+- **HotSwap declined on every systemd node**: installs run `Type=simple`, so HotSwap always declined. The unit is now migrated during update when the installed binary supports it. The migration runs in the `urnet-tools` performing the update, so on a 31.0 node run `urnet-tools self-update` before `urnet-tools update` to migrate on the upgrade to 31.1.
+- **Proxy earnings priority inversion**: cold promoted URL proxies could jump ahead of warm unpromoted URL proxies because provenance was checked before warmth. Sort order corrected to warmth-first.
+- **Proxy earnings starvation**: unproven URL proxies could be permanently starved behind cumulative cold-proxy ramp delays. Added exploration quota.
+- **Contract retry wait**: the wait is recomputed from its baseline before every retry, so it follows denials that async `CreateContract` callbacks record between retries and drops back once a contract succeeds or the denial state expires.
+- **Adaptive proxy `ParallelBlockSize`**: `getAdaptiveBlockSize()` now guards against zero/negative values.
+- **`consecutiveErrors` overflow**: capped at 20 to prevent unbounded growth.
+- **`writeStateFile` double close**: the fd was closed directly and again by the `*os.File` wrapping it, whose finalizer later closed whatever descriptor had reused the number. Surfaced as intermittent "bad file descriptor" test failures.
+- **HotSwap counter file symlink write**: `urnet-tools` (root) wrote `.hotswap_declines.json.tmp` into the provider-owned state dir with `os.WriteFile`, which follows symlinks. Now written with `O_NOFOLLOW`.
+- **Contract denial backoff cycled instead of climbing**: denial state expired 2 minutes after the last denial, shorter than the 120s+ tiers, so the count reset before reaching the cap. State now survives backoff + 2 minutes. A frame carrying several errors counts as one denial.
+- **Adaptive probe batch shared across proxies**: the success window was process-wide, so one proxy's failing path resized every proxy's batch. Now one window per client strategy; the batch halves when healthy and never exceeds the configured `ParallelBlockSize`.
+- **`gogc` "off" could disable GC**: a set carrying `OFF` (any casing the CLI did not rewrite to a clear) called `SetGCPercent(-1)`. Only `disabled` turns collection off; the CLI clear match is case-insensitive.
+- **Persisted `metrics on` ignored at boot**: without `URNETWORK_METRICS`, a saved `on` was never re-applied at startup, so `set metrics on` did not survive a restart. The auto-selected listener is now held open from probe to serve.
+- **Denial backoff overflow**: a very large denial count overflowed the shift and returned no backoff.
+- **Serial dialer ordering race**: dialer health is snapshotted before sorting, with one comparator shared by both evaluation paths.
+- **Unit migration hardening**: a symlinked unit file is refused, and files root writes into a user's unit directory are handed to that directory's owner.
+- **Test harness global mutation**: `withGlobalEarningsStore` now uses `t.Cleanup` to restore state.
+
+### Changed
+- **HotSwap decline messages**: all 5 decline points now include operator-facing guidance with actionable next steps instead of technical error strings.
+- **Proxy warmth test expectations**: updated to reflect warmth-first sort order.
+
+### Test Coverage
+- 62 new test functions covering denial backoff, proxy selection and ordering, adaptive probe batching, HotSwap unit migration, counters and declines, the control socket (`gogc`, metrics at boot), earnings launch ranking, `ParseByteCount`, the audit wire format, and the `writeStateFile` descriptor fix.
+
+---
+
 ## [v3.23.0-fix.31.0]
 
 ### Added

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -223,6 +224,29 @@ func snapshotErrors() map[string]uint64 {
 	return out
 }
 
+// readHotswapDeclinesFromDisk reads the hotswap decline/success counters
+// that the urnet-tools CLI writes to <stateDir>/.hotswap_declines.json.
+// Returns nil when the file is absent or unreadable (normal: no updates
+// have been attempted on this provider yet).
+func readHotswapDeclinesFromDisk() map[string]int64 {
+	stateDir := mustStateDir()
+	if stateDir == "" {
+		return nil
+	}
+	path := filepath.Join(stateDir, ".hotswap_declines.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var dc struct {
+		Counts map[string]int64 `json:"counts"`
+	}
+	if err := json.Unmarshal(data, &dc); err != nil || dc.Counts == nil {
+		return nil
+	}
+	return dc.Counts
+}
+
 // providerExtraMetrics generates the Prometheus text-format lines that only
 // the provider can supply. Called by connect.PrometheusHandler on every scrape.
 func providerExtraMetrics() string {
@@ -313,6 +337,15 @@ func providerExtraMetrics() string {
 		fmt.Fprintf(&b, "# TYPE urnet_lifetime_errors_total counter\n")
 		for cat, count := range errCounts {
 			fmt.Fprintf(&b, "urnet_lifetime_errors_total{category=%q} %d\n", cat, count)
+		}
+	}
+
+	// --- Hotswap decline/success counters (written by urnet-tools CLI) ---
+	if hsCounts := readHotswapDeclinesFromDisk(); len(hsCounts) > 0 {
+		fmt.Fprintf(&b, "# HELP urnet_hotswap_outcomes_total HotSwap attempt outcomes since last install.\n")
+		fmt.Fprintf(&b, "# TYPE urnet_hotswap_outcomes_total counter\n")
+		for reason, count := range hsCounts {
+			fmt.Fprintf(&b, "urnet_hotswap_outcomes_total{reason=%q} %d\n", reason, count)
 		}
 	}
 

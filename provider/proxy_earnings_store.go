@@ -31,11 +31,10 @@ import (
 // earning right now". This store answers "has this identity earned", which
 // is precisely the question an offline proxy still has an answer to.
 //
-// SAFETY: nothing reads the score to make a decision yet. This change
-// collects and persists the history and reports it at startup; the launch
-// ranking that will consume it is deliberately held back so it can be
-// judged against a real week of data. The store never admits, evicts, or
-// rejects a proxy.
+// SAFETY: the launch ranking now reads scores to order proxies by
+// earnings. The store collects, persists, and reports the history, and
+// the scheduler consumes it to break ties within the same warmth tier
+// and provenance group. The store never admits, evicts, or rejects a proxy.
 const (
 	// earningsHalfLife is how long a score takes to fall to half its value
 	// with no further earnings. A week is long enough to ride out a quiet
@@ -287,6 +286,13 @@ func (s *proxyEarningsStore) Save(now time.Time) error {
 	return atomicWriteJSON(path, out)
 }
 
+// earningsPromotionBytes is the decayed score at which a URL-sourced proxy
+// stops being treated as an unproven address and is ordered alongside the
+// file list. It is an absolute floor rather than a percentile: on a node
+// where nothing earns, nothing should be promoted, and a relative bar would
+// always promote the least-bad address.
+const earningsPromotionBytes = 64 << 20 // 64 MiB
+
 // globalProxyEarningsStore is fed by the same snapshot loop that feeds
 // globalPerProxyEarnTracker and consulted by the launch scheduler.
 var globalProxyEarningsStore = newProxyEarningsStore(proxyEarningsPath())
@@ -313,15 +319,13 @@ func proxyEarningsScore(addr string, now time.Time) float64 {
 
 // earningsHistorySummary describes the earnings history behind a launch
 // set, for the startup log: how many of the proxies carry any history at
-// all, and the single biggest earner.
-//
-// Nothing consults the history to order launches yet. It is reported so an
-// operator can watch it fill in, and so the ranking that will use it can be
-// judged against real data rather than a hypothesis.
+// all, how many URL-sourced proxies have been promoted, and the single
+// biggest earner.
 func earningsHistorySummary(
 	proxies []*connect.ProxySettings,
+	proxySourceOf map[string]string,
 	now time.Time,
-) (ranked int, topAddr string, topScore float64) {
+) (ranked int, promoted int, topAddr string, topScore float64) {
 	for _, p := range proxies {
 		score := proxyEarningsScore(p.Address, now)
 		// Same cutoff Save uses, so the line cannot count a sub-byte
@@ -330,10 +334,13 @@ func earningsHistorySummary(
 			continue
 		}
 		ranked++
+		if proxySourceOf[p.Address] == "url" && score >= earningsPromotionBytes {
+			promoted++
+		}
 		if score > topScore {
 			topScore = score
 			topAddr = p.Address
 		}
 	}
-	return ranked, topAddr, topScore
+	return ranked, promoted, topAddr, topScore
 }

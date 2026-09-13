@@ -6,7 +6,7 @@ import "errors"
 
 // triggerHotSwap on Windows is a stub until the named pipe adapter is connected.
 func triggerHotSwap(p Provider) error {
-	return errors.New("hotswap not yet implemented on windows")
+	return errors.New("zero-downtime hotswap is not yet supported on Windows. Use `urnet-tools restart` to apply updates (there will be a brief restart gap)")
 }
 
 // pidIsAlive is unreachable in practice on Windows: triggerHotSwap always

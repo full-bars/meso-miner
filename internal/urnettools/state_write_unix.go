@@ -27,17 +27,23 @@ func writeStateFile(stateDir, name string, data []byte, perm os.FileMode) error 
 	if err != nil {
 		return fmt.Errorf("write %s: %v", path, err)
 	}
-	defer unix.Close(fd)
-
-	// Loop the write to handle short writes (write(2) may return fewer
-	// bytes than requested). Also Fchmod to enforce perm on existing files
-	// where O_CREAT's mode argument is ignored.
+	// The *os.File owns fd from here, and f.Close is its only close.
+	// Closing fd directly as well double-closed it: the File's finalizer
+	// later closed whatever descriptor had reused the number.
 	f := os.NewFile(uintptr(fd), path)
+
+	// os.File.Write loops on short writes. Chmod enforces perm on existing
+	// files, where O_CREAT's mode argument is ignored.
 	if _, err := f.Write(data); err != nil {
+		f.Close()
 		return fmt.Errorf("write %s: %v", path, err)
 	}
-	if err := unix.Fchmod(fd, uint32(perm)); err != nil {
+	if err := f.Chmod(perm); err != nil {
+		f.Close()
 		return fmt.Errorf("chmod %s: %v", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close %s: %v", path, err)
 	}
 	return nil
 }

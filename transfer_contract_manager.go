@@ -50,6 +50,12 @@ func ContractMetricsSnapshot() (acquired, denied, utilSum uint64) {
 	return acquired, denied, utilSum
 }
 
+// Per-destination denial backoff state.
+type denialState struct {
+	count      int
+	lastDenial time.Time
+}
+
 // manage contracts which are embedded into each transfer sequence
 
 type ContractKey struct {
@@ -310,6 +316,9 @@ type ContractManager struct {
 
 	controlSyncProvide    *ControlSync
 	controlSyncProvideOob *ControlSyncOob
+
+	// Per-destination denial backoff: destination ID -> denial state.
+	denialCooldowns map[Id]denialState
 }
 
 func NewContractManagerWithDefaults(ctx context.Context, client *Client) *ContractManager {
@@ -354,6 +363,7 @@ func NewContractManager(
 		contractStatsCallbacks:     NewCallbackList[ContractStatsFunction](),
 		controlSyncProvide:         NewControlSync(ctx, client, "provide"),
 		controlSyncProvideOob:      NewControlSyncOob(ctx, client, "provide-oob"),
+		denialCooldowns:            map[Id]denialState{},
 	}
 
 	if client.ClientId() != ControlId {
@@ -363,6 +373,99 @@ func NewContractManager(
 	go HandleError(contractManager.expireQueuedContracts, client.Cancel)
 
 	return contractManager
+}
+
+// denialBackoffForCount returns the exponential backoff duration for the
+// given denial count. The schedule is: 1st denial → 0 (no backoff),
+// 2nd → 15 s, 3rd → 30 s, 4th → 60 s, 5th+ → 60s * 2^(count-4),
+// capped at 5 minutes.
+func denialBackoffForCount(count int) time.Duration {
+	if count <= 1 {
+		return 0
+	}
+	var d time.Duration
+	switch {
+	case count == 2:
+		d = 15 * time.Second
+	case count == 3:
+		d = 30 * time.Second
+	case count >= 7:
+		// 60s * 2^3 already passes the cap. Returning before the shift
+		// keeps a large count from overflowing to zero or a negative value.
+		return 5 * time.Minute
+	default:
+		// Exponential growth from 60s base: 60s, 120s, 240s.
+		d = 60 * time.Second * time.Duration(1<<(count-4))
+	}
+	if d > 5*time.Minute {
+		d = 5 * time.Minute
+	}
+	return d
+}
+
+// DenialCooldownExpiry is how long a destination's denial state survives
+// past its current backoff with no new denial. Exported so tests can
+// reference it without duplicating the constant.
+const DenialCooldownExpiry = 2 * time.Minute
+
+// denialCooldownFor is how long denial state at count survives, measured
+// from the last denial. It has to outlast the backoff itself: a flat
+// DenialCooldownExpiry is shorter than the 120s and longer tiers, so the
+// state expired before the retry that backoff was spacing out, the next
+// denial reset the count, and the schedule cycled back to zero instead of
+// climbing to its cap.
+func denialCooldownFor(count int) time.Duration {
+	return denialBackoffForCount(count) + DenialCooldownExpiry
+}
+
+// getDenialBackoff returns the exponential backoff duration for a
+// destination that has been denying contracts. Returns 0 if no cooldown
+// is active. Cooldown expires after DenialCooldownExpiry of inactivity.
+func (self *ContractManager) getDenialBackoff(destId Id) time.Duration {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+	ds, ok := self.denialCooldowns[destId]
+	if !ok || ds.count == 0 {
+		return 0
+	}
+	if time.Since(ds.lastDenial) > denialCooldownFor(ds.count) {
+		delete(self.denialCooldowns, destId)
+		return 0
+	}
+	return denialBackoffForCount(ds.count)
+}
+
+// noteDenial increments the denial count for a destination and records
+// the current time. If the previous denial has expired, the count is
+// reset before incrementing. Expired entries are also purged.
+func (self *ContractManager) noteDenial(destId Id) {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	// Purge expired entries to prevent unbounded memory growth.
+	now := time.Now()
+	for id, ds := range self.denialCooldowns {
+		if now.Sub(ds.lastDenial) > denialCooldownFor(ds.count) {
+			delete(self.denialCooldowns, id)
+		}
+	}
+
+	ds := self.denialCooldowns[destId]
+	// Reset count if the previous denial has expired.
+	if ds.count > 0 && now.Sub(ds.lastDenial) > denialCooldownFor(ds.count) {
+		ds.count = 0
+	}
+	ds.count++
+	ds.lastDenial = now
+	self.denialCooldowns[destId] = ds
+}
+
+// clearDenial resets the denial count for a destination (e.g. on
+// successful contract acquisition).
+func (self *ContractManager) clearDenial(destId Id) {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+	delete(self.denialCooldowns, destId)
 }
 
 func (self *ContractManager) providePing() {
@@ -609,6 +712,7 @@ func (self *ContractManager) HandleControlFrame(contractKey ContractKey, frame *
 							ByteCountHumanReadable(ByteCount(storedContract.GetTransferByteCount())),
 							contractKey.Destination.DestinationId)
 						atomic.AddUint64(&contractsAcquired, 1)
+						self.clearDenial(contractKey.Destination.DestinationId)
 						return nil
 					}
 				}
@@ -621,6 +725,11 @@ func (self *ContractManager) HandleControlFrame(contractKey ContractKey, frame *
 			} else {
 				c()
 			}
+		}
+		if 0 < len(contractErrors) {
+			// One refusal per frame. Counting each error in a multi-error
+			// frame skipped backoff tiers.
+			self.noteDenial(contractKey.Destination.DestinationId)
 		}
 		for _, contractError := range contractErrors {
 			self.client.log.Infof("⛔ [contract] denied = %s destination=%s\n", contractError, contractKey.Destination.DestinationId)

@@ -640,9 +640,12 @@ func (r *ProxyReloader) reload() {
 			tlog("[proxy] skip add %s: still draining\n", settings.Address)
 			continue
 		}
-		// Defer URL-sourced proxy launches until file-proxy warmup
+		// Defer unproven URL-sourced proxy launches until file-proxy warmup
 		// completes, so operator-curated proxies get an uncontested ramp.
-		if sourceOf[settings.Address] == "url" && !proxyWarmupDone.Load() {
+		// Promoted URL proxies (earnings >= 64 MiB) are known earners and
+		// should launch with the file list rather than be deferred.
+		isPromoted := proxyEarningsScore(settings.Address, time.Now()) >= earningsPromotionBytes
+		if sourceOf[settings.Address] == "url" && !isPromoted && !proxyWarmupDone.Load() {
 			warmupDeferred++
 			continue
 		}

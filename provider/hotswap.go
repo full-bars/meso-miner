@@ -537,9 +537,10 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 	// Standard Unix Branch (Host / systemd): Baton handoff to child
 	// Pre-check systemd notify capability: if running under systemd, NOTIFY_SOCKET is required to update MainPID (F-2)
 	if os.Getenv("INVOCATION_ID") != "" && os.Getenv("NOTIFY_SOCKET") == "" {
-		tlog("❌ [hotswap] Running under systemd without Type=notify (NOTIFY_SOCKET unset). Cannot safely transfer MainPID without service manager terminating unit. Aborting handoff; use standard restart.\n")
+		msg := "zero-downtime hotswap unavailable: the provider's systemd unit is Type=simple (NOTIFY_SOCKET not set), so MainPID cannot be handed to a new process; `urnet-tools update` migrates the unit to Type=notify, after which updates can hot swap"
+		tlog("❌ [hotswap] %s\n", msg)
 		session.Kill()
-		return ErrNoNotifySocket
+		return fmt.Errorf("%s: %w", msg, ErrNoNotifySocket)
 	}
 
 	// 1. Send TAKEOVER to candidate FIRST before yielding
