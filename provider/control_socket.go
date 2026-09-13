@@ -35,7 +35,7 @@ func controlSocketPath() (string, error) {
 // controlRequest is one line of the socket protocol: newline-delimited JSON,
 // one request per line, one response per line, in order.
 type controlRequest struct {
-	Cmd    string `json:"cmd"` // "set", "clear", "get", "status", "history", or "version"
+	Cmd    string `json:"cmd"` // "set", "clear", "get", "status", "history", "version", or "shutdown"
 	Key    string `json:"key"`
 	Value  string `json:"value,omitempty"`
 	Limit  int    `json:"limit,omitempty"`  // for "history" command
@@ -103,6 +103,13 @@ func startControlSocket(ctx context.Context, state *controlState) (func(), error
 	if err := os.Chmod(path, 0o600); err != nil {
 		ln.Close()
 		return nil, fmt.Errorf("control socket chmod: %w", err)
+	}
+	// On Windows, os.Chmod 0600 does not set NTFS permissions — any local
+	// user could connect. Apply platform-specific ACL restrictions after
+	// creation so only the current user can reach the socket.
+	if err := restrictSocketACL(path); err != nil {
+		ln.Close()
+		return nil, fmt.Errorf("control socket ACL: %w", err)
 	}
 
 	go func() {
@@ -588,6 +595,19 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		}
 		entries, nextCursor := globalAuditRing.Entries(limit, req.Cursor)
 		return controlResponse{OK: true, Entries: entries, NextCursor: nextCursor}
+
+	case "shutdown":
+		// Trigger the same graceful shutdown path as SIGTERM: cancel
+		// the main context so all goroutines drain, then the deferred
+		// flushRetentionEvents / cleanupControlSocket run.
+		if state.shutdownFn == nil {
+			return controlResponse{OK: false, Error: "shutdown not available (no shutdown function configured)"}
+		}
+		tlog("🛑 [control] shutdown requested via control socket\n")
+		// The connection will close when the response is written; the
+		// cancel runs asynchronously so the client gets its ACK first.
+		go state.shutdownFn()
+		return controlResponse{OK: true, Value: "shutting down"}
 
 	default:
 		return controlResponse{OK: false, Error: fmt.Sprintf("unknown command %q", req.Cmd)}

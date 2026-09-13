@@ -2879,6 +2879,9 @@ func provide(opts docopt.Opts) {
 	applyPersistedRuntimeTuning(globalControlState)
 	initPersistentErrors()
 	initAuditRing()
+	// The cancel function is captured by the control socket's "shutdown"
+	// command so a client can request graceful shutdown remotely.
+	globalControlState.shutdownFn = cancel
 	var cleanupControlSocket func()
 	if !isHotSwapCandidate {
 		var err error

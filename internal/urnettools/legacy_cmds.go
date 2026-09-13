@@ -157,6 +157,9 @@ func cmdStart(args []string, force, dryRun bool) error {
 		fmt.Printf("[dry-run] would start %s (unit=%s, user=%s)\n", providerLabel(p), p.Unit, p.User)
 		return nil
 	}
+	if runtime.GOOS == "windows" {
+		return cmdStartWindows(p, force, dryRun)
+	}
 	fmt.Printf("starting %s...\n", providerLabel(p))
 	if err := unitCommand(p, "start"); err != nil {
 		fmt.Printf("FAILED to start %s: %v\n", providerLabel(p), err)
@@ -173,6 +176,9 @@ func cmdStop(args []string, force, dryRun bool) error {
 	if dryRun {
 		fmt.Printf("[dry-run] would stop %s (unit=%s, user=%s)\n", providerLabel(p), p.Unit, p.User)
 		return nil
+	}
+	if runtime.GOOS == "windows" {
+		return cmdStopWindows(p, force, dryRun)
 	}
 	fmt.Printf("stopping %s...\n", providerLabel(p))
 	if err := unitCommand(p, "stop"); err != nil {
@@ -195,6 +201,9 @@ func cmdRestart(args []string, force, dryRun bool) error {
 	}
 	if !ok {
 		return nil // dry-run
+	}
+	if runtime.GOOS == "windows" {
+		return cmdRestartWindows(p, force, dryRun)
 	}
 	fmt.Printf("restarting %s...\n", providerLabel(p))
 	if err := unitCommand(p, "restart"); err != nil {
@@ -276,6 +285,10 @@ func errWithDockerHint(err error, systemdProviderCount int) error {
 // else journald. An optional trailing positional N (e.g. `logs --unit foo
 // 500`) sets the number of lines to seed the follow with; default is 250.
 func cmdLogs(args []string) error {
+	if runtime.GOOS == "windows" {
+		fmt.Println("logs are not available on Windows yet")
+		return nil
+	}
 	t, rest, err := parseTargetFlags(args)
 	if err != nil {
 		return err

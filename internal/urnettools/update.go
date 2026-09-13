@@ -914,6 +914,9 @@ func updateProvider(p Provider, cfg updateConfig) error {
 // restartProvider restarts the systemd unit (system or user level) that owns
 // the provider process. Falls back gracefully when systemd is unavailable.
 func restartProvider(p Provider) error {
+	if runtime.GOOS == "windows" {
+		return restartProviderWindows(p)
+	}
 	if p.Unit != "" {
 		// Determine the unit's real scope up front (isUserUnit checks whether
 		// a systemd system unit file exists). A user-owned unit MUST be
