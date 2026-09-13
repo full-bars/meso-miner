@@ -481,15 +481,6 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 	if _, err := os.Stat("/.dockerenv"); err == nil {
 		isDocker = true
 	}
-	if isDocker && getpidFunc() != 1 {
-		// Docker container detected but provider is not PID 1. In-place execve
-		// only works reliably when the provider owns the container's main PID;
-		// otherwise the supervision layer won't track the new process image.
-		msg := fmt.Sprintf("zero-downtime hotswap unavailable: running inside Docker but the provider is not PID 1 (PID %d). Ensure the container runs the provider as PID 1 (e.g. use exec form in your Dockerfile CMD) for zero-downtime updates", getpidFunc())
-		tlog("❌ [hotswap] %s\n", msg)
-		session.Kill()
-		return errors.New(msg)
-	}
 	if getpidFunc() == 1 || isDocker {
 		tlog("⚡ [hotswap] Docker container detected: candidate pre-flight verified -> preparing in-place execve\n")
 
@@ -546,7 +537,7 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 	// Standard Unix Branch (Host / systemd): Baton handoff to child
 	// Pre-check systemd notify capability: if running under systemd, NOTIFY_SOCKET is required to update MainPID (F-2)
 	if os.Getenv("INVOCATION_ID") != "" && os.Getenv("NOTIFY_SOCKET") == "" {
-		msg := "zero-downtime hotswap unavailable: the provider's systemd unit uses Type=simple (NOTIFY_SOCKET not set). The next update will migrate your unit file to Type=notify automatically; after that, zero-downtime hotswap will be available"
+		msg := "zero-downtime hotswap unavailable: the provider's systemd unit is Type=simple (NOTIFY_SOCKET not set), so MainPID cannot be handed to a new process; `urnet-tools update` migrates the unit to Type=notify, after which updates can hot swap"
 		tlog("❌ [hotswap] %s\n", msg)
 		session.Kill()
 		return fmt.Errorf("%s: %w", msg, ErrNoNotifySocket)
