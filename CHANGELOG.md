@@ -46,7 +46,7 @@ _Nothing yet._
 - **Proxy warmth test expectations**: updated to reflect warmth-first sort order.
 
 ### Test Coverage
-- 26 new tests across 3 features: `TestParseByteCount` (23 cases), `TestParseByteCountErrors` (4 cases), `TestSerialRecencyTiebreak`, `TestAuditEntryWireFormatRoundTrip`, `TestAuditEntryWireFormatFullResponse`, `TestMigrateUnitToNotify_*`, `TestReconcileUnitTypeFollowsBinary`, `TestMigrateUnitRefusesSymlinkedTemp`, hotswap metrics tests (9 cases), proxy earnings priority tests (5 new), provider metrics tests (2 cases).
+- 62 new test functions covering denial backoff, proxy selection and ordering, adaptive probe batching, HotSwap unit migration, counters and declines, the control socket (`gogc`, metrics at boot), earnings launch ranking, `ParseByteCount`, the audit wire format, and the `writeStateFile` descriptor fix.
 
 ---
 
