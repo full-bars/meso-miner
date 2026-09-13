@@ -7,8 +7,7 @@
 param(
     [String]$Version = "latest",
     [String]$Destination = "",
-    [String]$ToolsScriptPath = "",
-    [String]$UpdaterScriptPath = "",
+
     [Switch]$NoRestartDownload = $false,
     [Switch]$NoCleanup = $false,
     [Switch]$NonInteractive = $false,
@@ -269,16 +268,73 @@ if ($ReleaseInfo) {
     }
 }
 
-if ($ToolAsset -and $ToolDigest) {
-    # Go tool path: download, verify, swap with .old (Windows cannot delete a
-    # running mapped image, but can rename it).
+# Helper: tear down legacy PS1 updater and clean up Startup .lnk.
+# Called after urnet-tools.exe is installed from any source.
+$CleanupStaleUpdater = {
+    # Remove any stale PS1 scripts from previous installs.
+    $StalePs1 = Join-Path $Destination -ChildPath "urnet-tools.ps1"
+    if (Test-Path $StalePs1) { Remove-Item -Path $StalePs1 -Force }
+    $StaleUpdaterPs1 = Join-Path $Destination -ChildPath "urnetwork-updater.ps1"
+    if (Test-Path $StaleUpdaterPs1) { Remove-Item -Path $StaleUpdaterPs1 -Force }
+
+    # Read PID file and terminate legacy background updater.
+    $StalePid = Join-Path $Destination -ChildPath "urnetwork-updater.pid"
+    if (Test-Path $StalePid) {
+        try {
+            $OldPid = ([string](Get-Content -Path $StalePid -Raw)).Trim()
+            if ($OldPid -match '^\d+$') {
+                Stop-Process -Id ([int]$OldPid) -Force -ErrorAction SilentlyContinue
+            }
+        } catch {}
+        Remove-Item -Path $StalePid -Force -ErrorAction SilentlyContinue
+    }
+
+    # Remove the legacy Startup .lnk files — the Go tool uses Task
+    # Scheduler (schtasks /on logon) instead.
+    $StartupPath = Join-Path -Path $env:APPDATA -ChildPath "Microsoft\Windows\Start Menu\Programs\Startup"
+    $OldLnk = Join-Path -Path $StartupPath -ChildPath "urnetwork.lnk"
+    if (Test-Path $OldLnk) { Remove-Item -Path $OldLnk -Force -ErrorAction SilentlyContinue }
+    $UpdateLnk = Join-Path -Path $StartupPath -ChildPath "urnetwork-update.lnk"
+    if (Test-Path $UpdateLnk) { Remove-Item -Path $UpdateLnk -Force -ErrorAction SilentlyContinue }
+}
+
+# STEP 1: Check if urnet-tools.exe was already bundled inside the
+# extracted provider tarball (v3.23.0-fix.30+). This is the
+# preferred path — no extra download required.
+$ExtractedTool = Join-Path $ExtractPath -ChildPath "urnet-tools.exe"
+if (-not (Test-Path $ExtractedTool)) {
+    # Some tarballs nest binaries under <os>/<arch>/.
+    $NestedTool = Join-Path $ExtractPath -ChildPath "$OS/$Arch/urnet-tools.exe"
+    if (Test-Path $NestedTool) {
+        $ExtractedTool = $NestedTool
+    }
+}
+
+if (Test-Path $ExtractedTool) {
+    Write-Host "Found urnet-tools.exe in extracted tarball ($ExtractedTool)"
+    if (Test-Path $InstalledToolsBinaryPath) {
+        Move-Item -Path $InstalledToolsBinaryPath -Destination "$InstalledToolsBinaryPath.old" -Force
+    }
+    Move-Item -Path $ExtractedTool -Destination $InstalledToolsBinaryPath -Force
+    $ToolGoInstalled = $true
+    & $CleanupStaleUpdater
+}
+
+# STEP 2: Fallback — download standalone urnet-tools asset from
+# dl.fullbars.xyz with GitHub releases mirror.
+if (-not $ToolGoInstalled -and $ToolAsset -and $ToolDigest) {
     $ToolDownloadURL = "https://dl.fullbars.xyz/releases/download/$ReleaseVersion/$ToolAssetName"
+    $ToolMirrorURL = "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$ReleaseVersion/$ToolAssetName"
     $ToolTemp = Join-Path $env:TEMP $ToolAssetName
-    Write-Host "Installing Go urnet-tools binary ($ToolAssetName)..."
+    Write-Host "Installing Go urnet-tools binary ($ToolAssetName) via download..."
     try {
-        Download-File -URL $ToolDownloadURL -Destination $ToolTemp
+        try {
+            Download-File -URL $ToolDownloadURL -Destination $ToolTemp
+        } catch {
+            Write-Warning "Primary tool download failed, trying GitHub mirror..."
+            Download-File -URL $ToolMirrorURL -Destination $ToolTemp
+        }
         $ActualHash = (Get-FileHash -Path $ToolTemp -Algorithm SHA256).Hash.ToLower()
-        # The release API digest is "sha256:<hex>"; strip the prefix.
         $ExpectedHash = $ToolDigest.ToLower()
         if ($ExpectedHash -like "sha256:*") {
             $ExpectedHash = $ExpectedHash.Substring(7)
@@ -288,36 +344,8 @@ if ($ToolAsset -and $ToolDigest) {
                 Move-Item -Path $InstalledToolsBinaryPath -Destination "$InstalledToolsBinaryPath.old" -Force
             }
             Move-Item -Path $ToolTemp -Destination $InstalledToolsBinaryPath
-            # Remove any stale PS1 scripts from previous installs.
-            $StalePs1 = Join-Path $Destination -ChildPath "urnet-tools.ps1"
-            if (Test-Path $StalePs1) {
-                Remove-Item -Path $StalePs1 -Force
-            }
-            $StaleUpdaterPs1 = Join-Path $Destination -ChildPath "urnetwork-updater.ps1"
-            if (Test-Path $StaleUpdaterPs1) {
-                Remove-Item -Path $StaleUpdaterPs1 -Force
-            }
             $ToolGoInstalled = $true
-
-            # Belt-and-suspenders: explicitly tear down the legacy updater
-            # that the PS1 scripts used to manage. The Go tool's
-            # cleanupLifecycle already does this, but the installer should
-            # not leave orphaned processes or stale files behind.
-            Get-Process urnetwork-updater -ErrorAction SilentlyContinue |
-                Stop-Process -Force -ErrorAction SilentlyContinue
-
-            $StalePid = Join-Path $Destination -ChildPath "urnetwork-updater.pid"
-            if (Test-Path $StalePid) {
-                Remove-Item -Path $StalePid -Force -ErrorAction SilentlyContinue
-            }
-
-            # Remove the legacy Startup .lnk — the Go tool uses Task
-            # Scheduler (schtasks /on logon) instead.
-            $StartupPath = Join-Path -Path $env:APPDATA -ChildPath "Microsoft\Windows\Start Menu\Programs\Startup"
-            $OldLnk = Join-Path -Path $StartupPath -ChildPath "urnetwork.lnk"
-            if (Test-Path $OldLnk) {
-                Remove-Item -Path $OldLnk -Force -ErrorAction SilentlyContinue
-            }
+            & $CleanupStaleUpdater
         }
         else {
             Write-Error "Go urnet-tools digest mismatch (got $ActualHash); cannot install"
@@ -358,7 +386,7 @@ if ($OS -eq "windows") {
     
 	$Colon = ";";
 
-	if ($EnvPath -match ";$") {
+	if ($CurrentPath -match ";$") {
             $Colon = "";
 	}
 

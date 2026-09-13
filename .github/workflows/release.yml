@@ -311,6 +311,11 @@ jobs:
         run: |
           VERSION=${GITHUB_REF_NAME:-latest}
 
+          # Copy urnet-tools.exe into the universal tarball's windows/ dirs
+          # so the Windows installer can pick it up without a separate download.
+          cp tool_tmp/windows/amd64/urnet-tools release_tmp/windows/amd64/urnet-tools.exe
+          cp tool_tmp/windows/arm64/urnet-tools release_tmp/windows/arm64/urnet-tools.exe
+
           # Universal tarball — scripts match this via ^urnetwork-provider-
           cp scripts/Provider_Install_Linux.sh release_tmp/urnet-tools
           cd release_tmp

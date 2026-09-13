@@ -358,7 +358,7 @@ urnet-docker report http://HUB_IP:8080
 urnet-docker report
 urnet-docker report off
 ```
-(The legacy PowerShell wrapper `urnet-tools.ps1` is deprecated; the Go binary replaces it on every platform.)
+(The legacy PowerShell wrapper `urnet-tools.ps1` has been retired; the Go binary replaces it on every platform.)
 
 ## ♻️ Hot-Restart
 

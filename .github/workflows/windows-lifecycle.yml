@@ -57,6 +57,9 @@ jobs:
           done
 
       - name: Unit tests on Windows
+        # NOTE: Tests in internal/urnettools/ may not exist yet for Windows
+        # lifecycle — they are added by PR #616. This step passes once #616
+        # lands. Until then, the test binary has no matching tests and exits 0.
         run: go test ./internal/urnettools/
         env:
           GOOS: windows
@@ -164,6 +167,12 @@ jobs:
       # purpose-built fake-provider binary that listens on the control
       # socket (~/.urnetwork/provider.sock) and responds to the same
       # JSON-over-connection protocol as the real provider.
+      #
+      # NOTE: These steps require native Windows lifecycle management
+      # (start/stop/restart/logs) which is being ported in PR #616.
+      # Until #616 merges, these steps will fail because urnet-tools
+      # delegates to systemctl on Windows. They are kept in place so
+      # CI validates the full lifecycle once #616 lands.
 
       - name: Build the fake provider for Windows
         shell: bash
