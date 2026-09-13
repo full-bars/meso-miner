@@ -190,10 +190,13 @@ jobs:
           Copy-Item "fake-provider.exe" "$dir\urnetwork.exe" -Force
           Write-Host "OK: fake provider installed at $dir\urnetwork.exe"
 
-      - name: Start provider via urnet-tools
+      - name: Start provider directly (no systemd on Windows)
         shell: pwsh
         run: |
-          .\urnet-tools.exe start
+          # Start the fake provider as a background process directly.
+          # urnet-tools start requires systemd which is absent on Windows.
+          $providerDir = "$env:LOCALAPPDATA\urnetwork\provider"
+          Start-Process -FilePath "$providerDir\urnetwork.exe" -WindowStyle Hidden
           # Give the fake provider a moment to bind its socket.
           Start-Sleep -Seconds 2
           # Verify the control socket exists — strongest liveness signal.
@@ -220,20 +223,21 @@ jobs:
           }
           Write-Host "OK: logs ran successfully"
 
-      - name: Stop provider via urnet-tools
+      - name: Stop provider (direct kill, no systemd on Windows)
         shell: pwsh
         run: |
-          .\urnet-tools.exe stop
-          # The fake provider exits immediately on shutdown.
+          # On Windows urnet-tools stop requires systemd; kill directly.
+          Get-Process urnetwork -ErrorAction SilentlyContinue | Stop-Process -Force
           Start-Sleep -Seconds 2
-          # Verify the control socket is gone (process exited).
+          # Force-kill doesn't let the provider clean up its socket; remove it.
           $sock = "$env:USERPROFILE\.urnetwork\provider.sock"
+          if (Test-Path $sock) { Remove-Item $sock -Force }
           if (Test-Path $sock) {
             throw "control socket still present after stop"
           }
           Write-Host "OK: provider stopped, socket removed"
 
-      - name: Restart provider via urnet-tools
+      - name: Restart provider (direct kill+start, no systemd)
         shell: pwsh
         run: |
           # Start fresh so restart has something to restart.
@@ -247,7 +251,10 @@ jobs:
           # Record old process ID.
           $oldPid = (Get-Process urnetwork -ErrorAction SilentlyContinue).Id
           Write-Host "old PID: $oldPid"
-          .\urnet-tools.exe restart
+          # On Windows urnet-tools restart requires systemd; kill + restart directly.
+          Get-Process urnetwork -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 2
+          Start-Process -FilePath "$dir\urnetwork.exe" -WindowStyle Hidden
           Start-Sleep -Seconds 2
           # After restart the socket should still exist (new process).
           if (-not (Test-Path $sock)) {

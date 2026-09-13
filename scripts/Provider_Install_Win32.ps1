@@ -283,7 +283,11 @@ $CleanupStaleUpdater = {
         try {
             $OldPid = ([string](Get-Content -Path $StalePid -Raw)).Trim()
             if ($OldPid -match '^\d+$') {
-                Stop-Process -Id ([int]$OldPid) -Force -ErrorAction SilentlyContinue
+                $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $OldPid" -ErrorAction SilentlyContinue
+                if ($proc) {
+                    Write-Host "Terminating stale updater process (PID $OldPid, Name: $($proc.Name))"
+                    Stop-Process -Id ([int]$OldPid) -Force -ErrorAction SilentlyContinue
+                }
             }
         } catch {}
         Remove-Item -Path $StalePid -Force -ErrorAction SilentlyContinue

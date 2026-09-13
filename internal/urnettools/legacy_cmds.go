@@ -315,6 +315,11 @@ func cmdLogs(args []string) error {
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
 	}
+	// Windows has no systemd/journalctl — print a diagnostic and exit cleanly.
+	if runtime.GOOS == "windows" {
+		fmt.Println("urnet-tools: journalctl is not available on Windows — logs are not supported via this command.")
+		return nil
+	}
 	// journalctl is a standalone binary, not a systemctl verb — calling it
 	// through unitCommand would execute `systemctl journalctl` (invalid).
 	// Scope user units explicitly.

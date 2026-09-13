@@ -56,7 +56,11 @@ if (Test-Path $StalePid) {
     try {
         $OldPid = ([string](Get-Content -Path $StalePid -Raw)).Trim()
         if ($OldPid -match '^\d+$') {
-            Stop-Process -Id ([int]$OldPid) -Force -ErrorAction SilentlyContinue
+            $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $OldPid" -ErrorAction SilentlyContinue
+            if ($proc) {
+                Write-Host "Terminating stale updater process (PID $OldPid, Name: $($proc.Name))"
+                Stop-Process -Id ([int]$OldPid) -Force -ErrorAction SilentlyContinue
+            }
         }
     } catch {}
     Remove-Item -Path $StalePid -Force -ErrorAction SilentlyContinue
@@ -65,8 +69,8 @@ if (Test-Path $StalePid) {
 # Remove Task Scheduler tasks created by the Go urnet-tools binary.
 # The Go tool's cleanupLifecycle does this too, but the uninstaller
 # must be thorough even on partially-managed installs.
-schtasks /Delete /TN "urnetwork-update" /F 2>$null
-schtasks /Delete /TN "urnetwork-autostart" /F 2>$null
+schtasks /Delete /TN "urnetwork-update" /F *>$null
+schtasks /Delete /TN "urnetwork-autostart" /F *>$null
 
 Write-Host "Removing installation directory: $InstallDir"
 Remove-Item -Path $InstallDir -Recurse -Force
@@ -137,6 +141,7 @@ function Set-Path {
 # $InstallDir\windows\$Arch instead — remove both.
 $OldPaths = @($InstallDir, "$InstallDir\windows\$Arch")
 $EnvPath = Get-Path
+$EnvPath = if ($EnvPath) { $EnvPath } else { '' }
 $EnvPathSplitted = $EnvPath.Split(";")
 
 $Removed = $false

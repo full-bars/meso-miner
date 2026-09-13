@@ -18,6 +18,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 var (
@@ -103,11 +104,14 @@ func handleConn(conn net.Conn) {
 		fmt.Fprintf(os.Stderr, "fake-provider: shutdown requested, exiting\n")
 		ln.Close()
 		_ = os.Remove(sockPath)
-		os.Exit(0)
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			os.Exit(0)
+		}()
 	case "version":
 		resp.BuildVersion = "fake-provider-0.0.1"
 	default:
-		// Accept all other commands with ok:true.
+		resp = controlResponse{OK: false, Error: "hotswap not supported"}
 	}
 
 	json.NewEncoder(conn).Encode(resp)
