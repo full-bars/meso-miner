@@ -1765,10 +1765,15 @@ _append_pending_op() {
         flock -x 9
         local tmp
         tmp=$(mktemp "$dir/.pending_overrides.json.tmp-XXXXXX") || exit 1
-        if [ -s "$file" ]; then
-            # This function is the pending-queue file's only appender, so
-            # its last line is always exactly "]" (see the else branch and
-            # the append below) — safe to drop it and re-close the array.
+        # An empty array ("[]" on one line, however it is spaced) counts as
+        # empty: its only line is the whole array, so dropping the last line
+        # below would leave ",\n  entry\n]", invalid JSON the provider
+        # cannot parse, and every queued override would be lost.
+        if [ -s "$file" ] && [ "$(tr -d ' \t\r\n' < "$file")" != "[]" ]; then
+            # The last line is exactly "]": this function writes that shape
+            # (see the else branch and the append below), and urnet-tools
+            # writes the file with json.MarshalIndent. Safe to drop it and
+            # re-close the array.
             sed '$d' "$file" > "$tmp" && printf ',\n  %s\n]\n' "$entry" >> "$tmp"
         else
             printf '[\n  %s\n]\n' "$entry" > "$tmp"
