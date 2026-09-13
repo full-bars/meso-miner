@@ -664,9 +664,16 @@ func applyLiveSideEffect(key, value string) error {
 			controlApplyLog("⚙️ [control] applied gomemlimit=%s\n", value)
 		}
 	case "gogc":
-		if strings.EqualFold(value, "disabled") || strings.EqualFold(value, "off") {
+		// Only "disabled" turns collection off. "off" is the clear value
+		// for every tuning key, so a set that arrives carrying it (a raw
+		// socket client, or any casing the CLI does not rewrite to a clear)
+		// restores the runtime default instead of an unbounded heap.
+		if strings.EqualFold(value, "disabled") {
 			debug.SetGCPercent(-1)
 			controlApplyLog("⚙️ [control] applied gogc=disabled (garbage collection off; heap grows unbounded)\n")
+		} else if strings.EqualFold(value, "off") {
+			debug.SetGCPercent(100)
+			controlApplyLog("⚙️ [control] applied gogc=100 (off restores the default)\n")
 		} else {
 			percent, err := strconv.Atoi(value)
 			if err != nil {
@@ -719,13 +726,16 @@ func applyMetricsLive(value string) error {
 
 // resolveMetricsAddr picks a port for the Prometheus /metrics listener.
 // If URNETWORK_METRICS is set, that address is used as-is (explicit override).
-// Otherwise it probes 9100-9103 and binds the first available port.
+// Otherwise it probes 9100-9103 on loopback and uses the first free port.
+// Loopback because docs/Configuration.md tells operators never to expose the
+// endpoint on a public interface, and a bare ":port" binds every interface.
+// Reaching it remotely is an explicit URNETWORK_METRICS choice.
 func resolveMetricsAddr() string {
 	if addr := os.Getenv("URNETWORK_METRICS"); addr != "" {
 		return addr
 	}
 	for _, port := range []int{9100, 9101, 9102, 9103} {
-		addr := fmt.Sprintf(":%d", port)
+		addr := fmt.Sprintf("127.0.0.1:%d", port)
 		ln, err := net.Listen("tcp", addr)
 		if err == nil {
 			ln.Close()
@@ -734,8 +744,8 @@ func resolveMetricsAddr() string {
 		}
 		tlog("[metrics] port %d in use, trying next\n", port)
 	}
-	tlog("[metrics] warning: all ports 9100-9103 in use, falling back to :9100\n")
-	return ":9100"
+	tlog("[metrics] warning: all ports 9100-9103 in use, falling back to 127.0.0.1:9100\n")
+	return "127.0.0.1:9100"
 }
 
 // applyPersistedRuntimeTuning re-applies gomemlimit/gogc from state via
@@ -750,12 +760,12 @@ func resolveMetricsAddr() string {
 // parent's own gomemlimit/gogc runtime.debug calls apply only to the
 // parent's process, not the newly promoted candidate's.
 func applyPersistedRuntimeTuning(state *controlState) {
-	if v, ok := state.get("gomemlimit"); ok && v != "" && v != "off" {
+	if v, ok := state.get("gomemlimit"); ok && v != "" && !strings.EqualFold(v, "off") {
 		if err := applyLiveSideEffect("gomemlimit", v); err != nil {
 			tlog("[control] failed to apply persisted gomemlimit=%s: %s\n", v, err)
 		}
 	}
-	if v, ok := state.get("gogc"); ok && v != "" && v != "off" {
+	if v, ok := state.get("gogc"); ok && v != "" && !strings.EqualFold(v, "off") {
 		if err := applyLiveSideEffect("gogc", v); err != nil {
 			tlog("[control] failed to apply persisted gogc=%s: %s\n", v, err)
 		}
