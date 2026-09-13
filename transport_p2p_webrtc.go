@@ -7,7 +7,6 @@ import (
 	"net"
 	"os"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/pion/datachannel"
@@ -21,67 +20,6 @@ var (
 	ipv6CheckOnce sync.Once
 	ipv6OK        bool
 )
-
-// STUN failure cache: tracks STUN servers that have failed ICE gathering
-// so we can skip them on the next PeerConnection setup.
-var stunFailureCache sync.Map
-
-// stunCacheTTL is how long a failed STUN URL stays blacklisted.
-const stunCacheTTL = 5 * time.Minute
-
-// stunURLHealthy returns true if url is not in the failure cache or its
-// entry has expired.
-func stunURLHealthy(url string) bool {
-	v, ok := stunFailureCache.Load(url)
-	if !ok {
-		return true
-	}
-	failedAt := v.(time.Time)
-	if time.Since(failedAt) > stunCacheTTL {
-		// Atomically remove only if the stored time still matches
-		// (so a newer failure isn't deleted by a stale reader).
-		stunFailureCache.CompareAndDelete(url, failedAt)
-		return true
-	}
-	return false
-}
-
-// markSTUNFailed records the given STUN URLs as failed at the current time.
-func markSTUNFailed(urls []string) {
-	now := time.Now()
-	for _, u := range urls {
-		stunFailureCache.Store(u, now)
-	}
-}
-
-// clearSTUNSuccess removes all entries from the failure cache. Called when
-// ICE connects successfully because the server landscape may have changed.
-func clearSTUNSuccess() {
-	stunFailureCache.Range(func(key, _ any) bool {
-		stunFailureCache.Delete(key)
-		return true
-	})
-}
-
-// filterSTUNURLs returns the subset of urls that are healthy (not in the
-// failure cache). If filtering removes every URL, at least the Google STUN
-// servers are kept as a fallback.
-func filterSTUNURLs(urls []string) []string {
-	var healthy []string
-	for _, u := range urls {
-		if stunURLHealthy(u) {
-			healthy = append(healthy, u)
-		}
-	}
-	if len(healthy) == 0 {
-		// All URLs are marked unhealthy. Return the entire original slice
-		// rather than picking just one, preserving redundancy. The cache
-		// will filter them again on the next attempt anyway.
-		healthy = make([]string, len(urls))
-		copy(healthy, urls)
-	}
-	return healthy
-}
 
 // stunIPv6Addr is an IPv6 address of one of the STUN servers from
 // DefaultWebRtcSettings. Used by ipv6Available to probe whether the host can
@@ -786,38 +724,10 @@ func (self *peerConn) Run() {
 		self.connMonitor.NotifyAll()
 	}()
 
-	var srflxCount atomic.Int32
-	self.pc.OnICECandidate(func(c *webrtc.ICECandidate) {
-		if c != nil {
-			// Only srflx candidates prove STUN servers are reachable.
-			if c.Typ == webrtc.ICECandidateTypeSrflx {
-				srflxCount.Add(1)
-			}
-		}
-	})
-
-	// Track whether STUN URLs were configured so we can detect failure
-	// when gathering completes with zero srflx candidates.
-	hasSTUN := len(self.settings.IceServerUrls) > 0
-
 	self.pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
 		connected := state == webrtc.ICEConnectionStateConnected
 		self.log.V(2).Infof("[peerconn]state=%v (%t)\n", state, connected)
 		self.setConnected(connected)
-
-		if state == webrtc.ICEConnectionStateConnected {
-			clearSTUNSuccess()
-		}
-	})
-
-	self.pc.OnICEGatheringStateChange(func(state webrtc.ICEGatheringState) {
-		if state == webrtc.ICEGatheringStateComplete && hasSTUN && srflxCount.Load() == 0 {
-			// Gathering finished but no srflx candidates were produced.
-			// Any machine with a network interface produces host candidates,
-			// so the absence of srflx means the STUN servers are unreachable.
-			self.log.V(2).Infof("[stun-cache] ICE gathering complete with 0 srflx candidates, marking %d STUN URLs failed", len(self.settings.IceServerUrls))
-			markSTUNFailed(self.settings.IceServerUrls)
-		}
 	})
 
 	self.addIceCandidates()
