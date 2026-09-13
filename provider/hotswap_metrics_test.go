@@ -7,36 +7,29 @@ import (
 	"testing"
 )
 
+// Both tests run against a temporary HOME. They used to write the real
+// ~/.urnetwork/.hotswap_declines.json and restore it afterward, which could
+// discard counters a provider on the same machine wrote in between.
+
 func TestReadHotswapDeclinesFromDisk(t *testing.T) {
-	// Save the original state dir file and restore after test.
+	withTempHome(t)
 	stateDir := mustStateDir()
 	if stateDir == "" {
 		t.Skip("mustStateDir returned empty")
 	}
-	origPath := filepath.Join(stateDir, ".hotswap_declines.json")
-	origData, origErr := os.ReadFile(origPath)
-	// Whether or not the original existed, restore it at the end.
-	defer func() {
-		if origErr != nil {
-			os.Remove(origPath) // didn't exist before; clean up
-		} else {
-			os.WriteFile(origPath, origData, 0600) // restore
-		}
-	}()
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	// Write a decline file the same way urnet-tools CLI would.
 	counts := map[string]int64{"version_old": 3, "unit_not_notify": 1, "success": 5}
 	data, _ := json.Marshal(struct {
 		Counts map[string]int64 `json:"counts"`
 	}{Counts: counts})
-	if err := os.MkdirAll(stateDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(origPath, data, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(stateDir, ".hotswap_declines.json"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	// Call the actual function and verify the result.
 	result := readHotswapDeclinesFromDisk()
 	if result == nil {
 		t.Fatal("readHotswapDeclinesFromDisk returned nil for existing file")
@@ -53,26 +46,12 @@ func TestReadHotswapDeclinesFromDisk(t *testing.T) {
 }
 
 func TestReadHotswapDeclinesFromDiskMissing(t *testing.T) {
-	// Save the original state dir file and ensure it's absent during the test.
-	stateDir := mustStateDir()
-	if stateDir == "" {
+	withTempHome(t)
+	if mustStateDir() == "" {
 		t.Skip("mustStateDir returned empty")
 	}
-	origPath := filepath.Join(stateDir, ".hotswap_declines.json")
-	origData, origErr := os.ReadFile(origPath)
-	defer func() {
-		if origErr != nil {
-			os.Remove(origPath) // didn't exist before; clean up
-		} else {
-			os.WriteFile(origPath, origData, 0600) // restore
-		}
-	}()
 
-	// Remove the file so the function returns nil.
-	os.Remove(origPath)
-
-	result := readHotswapDeclinesFromDisk()
-	if result != nil {
+	if result := readHotswapDeclinesFromDisk(); result != nil {
 		t.Errorf("readHotswapDeclinesFromDisk with missing file returned %v, want nil", result)
 	}
 }
