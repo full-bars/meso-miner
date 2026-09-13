@@ -694,24 +694,27 @@ func applyLiveSideEffect(key, value string) error {
 func applyMetricsLive(value string) error {
 	enabled := strings.EqualFold(value, "on")
 	if enabled && metricsServer == nil {
-		metricsAddr := os.Getenv("URNETWORK_METRICS")
-		if metricsAddr == "" {
-			metricsAddr = resolveMetricsAddr()
+		// Bind before reporting success: a port that cannot be bound is an
+		// error the caller sees, not a log line from a goroutine after the
+		// command already returned OK.
+		ln, err := listenMetrics()
+		if err != nil {
+			return fmt.Errorf("metrics on: %w", err)
 		}
 		connect.SetExtraMetricsProvider(providerExtraMetrics)
 		connect.SetPersistentErrorFunc(IncrPersistentError)
-		metricsServer = &http.Server{
-			Addr:              metricsAddr,
+		server := &http.Server{
 			Handler:           connect.PrometheusHandler(),
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       30 * time.Second,
 		}
+		metricsServer = server
 		go func() {
-			if err := metricsServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			if err := server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				tlog("[metrics] listener failed: %v\n", err)
 			}
 		}()
-		tlog("[metrics] started Prometheus /metrics on %s\n", metricsAddr)
+		tlog("[metrics] started Prometheus /metrics on %s\n", ln.Addr())
 	} else if !enabled && metricsServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -724,31 +727,32 @@ func applyMetricsLive(value string) error {
 	return nil
 }
 
-// resolveMetricsAddr picks a port for the Prometheus /metrics listener.
-// If URNETWORK_METRICS is set, that address is used as-is (explicit override).
-// Otherwise it probes 9100-9103 on loopback and uses the first free port.
-// Loopback because docs/Configuration.md tells operators never to expose the
-// endpoint on a public interface, and a bare ":port" binds every interface.
-// Reaching it remotely is an explicit URNETWORK_METRICS choice.
-func resolveMetricsAddr() string {
+// listenMetrics binds the Prometheus /metrics listener. If URNETWORK_METRICS
+// is set, that address is used as-is (explicit override). Otherwise it tries
+// 9100-9103 on loopback and keeps the first listener that binds. Loopback
+// because docs/Configuration.md tells operators never to expose the endpoint
+// on a public interface, and a bare ":port" binds every interface; reaching
+// it remotely is an explicit URNETWORK_METRICS choice. The listener comes
+// back open: probing a port, closing it and binding it again let another
+// process take it in between.
+func listenMetrics() (net.Listener, error) {
 	if addr := os.Getenv("URNETWORK_METRICS"); addr != "" {
-		return addr
+		return net.Listen("tcp", addr)
 	}
+	var lastErr error
 	for _, port := range []int{9100, 9101, 9102, 9103} {
-		addr := fmt.Sprintf("127.0.0.1:%d", port)
-		ln, err := net.Listen("tcp", addr)
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 		if err == nil {
-			ln.Close()
-			tlog("[metrics] port %d is available\n", port)
-			return addr
+			return ln, nil
 		}
+		lastErr = err
 		tlog("[metrics] port %d in use, trying next\n", port)
 	}
-	tlog("[metrics] warning: all ports 9100-9103 in use, falling back to 127.0.0.1:9100\n")
-	return "127.0.0.1:9100"
+	return nil, fmt.Errorf("no free port in 127.0.0.1:9100-9103: %w", lastErr)
 }
 
-// applyPersistedRuntimeTuning re-applies gomemlimit/gogc from state via
+// applyPersistedRuntimeTuning re-applies gomemlimit, gogc and (when
+// URNETWORK_METRICS is unset) metrics from state via
 // applyLiveSideEffect. Unlike every other control key, these two have no
 // other startup-time consumer (profile/ramlogs are seeded into env vars by
 // seedEnvFromControlState/this package's init(), before main() even runs;
@@ -768,6 +772,15 @@ func applyPersistedRuntimeTuning(state *controlState) {
 	if v, ok := state.get("gogc"); ok && v != "" && !strings.EqualFold(v, "off") {
 		if err := applyLiveSideEffect("gogc", v); err != nil {
 			tlog("[control] failed to apply persisted gogc=%s: %s\n", v, err)
+		}
+	}
+	// main.go starts the listener only from URNETWORK_METRICS, so without
+	// the env var a persisted "on" had no startup consumer and
+	// `set metrics on` did not survive a restart. With the env var set,
+	// main.go owns the listener and this stays out of its way.
+	if v, ok := state.get("metrics"); ok && strings.EqualFold(v, "on") && os.Getenv("URNETWORK_METRICS") == "" {
+		if err := applyMetricsLive("on"); err != nil {
+			tlog("[control] failed to apply persisted metrics=on: %s\n", err)
 		}
 	}
 }
