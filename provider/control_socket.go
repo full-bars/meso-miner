@@ -606,7 +606,12 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		tlog("🛑 [control] shutdown requested via control socket\n")
 		// The connection will close when the response is written; the
 		// cancel runs asynchronously so the client gets its ACK first.
-		go state.shutdownFn()
+		// Small delay ensures the HTTP/JSON response is flushed over
+		// the socket before os.Exit(0) terminates the process.
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			state.shutdownFn()
+		}()
 		return controlResponse{OK: true, Value: "shutting down"}
 
 	default:

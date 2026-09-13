@@ -20,8 +20,10 @@ func cmdRestartWindows(p Provider, force, dryRun bool) error {
 		fmt.Println("attempting zero-downtime HotSwap...")
 		resp, err := sendSocketRequest(sockPath, controlRequest{Cmd: "hotswap"})
 		if err == nil && resp.OK {
-			// HotSwap accepted — wait for the new provider to
-			// come up (poll pidIsAlive + controlSocketReachable).
+			// HotSwap accepted — wait for the old process to die and
+			// the new provider to come up (poll pidIsAlive +
+			// controlSocketReachable).
+			oldPID := p.PID
 			deadline := time.After(30 * time.Second)
 			ticker := time.NewTicker(time.Second)
 			defer ticker.Stop()
@@ -35,7 +37,7 @@ func cmdRestartWindows(p Provider, force, dryRun bool) error {
 					fmt.Println("warning: HotSwap did not complete within 30s")
 					return stopStartFallback(p)
 				case <-ticker.C:
-					if controlSocketReachable(p) {
+					if !pidIsAlive(oldPID) && controlSocketReachable(p) {
 						fmt.Printf("restarted %s (HotSwap)\n", providerLabel(p))
 						return nil
 					}
@@ -72,9 +74,11 @@ func providerSocketPath(p Provider) string {
 	return filepath.Join(p.StateDir, "provider.sock")
 }
 
-// restartProviderWindows restarts the provider during an update. Same logic
-// as cmdRestartWindows but without the dryRun gate — the update path already
-// confirmed the restart is needed.
+// restartProviderWindows restarts the provider during an update. Unlike
+// cmdRestartWindows, it does NOT attempt HotSwap — updateProvider already
+// tried that and failed. This performs only stop + start to avoid the
+// double-hotswap / state-tracking bypass that routing back to
+// cmdRestartWindows would cause.
 func restartProviderWindows(p Provider) error {
-	return cmdRestartWindows(p, false, false)
+	return stopStartFallback(p)
 }

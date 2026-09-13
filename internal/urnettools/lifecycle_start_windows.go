@@ -34,20 +34,28 @@ func cmdStartWindows(p Provider, force, dryRun bool) error {
 	fmt.Printf("launching %s directly\n", providerLabel(p))
 
 	const (
-		detachedProcess     = 0x00000008
-		createNewProcessGrp = 0x00000200
-		createNoWindow      = 0x08000000
+		detachedProcess        = 0x00000008
+		createNewProcessGrp    = 0x00000200
+		createNoWindow         = 0x08000000
+		createBreakawayFromJob = 0x01000000
 	)
 
 	cmd := exec.Command(p.Binary, "provide")
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: detachedProcess | createNewProcessGrp | createNoWindow,
+		// CREATE_BREAKAWAY_FROM_JOB prevents the provider from being
+		// killed when the CLI exits under a Windows Job Object (the
+		// default in PowerShell 7, Windows Terminal, VS Code, and CI
+		// runners). Without it the parent's job object terminates the
+		// provider on CLI exit even with DETACHED_PROCESS.
+		CreationFlags: detachedProcess | createNewProcessGrp | createNoWindow | createBreakawayFromJob,
 	}
+	cmd.Dir = p.StateDir
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start provider: %w", err)
 	}
 
 	// Release the process so the CLI can exit. We intentionally do not
 	// wait for it — the provider runs as a background daemon.
+	_ = cmd.Process.Release()
 	return nil
 }

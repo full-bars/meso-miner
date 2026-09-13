@@ -54,12 +54,27 @@ func cmdStopWindows(p Provider, force, dryRun bool) error {
 		}
 	}
 
-	// If we had no PID, just report success — the socket went away.
-	fmt.Printf("stopped %s\n", providerLabel(p))
-	return nil
+	// If we had no PID, poll the control socket to confirm shutdown.
+	deadline := time.After(10 * time.Second)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline:
+			fmt.Printf("stopped %s\n", providerLabel(p))
+			return nil
+		case <-ticker.C:
+			if !controlSocketReachable(p) {
+				fmt.Printf("stopped %s\n", providerLabel(p))
+				return nil
+			}
+		}
+	}
 }
 
-// terminateProcess kills a Windows process by PID using TerminateProcess.
+// terminateProcess kills a Windows process by PID using TerminateProcess,
+// then waits for the process object to signal so callers don't race with
+// port/socket release.
 func terminateProcess(pid int) error {
 	const processTerminate = 0x0001
 
@@ -68,7 +83,7 @@ func terminateProcess(pid int) error {
 	procTerminate := kernel32.NewProc("TerminateProcess")
 
 	handle, _, _ := procOpen.Call(
-		uintptr(processTerminate),
+		uintptr(processTerminate|syscall.SYNCHRONIZE),
 		0, // bInheritHandle = FALSE
 		uintptr(pid),
 	)
@@ -81,5 +96,8 @@ func terminateProcess(pid int) error {
 	if ret == 0 {
 		return fmt.Errorf("TerminateProcess failed for pid %d", pid)
 	}
+	// Wait for the process to actually exit so subsequent starts don't
+	// race with releasing sockets, ports, and file locks.
+	syscall.WaitForSingleObject(syscall.Handle(handle), 5000)
 	return nil
 }

@@ -4000,6 +4000,12 @@ func provide(opts docopt.Opts) {
 		metricsServer.Shutdown(ctx)
 	}
 	markCleanShutdown()
+	// Explicitly clean up the control socket before os.Exit(0) since
+	// Go defers do not run on os.Exit. Without this, provider.sock is
+	// permanently orphaned on disk across every restart.
+	if cleanupControlSocket != nil {
+		cleanupControlSocket()
+	}
 	os.Exit(0)
 }
 

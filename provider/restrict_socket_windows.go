@@ -17,9 +17,14 @@ func restrictSocketACL(path string) error {
 	return restrictFileACL(path)
 }
 
-// restrictFileACL grants the current user FILE_GENERIC_READ | FILE_GENERIC_WRITE
-// on path via a DACL. Everyone else is implicitly denied because the
-// DACL contains only one ACE — the owner's.
+// restrictFileACL grants the current user GENERIC_ALL on path via a
+// DACL. Everyone else is implicitly denied because the DACL contains
+// only one ACE — the owner's. PROTECTED_DACL_SECURITY_INFORMATION is
+// set to block inherited ACEs from parent directories (otherwise users
+// like BUILTIN\Users or Authenticated Users gain implicit access via
+// NTFS inheritance). GENERIC_ALL includes DELETE so os.Remove(path)
+// works during socket cleanup even if the parent directory does not
+// grant FILE_DELETE_CHILD.
 func restrictFileACL(path string) error {
 	// Current user SID from the process token.
 	token, err := windows.OpenCurrentProcessToken()
@@ -33,10 +38,10 @@ func restrictFileACL(path string) error {
 	}
 	sid := user.User.Sid
 
-	// Single ACE: grant the current user read+write.
+	// Single ACE: grant the current user full access (read+write+delete).
 	entries := []windows.EXPLICIT_ACCESS{
 		{
-			AccessPermissions: windows.FILE_GENERIC_READ | windows.FILE_GENERIC_WRITE,
+			AccessPermissions: windows.GENERIC_ALL,
 			AccessMode:        windows.GRANT_ACCESS,
 			Inheritance:       windows.NO_INHERITANCE,
 			Trustee: windows.TRUSTEE{
@@ -52,14 +57,16 @@ func restrictFileACL(path string) error {
 		return fmt.Errorf("build DACL: %w", err)
 	}
 
-	// Apply the DACL to the file. SetNamedSecurityInfo is the canonical
-	// Win32 API for modifying a file's security descriptor; it works on
-	// both regular files and named pipes (which is what Go's "unix"
-	// domain sockets compile to on Windows).
+	// Apply the DACL to the file. PROTECTED_DACL_SECURITY_INFORMATION
+	// prevents inherited ACEs from parent directories from merging into
+	// the new DACL. Without this flag, any permissions granted to
+	// BUILTIN\Users, Authenticated Users, or Everyone via the containing
+	// directory would remain active on provider.sock — enabling any
+	// local user to connect and issue commands (including shutdown).
 	if err := windows.SetNamedSecurityInfo(
 		path,
 		windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
 		nil, nil, acl, nil,
 	); err != nil {
 		return fmt.Errorf("set named security info: %w", err)

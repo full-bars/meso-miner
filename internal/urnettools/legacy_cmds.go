@@ -195,7 +195,7 @@ func cmdRestart(args []string, force, dryRun bool) error {
 	if err != nil {
 		return err
 	}
-	ok, err := confirmGate("restart "+p.Unit, p, force, dryRun)
+	ok, err := confirmGate("restart "+providerLabel(p), p, force, dryRun)
 	if err != nil {
 		return err
 	}
@@ -286,8 +286,7 @@ func errWithDockerHint(err error, systemdProviderCount int) error {
 // 500`) sets the number of lines to seed the follow with; default is 250.
 func cmdLogs(args []string) error {
 	if runtime.GOOS == "windows" {
-		fmt.Println("logs are not available on Windows yet")
-		return nil
+		return fmt.Errorf("logs are not available on Windows yet")
 	}
 	t, rest, err := parseTargetFlags(args)
 	if err != nil {
