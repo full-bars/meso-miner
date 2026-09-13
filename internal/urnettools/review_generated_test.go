@@ -100,6 +100,12 @@ type testErrAmbiguous struct{ msg string }
 func (e *testErrAmbiguous) Error() string { return e.msg }
 
 func TestErrWithDockerHint_PassThroughWhenNoDocker(t *testing.T) {
+	// Stub discovery: the real one asks the docker binary, so this test
+	// failed on any machine with a provider container running.
+	orig := discoverDockerFn
+	defer func() { discoverDockerFn = orig }()
+	discoverDockerFn = func() []Provider { return nil }
+
 	ambiguous := &testErrAmbiguous{msg: `target unit "x" is ambiguous (2 matches); use a more specific target`}
 	got := errWithDockerHint(ambiguous, 0)
 	if got.Error() != ambiguous.msg {
