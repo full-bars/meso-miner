@@ -36,96 +36,76 @@ func hotswapDeclineReason(err error) string {
 	}
 }
 
-// --- Hotswap decline counters (written to provider state dir) ---
+// --- Hotswap outcome counters (written to provider state dir) ---
 
-var (
-	hotswapDeclineMu sync.Mutex
-)
+var hotswapDeclineMu sync.Mutex
 
-// hotswapDeclineCounts is the on-disk format for hotswap decline
-// counters, persisted in <stateDir>/.hotswap_declines.json. The
-// provider reads this file and exposes the values as Prometheus
-// urnet_hotswap_declines_total{reason="..."} counters.
+// hotswapCountsFile holds the outcome counters inside the provider's state
+// directory.
+const hotswapCountsFile = ".hotswap_declines.json"
+
+// hotswapDeclineCounts is the on-disk format for hotswap outcome counters,
+// persisted in <stateDir>/.hotswap_declines.json. The provider reads this
+// file and exposes the values as Prometheus
+// urnet_hotswap_outcomes_total{reason="..."} counters.
 type hotswapDeclineCounts struct {
 	Counts map[string]int64 `json:"counts"`
 }
 
-// recordHotswapDecline atomically increments a reason counter in the
-// provider's state directory. Safe to call from the CLI update path.
-// Errors are logged but never returned — metric bookkeeping must not
+// recordHotswapDecline increments a decline reason counter in the
+// provider's state directory. Best-effort: metric bookkeeping must not
 // abort an update.
 func recordHotswapDecline(stateDir string, reason string) {
-	if stateDir == "" || reason == "" {
+	if reason == "" {
+		return
+	}
+	bumpHotswapCounter(stateDir, reason)
+}
+
+// recordHotswapSuccess increments the success counter in the provider's
+// state directory. Called once verification confirms the new version is
+// running.
+func recordHotswapSuccess(stateDir string) {
+	bumpHotswapCounter(stateDir, "success")
+}
+
+// bumpHotswapCounter increments one outcome counter. The CLI runs as root
+// and the state directory belongs to the provider user, so the temp file
+// goes through writeStateFile (O_NOFOLLOW): os.WriteFile follows a symlink
+// planted at the temp path and would aim a root write at any file on the
+// box. rename(2) replaces a symlink at the final path rather than writing
+// through it.
+func bumpHotswapCounter(stateDir, reason string) {
+	if stateDir == "" {
 		return
 	}
 	hotswapDeclineMu.Lock()
 	defer hotswapDeclineMu.Unlock()
 
-	path := filepath.Join(stateDir, ".hotswap_declines.json")
-
-	// Read existing counts (best-effort).
-	var dc hotswapDeclineCounts
-	if data, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(data, &dc)
-	}
+	dc := hotswapDeclineCounts{Counts: readHotswapDeclines(stateDir)}
 	if dc.Counts == nil {
 		dc.Counts = make(map[string]int64)
 	}
 	dc.Counts[reason]++
 
-	// Atomic write: write to temp, rename.
-	tmp := path + ".tmp"
 	data, err := json.Marshal(dc)
 	if err != nil {
 		return
 	}
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
+	tmp := hotswapCountsFile + ".tmp"
+	if err := writeStateFile(stateDir, tmp, data, 0o644); err != nil {
 		return
 	}
-	_ = os.Rename(tmp, path)
+	_ = os.Rename(filepath.Join(stateDir, tmp), filepath.Join(stateDir, hotswapCountsFile))
 }
 
-// recordHotswapSuccess increments the hotswap_success counter in the
-// provider's state directory. Called by the CLI when SIGUSR2 was sent
-// successfully (the provider still needs to complete the handoff).
-func recordHotswapSuccess(stateDir string) {
-	if stateDir == "" {
-		return
-	}
-	hotswapDeclineMu.Lock()
-	defer hotswapDeclineMu.Unlock()
-
-	path := filepath.Join(stateDir, ".hotswap_declines.json")
-
-	var dc hotswapDeclineCounts
-	if data, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(data, &dc)
-	}
-	if dc.Counts == nil {
-		dc.Counts = make(map[string]int64)
-	}
-	dc.Counts["success"]++
-
-	tmp := path + ".tmp"
-	data, err := json.Marshal(dc)
-	if err != nil {
-		return
-	}
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
-		return
-	}
-	_ = os.Rename(tmp, path)
-}
-
-// readHotswapDeclines reads the decline counters from the provider's
-// state directory. Returns nil when the file does not exist. Used by
-// the provider's Prometheus metrics endpoint.
+// readHotswapDeclines reads the outcome counters from the provider's
+// state directory. Returns nil when the file does not exist or is corrupt.
 func readHotswapDeclines(stateDir string) map[string]int64 {
 	if stateDir == "" {
 		return nil
 	}
-	path := filepath.Join(stateDir, ".hotswap_declines.json")
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Join(stateDir, hotswapCountsFile))
 	if err != nil {
 		return nil
 	}
