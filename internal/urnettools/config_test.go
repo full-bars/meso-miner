@@ -87,6 +87,19 @@ func TestConfigCmd_TableOutput(t *testing.T) {
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// Stub discovery so runConfig finds our mock provider (whose
+	// StateDir matches the stub) instead of any real provider on the box.
+	origP, origT := discoverProcessesFn, discoverStoppedFn
+	discoverProcessesFn = func() []Provider {
+		return []Provider{{User: currentUserName(), StateDir: filepath.Join(home, ".urnetwork")}}
+	}
+	discoverStoppedFn = func(running []Provider) []Provider { return nil }
+	t.Cleanup(func() {
+		discoverProcessesFn = origP
+		discoverStoppedFn = origT
+	})
+	// Use --state-dir to target the stub provider via the hasSelector path,
+	// avoiding any real providers that discoverStopped might surface.
 	sockPath := filepath.Join(home, ".urnetwork", "provider.sock")
 
 	twoHoursAgo := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
@@ -113,7 +126,7 @@ func TestConfigCmd_TableOutput(t *testing.T) {
 	defer cleanup()
 
 	var buf bytes.Buffer
-	if err := runConfig(&buf, nil); err != nil {
+	if err := runConfig(&buf, []string{"--state-dir", filepath.Join(home, ".urnetwork")}); err != nil {
 		t.Fatalf("runConfig failed: %v", err)
 	}
 
@@ -166,6 +179,12 @@ func TestConfigCmd_JSONOutput(t *testing.T) {
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	origP, origT := discoverProcessesFn, discoverStoppedFn
+	discoverProcessesFn = func() []Provider {
+		return []Provider{{User: currentUserName(), StateDir: filepath.Join(home, ".urnetwork")}}
+	}
+	discoverStoppedFn = func(running []Provider) []Provider { return nil }
+	t.Cleanup(func() { discoverProcessesFn = origP; discoverStoppedFn = origT })
 	sockPath := filepath.Join(home, ".urnetwork", "provider.sock")
 
 	twoHoursAgo := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
@@ -189,7 +208,7 @@ func TestConfigCmd_JSONOutput(t *testing.T) {
 
 	for _, flag := range []string{"--json", "-j", "--json=true"} {
 		var buf bytes.Buffer
-		if err := runConfig(&buf, []string{flag}); err != nil {
+		if err := runConfig(&buf, []string{"--state-dir", filepath.Join(home, ".urnetwork"), flag}); err != nil {
 			t.Fatalf("runConfig(%s) failed: %v", flag, err)
 		}
 
@@ -218,9 +237,15 @@ func TestConfigCmd_SocketUnavailable(t *testing.T) {
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	origP, origT := discoverProcessesFn, discoverStoppedFn
+	discoverProcessesFn = func() []Provider {
+		return []Provider{{User: currentUserName(), StateDir: filepath.Join(home, ".urnetwork")}}
+	}
+	discoverStoppedFn = func(running []Provider) []Provider { return nil }
+	t.Cleanup(func() { discoverProcessesFn = origP; discoverStoppedFn = origT })
 
 	var buf bytes.Buffer
-	err := runConfig(&buf, nil)
+	err := runConfig(&buf, []string{"--state-dir", filepath.Join(home, ".urnetwork")})
 	if err == nil {
 		t.Fatal("expected error when socket is unavailable, got nil")
 	}
@@ -232,6 +257,12 @@ func TestConfigCmd_ProviderReturnedError(t *testing.T) {
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	origP, origT := discoverProcessesFn, discoverStoppedFn
+	discoverProcessesFn = func() []Provider {
+		return []Provider{{User: currentUserName(), StateDir: filepath.Join(home, ".urnetwork")}}
+	}
+	discoverStoppedFn = func(running []Provider) []Provider { return nil }
+	t.Cleanup(func() { discoverProcessesFn = origP; discoverStoppedFn = origT })
 	sockPath := filepath.Join(home, ".urnetwork", "provider.sock")
 
 	cleanup := startMockStatusServer(t, sockPath, controlResponse{
@@ -241,7 +272,7 @@ func TestConfigCmd_ProviderReturnedError(t *testing.T) {
 	defer cleanup()
 
 	var buf bytes.Buffer
-	err := runConfig(&buf, nil)
+	err := runConfig(&buf, []string{"--state-dir", filepath.Join(home, ".urnetwork")})
 	if err == nil {
 		t.Fatal("expected error when provider returns ok=false, got nil")
 	}

@@ -49,8 +49,14 @@ func runConfig(out io.Writer, args []string) error {
 	hasSelector := t.Unit != "" || t.User != "" || t.Network != "" || t.NetworkID != "" || t.StateDir != ""
 	if hasSelector {
 		// Explicit target flags — resolve via provider discovery.
-		p, err := selectTarget(Discover(), t)
+		providers := Discover()
+		p, err := selectTarget(providers, t)
 		if err != nil {
+			return err
+		}
+		// Managing another user's provider requires root; re-exec under sudo.
+		// Mirrors cmdStatus/cmdReport/cmdSet.
+		if elevated, err := maybeElevateForCrossUser("config", p, args, false, jsonMode); elevated {
 			return err
 		}
 		if p.StateDir == "" {
@@ -58,12 +64,45 @@ func runConfig(out io.Writer, args []string) error {
 		}
 		sockPath := filepath.Join(p.StateDir, "provider.sock")
 		resp, err = sendSocketRequest(sockPath, controlRequest{Cmd: "status"})
+		if err != nil {
+			return err
+		}
 	} else {
-		// No target flags — use default socket path.
-		resp, err = dialControlSocket(controlRequest{Cmd: "status"})
-	}
-	if err != nil {
-		return err
+		// No target flags — discover the sole accessible provider (or
+		// elevate to it if we are root + it belongs to another user).
+		// This mirrors cmdStatus/cmdReport so that `config` works the
+		// same way when run as root on a multi-user box.
+		// If discovery finds nothing, fall back to the default
+		// controlSocketPath() (HOME-based) — this preserves backward
+		// compat for single-user setups and tests that set HOME.
+		providers := Discover()
+		if len(providers) == 0 {
+			// No discoverable providers — fall back to the default
+			// HOME-based socket path (existing behavior).
+			resp, err = dialControlSocket(controlRequest{Cmd: "status"})
+		} else {
+			p, narrowed, err := selectTargetOrSoleAccessible(providers, t, false)
+			if err != nil {
+				return err
+			}
+			if elevated, err := maybeElevateForCrossUser("config", p, args, false, jsonMode); elevated {
+				return err
+			}
+			if narrowed {
+				fmt.Fprintf(out, "Note: %d providers found; only user=%s is accessible without root — showing its config.\n", len(providers), p.User)
+				if !jsonMode {
+					fmt.Fprintf(out, " To inspect all of them: urnet-tools providers --all (as root)\n")
+				}
+			}
+			if p.StateDir == "" {
+				return fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
+			}
+			sockPath := filepath.Join(p.StateDir, "provider.sock")
+			resp, err = sendSocketRequest(sockPath, controlRequest{Cmd: "status"})
+		}
+		if err != nil {
+			return err
+		}
 	}
 	if !resp.OK {
 		if resp.Error != "" {
