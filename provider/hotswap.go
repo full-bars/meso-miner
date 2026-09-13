@@ -586,7 +586,6 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 			return err
 		}
 		yieldCoordinatorSession()
-		flushRetentionEvents()
 		handoffDrainParent(ctx, cancel, session, parentPID)
 		return nil
 	}

@@ -4,7 +4,6 @@ package urnettools
 
 import (
 	"syscall"
-	"unsafe"
 )
 
 // triggerHotSwap sends {cmd: "hotswap"} over the provider's control socket
@@ -18,24 +17,25 @@ func triggerHotSwap(p Provider) error {
 }
 
 // pidIsAlive reports whether pid still refers to a running process.
-// Uses OpenProcess + GetExitCodeProcess: a process whose exit code is
-// STILL_ACTIVE (259) is considered alive. Every other code means it has
-// exited.
+// Uses OpenProcess with SYNCHRONIZE access and WaitForSingleObject: if the
+// wait returns WAIT_OBJECT_0, the process has exited; WAIT_TIMEOUT means it
+// is still running.
 func pidIsAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
 	const (
-		processQueryLimitedInformation = 0x1000
-		stillActive                    = 259 // 0x103
+		processSynchronize = 0x00100000
+		waitObject0        = 0x00000000 // Process has exited
+		waitTimeout        = 0x00000102 // Process is still running
 	)
 
 	kernel32 := syscall.NewLazyDLL("kernel32.dll")
 	procOpen := kernel32.NewProc("OpenProcess")
-	procExitCode := kernel32.NewProc("GetExitCodeProcess")
+	procWait := kernel32.NewProc("WaitForSingleObject")
 
 	handle, _, _ := procOpen.Call(
-		uintptr(processQueryLimitedInformation),
+		uintptr(processSynchronize),
 		0, // bInheritHandle = FALSE
 		uintptr(pid),
 	)
@@ -44,15 +44,9 @@ func pidIsAlive(pid int) bool {
 	}
 	defer syscall.CloseHandle(syscall.Handle(handle))
 
-	var exitCode uint32
-	ret, _, _ := procExitCode.Call(
+	ret, _, _ := procWait.Call(
 		handle,
-		uintptr(unsafe.Pointer(&exitCode)),
+		0, // dwMilliseconds = 0 (immediate check)
 	)
-	if ret == 0 {
-		// GetExitCodeProcess failed — assume the process is gone rather than
-		// risking a false 'alive' verdict that blocks rollback.
-		return false
-	}
-	return exitCode == stillActive
+	return ret == waitTimeout // Still running
 }

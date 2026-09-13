@@ -104,12 +104,10 @@ func spawnHotSwapCandidate(exe string, args []string) (*HotswapParentSession, er
 	// Build a user-scoped pipe ACL. Default named-pipe security lets any local
 	// user connect, which would expose the IPC handshake to other users.
 	sddl, err := currentUserPipeSDDL()
-	var pipeConfig *winio.PipeConfig
 	if err != nil {
-		tlog("⚠️ [hotswap] failed to build user-scoped pipe ACL: %v; using default pipe security\n", err)
-	} else {
-		pipeConfig = &winio.PipeConfig{SecurityDescriptor: sddl}
+		return nil, fmt.Errorf("build user-scoped pipe ACL: %w", err)
 	}
+	pipeConfig := &winio.PipeConfig{SecurityDescriptor: sddl}
 
 	listener, err := winio.ListenPipe(pipeName, pipeConfig)
 	if err != nil {
@@ -147,6 +145,8 @@ func spawnHotSwapCandidate(exe string, args []string) (*HotswapParentSession, er
 	select {
 	case res := <-acceptCh:
 		if res.err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
 			_ = listener.Close()
 			return nil, fmt.Errorf("accept named pipe: %w", res.err)
 		}
@@ -160,6 +160,7 @@ func spawnHotSwapCandidate(exe string, args []string) (*HotswapParentSession, er
 	case <-time.After(hotSwapPipeTimeout):
 		_ = listener.Close()
 		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
 		return nil, fmt.Errorf("timed out waiting for candidate to connect to named pipe (%s)", hotSwapPipeTimeout)
 	}
 }
@@ -181,8 +182,8 @@ func getHotSwapChildIPC() (io.ReadWriteCloser, bool) {
 	timeout := hotSwapPipeTimeout
 	conn, err := winio.DialPipe(pipeName, &timeout)
 	if err != nil {
-		tlog("⚠️ [hotswap] Failed to connect to named pipe %s: %v; starting as normal provider\n", pipeName, err)
-		return nil, false
+		tlog("❌ [hotswap] Failed to connect to named pipe %s: %v\n", pipeName, err)
+		os.Exit(2) // Do NOT fall back to normal provider — that causes split-brain.
 	}
 
 	return conn, true
