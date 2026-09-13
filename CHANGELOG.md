@@ -14,24 +14,27 @@ _Nothing yet._
 
 ### Added
 - **`urnet-tools history` command**: exposes the provider's 1000-entry command audit ring via the control socket. Supports `--limit` and `--cursor` for pagination. Fixed wire-format mismatch (`int64` vs `time.Time` serialization) that broke every invocation.
-- **HotSwap auto-migration (PR #611)**: `urnet-tools update` now automatically rewrites `Type=simple` systemd units to `Type=notify` during the binary swap. Pre-v31.0 fleet nodes that were installed before `Type=notify` became the default now get zero-downtime updates without a full reinstall. Non-fatal by design — migration failure logs a note and falls back to restart.
-- **HotSwap operator-facing decline messages (PR #611)**: every HotSwap decline point now tells the operator what went wrong in plain language and what to do about it, instead of technical jargon. Covers version too old, Type=simple, Windows, Docker non-PID-1, and missing NOTIFY_SOCKET.
+- **HotSwap unit migration (PR #611)**: `urnet-tools update` rewrites a `Type=simple` unit to `Type=notify` when the binary it installs sends `READY=1` at startup (v31.0+), so the following update can hot swap; the migrating update itself uses a normal restart. The unit follows the installed binary: installing anything older, or a binary whose version cannot be read, demotes it back to `Type=simple`, as does a HotSwap rollback to such a binary. A `Type=notify` unit is therefore never left paired with a binary that cannot signal readiness, the skew #546 kept the installer on `Type=simple` to avoid. Unit, temp and backup files are written with `O_NOFOLLOW`. Non-fatal: a failed migration logs a note and falls back to restart.
+- **HotSwap operator-facing decline messages (PR #611)**: every HotSwap decline point now tells the operator what went wrong in plain language and what to do about it, instead of technical jargon. Covers version too old, Type=simple, Windows, and missing NOTIFY_SOCKET.
 - **HotSwap decline metrics (PR #611)**: new `urnet_hotswap_outcomes_total{reason="..."}` Prometheus counter tracking HotSwap success and decline outcomes by reason (version_old, unit_not_notify, windows, takeover_failed, etc.). Written atomically by `urnet-tools` and scraped by the provider's `/metrics` endpoint.
 - **`ParseByteCount` human suffixes (PR #610)**: `urnet-tools set gomemlimit` now accepts common formats (`1536M`, `2G`, `512MB`, `1g`, `2tib`) in addition to the original lowercase iB variants. Spaces stripped, longest-suffix-first matching.
-- **`urnet-tools set metrics on|off` (PR #611)**: metrics server auto-starts when toggled on — probes ports 9100-9103 for a free port, binds `:9100` by default. No longer requires `URNETWORK_METRICS` env var at boot.
-- **Proxy earnings priority ranking (PR #601)**: proxy launch order now considers earnings history — high-earning URL proxies are promoted into the trusted launch group alongside file proxies. Sort order: warmth first, then provenance, then earnings. Exploration quota interleaves 1 unproven proxy per 5 trusted cold proxies to prevent starvation.
+- **`urnet-tools set metrics on|off` (PR #611)**: when `URNETWORK_METRICS` is unset, the listener starts on the first free loopback port in `127.0.0.1:9100-9103`. Set `URNETWORK_METRICS` to serve it on another interface. A persisted `on` is not yet applied at boot without the env var.
+- **Proxy earnings priority ranking (PR #611, from #601)**: proxy launch order now considers earnings history — high-earning URL proxies are promoted into the trusted launch group alongside file proxies. Sort order: warmth first, then provenance, then earnings. Exploration quota interleaves 1 unproven proxy per 5 trusted cold proxies to prevent starvation.
 
 ### Fixed
 - **`urnet-tools history` wire-format mismatch**: `AuditEntry.Timestamp` was `int64` on the client but the provider sends `time.Time` (RFC3339 string), causing JSON unmarshal failure on every invocation.
-- **`urnet-tools set metrics on` no-op**: `applyMetricsLive` required `URNETWORK_METRICS` env var at boot — if unset, the server never started and `set metrics on` silently did nothing. Now auto-starts the metrics server with port probing.
-- **HotSwap declined on all pre-v31.0 nodes**: every node installed before v31.0 ran `Type=simple` and HotSwap permanently declined. Now auto-migrated during update.
+- **`urnet-tools set metrics on` no-op**: `applyMetricsLive` required `URNETWORK_METRICS` env var at boot — if unset, the server never started and `set metrics on` silently did nothing. Now auto-starts the metrics server on a free loopback port.
+- **HotSwap declined on every systemd node**: installs run `Type=simple`, so HotSwap always declined. The unit is now migrated during update when the installed binary supports it.
 - **Proxy earnings priority inversion**: cold promoted URL proxies could jump ahead of warm unpromoted URL proxies because provenance was checked before warmth. Sort order corrected to warmth-first.
 - **Proxy earnings starvation**: unproven URL proxies could be permanently starved behind cumulative cold-proxy ramp delays. Added exploration quota.
 - **Contract denial retry loop re-read**: `getDenialBackoff()` was read before the retry loop, missing async `CreateContract` callbacks that trigger `noteDenial` between retries.
-- **STUN URL cache stale entries**: expired entries were left in the `sync.Map` instead of being atomically removed. Now uses `CompareAndDelete`.
 - **Adaptive proxy `ParallelBlockSize`**: `getAdaptiveBlockSize()` now guards against zero/negative values.
 - **`consecutiveErrors` overflow**: capped at 20 to prevent unbounded growth.
-- **HotSwap Docker non-PID-1**: containers where the provider is not PID 1 now get a clear decline message instead of falling through to the systemd check.
+- **`writeStateFile` double close**: the fd was closed directly and again by the `*os.File` wrapping it, whose finalizer later closed whatever descriptor had reused the number. Surfaced as intermittent "bad file descriptor" test failures.
+- **HotSwap counter file symlink write**: `urnet-tools` (root) wrote `.hotswap_declines.json.tmp` into the provider-owned state dir with `os.WriteFile`, which follows symlinks. Now written with `O_NOFOLLOW`.
+- **Contract denial backoff cycled instead of climbing**: denial state expired 2 minutes after the last denial, shorter than the 120s+ tiers, so the count reset before reaching the cap. State now survives backoff + 2 minutes. A frame carrying several errors counts as one denial.
+- **Adaptive probe batch shared across proxies**: the success window was process-wide, so one proxy's failing path resized every proxy's batch. Now one window per client strategy, scaled from the configured `ParallelBlockSize`.
+- **`gogc` "off" could disable GC**: a set carrying `OFF` (any casing the CLI did not rewrite to a clear) called `SetGCPercent(-1)`. Only `disabled` turns collection off; the CLI clear match is case-insensitive.
 - **Test harness global mutation**: `withGlobalEarningsStore` now uses `t.Cleanup` to restore state.
 
 ### Changed
@@ -39,7 +42,7 @@ _Nothing yet._
 - **Proxy warmth test expectations**: updated to reflect warmth-first sort order.
 
 ### Test Coverage
-- 26 new tests across 3 features: `TestParseByteCount` (23 cases), `TestParseByteCountErrors` (4 cases), `TestSerialRecencyTiebreak`, `TestAuditEntryWireFormatRoundTrip`, `TestAuditEntryWireFormatFullResponse`, `TestMigrateUnitToNotify_*` (14 cases), hotswap metrics tests (9 cases), proxy earnings priority tests (5 new), provider metrics tests (2 cases).
+- 26 new tests across 3 features: `TestParseByteCount` (23 cases), `TestParseByteCountErrors` (4 cases), `TestSerialRecencyTiebreak`, `TestAuditEntryWireFormatRoundTrip`, `TestAuditEntryWireFormatFullResponse`, `TestMigrateUnitToNotify_*`, `TestReconcileUnitTypeFollowsBinary`, `TestMigrateUnitRefusesSymlinkedTemp`, hotswap metrics tests (9 cases), proxy earnings priority tests (5 new), provider metrics tests (2 cases).
 
 ---
 
