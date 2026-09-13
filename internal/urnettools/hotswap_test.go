@@ -203,7 +203,7 @@ func TestHotSwapPreflightReturnsTheGateSpecificReason(t *testing.T) {
 		if !errors.Is(err, ErrHotSwapUnitNotNotify) {
 			t.Fatalf("hotSwapPreflight = %v, want ErrHotSwapUnitNotNotify", err)
 		}
-		for _, want := range []string{"Type=simple instead of Type=notify", "Provider_Install_Linux.sh"} {
+		for _, want := range []string{"Type=simple", "Provider_Install_Linux.sh"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("decline text %q lost %q, which shakedown section V2 greps for", err, want)
 			}

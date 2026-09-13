@@ -739,10 +739,17 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	// (provider/hotswap.go checks NOTIFY_SOCKET which is only set for
 	// Type=notify units). Without this migration the entire pre-existing
 	// fleet has zero-downtime updates unavailable without a full
-	// reinstall. The provider already sends sd_notify on v30+, so
-	// Type=notify is backward-compatible; if the provider doesn't
-	// actually send sd_notify, systemd treats it as started immediately
-	// (same as Type=simple).
+	// reinstall.
+	//
+	// Type=notify is only safe with a binary that sends READY=1 at its
+	// startup barrier (v3.23.0-fix.31.0+, #543). Under Type=notify an
+	// older binary never signals readiness and systemd fails the start,
+	// which is why the installer keeps Type=simple (#546). So the unit
+	// follows the binary being installed: reconcileUnitTypeForBinary
+	// migrates to notify only for a binary that sends READY early and
+	// demotes back to simple for one that does not (an `update --tag`
+	// downgrade), and the rollback path below demotes again before it
+	// restarts an older binary under a unit this run migrated.
 	//
 	// CRITICAL: When migration succeeds (migratedUnit == true), we MUST
 	// skip the HotSwap path and use a standard restart instead. The
@@ -756,7 +763,7 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	// unit, which DOES set NOTIFY_SOCKET, so the new process starts
 	// correctly.
 	migratedUnit := false
-	if migrated, err := migrateUnitToNotify(p); err != nil {
+	if migrated, err := reconcileUnitTypeForBinary(p, providerVersion(p.Binary)); err != nil {
 		// Migration failure is non-fatal: log and continue with the
 		// normal restart path. HotSwap will still decline on
 		// Type=simple, but the binary was already swapped so a
@@ -888,6 +895,14 @@ func updateProvider(p Provider, cfg updateConfig) error {
 				fmt.Printf("warning: atomic rollback failed: %v\n", rerr)
 			} else {
 				fmt.Printf("✅ Previous binary restored. Live provider (PID %d) was never killed and remains active.\n", oldPID)
+				// The unit must not outlive the binary it was migrated for:
+				// if the restored binary cannot send READY=1 at startup, its
+				// next start under Type=notify would fail.
+				if !isHotSwapSupportedVersion(providerVersion(p.Binary)) {
+					if _, derr := demoteUnitToSimple(p); derr != nil {
+						fmt.Printf("warning: could not restore Type=simple for the rolled-back binary: %v\n", derr)
+					}
+				}
 			}
 		}
 		return fmt.Errorf("update %s: HotSwap candidate failed to take over; binary rolled back; live provider PID %d was never killed and remains active", providerLabel(p), oldPID)
@@ -1396,9 +1411,9 @@ func fileSHA256(path string) (string, error) {
 // the automatic fix for pre-v31.0 fleet nodes that were installed before
 // Type=notify became the default in Provider_Install_Linux.sh.
 //
-// The provider already sends sd_notify on v30+, so Type=notify is
-// backward-compatible. If the provider doesn't actually send sd_notify,
-// systemd treats it as started immediately (same as Type=simple).
+// Only call this for a binary that sends READY=1 at startup
+// (v3.23.0-fix.31.0+): under Type=notify a binary that never signals
+// readiness fails to start. reconcileUnitTypeForBinary enforces that.
 //
 // Returns (migrated, err): migrated is true when the unit file was rewritten
 // (meaning the caller must use a standard restart instead of HotSwap, because
@@ -1423,7 +1438,7 @@ func migrateUnitToNotify(p Provider) (bool, error) {
 	}
 
 	// Resolve the unit file's on-disk path via FragmentPath.
-	unitPath, err := resolveUnitFilePath(p)
+	unitPath, err := unitFilePathFunc(p)
 	if err != nil {
 		return false, fmt.Errorf("resolve unit file path for %s: %w", p.Unit, err)
 	}
@@ -1443,31 +1458,24 @@ func migrateUnitToNotify(p Provider) (bool, error) {
 		return false, nil // nothing to do (Type=notify already)
 	}
 
-	// Back up the original unit file before overwriting.
+	// Back up the original unit file before overwriting. writeStateFile
+	// (O_NOFOLLOW), not copyFile: a user unit lives in a directory the
+	// provider user controls, and this runs as root.
 	backupPath := unitPath + ".bak"
-	if err := copyFile(unitPath, backupPath); err != nil {
+	if err := writeStateFile(filepath.Dir(unitPath), filepath.Base(backupPath), content, 0o644); err != nil {
 		return false, fmt.Errorf("backup unit file %s: %w", unitPath, err)
 	}
 	fmt.Printf("backed up unit file %s -> %s\n", unitPath, backupPath)
 
-	// Write the updated unit file. Atomic: write then rename to avoid
-	// a partial file on crash.
-	tmpPath := unitPath + ".tmp"
-	if err := os.WriteFile(tmpPath, []byte(newContent), 0o644); err != nil {
-		os.Remove(tmpPath)
+	if err := replaceUnitFile(unitPath, []byte(newContent)); err != nil {
 		return false, fmt.Errorf("write updated unit file: %w", err)
-	}
-	if err := os.Rename(tmpPath, unitPath); err != nil {
-		os.Remove(tmpPath)
-		os.Rename(backupPath, unitPath) // best-effort restore
-		return false, fmt.Errorf("rename updated unit file: %w", err)
 	}
 	fmt.Printf("migrated %s from Type=simple to Type=notify\n", unitPath)
 
 	// Daemon-reload so systemd picks up the rewritten unit. Best-effort:
 	// failure here means the running unit still has the old Type= but the
 	// file on disk is correct — the next restart or reboot will pick it up.
-	if err := daemonReloadForUnit(p); err != nil {
+	if err := daemonReloadFunc(p); err != nil {
 		fmt.Printf("warning: daemon-reload after unit migration failed: %v\n", err)
 	} else {
 		fmt.Println("daemon-reload completed after unit migration")
@@ -1569,4 +1577,109 @@ func daemonReloadForUnit(p Provider) error {
 		return fmt.Errorf("daemon-reload: %v (%s)", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// unitFilePathFunc and daemonReloadFunc are overridable so tests can drive
+// the unit rewrite against a temp file without a real systemd.
+var (
+	unitFilePathFunc = resolveUnitFilePath
+	daemonReloadFunc = daemonReloadForUnit
+)
+
+// reconcileUnitTypeForBinary makes the unit's Type= safe for the binary
+// about to run under it. A binary that sends READY=1 at its startup barrier
+// (v3.23.0-fix.31.0+) gets Type=notify so HotSwap can transfer MainPID.
+// Anything else, including a version that cannot be read, gets Type=simple:
+// a wrong demotion only costs zero-downtime on the next update, while a
+// wrong promotion fails every start. Returns true only when this call
+// migrated the unit to notify.
+func reconcileUnitTypeForBinary(p Provider, binaryVersion string) (bool, error) {
+	if isHotSwapSupportedVersion(binaryVersion) {
+		return migrateUnitToNotify(p)
+	}
+	if _, err := demoteUnitToSimple(p); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+// demoteUnitToSimple rewrites a Type=notify unit back to Type=simple and
+// reloads systemd. It undoes migrateUnitToNotify before a binary that does
+// not send READY=1 at startup runs under the unit: a rollback restoring the
+// previous binary, or an `update --tag` downgrade below v3.23.0-fix.31.0.
+// Returns true when the unit file was rewritten.
+func demoteUnitToSimple(p Provider) (bool, error) {
+	if p.Unit == "" {
+		return false, nil
+	}
+	typ, err := unitTypeFunc(p)
+	if err != nil {
+		return false, fmt.Errorf("query unit type for %s: %w", p.Unit, err)
+	}
+	if typ != "notify" {
+		return false, nil
+	}
+	unitPath, err := unitFilePathFunc(p)
+	if err != nil {
+		return false, fmt.Errorf("resolve unit file path for %s: %w", p.Unit, err)
+	}
+	if unitPath == "" {
+		return false, fmt.Errorf("unit %s has no FragmentPath, cannot restore Type=simple", p.Unit)
+	}
+	content, err := os.ReadFile(unitPath)
+	if err != nil {
+		return false, fmt.Errorf("read unit file %s: %w", unitPath, err)
+	}
+	newContent, changed := rewriteUnitContentToSimple(string(content))
+	if !changed {
+		return false, nil
+	}
+	if err := replaceUnitFile(unitPath, []byte(newContent)); err != nil {
+		return false, fmt.Errorf("write unit file %s: %w", unitPath, err)
+	}
+	fmt.Printf("restored %s to Type=simple\n", unitPath)
+	if err := daemonReloadFunc(p); err != nil {
+		return true, fmt.Errorf("daemon-reload after restoring Type=simple: %w", err)
+	}
+	return true, nil
+}
+
+// replaceUnitFile atomically replaces a unit file. A user unit lives in a
+// directory the provider user controls while this runs as root, so the temp
+// file goes through writeStateFile (O_NOFOLLOW): os.WriteFile would follow
+// a symlink planted at the temp path. rename(2) replaces a symlink at the
+// final path rather than writing through it.
+func replaceUnitFile(unitPath string, content []byte) error {
+	dir, tmpName := filepath.Dir(unitPath), filepath.Base(unitPath)+".tmp"
+	if err := writeStateFile(dir, tmpName, content, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(filepath.Join(dir, tmpName), unitPath); err != nil {
+		os.Remove(filepath.Join(dir, tmpName))
+		return err
+	}
+	return nil
+}
+
+// rewriteUnitContentToSimple is the inverse of rewriteUnitContent: it turns
+// Type=notify back into Type=simple. NotifyAccess= stays; it is harmless
+// under Type=simple, and removing it could drop a directive an operator set.
+func rewriteUnitContentToSimple(content string) (string, bool) {
+	lines := strings.Split(content, "\n")
+	changed := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if idx := strings.IndexAny(trimmed, "#;"); idx >= 0 {
+			trimmed = strings.TrimSpace(trimmed[:idx])
+		}
+		key, val, ok := strings.Cut(trimmed, "=")
+		if !ok {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(key), "Type") && strings.EqualFold(strings.TrimSpace(val), "notify") {
+			lines[i] = "Type=simple"
+			changed = true
+		}
+	}
+	return strings.Join(lines, "\n"), changed
 }
