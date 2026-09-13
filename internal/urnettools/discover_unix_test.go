@@ -280,6 +280,33 @@ func TestParseUnitLinesAcceptsSiblingWhenExecStartEmptyButStateDirExists(t *test
 	}
 }
 
+// TestParseUnitLinesDoesNotSuppressSiblingStoppedUnit verifies that a
+// stopped sibling unit (urnetwork-backup.service) is NOT suppressed when a
+// running provider already has its Unit assigned.  The state-dir dedup
+// must only match unassigned running providers (Unit==""); if the running
+// provider already carries a unit name, other stopped units for the same
+// user must still be listed.
+func TestParseUnitLinesDoesNotSuppressSiblingStoppedUnit(t *testing.T) {
+	const fakeUser = "testuser-sibling-dedup"
+	stateDir := "/home/" + fakeUser + "/.urnetwork"
+	// Running provider already has its Unit assigned — state-dir dedup
+	// must NOT match it against other units for the same user.
+	running := []Provider{
+		{User: fakeUser, StateDir: stateDir, Unit: "urnetwork.service", Running: true},
+	}
+	// A stopped sibling unit with a different name but the same user.
+	text := "urnetwork-backup.service loaded inactive dead\n"
+	got := parseUnitLines(text, running,
+		func(string) string { return fakeUser },
+		func(string) string { return "/usr/bin/urnetwork" },
+	)
+	if len(got) != 1 {
+		t.Fatalf("parseUnitLines returned %d providers, want 1 (stopped sibling must not be suppressed by assigned running provider): %+v", len(got), got)
+	}
+	if got[0].Unit != "urnetwork-backup.service" {
+		t.Errorf("Unit = %q, want urnetwork-backup.service", got[0].Unit)
+	}
+}
 
 // TestParseUnitLinesSkipsUnitWhenRunningProviderSharesStateDir verifies
 // that a systemd unit is skipped when a running provider occupies the

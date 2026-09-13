@@ -102,8 +102,8 @@ func alreadyBackedByRunning(running []Provider, unit string, userFor func(string
 	if sd == "" {
 		return false
 	}
-	for _, rp := range running {
-		if rp.StateDir == sd && rp.User == user {
+	for i := range running {
+		if running[i].Unit == "" && running[i].StateDir == sd && running[i].User == user {
 			return true
 		}
 	}
