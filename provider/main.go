@@ -2792,6 +2792,7 @@ func provide(opts docopt.Opts) {
 	var candidateAckOnce sync.Once
 	if ipcFile, isChild := getHotSwapChildIPC(); isChild {
 		isHotSwapCandidate = true
+		metricsHandoffPending.Store(true)
 		hotSwapIPC = ipcFile
 		defer hotSwapIPC.Close()
 		if err := runHotSwapChildHandshake(hotSwapIPC, opts, apiUrl); err != nil {
@@ -2908,9 +2909,9 @@ func provide(opts docopt.Opts) {
 	// only sense systemd asks about.
 	//
 	// This deliberately does NOT wait for a proxy to authenticate. See
-	// notifySystemdReady for the full reasoning; the short version is that the
-	// unit sets TimeoutStartSec=0, so gating READY on an external dependency
-	// turns `systemctl restart` into an unbounded hang during an API outage.
+	// notifySystemdReady for the full reasoning; the short version is that
+	// proxy auth can back off for hours, so gating READY on it would make a
+	// Type=notify start time out and fail during an API outage.
 	// Proxy health is reported continuously via STATUS= instead.
 	//
 	// The HotSwap candidate path sends its own READY after takeover completes
@@ -3517,6 +3518,7 @@ func provide(opts docopt.Opts) {
 				}
 				mergePendingOverrides(globalControlState)
 				applyPersistedRuntimeTuning(globalControlState)
+				startMetricsAfterTakeover(globalControlState)
 
 				// Bind control socket now that the parent yielded its listener
 				if cleanup, err := startControlSocket(ctx, globalControlState); err != nil {
@@ -3928,21 +3930,16 @@ func provide(opts docopt.Opts) {
 	// URNETWORK_METRICS binds a Prometheus /metrics endpoint on the given
 	// address (typically a Tailscale IP like "192.200.0.5:9100") so remote
 	// Prometheus can scrape without an agent on the fleet server.
-	if metricsAddr := os.Getenv("URNETWORK_METRICS"); metricsAddr != "" {
+	//
+	// A HotSwap candidate skips this: the parent still holds the address
+	// until it yields, and startMetricsAfterTakeover binds it after takeover.
+	if metricsAddr := os.Getenv("URNETWORK_METRICS"); metricsAddr != "" && !isHotSwapCandidate {
 		tlog("[metrics] enabling Prometheus /metrics on %s\n", metricsAddr)
-		connect.SetExtraMetricsProvider(providerExtraMetrics)
-		connect.SetPersistentErrorFunc(IncrPersistentError)
-		metricsServer = &http.Server{
-			Addr:              metricsAddr,
-			Handler:           connect.PrometheusHandler(),
-			ReadHeaderTimeout: 10 * time.Second,
-			IdleTimeout:       30 * time.Second,
+		if ln, err := net.Listen("tcp", metricsAddr); err != nil {
+			tlog("[metrics] listener failed: %v\n", err)
+		} else {
+			serveMetrics(ln)
 		}
-		go func() {
-			if err := metricsServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				tlog("[metrics] listener failed: %v\n", err)
-			}
-		}()
 	}
 	if 0 < port {
 		tlog("[startup] status server listening on :%d\n", port)
