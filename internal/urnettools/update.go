@@ -1447,7 +1447,7 @@ func migrateUnitToNotify(p Provider) (bool, error) {
 	}
 
 	// Read the current unit file.
-	content, err := os.ReadFile(unitPath)
+	content, err := readUnitFile(unitPath)
 	if err != nil {
 		return false, fmt.Errorf("read unit file %s: %w", unitPath, err)
 	}
@@ -1465,6 +1465,7 @@ func migrateUnitToNotify(p Provider) (bool, error) {
 	if err := writeStateFile(filepath.Dir(unitPath), filepath.Base(backupPath), content, 0o644); err != nil {
 		return false, fmt.Errorf("backup unit file %s: %w", unitPath, err)
 	}
+	_ = chownLikeStateOwner(filepath.Dir(unitPath), backupPath)
 	fmt.Printf("backed up unit file %s -> %s\n", unitPath, backupPath)
 
 	if err := replaceUnitFile(unitPath, []byte(newContent)); err != nil {
@@ -1626,7 +1627,7 @@ func demoteUnitToSimple(p Provider) (bool, error) {
 	if unitPath == "" {
 		return false, fmt.Errorf("unit %s has no FragmentPath, cannot restore Type=simple", p.Unit)
 	}
-	content, err := os.ReadFile(unitPath)
+	content, err := readUnitFile(unitPath)
 	if err != nil {
 		return false, fmt.Errorf("read unit file %s: %w", unitPath, err)
 	}
@@ -1654,11 +1655,32 @@ func replaceUnitFile(unitPath string, content []byte) error {
 	if err := writeStateFile(dir, tmpName, content, 0o644); err != nil {
 		return err
 	}
+	// A new file created by root would leave the provider user's own unit
+	// owned by root; hand it to the directory's owner before it goes live.
+	if err := chownLikeStateOwner(dir, filepath.Join(dir, tmpName)); err != nil {
+		os.Remove(filepath.Join(dir, tmpName))
+		return err
+	}
 	if err := os.Rename(filepath.Join(dir, tmpName), unitPath); err != nil {
 		os.Remove(filepath.Join(dir, tmpName))
 		return err
 	}
 	return nil
+}
+
+// readUnitFile reads a unit file, refusing a symlink. This runs as root
+// against a path in a directory the provider user may control: following a
+// link there would read an arbitrary root-only file, and migration copies
+// what it read into a world-readable .bak.
+func readUnitFile(unitPath string) ([]byte, error) {
+	fi, err := os.Lstat(unitPath)
+	if err != nil {
+		return nil, err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("refusing to read %s: path is a symlink", unitPath)
+	}
+	return os.ReadFile(unitPath)
 }
 
 // rewriteUnitContentToSimple is the inverse of rewriteUnitContent: it turns

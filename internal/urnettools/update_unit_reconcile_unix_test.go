@@ -150,3 +150,27 @@ func TestMigrateUnitRefusesSymlinkedTemp(t *testing.T) {
 		t.Errorf("unit changed despite the refused write:\n%s", got)
 	}
 }
+
+// TestMigrateUnitRefusesSymlinkedUnitFile: reading through a symlinked unit
+// as root would copy an arbitrary root-only file into the world-readable
+// .bak.
+func TestMigrateUnitRefusesSymlinkedUnitFile(t *testing.T) {
+	p, path, _ := fakeUnit(t, simpleUnit)
+	secret := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(secret, []byte(simpleUnit+"# secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, path); err != nil {
+		t.Fatal(err)
+	}
+
+	if migrated, err := migrateUnitToNotify(p); err == nil || migrated {
+		t.Fatalf("migrate through a symlinked unit: migrated=%v err=%v, want refusal", migrated, err)
+	}
+	if _, err := os.Lstat(path + ".bak"); !os.IsNotExist(err) {
+		t.Errorf(".bak was written from a symlinked unit (lstat err=%v)", err)
+	}
+}

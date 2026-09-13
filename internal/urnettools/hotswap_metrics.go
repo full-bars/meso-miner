@@ -96,6 +96,7 @@ func bumpHotswapCounter(stateDir, reason string) {
 	if err := writeStateFile(stateDir, tmp, data, 0o644); err != nil {
 		return
 	}
+	_ = chownLikeStateOwner(stateDir, filepath.Join(stateDir, tmp))
 	_ = os.Rename(filepath.Join(stateDir, tmp), filepath.Join(stateDir, hotswapCountsFile))
 }
 
