@@ -7,9 +7,7 @@ malicious > 0, it:
   1. Queries the VT API for Microsoft's detection name + engine version
   2. Copies the local binary (from the already-downloaded scan artifacts)
   3. Verifies SHA256 against the VT record
-  4. Uses kilo-free (via zenproxy) to generate a contextual WDSI submission
-     text block (no hardcoded detection names — adapts to whatever Microsoft
-     actually flags)
+  4. Generates a deterministic WDSI submission text block with per-file details
   5. Bundles everything into defender-submissions-<tag>/ with WDSI-submission-text.txt
 
 Usage:
@@ -17,7 +15,6 @@ Usage:
 
 Env:
   VIRUS_TOTAL  — VT API key
-  ZENPROXY_KEY — Optional; if unset, uses the public zenproxy endpoint
 
 Output:
   defender-submissions-<tag>/
@@ -27,12 +24,12 @@ Output:
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import urllib.request
 
 VT_API = "https://www.virustotal.com/api/v3"
-ZENPROXY_URL = os.environ.get("ZENPROXY_URL", "https://ohmyproxy.12388321.xyz/v1")
 
 
 def vt_api(path, api_key):
@@ -52,28 +49,12 @@ def sha256_of(path):
     return h.hexdigest()
 
 
-def zenproxy_chat(messages, api_key=None):
-    """Call kilo-free via zenproxy to generate WDSI submission text."""
-    payload = {
-        "model": "kilo-free",
-        "messages": messages,
-        "max_tokens": 2048,
-        "temperature": 0.3,
-    }
-    data = json.dumps(payload).encode()
-    req = urllib.request.Request(f"{ZENPROXY_URL}/chat/completions", data=data)
-    req.add_header("Content-Type", "application/json")
-    if api_key:
-        req.add_header("Authorization", f"Bearer {api_key}")
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        result = json.loads(resp.read())
-    return result["choices"][0]["message"]["content"]
-
-
 def scan_path_to_asset(path):
     """Map a VT scan path (e.g. release_tmp/linux/amd64/provider) to a
     human-readable artifact name for the WDSI form and the destination dir."""
     basename = os.path.basename(path)
+    # Strip any extension to avoid double-extension issues (e.g. provider.exe)
+    basename_stripped = os.path.splitext(basename)[0]
     # Build a descriptive name with platform
     parts = path.split(os.sep)
     platform = ""
@@ -92,20 +73,20 @@ def scan_path_to_asset(path):
     elif "amd64" in parts:
         arch = "amd64"
 
-    # Special names for display
-    if basename == "provider":
+    # Special names for display — match against extension-stripped basename
+    if basename_stripped == "provider":
         display = "urnetwork-provider"
-    elif basename == "hub":
+    elif basename_stripped == "hub":
         display = "urnetwork-hub"
-    elif basename == "urnet-tools":
+    elif basename_stripped == "urnet-tools":
         display = "urnet-tools"
-    elif basename == "urnet-docker":
+    elif basename_stripped == "urnet-docker":
         display = "urnet-docker"
     else:
-        display = basename
+        display = basename_stripped
 
     ext = ".exe" if platform == "Windows" else ""
-    return f"{display}-{platform.lower()}-{arch}{ext}", basename, platform, arch
+    return f"{display}-{platform.lower()}-{arch}{ext}", basename_stripped, platform, arch
 
 
 def main():
@@ -119,7 +100,6 @@ def main():
     source_dir = sys.argv[3]  # e.g. release_tmp/ — already downloaded by scan job
 
     vt_key = os.environ.get("VIRUS_TOTAL", "")
-    zenproxy_key = os.environ.get("ZENPROXY_KEY", "")
 
     if not vt_key:
         print("ERROR: VIRUS_TOTAL not set", file=sys.stderr)
@@ -135,10 +115,16 @@ def main():
         print("No flagged files — nothing to stage")
         return 0
 
-    dest_dir = f"defender-submissions-{tag.replace('v', '', 1)}"
+    # Sanitize tag for use as a directory name
+    safe_tag = re.sub(r'[^a-zA-Z0-9._-]', '_', tag).removeprefix('v')
+    dest_dir = f"defender-submissions-{safe_tag}"
     if os.path.exists(dest_dir):
         shutil.rmtree(dest_dir)
     os.makedirs(dest_dir)
+
+    # Determine the repository URL for WDSI text
+    repo = os.environ.get("GITHUB_REPOSITORY", "full-bars/urnetwork-3.23-fix")
+    repo_url = f"https://github.com/{repo}"
 
     # First pass: gather detection details from VT for each flagged file
     file_details = []
@@ -155,7 +141,7 @@ def main():
             result = vt_api(f"/files/{sha}", vt_key)
             last_results = result.get("data", {}).get("attributes", {}).get("last_analysis_results", {})
             msft = last_results.get("Microsoft", {})
-            detection_name = msft.get("result", "Unknown")
+            detection_name = msft.get("result") or "Unknown"
             engine_version = msft.get("engine_version", "")
         except Exception as e:
             print(f"  WARNING: VT lookup for {sha} failed: {e}", file=sys.stderr)
@@ -218,94 +204,42 @@ def main():
         verified_details.append(fd)
     file_details = verified_details
 
-    # Third pass: generate WDSI submission text via kilo-free
-    print("  Generating WDSI submission text via kilo-free...")
-    prompt = [
-        {
-            "role": "system",
-            "content": (
-                "You are preparing Microsoft WDSI false-positive submission text for "
-                "open-source Go binaries. Given a list of flagged files with their "
-                "Microsoft detection name, engine version, SHA256, platform, and "
-                "architecture, generate a pre-filled WDSI submission document.\n\n"
-                "Include:\n"
-                "1. A header with the detection name, engine version, and product "
-                "(Windows Defender)\n"
-                "2. For each file: file name, SHA256, VT report URL, malicious count, "
-                "detection name, and an 'Additional info' paragraph that explains:\n"
-                "   - It is an open-source Go binary (MPL-2.0 license) from "
-                "https://github.com/full-bars/urnetwork-3.23-fix\n"
-                "   - Built with -trimpath -s -w (stripped, which is why ML heuristics "
-                "flag it)\n"
-                "   - The detection is a known machine-learning false positive on "
-                "stripped Go binaries\n"
-                "   - The specific platform/architecture\n"
-                "3. A note about one-file-per-submission and the WDSI form URL\n\n"
-                "Do NOT use markdown headers or bullet points that won't render in a "
-                "text form. Use plain sections separated by '---'. Keep it concise."
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                f"Generate WDSI submission text for {len(file_details)} files flagged in "
-                f"release {tag}:\n\n"
-                + "\n".join(
-                    f"- {fd['asset_name']} ({fd['platform']} {fd['arch']}): "
-                    f"detection={fd['detection_name']}, engine={fd['engine_version']}, "
-                    f"SHA256={fd['sha']}, malicious={fd['malicious']}, "
-                    f"VT=https://www.virustotal.com/gui/file/{fd['sha']}"
-                    for fd in file_details
-                )
-            ),
-        },
+    # Third pass: generate WDSI submission text (deterministic template)
+    print("  Generating WDSI submission text...")
+    lines = [
+        f"=== Microsoft WDSI False-Positive Submission — {tag} ===",
+        "",
+        "Submission type: My file was incorrectly detected",
+        "Product: Windows Defender",
     ]
-
-    try:
-        wdsi_text = zenproxy_chat(prompt, zenproxy_key)
-    except Exception as e:
-        print(f"  WARNING: zenproxy call failed: {e} — writing fallback template", file=sys.stderr)
-        wdsi_text = None
-
-    if wdsi_text:
-        with open(os.path.join(dest_dir, "WDSI-submission-text.txt"), "w") as f:
-            f.write(wdsi_text)
-    else:
-        # Fallback: write a basic template
-        lines = [
-            f"=== Microsoft WDSI False-Positive Submission — {tag} ===",
-            "",
-            "Submission type: My file was incorrectly detected",
-            "Product: Windows Defender",
-        ]
-        for fd in file_details:
-            lines.extend([
-                "---",
-                "",
-                f"File: {fd['asset_name']}",
-                f"SHA256: {fd['sha']}",
-                f"Malicious: {fd['malicious']}",
-                f"VT: https://www.virustotal.com/gui/file/{fd['sha']}",
-                f"Detection: {fd['detection_name']}",
-                f"Engine: {fd['engine_version']}",
-                "",
-                "Additional info:",
-                f"Open-source Go binary (MPL-2.0) from "
-                f"https://github.com/full-bars/urnetwork-3.23-fix — "
-                f"{fd['asset_name']} ({fd['platform']} {fd['arch']}). "
-                f"Built with -trimpath -s -w. {fd['detection_name']} is a known "
-                f"ML false positive on stripped Go binaries.",
-                "",
-            ])
+    for fd in file_details:
         lines.extend([
             "---",
             "",
-            "WDSI submission form: https://www.microsoft.com/en-us/wdsi/filesubmission",
-            "One file per submission.",
-            f"Bundle location: {dest_dir}/",
+            f"File: {fd['asset_name']}",
+            f"SHA256: {fd['sha']}",
+            f"Malicious: {fd['malicious']}",
+            f"VT: https://www.virustotal.com/gui/file/{fd['sha']}",
+            f"Detection: {fd['detection_name']}",
+            f"Engine: {fd['engine_version']}",
+            "",
+            "Additional info:",
+            f"Open-source Go binary (MPL-2.0) from "
+            f"{repo_url} — "
+            f"{fd['asset_name']} ({fd['platform']} {fd['arch']}). "
+            f"Built with -trimpath -s -w. {fd['detection_name']} is a known "
+            f"ML false positive on stripped Go binaries.",
+            "",
         ])
-        with open(os.path.join(dest_dir, "WDSI-submission-text.txt"), "w") as f:
-            f.write("\n".join(lines) + "\n")
+    lines.extend([
+        "---",
+        "",
+        "WDSI submission form: https://www.microsoft.com/en-us/wdsi/filesubmission",
+        "One file per submission.",
+        f"Bundle location: {dest_dir}/",
+    ])
+    with open(os.path.join(dest_dir, "WDSI-submission-text.txt"), "w") as f:
+        f.write("\n".join(lines) + "\n")
 
     print(f"\nDone. Staged {len(file_details)} files in {dest_dir}/")
     print(f"WDSI text: {dest_dir}/WDSI-submission-text.txt")
