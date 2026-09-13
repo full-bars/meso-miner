@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -243,7 +244,7 @@ func triggerHotSwapViaSocket(p Provider) error {
 // from a provider's StateDir, falling back to the default home-based path.
 func controlSocketPathFromStateDir(p Provider) string {
 	if p.StateDir != "" {
-		return p.StateDir + "/provider.sock"
+		return filepath.Join(p.StateDir, "provider.sock")
 	}
 	sockPath, err := controlSocketPath()
 	if err != nil {

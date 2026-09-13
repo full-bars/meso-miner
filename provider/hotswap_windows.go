@@ -175,8 +175,8 @@ func getHotSwapChildIPC() (io.ReadWriteCloser, bool) {
 
 	pipeName := os.Getenv("URNETWORK_HOTSWAP_PIPE")
 	if pipeName == "" {
-		tlog("⚠️ [hotswap] %s=1 is set but URNETWORK_HOTSWAP_PIPE is empty; starting as normal provider\n", EnvHotSwap)
-		return nil, false
+		tlog("❌ [hotswap] %s=1 is set but URNETWORK_HOTSWAP_PIPE is empty — cannot connect to parent\n", EnvHotSwap)
+		os.Exit(2) // Same as DialPipe failure: do NOT fall back to normal provider.
 	}
 
 	timeout := hotSwapPipeTimeout
