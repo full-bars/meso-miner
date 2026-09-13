@@ -19,6 +19,20 @@ import (
 	"time"
 )
 
+// Test seams for the verification loop — package-level vars so tests can
+// override without touching production call sites.
+var (
+	verifyDiscoverFn           = Discover
+	verifyRunningImageHandleFn = runningImageHandle
+	verifyRunningImagePathFn   = runningImagePath
+	verifyProviderVersionFn    = providerVersion
+	verifyPidIsAliveFn         = pidIsAlive
+	verifyPruneBackupsFn       = pruneBackups
+	verifySleepFn              = time.Sleep
+	verifyRecordSuccessFn      = recordHotswapSuccess
+	verifyRecordDeclineFn      = recordHotswapDecline
+)
+
 // updateConfig holds the release metadata for the update command.
 type updateConfig struct {
 	// Tag is the release tag to install, e.g. "v3.23.0-fix.26.8".
@@ -820,24 +834,48 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	// Verify the restart took effect: wait for the process to be on the
 	// new version. We must check the RUNNING process's image, not the
 	// on-disk binary.
+	return verifyRestartLoop(p, cfg, hotSwapTriggered, backup)
+}
+
+// verifyRestartLoop waits for a restarted provider to appear on the
+// expected version. It polls Discover() every few seconds, tracking PID
+// changes and version matches. Uses package-level verify*Fn vars so
+// tests can stub I/O and sleeps.
+func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, backup string) error {
 	oldPID := p.PID
 	// Give the old process time to exit before the first check: during CI
 	// or slow systemd restarts the old process is often still alive when
 	// the loop fires, which previously read as "restart did not take
 	// effect" on the very first iteration.
-	time.Sleep(3 * time.Second)
+	verifySleepFn(3 * time.Second)
 	maxIterations := 30 // ~60s for standard restart (plus 3s settle delay)
 	if hotSwapTriggered {
 		maxIterations = 40 // ~80s to cover pre-flight + auth bring-up + takeover
 	}
 
+	pidChanged := false
 	for i := 0; i < maxIterations; i++ {
-		time.Sleep(2 * time.Second)
-		providers := Discover()
+		// Adaptive sleep: poll every 2s while waiting for the restart to
+		// land (old PID still alive), then every 3s once a new PID appears
+		// (waiting for version to match — auth bring-up can take time).
+		sleepSec := 2
+		if pidChanged {
+			sleepSec = 3
+		}
+		verifySleepFn(time.Duration(sleepSec) * time.Second)
+
+		providers := verifyDiscoverFn()
 		for _, rp := range providers {
 			// Check matching state directory and verify running image
 			if rp.StateDir == p.StateDir && rp.StateDir != "" && rp.PID != 0 && !rp.BinaryDeleted {
-				procExe, perr := runningImageHandle(rp.PID)
+				// Track whether the PID changed — a new PID means the
+				// restart landed — just waiting for version match.
+				if rp.PID != oldPID && !pidChanged {
+					pidChanged = true
+					fmt.Printf("provider %s restarted (pid %d -> %d), waiting for version %s...\n", providerLabel(p), oldPID, rp.PID, cfg.Tag)
+				}
+
+				procExe, perr := verifyRunningImageHandleFn(rp.PID)
 				if perr == nil {
 					// providerVersion, not the buildinfo-only variant: every
 					// release binary is built with -trimpath, which strips
@@ -847,11 +885,11 @@ func updateProvider(p Provider, cfg updateConfig) error {
 					// the running image of the unit we just restarted, and
 					// providerVersion's --version fallback is gated behind
 					// isRecognizedExecutable.
-					if procVersion := providerVersion(procExe); procVersion == cfg.Tag {
+					if procVersion := verifyProviderVersionFn(procExe); procVersion == cfg.Tag {
 						// Report the image's real path, not the /proc
 						// handle the version was read through.
 						shown := procExe
-						if real, rerr := runningImagePath(rp.PID); rerr == nil {
+						if real, rerr := verifyRunningImagePathFn(rp.PID); rerr == nil {
 							shown = real
 						}
 						fmt.Printf("verified %s running %s (pid %d; running image %s matches)\n", providerLabel(p), cfg.Tag, rp.PID, shown)
@@ -859,13 +897,26 @@ func updateProvider(p Provider, cfg updateConfig) error {
 						// version is actually running — signal delivery alone
 						// is not proof that the handoff completed.
 						if hotSwapTriggered {
-							recordHotswapSuccess(p.StateDir)
+							verifyRecordSuccessFn(p.StateDir)
 						}
-						pruneBackups(p.Binary, 2)
+						verifyPruneBackupsFn(p.Binary, 2)
 						return nil
+					}
+					// Version doesn't match yet — log what IS running so
+					// operators can see progress instead of a black box.
+					if i > 0 && i%5 == 0 {
+						procVersion := verifyProviderVersionFn(procExe)
+						fmt.Printf("still waiting for %s (pid %d running %q, iteration %d/%d)...\n", cfg.Tag, rp.PID, procVersion, i+1, maxIterations)
 					}
 				}
 			}
+		}
+
+		// Early exit: if the old PID is dead and no new provider appeared,
+		// the restart failed outright — don't waste the full timeout.
+		if i > 3 && !pidChanged && !verifyPidIsAliveFn(oldPID) {
+			fmt.Printf("provider %s (pid %d) exited but no new provider found — restart may have failed\n", providerLabel(p), oldPID)
+			break
 		}
 	}
 
@@ -873,7 +924,7 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	if hotSwapTriggered {
 		// Verification timed out — record the decline with reason
 		// "takeover_failed" so operators can see it in Prometheus.
-		recordHotswapDecline(p.StateDir, "takeover_failed")
+		verifyRecordDeclineFn(p.StateDir, "takeover_failed")
 		fmt.Printf("❌ HotSwap candidate failed to take over within %ds.\n", maxIterations*2)
 		// oldPID's process exits (via its drain-timeout goroutine) only after
 		// the candidate confirmed active takeover — the same handoff gate
@@ -885,7 +936,7 @@ func updateProvider(p Provider, cfg updateConfig) error {
 		// process, but it does silently revert the image a future restart
 		// would use, and "live provider was never killed" would be false —
 		// so skip the rollback and report the real (unknown) state instead.
-		if !pidIsAlive(oldPID) {
+		if !verifyPidIsAliveFn(oldPID) {
 			return fmt.Errorf("update %s: HotSwap candidate ACKed takeover and PID %d exited its drain, but verification could not confirm the new process is running %s within %ds; binary NOT rolled back (ownership already transferred) — check the provider's logs/dashboard to confirm which version is actually live", providerLabel(p), oldPID, cfg.Tag, maxIterations*2)
 		}
 		if backup != "" {
@@ -898,7 +949,7 @@ func updateProvider(p Provider, cfg updateConfig) error {
 				// The unit must not outlive the binary it was migrated for:
 				// if the restored binary cannot send READY=1 at startup, its
 				// next start under Type=notify would fail.
-				if !isHotSwapSupportedVersion(providerVersion(p.Binary)) {
+				if !isHotSwapSupportedVersion(verifyProviderVersionFn(p.Binary)) {
 					if _, derr := demoteUnitToSimple(p); derr != nil {
 						fmt.Printf("warning: could not restore Type=simple for the rolled-back binary: %v\n", derr)
 					}

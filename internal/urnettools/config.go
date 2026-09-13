@@ -46,22 +46,15 @@ func runConfig(out io.Writer, args []string) error {
 	}
 
 	var resp controlResponse
-	hasSelector := t.Unit != "" || t.User != "" || t.Network != "" || t.NetworkID != "" || t.StateDir != ""
-	if hasSelector {
-		// Explicit target flags — resolve via provider discovery.
-		p, err := selectTarget(Discover(), t)
-		if err != nil {
-			return err
-		}
-		if p.StateDir == "" {
-			return fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
-		}
-		sockPath := filepath.Join(p.StateDir, "provider.sock")
-		resp, err = sendSocketRequest(sockPath, controlRequest{Cmd: "status"})
-	} else {
-		// No target flags — use default socket path.
-		resp, err = dialControlSocket(controlRequest{Cmd: "status"})
+	p, err := selectTarget(discoverSystemdFn(), t)
+	if err != nil {
+		return err
 	}
+	if p.StateDir == "" {
+		return fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
+	}
+	sockPath := filepath.Join(p.StateDir, "provider.sock")
+	resp, err = sendSocketRequest(sockPath, controlRequest{Cmd: "status"})
 	if err != nil {
 		return err
 	}

@@ -87,6 +87,9 @@ func TestConfigCmd_TableOutput(t *testing.T) {
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// config resolves its target through discovery, like status; point
+	// discovery at this test's state dir instead of real providers.
+	stubDiscovery(t, []Provider{{StateDir: filepath.Join(home, ".urnetwork"), Running: true}}, nil)
 	sockPath := filepath.Join(home, ".urnetwork", "provider.sock")
 
 	twoHoursAgo := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
@@ -166,6 +169,9 @@ func TestConfigCmd_JSONOutput(t *testing.T) {
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// config resolves its target through discovery, like status; point
+	// discovery at this test's state dir instead of real providers.
+	stubDiscovery(t, []Provider{{StateDir: filepath.Join(home, ".urnetwork"), Running: true}}, nil)
 	sockPath := filepath.Join(home, ".urnetwork", "provider.sock")
 
 	twoHoursAgo := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
@@ -218,6 +224,9 @@ func TestConfigCmd_SocketUnavailable(t *testing.T) {
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// config resolves its target through discovery, like status; point
+	// discovery at this test's state dir instead of real providers.
+	stubDiscovery(t, []Provider{{StateDir: filepath.Join(home, ".urnetwork"), Running: true}}, nil)
 
 	var buf bytes.Buffer
 	err := runConfig(&buf, nil)
@@ -232,6 +241,9 @@ func TestConfigCmd_ProviderReturnedError(t *testing.T) {
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// config resolves its target through discovery, like status; point
+	// discovery at this test's state dir instead of real providers.
+	stubDiscovery(t, []Provider{{StateDir: filepath.Join(home, ".urnetwork"), Running: true}}, nil)
 	sockPath := filepath.Join(home, ".urnetwork", "provider.sock")
 
 	cleanup := startMockStatusServer(t, sockPath, controlResponse{
@@ -256,6 +268,9 @@ func TestDialControlSocket(t *testing.T) {
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// config resolves its target through discovery, like status; point
+	// discovery at this test's state dir instead of real providers.
+	stubDiscovery(t, []Provider{{StateDir: filepath.Join(home, ".urnetwork"), Running: true}}, nil)
 	sockPath := filepath.Join(home, ".urnetwork", "provider.sock")
 
 	cleanup := startMockStatusServer(t, sockPath, controlResponse{
