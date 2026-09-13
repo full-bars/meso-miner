@@ -24,10 +24,10 @@ _Nothing yet._
 ### Fixed
 - **`urnet-tools history` wire-format mismatch**: `AuditEntry.Timestamp` was `int64` on the client but the provider sends `time.Time` (RFC3339 string), causing JSON unmarshal failure on every invocation.
 - **`urnet-tools set metrics on` no-op**: `applyMetricsLive` required `URNETWORK_METRICS` env var at boot — if unset, the server never started and `set metrics on` silently did nothing. Now auto-starts the metrics server on a free loopback port.
-- **HotSwap declined on every systemd node**: installs run `Type=simple`, so HotSwap always declined. The unit is now migrated during update when the installed binary supports it.
+- **HotSwap declined on every systemd node**: installs run `Type=simple`, so HotSwap always declined. The unit is now migrated during update when the installed binary supports it. The migration runs in the `urnet-tools` performing the update, so on a 31.0 node run `urnet-tools self-update` before `urnet-tools update` to migrate on the upgrade to 31.1.
 - **Proxy earnings priority inversion**: cold promoted URL proxies could jump ahead of warm unpromoted URL proxies because provenance was checked before warmth. Sort order corrected to warmth-first.
 - **Proxy earnings starvation**: unproven URL proxies could be permanently starved behind cumulative cold-proxy ramp delays. Added exploration quota.
-- **Contract denial retry loop re-read**: `getDenialBackoff()` was read before the retry loop, missing async `CreateContract` callbacks that trigger `noteDenial` between retries.
+- **Contract retry wait**: the wait is recomputed from its baseline before every retry, so it follows denials that async `CreateContract` callbacks record between retries and drops back once a contract succeeds or the denial state expires.
 - **Adaptive proxy `ParallelBlockSize`**: `getAdaptiveBlockSize()` now guards against zero/negative values.
 - **`consecutiveErrors` overflow**: capped at 20 to prevent unbounded growth.
 - **`writeStateFile` double close**: the fd was closed directly and again by the `*os.File` wrapping it, whose finalizer later closed whatever descriptor had reused the number. Surfaced as intermittent "bad file descriptor" test failures.
