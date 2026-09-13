@@ -37,7 +37,7 @@ func cmdRestartWindows(p Provider, force, dryRun bool) error {
 					fmt.Println("warning: HotSwap did not complete within 30s")
 					return stopStartFallback(p)
 				case <-ticker.C:
-					if !pidIsAlive(oldPID) && controlSocketReachable(p) {
+					if p.PID > 0 && !pidIsAlive(oldPID) && controlSocketReachable(p) {
 						fmt.Printf("restarted %s (HotSwap)\n", providerLabel(p))
 						return nil
 					}

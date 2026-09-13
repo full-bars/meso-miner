@@ -18,17 +18,28 @@ func cmdStopWindows(p Provider, force, dryRun bool) error {
 	}
 	sockPath := filepath.Join(p.StateDir, "provider.sock")
 
-	// Attempt a graceful shutdown via the control socket.
-	fmt.Println("sending shutdown command...")
-	resp, err := sendSocketRequest(sockPath, controlRequest{Cmd: "shutdown"})
-	if err != nil {
-		if isSocketUnavailable(err) {
-			fmt.Printf("provider %s is not running (control socket unreachable)\n", providerLabel(p))
-			return nil
+	// When force==true, bypass graceful shutdown and go straight to kill.
+	if !force {
+		// Attempt a graceful shutdown via the control socket.
+		fmt.Println("sending shutdown command...")
+		resp, err := sendSocketRequest(sockPath, controlRequest{Cmd: "shutdown"})
+		if err != nil {
+			if isSocketUnavailable(err) {
+				// Socket is dead — but if the PID is alive, fall
+				// through to the PID wait/terminate path below.
+				if p.PID <= 0 {
+					fmt.Printf("provider %s is not running (control socket unreachable)\n", providerLabel(p))
+					return nil
+				}
+				fmt.Printf("warning: control socket unreachable, falling back to process kill\n")
+			} else {
+				fmt.Printf("warning: shutdown command failed: %v\n", err)
+			}
+		} else if !resp.OK {
+			fmt.Printf("warning: shutdown response: %s\n", resp.Error)
 		}
-		fmt.Printf("warning: shutdown command failed: %v\n", err)
-	} else if !resp.OK {
-		fmt.Printf("warning: shutdown response: %s\n", resp.Error)
+	} else {
+		fmt.Println("force stop: skipping graceful shutdown")
 	}
 
 	// Wait up to 15 seconds for the process to exit.
@@ -61,8 +72,7 @@ func cmdStopWindows(p Provider, force, dryRun bool) error {
 	for {
 		select {
 		case <-deadline:
-			fmt.Printf("stopped %s\n", providerLabel(p))
-			return nil
+			return fmt.Errorf("provider %s did not shut down within 10s (no PID to kill)", providerLabel(p))
 		case <-ticker.C:
 			if !controlSocketReachable(p) {
 				fmt.Printf("stopped %s\n", providerLabel(p))

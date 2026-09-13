@@ -38,7 +38,12 @@ func restrictFileACL(path string) error {
 	}
 	sid := user.User.Sid
 
-	// Single ACE: grant the current user full access (read+write+delete).
+	// ACEs: grant the current user full access, plus allow SYSTEM and
+	// Administrators so that elevated services and admin tools can still
+	// manage the socket (e.g. Windows services, scheduled tasks).
+	systemSID, _ := windows.StringToSid("S-1-5-18")     // NT AUTHORITY\SYSTEM
+	adminsSID, _ := windows.StringToSid("S-1-5-32-544") // BUILTIN\Administrators
+
 	entries := []windows.EXPLICIT_ACCESS{
 		{
 			AccessPermissions: windows.GENERIC_ALL,
@@ -48,6 +53,26 @@ func restrictFileACL(path string) error {
 				TrusteeForm:  windows.TRUSTEE_IS_SID,
 				TrusteeType:  windows.TRUSTEE_IS_USER,
 				TrusteeValue: windows.TrusteeValueFromSID(sid),
+			},
+		},
+		{
+			AccessPermissions: windows.GENERIC_ALL,
+			AccessMode:        windows.GRANT_ACCESS,
+			Inheritance:       windows.NO_INHERITANCE,
+			Trustee: windows.TRUSTEE{
+				TrusteeForm:  windows.TRUSTEE_IS_SID,
+				TrusteeType:  windows.TRUSTEE_IS_WELL_KNOWN_GROUP,
+				TrusteeValue: windows.TrusteeValueFromSID(systemSID),
+			},
+		},
+		{
+			AccessPermissions: windows.GENERIC_ALL,
+			AccessMode:        windows.GRANT_ACCESS,
+			Inheritance:       windows.NO_INHERITANCE,
+			Trustee: windows.TRUSTEE{
+				TrusteeForm:  windows.TRUSTEE_IS_SID,
+				TrusteeType:  windows.TRUSTEE_IS_WELL_KNOWN_GROUP,
+				TrusteeValue: windows.TrusteeValueFromSID(adminsSID),
 			},
 		},
 	}
