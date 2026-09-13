@@ -519,6 +519,7 @@ jobs:
           VT_FAIL_THRESHOLD: "10"
           VT_REVIEW_THRESHOLD: "2"
           VT_SUMMARY_FILE: ${{ github.workspace }}/vt-scan-report.md
+          VT_JSON_FILE: ${{ github.workspace }}/vt-scan-results.json
           GITHUB_SERVER_URL: ${{ github.server_url }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_RUN_ID: ${{ github.run_id }}
@@ -615,3 +616,23 @@ jobs:
           with urllib.request.urlopen(req2, timeout=30) as resp2:
               print("scan verdict appended to release body (HTTP", resp2.status, ")")
           PY
+
+      - name: Stage WDSI submissions for flagged files
+        if: always() && startsWith(github.ref, 'refs/tags/')
+        env:
+          VIRUS_TOTAL: ${{ secrets.VIRUS_TOTAL }}
+          ZENPROXY_KEY: ${{ secrets.ZENPROXY_KEY }}
+        run: |
+          set -euo pipefail
+          if [ ! -f vt-scan-results.json ]; then
+            echo "No VT scan results — skipping WDSI staging"
+            exit 0
+          fi
+          python3 .github/scripts/stage-wdsi.py "${GITHUB_REF_NAME}" vt-scan-results.json "${GITHUB_WORKSPACE}"
+
+      - name: Upload defender-submissions artifact
+        if: always() && startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: defender-submissions-${{ github.ref_name }}
+          path: defender-submissions-*

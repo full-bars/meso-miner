@@ -18,6 +18,8 @@ Env:
   VT_POLL_MAX         max polls before timeout (default 20)
   VT_SUMMARY_FILE     path: append a markdown proof block (per-file
                       verdicts + VT links + CI run ref) to this file
+  VT_JSON_FILE        path: write machine-readable JSON scan results for
+                      downstream automation (one JSON object per file)
 
 Exit codes: 0 = pass/review/UNKNOWN (non-blocking api/upload/timeout),
 1 = malicious above fail threshold (real-malware line). The scan is
@@ -39,6 +41,7 @@ FAIL_THRESHOLD = int(os.environ.get("VT_FAIL_THRESHOLD", "10"))
 REVIEW_THRESHOLD = int(os.environ.get("VT_REVIEW_THRESHOLD", "2"))
 UPLOAD = os.environ.get("VT_UPLOAD", "1") != "0"
 SUMMARY_FILE = os.environ.get("VT_SUMMARY_FILE", "")
+JSON_FILE = os.environ.get("VT_JSON_FILE", "")
 
 
 def api(path: str, data=None, method=None, headers=None) -> tuple[int, dict]:
@@ -153,6 +156,26 @@ def scan_file(path: str) -> int:
 _summary_rows = []  # (path, sha, verdict, mal, sus, har, und) accumulated for the proof block
 
 
+def write_json(json_path: str) -> None:
+    """Write machine-readable scan results JSON for downstream automation."""
+    rows_out = []
+    for path, fsha, verdict, mal, sus, har, und in _summary_rows:
+        rows_out.append({
+            "path": path,
+            "sha": fsha,
+            "verdict": verdict,
+            "malicious": mal,
+            "suspicious": sus,
+            "harmless": har,
+            "undetected": und,
+        })
+    try:
+        with open(json_path, "w") as f:
+            json.dump(rows_out, f, indent=2)
+    except OSError as e:
+        print(f"  (json write failed: {e})", flush=True)
+
+
 def write_summary() -> None:
     """Write the release-notes proof block once, after all files are scanned.
 
@@ -248,6 +271,8 @@ def main() -> int:
             rc = r
         time.sleep(2)
     write_summary()
+    if JSON_FILE:
+        write_json(JSON_FILE)
     print(f"RESULT: {'PASS' if rc == 0 else 'FAIL'}", flush=True)
     return rc
 
