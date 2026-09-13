@@ -69,15 +69,15 @@ func (self *probeWindow) record(success bool) {
 	}
 }
 
-// blockSize scales the configured ParallelBlockSize by recent health:
+// blockSize sizes the parallel batch from recent health, never above the
+// configured ParallelBlockSize:
 //
 //	>80 % success → half (healthy, save goroutines)
-//	50-80 %       → configured
-//	<50 %         → one and a half times (degraded, probe harder)
+//	otherwise     → configured
 //
-// The default of 4 gives 2/4/6. Scaling instead of returning fixed values
-// keeps an operator's configured size meaningful. Returns the configured
-// size when the window holds no fresh data.
+// The configured size is a ceiling on concurrent dials, so a degraded
+// network probes at the full configured width rather than past it. Returns
+// the configured size when the window holds no fresh data.
 func (self *probeWindow) blockSize(configured int) int {
 	if configured < 1 {
 		configured = 1
@@ -97,10 +97,8 @@ func (self *probeWindow) blockSize(configured int) int {
 	rate := float64(s) / float64(total)
 	if rate > 0.8 {
 		return max(1, configured/2)
-	} else if rate >= 0.5 {
-		return configured
 	}
-	return configured + max(1, configured/2)
+	return configured
 }
 
 func DefaultClientStrategySettings() *ClientStrategySettings {
@@ -590,42 +588,7 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 			}
 
 			// WeightedShuffle(serialDialers, dialerWeights)
-			slices.SortStableFunc(serialDialers, func(a *clientDialer, b *clientDialer) int {
-				// CRITICAL #2 fix: use Stats() snapshot to avoid data race
-				// with concurrent Update() calls writing these fields.
-				// Sort by: grade (if available) → success rate → recency of last success
-				// Grade: lower priority int = higher priority (already in struct)
-				if a.priority != b.priority {
-					return a.priority - b.priority
-				}
-				// Success rate: higher is better
-				aStats := a.Stats()
-				bStats := b.Stats()
-				aRate := float32(0)
-				bRate := float32(0)
-				aTotal := aStats.successCount + aStats.errorCount
-				bTotal := bStats.successCount + bStats.errorCount
-				if aTotal > 0 {
-					aRate = float32(aStats.successCount) / float32(aTotal)
-				}
-				if bTotal > 0 {
-					bRate = float32(bStats.successCount) / float32(bTotal)
-				}
-				if aRate > bRate {
-					return -1
-				}
-				if aRate < bRate {
-					return 1
-				}
-				// Recency: more recent success = higher priority
-				if aStats.lastSuccessTime.After(bStats.lastSuccessTime) {
-					return -1
-				}
-				if aStats.lastSuccessTime.Before(bStats.lastSuccessTime) {
-					return 1
-				}
-				return 0
-			})
+			sortDialersByHealth(serialDialers)
 			for _, dialer := range serialDialers {
 				select {
 				case <-handleCtx.Done():
@@ -765,38 +728,7 @@ func (self *ClientStrategy) serialEval(ctx context.Context, eval func(ctx contex
 			}
 		}
 
-		slices.SortStableFunc(serialDialers, func(a *clientDialer, b *clientDialer) int {
-			// CRITICAL #2 fix: use Stats() snapshot to avoid data race
-			// Sort by: grade (if available) → success rate → recency of last success
-			if a.priority != b.priority {
-				return a.priority - b.priority
-			}
-			aStats := a.Stats()
-			bStats := b.Stats()
-			aRate := float32(0)
-			bRate := float32(0)
-			aTotal := aStats.successCount + aStats.errorCount
-			bTotal := bStats.successCount + bStats.errorCount
-			if aTotal > 0 {
-				aRate = float32(aStats.successCount) / float32(aTotal)
-			}
-			if bTotal > 0 {
-				bRate = float32(bStats.successCount) / float32(bTotal)
-			}
-			if aRate > bRate {
-				return -1
-			}
-			if aRate < bRate {
-				return 1
-			}
-			if aStats.lastSuccessTime.After(bStats.lastSuccessTime) {
-				return -1
-			}
-			if aStats.lastSuccessTime.Before(bStats.lastSuccessTime) {
-				return 1
-			}
-			return 0
-		})
+		sortDialersByHealth(serialDialers)
 		for _, dialer := range serialDialers {
 			select {
 			case <-handleCtx.Done():
@@ -1227,6 +1159,47 @@ type dialerStats struct {
 	successCount    uint64
 	errorCount      uint64
 	lastSuccessTime time.Time
+}
+
+// successRate is successCount over all counted outcomes, 0 with no samples.
+func (self dialerStats) successRate() float32 {
+	total := self.successCount + self.errorCount
+	if total == 0 {
+		return 0
+	}
+	return float32(self.successCount) / float32(total)
+}
+
+// sortDialersByHealth orders serial dialers by priority (lower first), then
+// success rate (higher first), then most recent success. Each dialer's
+// health is read once, under its mutex, before sorting: Update runs
+// concurrently, so reading inside the comparator raced and could change the
+// inputs partway through the sort. parallelEval, serialEval and the tests
+// share this one ordering.
+func sortDialersByHealth(dialers []*clientDialer) {
+	type ranked struct {
+		dialer *clientDialer
+		stats  dialerStats
+	}
+	rs := make([]ranked, len(dialers))
+	for i, d := range dialers {
+		rs[i] = ranked{dialer: d, stats: d.Stats()}
+	}
+	slices.SortStableFunc(rs, func(a ranked, b ranked) int {
+		if a.dialer.priority != b.dialer.priority {
+			return a.dialer.priority - b.dialer.priority
+		}
+		if aRate, bRate := a.stats.successRate(), b.stats.successRate(); aRate != bRate {
+			if aRate > bRate {
+				return -1
+			}
+			return 1
+		}
+		return b.stats.lastSuccessTime.Compare(a.stats.lastSuccessTime)
+	})
+	for i, r := range rs {
+		dialers[i] = r.dialer
+	}
 }
 
 // Stats returns a thread-safe snapshot of the dialer's performance counters.

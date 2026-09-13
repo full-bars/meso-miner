@@ -3,7 +3,6 @@ package connect
 import (
 	"context"
 	"fmt"
-	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -151,14 +150,14 @@ func TestAdaptiveBlockSize(t *testing.T) {
 		}
 	})
 
-	t.Run("degraded_network_increases_to_6", func(t *testing.T) {
+	t.Run("degraded_network_capped_at_configured", func(t *testing.T) {
 		w.mu.Lock()
 		w.successCount = 30
 		w.failureCount = 70
 		w.mu.Unlock()
 		got := w.blockSize(4)
-		if got != 6 {
-			t.Errorf("expected 6 for <50%% success, got %d", got)
+		if got != 4 {
+			t.Errorf("expected 4 (the configured ceiling) for <50%% success, got %d", got)
 		}
 	})
 
@@ -223,14 +222,14 @@ func TestAdaptiveBlockSize(t *testing.T) {
 		}
 		// ~67 successes should give >50% → block size 4 or 2
 		got := w.blockSize(4)
-		if got != 2 && got != 4 {
-			t.Errorf("expected block size 2 or 4 for ~67%% success, got %d", got)
+		if got != 4 {
+			t.Errorf("expected block size 4 for 66%% success, got %d", got)
 		}
 	})
 }
 
-// TestAdaptiveBlockSizePerStrategy: windows scale the configured size and
-// never share state. A provider runs one ClientStrategy per proxy, so one
+// TestAdaptiveBlockSizePerStrategy: windows stay within the configured size
+// and never share state. A provider runs one ClientStrategy per proxy, so one
 // proxy's failing path must not widen another proxy's batch.
 func TestAdaptiveBlockSizePerStrategy(t *testing.T) {
 	healthy := &probeWindow{}
@@ -242,11 +241,11 @@ func TestAdaptiveBlockSizePerStrategy(t *testing.T) {
 	if got := healthy.blockSize(8); got != 4 {
 		t.Errorf("healthy blockSize(8) = %d, want 4", got)
 	}
-	if got := degraded.blockSize(8); got != 12 {
-		t.Errorf("degraded blockSize(8) = %d, want 12", got)
+	if got := degraded.blockSize(8); got != 8 {
+		t.Errorf("degraded blockSize(8) = %d, want 8 (never above configured)", got)
 	}
-	if got := degraded.blockSize(1); got != 2 {
-		t.Errorf("degraded blockSize(1) = %d, want 2", got)
+	if got := degraded.blockSize(1); got != 1 {
+		t.Errorf("degraded blockSize(1) = %d, want 1", got)
 	}
 	if got := healthy.blockSize(1); got != 1 {
 		t.Errorf("healthy blockSize(1) = %d, want 1", got)
@@ -297,35 +296,8 @@ func TestSerialPrioritySort(t *testing.T) {
 		},
 	}
 
-	// Use the same sort comparator as parallelEval / serialEval
-	slices.SortStableFunc(dialers, func(a, b *clientDialer) int {
-		if a.priority != b.priority {
-			return a.priority - b.priority
-		}
-		aRate := float32(0)
-		bRate := float32(0)
-		aTotal := a.successCount + a.errorCount
-		bTotal := b.successCount + b.errorCount
-		if aTotal > 0 {
-			aRate = float32(a.successCount) / float32(aTotal)
-		}
-		if bTotal > 0 {
-			bRate = float32(b.successCount) / float32(bTotal)
-		}
-		if aRate > bRate {
-			return -1
-		}
-		if aRate < bRate {
-			return 1
-		}
-		if a.lastSuccessTime.After(b.lastSuccessTime) {
-			return -1
-		}
-		if a.lastSuccessTime.Before(b.lastSuccessTime) {
-			return 1
-		}
-		return 0
-	})
+	// The production ordering shared with parallelEval / serialEval
+	sortDialersByHealth(dialers)
 
 	// Expected order:
 	// 1. priority 0, rate 1.0 (10/10), old
@@ -384,34 +356,7 @@ func TestSerialRecencyTiebreak(t *testing.T) {
 		},
 	}
 
-	slices.SortStableFunc(dialers, func(a, b *clientDialer) int {
-		if a.priority != b.priority {
-			return a.priority - b.priority
-		}
-		aRate := float32(0)
-		bRate := float32(0)
-		aTotal := a.successCount + a.errorCount
-		bTotal := b.successCount + b.errorCount
-		if aTotal > 0 {
-			aRate = float32(a.successCount) / float32(aTotal)
-		}
-		if bTotal > 0 {
-			bRate = float32(b.successCount) / float32(bTotal)
-		}
-		if aRate > bRate {
-			return -1
-		}
-		if aRate < bRate {
-			return 1
-		}
-		if a.lastSuccessTime.After(b.lastSuccessTime) {
-			return -1
-		}
-		if a.lastSuccessTime.Before(b.lastSuccessTime) {
-			return 1
-		}
-		return 0
-	})
+	sortDialersByHealth(dialers)
 
 	// The more recent dialer (lastSuccessTime -1m) should sort first.
 	if !dialers[0].lastSuccessTime.After(dialers[1].lastSuccessTime) {
