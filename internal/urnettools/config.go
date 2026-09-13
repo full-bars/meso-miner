@@ -46,7 +46,7 @@ func runConfig(out io.Writer, args []string) error {
 	}
 
 	var resp controlResponse
-	p, err := selectTarget(Discover(), t)
+	p, err := selectTarget(discoverSystemdFn(), t)
 	if err != nil {
 		return err
 	}
