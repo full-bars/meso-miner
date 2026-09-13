@@ -1,10 +1,13 @@
 package connect
 
 import (
+	"compress/gzip"
 	"fmt"
+	"io"
 	"net/http"
 	"runtime"
 	"runtime/metrics"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -104,39 +107,53 @@ func PrometheusHandler() http.Handler {
 		fmt.Fprintf(&b, "urnet_proxy_pool_size{status=\"connecting\"} %d\n", len(connecting))
 
 		// --- Per-proxy bandwidth + provider aggregates ---
-		fmt.Fprintf(&b, "# HELP urnet_proxy_bytes_total Cumulative bytes transferred per proxy.\n")
-		fmt.Fprintf(&b, "# TYPE urnet_proxy_bytes_total counter\n")
-		fmt.Fprintf(&b, "# HELP urnet_proxy_billable_bytes_total Cumulative billable bytes per proxy.\n")
-		fmt.Fprintf(&b, "# TYPE urnet_proxy_billable_bytes_total counter\n")
-		fmt.Fprintf(&b, "# HELP urnet_proxy_clients Active clients per proxy.\n")
-		fmt.Fprintf(&b, "# TYPE urnet_proxy_clients gauge\n")
-		fmt.Fprintf(&b, "# HELP urnet_proxy_session_age_seconds How long the current client presence window has been active per proxy.\n")
-		fmt.Fprintf(&b, "# TYPE urnet_proxy_session_age_seconds gauge\n")
-		fmt.Fprintf(&b, "# HELP urnet_billable_bytes_total Aggregate billable bytes for this provider.\n")
-		fmt.Fprintf(&b, "# TYPE urnet_billable_bytes_total counter\n")
+		// Each family is one contiguous block: HELP, TYPE, then its samples.
+		// The text format requires that, and strict parsers reject samples of
+		// one family interleaved with another's. Sorted keys keep the output
+		// stable between scrapes.
+		keys := make([]string, 0, len(bandwidth))
+		for key := range bandwidth {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		var proxyBytes, proxyBillable, proxyClients, proxyAge strings.Builder
 		var totalBillRx, totalBillTx uint64
 		var totalRx, totalTx uint64
 		var totalClients int64
-		for key, bw := range bandwidth {
+		for _, key := range keys {
+			bw := bandwidth[key]
 			rx := bw.TotalRx.Load()
 			tx := bw.TotalTx.Load()
 			billRx := bw.BillableRx.Load()
 			billTx := bw.BillableTx.Load()
 			clients := bw.Clients.Load()
-			proxyID := escapeLabelValue(key)
-			fmt.Fprintf(&b, "urnet_proxy_bytes_total{proxy=%q,direction=\"in\"} %d\n", proxyID, rx)
-			fmt.Fprintf(&b, "urnet_proxy_bytes_total{proxy=%q,direction=\"out\"} %d\n", proxyID, tx)
-			fmt.Fprintf(&b, "urnet_proxy_billable_bytes_total{proxy=%q,direction=\"in\"} %d\n", proxyID, billRx)
-			fmt.Fprintf(&b, "urnet_proxy_billable_bytes_total{proxy=%q,direction=\"out\"} %d\n", proxyID, billTx)
-			fmt.Fprintf(&b, "urnet_proxy_clients{proxy=%q} %d\n", proxyID, clients)
-			age := bw.MaxAge()
-			fmt.Fprintf(&b, "urnet_proxy_session_age_seconds{proxy=%q} %g\n", proxyID, age.Seconds())
+			proxyID := PrometheusLabelValue(key)
+			fmt.Fprintf(&proxyBytes, "urnet_proxy_bytes_total{proxy=%s,direction=\"in\"} %d\n", proxyID, rx)
+			fmt.Fprintf(&proxyBytes, "urnet_proxy_bytes_total{proxy=%s,direction=\"out\"} %d\n", proxyID, tx)
+			fmt.Fprintf(&proxyBillable, "urnet_proxy_billable_bytes_total{proxy=%s,direction=\"in\"} %d\n", proxyID, billRx)
+			fmt.Fprintf(&proxyBillable, "urnet_proxy_billable_bytes_total{proxy=%s,direction=\"out\"} %d\n", proxyID, billTx)
+			fmt.Fprintf(&proxyClients, "urnet_proxy_clients{proxy=%s} %d\n", proxyID, clients)
+			fmt.Fprintf(&proxyAge, "urnet_proxy_session_age_seconds{proxy=%s} %g\n", proxyID, bw.MaxAge().Seconds())
 			totalBillRx += billRx
 			totalBillTx += billTx
 			totalRx += rx
 			totalTx += tx
 			totalClients += clients
 		}
+		fmt.Fprintf(&b, "# HELP urnet_proxy_bytes_total Cumulative bytes transferred per proxy.\n")
+		fmt.Fprintf(&b, "# TYPE urnet_proxy_bytes_total counter\n")
+		b.WriteString(proxyBytes.String())
+		fmt.Fprintf(&b, "# HELP urnet_proxy_billable_bytes_total Cumulative billable bytes per proxy.\n")
+		fmt.Fprintf(&b, "# TYPE urnet_proxy_billable_bytes_total counter\n")
+		b.WriteString(proxyBillable.String())
+		fmt.Fprintf(&b, "# HELP urnet_proxy_clients Active clients per proxy.\n")
+		fmt.Fprintf(&b, "# TYPE urnet_proxy_clients gauge\n")
+		b.WriteString(proxyClients.String())
+		fmt.Fprintf(&b, "# HELP urnet_proxy_session_age_seconds How long the current client presence window has been active per proxy.\n")
+		fmt.Fprintf(&b, "# TYPE urnet_proxy_session_age_seconds gauge\n")
+		b.WriteString(proxyAge.String())
+		fmt.Fprintf(&b, "# HELP urnet_billable_bytes_total Aggregate billable bytes for this provider.\n")
+		fmt.Fprintf(&b, "# TYPE urnet_billable_bytes_total counter\n")
 		fmt.Fprintf(&b, "urnet_billable_bytes_total{direction=\"in\"} %d\n", totalBillRx)
 		fmt.Fprintf(&b, "urnet_billable_bytes_total{direction=\"out\"} %d\n", totalBillTx)
 		fmt.Fprintf(&b, "# HELP urnet_bytes_total Aggregate total bytes for this provider.\n")
@@ -151,8 +168,13 @@ func PrometheusHandler() http.Handler {
 		globalProm.initErrors()
 		fmt.Fprintf(&b, "# HELP urnet_errors_total Cumulative transport errors by category.\n")
 		fmt.Fprintf(&b, "# TYPE urnet_errors_total counter\n")
-		for cat, c := range globalProm.errorsTotal {
-			fmt.Fprintf(&b, "urnet_errors_total{category=%q} %d\n", string(cat), c.Load())
+		cats := make([]string, 0, len(globalProm.errorsTotal))
+		for cat := range globalProm.errorsTotal {
+			cats = append(cats, string(cat))
+		}
+		sort.Strings(cats)
+		for _, cat := range cats {
+			fmt.Fprintf(&b, "urnet_errors_total{category=%s} %d\n", PrometheusLabelValue(cat), globalProm.errorsTotal[ErrorCategory(cat)].Load())
 		}
 
 		// --- Contract counters ---
@@ -204,8 +226,37 @@ func PrometheusHandler() http.Handler {
 			}
 		}
 
-		_, _ = w.Write([]byte(b.String()))
+		// Prometheus always asks for gzip. A node with thousands of proxies
+		// serves megabytes of text per scrape; compressed it is about a
+		// twelfth of that.
+		w.Header().Add("Vary", "Accept-Encoding")
+		if acceptsGzip(r.Header.Get("Accept-Encoding")) {
+			w.Header().Set("Content-Encoding", "gzip")
+			zw := gzip.NewWriter(w)
+			_, _ = io.WriteString(zw, b.String())
+			_ = zw.Close()
+			return
+		}
+		_, _ = io.WriteString(w, b.String())
 	})
+}
+
+// acceptsGzip reports whether an Accept-Encoding header allows gzip, either
+// by name or through "*", and not with q=0.
+func acceptsGzip(header string) bool {
+	for _, part := range strings.Split(header, ",") {
+		coding, params, _ := strings.Cut(strings.TrimSpace(part), ";")
+		coding = strings.ToLower(strings.TrimSpace(coding))
+		if coding != "gzip" && coding != "*" {
+			continue
+		}
+		q := strings.ReplaceAll(strings.ToLower(params), " ", "")
+		if q == "q=0" || q == "q=0.0" || q == "q=0.00" || q == "q=0.000" {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // readUint64Metric extracts a uint64 from a runtime/metrics Value.
@@ -218,6 +269,14 @@ func readUint64Metric(v metrics.Value) uint64 {
 	default:
 		return 0
 	}
+}
+
+// PrometheusLabelValue returns s as a quoted text-format label value. The
+// format defines only three escapes (\\, \", \n). Go's %q emits others
+// (\t, \x.., \u....) that Prometheus does not decode, and a label value
+// must be valid UTF-8 or the scrape fails.
+func PrometheusLabelValue(s string) string {
+	return `"` + escapeLabelValue(strings.ToValidUTF8(s, "\uFFFD")) + `"`
 }
 
 // escapeLabelValue escapes backslash, double-quote, and newlines for
