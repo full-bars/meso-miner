@@ -831,13 +831,29 @@ func updateProvider(p Provider, cfg updateConfig) error {
 		maxIterations = 40 // ~80s to cover pre-flight + auth bring-up + takeover
 	}
 
+	pidChanged := false
 	for i := 0; i < maxIterations; i++ {
-		time.Sleep(2 * time.Second)
+		// Adaptive sleep: poll every 2s while waiting for the restart to
+		// land (old PID still alive), then every 3s once a new PID appears
+		// (waiting for version to match — auth bring-up can take time).
+		sleepSec := 2
+		if pidChanged {
+			sleepSec = 3
+		}
+		time.Sleep(time.Duration(sleepSec) * time.Second)
+
 		providers := Discover()
 		for _, rp := range providers {
 			// Check matching state directory and verify running image
 			if rp.StateDir == p.StateDir && rp.StateDir != "" && rp.PID != 0 && !rp.BinaryDeleted {
-				procExe, perr := runningImageHandle(rp.PID)
+			// Track whether the PID changed — a new PID means the
+			// restart landed — just waiting for version match.
+			if rp.PID != oldPID && !pidChanged {
+				pidChanged = true
+				fmt.Printf("provider %s restarted (pid %d -> %d), waiting for version %s...\n", providerLabel(p), oldPID, rp.PID, cfg.Tag)
+			}
+
+			procExe, perr := runningImageHandle(rp.PID)
 				if perr == nil {
 					// providerVersion, not the buildinfo-only variant: every
 					// release binary is built with -trimpath, which strips
@@ -864,8 +880,21 @@ func updateProvider(p Provider, cfg updateConfig) error {
 						pruneBackups(p.Binary, 2)
 						return nil
 					}
+					// Version doesn't match yet — log what IS running so
+					// operators can see progress instead of a black box.
+					if i > 0 && i%5 == 0 {
+						procVersion := providerVersion(procExe)
+						fmt.Printf("still waiting for %s (pid %d running %q, iteration %d/%d)...\n", cfg.Tag, rp.PID, procVersion, i+1, maxIterations)
+					}
 				}
 			}
+		}
+
+		// Early exit: if the old PID is dead and no new provider appeared,
+		// the restart failed outright — don't waste the full timeout.
+		if i > 3 && !pidChanged && !pidIsAlive(oldPID) {
+			fmt.Printf("provider %s (pid %d) exited but no new provider found — restart may have failed\n", providerLabel(p), oldPID)
+			break
 		}
 	}
 
