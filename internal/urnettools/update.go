@@ -26,6 +26,12 @@ type updateConfig struct {
 	// Digest is the sha256 of the release tarball asset (hex). When empty,
 	// integrity verification is skipped (not recommended).
 	Digest string
+	// DigestExplicit is true when the caller provided --digest on the
+	// command line (as opposed to the digest being resolved from the
+	// release API). When explicit, the digest MUST be verified even on
+	// same-version updates — an attacker who controls a tag could ship a
+	// malicious binary with the same version string but different content.
+	DigestExplicit bool
 	// AssetURL is the download URL for the tarball.
 	AssetURL string
 	// StageDir is where downloads/extraction happen. MUST be on real disk —

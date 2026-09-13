@@ -110,13 +110,20 @@ func providerFromUnit(unit, user string) Provider {
 // Discover returns every provider on the box: running processes across all
 // users plus stopped systemd units. Sorted by user then unit for stable
 // output.
+// discoverProcessesFn and discoverStoppedFn are stub seams so tests can
+// isolate Discover() from the host's /proc scan and systemd enumeration.
+var (
+	discoverProcessesFn = discoverProcesses
+	discoverStoppedFn   = discoverStopped
+)
+
 func Discover() []Provider {
-	all := discoverProcesses()
+	all := discoverProcessesFn()
 	// Platform hook for stopped-unit / lifecycle-based discovery. On Linux
 	// this attaches systemd unit names to running providers and adds
 	// stopped provider units; on macOS/Windows it is a no-op (those
 	// platforms have no systemd units to enumerate).
-	all = append(all, discoverStopped(all)...)
+	all = append(all, discoverStoppedFn(all)...)
 	sort.SliceStable(all, func(i, j int) bool {
 		if all[i].User != all[j].User {
 			return all[i].User < all[j].User
