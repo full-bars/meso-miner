@@ -389,8 +389,12 @@ func denialBackoffForCount(count int) time.Duration {
 		d = 15 * time.Second
 	case count == 3:
 		d = 30 * time.Second
+	case count >= 7:
+		// 60s * 2^3 already passes the cap. Returning before the shift
+		// keeps a large count from overflowing to zero or a negative value.
+		return 5 * time.Minute
 	default:
-		// Exponential growth from 60s base: 60s, 120s, 240s, 480s→300s, ...
+		// Exponential growth from 60s base: 60s, 120s, 240s.
 		d = 60 * time.Second * time.Duration(1<<(count-4))
 	}
 	if d > 5*time.Minute {

@@ -456,8 +456,12 @@ func TestDenialBackoff_CapAtFiveMinutes(t *testing.T) {
 		t.Errorf("count=8: got %v, want 5min", got)
 	}
 	// Verify it never exceeds 5 minutes.
-	if got := denialBackoffForCount(100); got > 5*time.Minute {
-		t.Errorf("backoff %v exceeds 5-minute cap", got)
+	// Large counts must return the cap itself: the shift used to overflow
+	// and produce zero or a negative duration.
+	for _, count := range []int{7, 64, 100, 1000} {
+		if got := denialBackoffForCount(count); got != 5*time.Minute {
+			t.Errorf("count=%d: got %v, want 5min", count, got)
+		}
 	}
 }
 
@@ -604,5 +608,30 @@ func TestDenial_LongBackoffOutlivesBaseExpiry(t *testing.T) {
 	cm.noteDenial(dest)
 	if got := cm.getDenialBackoff(dest); got != 5*time.Minute {
 		t.Fatalf("7th denial: got %v, want 5m cap", got)
+	}
+}
+
+// TestDenial_NoteAfterExpiryStartsFresh: a denial arriving after the state
+// expired is a first denial, not the next step of a stale streak.
+func TestDenial_NoteAfterExpiryStartsFresh(t *testing.T) {
+	clientId := NewId()
+	settings := DefaultClientSettings()
+	client := NewClient(context.Background(), clientId, NewNoContractClientOob(), settings)
+	defer client.Cancel()
+	cm := client.ContractManager()
+
+	dest := NewId()
+	cm.noteDenial(dest)
+	cm.noteDenial(dest)
+
+	cm.mutex.Lock()
+	ds := cm.denialCooldowns[dest]
+	ds.lastDenial = time.Now().Add(-(denialCooldownFor(ds.count) + time.Second))
+	cm.denialCooldowns[dest] = ds
+	cm.mutex.Unlock()
+
+	cm.noteDenial(dest)
+	if got := cm.getDenialBackoff(dest); got != 0 {
+		t.Fatalf("denial after expiry: got %v, want 0 (first denial)", got)
 	}
 }
