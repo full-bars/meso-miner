@@ -383,8 +383,10 @@ func parseUnitLines(text string, running []Provider, userFor, binaryFor func(uni
 			continue
 		}
 		// Skip units already backed by a running process (matched by unit
-		// name via the provider's Unit field, set below).
-		if unitIn(running, unit) {
+		// name via the provider's Unit field, set below).  Also catches
+		// duplicates from user-level systemd where attachUnits cannot
+		// parse the cgroup to set Unit — falls back to state-dir match.
+		if alreadyBackedByRunning(running, unit, userFor) {
 			continue
 		}
 		if seen[unit] {

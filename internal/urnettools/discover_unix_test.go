@@ -280,6 +280,30 @@ func TestParseUnitLinesAcceptsSiblingWhenExecStartEmptyButStateDirExists(t *test
 	}
 }
 
+
+// TestParseUnitLinesSkipsUnitWhenRunningProviderSharesStateDir verifies
+// that a systemd unit is skipped when a running provider occupies the
+// same state dir, even if the unit name doesn't match (covers user-level
+// systemd where attachUnits cannot resolve the cgroup to a unit name).
+func TestParseUnitLinesSkipsUnitWhenRunningProviderSharesStateDir(t *testing.T) {
+	// Use a non-existent user so unitStateDir falls back to
+	// /home/<user>/.urnetwork.  Set the running provider's StateDir to
+	// match — alreadyBackedByRunning must detect the overlap.
+	const fakeUser = "testuser-nostate-dedup"
+	stateDir := "/home/" + fakeUser + "/.urnetwork"
+	running := []Provider{
+		{User: fakeUser, StateDir: stateDir, PID: 1234},
+	}
+	text := "urnetwork.service loaded active running\n"
+	got := parseUnitLines(text, running,
+		func(string) string { return fakeUser },
+		func(string) string { return "/usr/bin/urnetwork" },
+	)
+	if len(got) != 0 {
+		t.Errorf("parseUnitLines returned %d providers, want 0 (unit with same state dir as running provider should be skipped): %+v", len(got), got)
+	}
+}
+
 // TestSelectTargetOrSoleAccessibleExplicitTargetBypassesNarrowing: an
 // explicit --unit/--user always resolves strictly via selectTarget; the
 // narrowing shortcut only kicks in for the no-target case.

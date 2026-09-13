@@ -86,6 +86,30 @@ func unitIn(running []Provider, unit string) bool {
 	return false
 }
 
+// alreadyBackedByRunning reports whether a systemd unit is already
+// represented by a running provider.  Checks unit name first (fast),
+// then falls back to state-dir matching for user-level systemd where
+// attachUnits cannot parse the cgroup to set Provider.Unit.
+func alreadyBackedByRunning(running []Provider, unit string, userFor func(string) string) bool {
+	if unitIn(running, unit) {
+		return true
+	}
+	if userFor == nil {
+		return false
+	}
+	user := userFor(unit)
+	sd := unitStateDir(user)
+	if sd == "" {
+		return false
+	}
+	for _, rp := range running {
+		if rp.StateDir == sd && rp.User == user {
+			return true
+		}
+	}
+	return false
+}
+
 // providerFromUnit builds a Provider record for a (possibly stopped) unit.
 //
 // binary is the unit's ExecStart executable, resolved by the caller (it needs
