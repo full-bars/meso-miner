@@ -3170,20 +3170,26 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 
 		endTime := time.Now().Add(self.sendBufferSettings.CreateContractTimeout)
 
-		// back off contract retries when the backend is unreachable to reduce API storm
-		contractRetryInterval := self.sendBufferSettings.CreateContractRetryInterval
-		if isBackendDegraded() {
-			contractRetryInterval = 30 * time.Second
-		}
-		// per-destination denial backoff: re-read before every attempt because
-		// async CreateContract callbacks can trigger noteDenial between retries.
-		if denialBackoff := self.client.ContractManager().getDenialBackoff(self.destination.DestinationId); denialBackoff > contractRetryInterval {
-			contractRetryInterval = denialBackoff
+		// retryInterval is recomputed before every wait, from the baseline:
+		// back off when the backend is unreachable to reduce API storm, and
+		// honor the per-destination denial backoff, which async
+		// CreateContract callbacks can raise, clear or let expire between
+		// retries. Keeping a running maximum instead held a 15-60s wait
+		// after the denial had already cleared.
+		retryInterval := func() time.Duration {
+			interval := self.sendBufferSettings.CreateContractRetryInterval
+			if isBackendDegraded() {
+				interval = 30 * time.Second
+			}
+			if denialBackoff := self.client.ContractManager().getDenialBackoff(self.destination.DestinationId); denialBackoff > interval {
+				interval = denialBackoff
+			}
+			return interval
 		}
 
 		if self.sendContract != nil {
 			// there should be a queued up contract
-			if traceNextContract(min(self.sendBufferSettings.CreateContractTimeout, contractRetryInterval)) {
+			if traceNextContract(min(self.sendBufferSettings.CreateContractTimeout, retryInterval())) {
 				return true
 			}
 		}
@@ -3218,13 +3224,7 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 				)
 			}
 
-			// Re-read denial backoff each iteration — async callbacks may have
-			// raised it since the last iteration.
-			if denialBackoff := self.client.ContractManager().getDenialBackoff(self.destination.DestinationId); denialBackoff > contractRetryInterval {
-				contractRetryInterval = denialBackoff
-			}
-
-			if traceNextContract(min(timeout, contractRetryInterval)) {
+			if traceNextContract(min(timeout, retryInterval())) {
 				return true
 			}
 		}
