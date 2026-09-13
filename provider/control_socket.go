@@ -197,9 +197,8 @@ func handleControlConn(conn net.Conn, state *controlState) {
 		if err := verifyPeerCredentials(uc); err != nil {
 			// Send a structured error so the CLI prints a real
 			// message instead of "connection reset by peer".
-			enc := json.NewEncoder(conn)
-			enc.Encode(controlResponse{OK: false, Error: err.Error()})
 			conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+			_ = json.NewEncoder(conn).Encode(controlResponse{OK: false, Error: err.Error()})
 			tlog("🔒 [control] rejected connection: %s\n", err)
 			return
 		}

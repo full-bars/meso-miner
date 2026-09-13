@@ -34,15 +34,15 @@ func verifyPeerCredentials(conn *net.UnixConn) error {
 	}
 
 	providerUID := uint32(os.Getuid())
-	if ucred.Uid != providerUID && ucred.Uid != 0 {
-		return fmt.Errorf("peer cred: UID %d != provider UID %d (root=%d)", ucred.Uid, providerUID, uint32(0))
+	if !peerAllowed(ucred.Uid, providerUID) {
+		return fmt.Errorf("peer cred: UID %d is neither the provider UID %d nor root", ucred.Uid, providerUID)
 	}
 	return nil
 }
 
-// peerAllowed reports whether the given peer UID is accepted by the
-// provider. Exported as a pure function so tests can exercise the logic
-// without needing real Unix connections.
+// peerAllowed reports whether a peer UID may use the control socket: the
+// provider's own UID or root. verifyPeerCredentials delegates here so the
+// decision is testable without connecting as another user.
 func peerAllowed(peerUID, providerUID uint32) bool {
 	return peerUID == providerUID || peerUID == 0
 }
