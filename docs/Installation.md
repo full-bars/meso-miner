@@ -140,7 +140,7 @@ powershell -c "irm https://dl.fullbars.xyz/uninstall-win.ps1 | iex"
 | Component | Location |
 |-----------|----------|
 | Provider binary | `%LOCALAPPDATA%\urnetwork\provider\windows\<arch>\urnetwork.exe` |
-| Management tool | `urnet-tools` (Go binary, v3.23.0-fix.27.0+; the legacy `urnet-tools.ps1` wrapper is deprecated) + `urnetwork-updater.ps1` |
+| Management tool | `urnet-tools` (Go binary, v3.23.0-fix.27.0+) |
 | State directory | `%USERPROFILE%\.urnetwork\` |
 | Startup (optional) | `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\urnetwork.lnk` |
 | PATH | User PATH updated to include `%LOCALAPPDATA%\urnetwork\provider\windows\<arch>\` |

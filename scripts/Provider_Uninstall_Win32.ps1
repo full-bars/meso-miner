@@ -48,6 +48,22 @@ $ProviderExe = Join-Path -Path $InstallDir -ChildPath "urnetwork.exe"
 # installed path only.
 Get-WmiObject Win32_Process | Where-Object { $_.ExecutablePath -eq $ProviderExe } | ForEach-Object { $_.Terminate() }
 
+# Kill the legacy updater process (PS1-era) if still running.
+Get-Process urnetwork-updater -ErrorAction SilentlyContinue |
+    Stop-Process -Force -ErrorAction SilentlyContinue
+
+# Remove Task Scheduler tasks created by the Go urnet-tools binary.
+# The Go tool's cleanupLifecycle does this too, but the uninstaller
+# must be thorough even on partially-managed installs.
+schtasks /Delete /TN "urnetwork-update" /F 2>$null
+schtasks /Delete /TN "urnetwork-autostart" /F 2>$null
+
+# Remove PID file if the legacy updater left one behind.
+$StalePid = Join-Path -Path $InstallDir -ChildPath "urnetwork-updater.pid"
+if (Test-Path $StalePid) {
+    Remove-Item -Path $StalePid -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host "Removing installation directory: $InstallDir"
 Remove-Item -Path $InstallDir -Recurse -Force
 

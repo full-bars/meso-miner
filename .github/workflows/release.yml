@@ -340,8 +340,7 @@ jobs:
             arch="${plat#windows-}"
             mkdir -p "per-platform/${plat}"
             cp "release_tmp/windows/${arch}/provider.exe" "per-platform/${plat}/"
-            cp scripts/urnet-tools.ps1 "per-platform/${plat}/"
-            cp scripts/urnetwork-updater.ps1 "per-platform/${plat}/"
+            cp "tool_tmp/windows/${arch}/urnet-tools" "per-platform/${plat}/urnet-tools.exe"
             cd "per-platform/${plat}" && tar -czf "../../urnetwork-provider-${VERSION}-${plat}.tar.gz" * && cd ../..
           done
 

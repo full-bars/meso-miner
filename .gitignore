@@ -32,3 +32,4 @@ prs.json
 *.exe
 review-egg-dsflash-v2.md
 /dist/
+fake-provider
