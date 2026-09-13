@@ -85,10 +85,13 @@ var (
 	getpidFunc         = os.Getpid
 	execInPlaceFunc    = execInPlace
 	spawnCandidateFunc = spawnHotSwapCandidate
-	exitFunc           = os.Exit
-	executableFunc     = os.Executable
-	statFunc           = os.Stat
-	syscallAccess      = checkExecAccess
+	// restoreStdioBeforeExecFunc is overridable so tests can check it runs
+	// before the in-place execve.
+	restoreStdioBeforeExecFunc = restoreStdioBeforeExec
+	exitFunc                   = os.Exit
+	executableFunc             = os.Executable
+	statFunc                   = os.Stat
+	syscallAccess              = checkExecAccess
 )
 
 // installPath is the executable path captured at process start, before any
@@ -244,6 +247,44 @@ func ClearCoordinatorClosers() {
 	coordinatorClosersMu.Lock()
 	defer coordinatorClosersMu.Unlock()
 	coordinatorClosersMap = make(map[uint64]func())
+}
+
+// sanitizeCandidateArgs strips identity-mutating arguments from the parent's
+// argv so the HotSwap candidate never re-authenticates or re-executes
+// auth-provide with a stale auth code (F-3). Returns the cleaned argument list.
+// Shared by the spawned-candidate path (hotswap_unix.go) and the Docker
+// in-place execve branch below, so it lives in the platform-neutral file.
+func sanitizeCandidateArgs(args []string) []string {
+	var cleanArgs []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "auth-provide" {
+			cleanArgs = append(cleanArgs, "provide")
+			// If followed by positional auth code, skip it
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+			}
+			continue
+		}
+		if arg == "-f" {
+			continue
+		}
+		if arg == "--user_auth" {
+			// Skip the flag and its positional value (separated form: --user_auth <val>)
+			i++
+			continue
+		}
+		if arg == "--password" {
+			// Skip the flag and its positional value (separated form: --password <val>)
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "--user_auth=") || strings.HasPrefix(arg, "--password=") {
+			continue
+		}
+		cleanArgs = append(cleanArgs, arg)
+	}
+	return cleanArgs
 }
 
 // yieldCoordinatorSession executes all registered callbacks to disconnect from the coordinator.
@@ -520,10 +561,22 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 			}
 		}
 
-		args := os.Args
-		if len(args) == 0 {
-			args = []string{exe}
+		// The canary was spawned with sanitizeCandidateArgs, and the in-place
+		// image must be too. A container first started as
+		// `auth-provide <code>` would otherwise re-execute with an auth code
+		// the first run already consumed, and exit.
+		argv0 := exe
+		var rest []string
+		if len(os.Args) > 0 {
+			argv0 = os.Args[0]
+			rest = os.Args[1:]
 		}
+		args := append([]string{argv0}, sanitizeCandidateArgs(rest)...)
+
+		// Hand stdout/stderr back from the ramlog pipe: its reader is a
+		// goroutine in this process and does not survive exec, so the new
+		// image would die of SIGPIPE on its first write.
+		restoreStdioBeforeExecFunc()
 
 		if err := execInPlaceFunc(exe, args, cleanEnv); err != nil {
 			tlog("CRITICAL [hotswap] syscall.Exec failed: %v\n", err)

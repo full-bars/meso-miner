@@ -69,42 +69,6 @@ func (s *HotswapParentSession) Wait() error {
 	return s.waitErr
 }
 
-// sanitizeCandidateArgs strips identity-mutating arguments from the parent's
-// argv so the HotSwap candidate never re-authenticates or re-executes
-// auth-provide with a stale auth code (F-3). Returns the cleaned argument list.
-func sanitizeCandidateArgs(args []string) []string {
-	var cleanArgs []string
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "auth-provide" {
-			cleanArgs = append(cleanArgs, "provide")
-			// If followed by positional auth code, skip it
-			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
-				i++
-			}
-			continue
-		}
-		if arg == "-f" {
-			continue
-		}
-		if arg == "--user_auth" {
-			// Skip the flag and its positional value (separated form: --user_auth <val>)
-			i++
-			continue
-		}
-		if arg == "--password" {
-			// Skip the flag and its positional value (separated form: --password <val>)
-			i++
-			continue
-		}
-		if strings.HasPrefix(arg, "--user_auth=") || strings.HasPrefix(arg, "--password=") {
-			continue
-		}
-		cleanArgs = append(cleanArgs, arg)
-	}
-	return cleanArgs
-}
-
 // spawnHotSwapCandidate creates an anonymous close-on-exec socketpair,
 // passes descriptor 3 to the child via ExtraFiles, and starts the candidate process.
 func spawnHotSwapCandidate(exe string, args []string) (*HotswapParentSession, error) {
@@ -257,12 +221,12 @@ func notifySystemdMainPID(pid int) error {
 // supervision loops running), NOT once a proxy has authenticated.
 //
 // Gating READY on a successful proxy auth would make the barrier hostage to a
-// third party. The unit sets TimeoutStartSec=0, which is itself correct (proxy
-// auth backs off for hours against a rate-limited API, so any finite timeout
-// would eventually kill a provider that is retrying correctly). Combining the
-// two means a `systemctl restart` during an API outage blocks forever, with no
-// ceiling, at exactly the moment an operator most needs to restart. Health is
-// reported separately and continuously via notifySystemdStatus.
+// third party. Proxy auth backs off for hours against a rate-limited API, so a
+// Type=notify unit waiting on it would hit its start timeout (the installer
+// sets none, so systemd's default applies) and kill a provider that is
+// retrying correctly, making a `systemctl restart` during an API outage fail
+// at exactly the moment an operator most needs to restart. Health is reported
+// separately and continuously via notifySystemdStatus.
 func notifySystemdReady() error {
 	if err := sdNotify("READY=1\n"); err != nil && !errors.Is(err, ErrNoNotifySocket) {
 		return err

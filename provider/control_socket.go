@@ -14,6 +14,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -697,34 +698,126 @@ func applyMetricsLive(value string) error {
 		// Bind before reporting success: a port that cannot be bound is an
 		// error the caller sees, not a log line from a goroutine after the
 		// command already returned OK.
-		ln, err := listenMetrics()
+		ln, err := listenMetrics(0)
 		if err != nil {
 			return fmt.Errorf("metrics on: %w", err)
 		}
-		connect.SetExtraMetricsProvider(providerExtraMetrics)
-		connect.SetPersistentErrorFunc(IncrPersistentError)
-		server := &http.Server{
-			Handler:           connect.PrometheusHandler(),
-			ReadHeaderTimeout: 10 * time.Second,
-			IdleTimeout:       30 * time.Second,
-		}
-		metricsServer = server
-		go func() {
-			if err := server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				tlog("[metrics] listener failed: %v\n", err)
-			}
-		}()
-		tlog("[metrics] started Prometheus /metrics on %s\n", ln.Addr())
+		serveMetrics(ln)
 	} else if !enabled && metricsServer != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		if err := metricsServer.Shutdown(ctx); err != nil {
+		if err := stopMetrics(); err != nil {
 			return fmt.Errorf("metrics off: %w", err)
 		}
-		metricsServer = nil
 		tlog("[metrics] stopped Prometheus /metrics\n")
 	}
 	return nil
+}
+
+// metricsUnregCloser removes the running listener from the HotSwap
+// coordinator closers; nil when no listener is registered.
+var metricsUnregCloser func()
+
+// metricsListener is the socket metricsServer serves on. stopMetrics closes
+// it directly: Shutdown alone does not free the port when it returns if
+// Serve has not registered the listener yet, and a HotSwap candidate needs
+// the port released by the time the parent has yielded.
+var metricsListener net.Listener
+
+// metricsHandoffPending is true while this process is a HotSwap candidate
+// that has not taken over yet. The parent holds the metrics port until it
+// yields, so a listener started earlier either fails to bind or lands on a
+// different port. startMetricsAfterTakeover clears it.
+var metricsHandoffPending atomic.Bool
+
+// serveMetrics serves /metrics on ln and registers the listener with the
+// HotSwap coordinator closers, so a parent releases the port when it yields
+// and the promoted candidate can bind the same address.
+func serveMetrics(ln net.Listener) {
+	connect.SetExtraMetricsProvider(providerExtraMetrics)
+	connect.SetPersistentErrorFunc(IncrPersistentError)
+	server := &http.Server{
+		Handler:           connect.PrometheusHandler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       30 * time.Second,
+	}
+	metricsServer = server
+	metricsListener = ln
+	go func() {
+		if err := server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+			tlog("[metrics] listener failed: %v\n", err)
+		}
+	}()
+	if metricsUnregCloser != nil {
+		metricsUnregCloser()
+	}
+	metricsUnregCloser = RegisterCoordinatorCloser(func() {
+		if err := stopMetrics(); err != nil {
+			tlog("[metrics] releasing /metrics for hotswap: %v\n", err)
+		}
+	})
+	tlog("[metrics] started Prometheus /metrics on %s\n", ln.Addr())
+}
+
+// stopMetrics shuts the /metrics listener down, unregisters its HotSwap
+// closer and forgets it. Safe to call when nothing is running.
+func stopMetrics() error {
+	if metricsUnregCloser != nil {
+		metricsUnregCloser()
+		metricsUnregCloser = nil
+	}
+	if metricsServer == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := metricsServer.Shutdown(ctx)
+	if metricsListener != nil {
+		// Already closed by Shutdown in the common case; closing again just
+		// returns net.ErrClosed.
+		_ = metricsListener.Close()
+		metricsListener = nil
+	}
+	metricsServer = nil
+	return err
+}
+
+// startMetricsAfterTakeover starts /metrics in a promoted HotSwap candidate,
+// once the parent has yielded. The parent's closers run in no fixed order,
+// so its metrics port can still be held for a moment after the control
+// socket is released; wait briefly for the same address instead of moving
+// to another port.
+func startMetricsAfterTakeover(state *controlState) {
+	metricsHandoffPending.Store(false)
+	if metricsServer != nil {
+		return
+	}
+	enabled := os.Getenv("URNETWORK_METRICS") != ""
+	if !enabled {
+		if v, ok := state.get("metrics"); ok && strings.EqualFold(v, "on") {
+			enabled = true
+		}
+	}
+	if !enabled {
+		return
+	}
+	ln, err := listenMetrics(5 * time.Second)
+	if err != nil {
+		tlog("[metrics] could not bind /metrics after hotswap takeover: %v\n", err)
+		return
+	}
+	serveMetrics(ln)
+}
+
+// listenOrWait binds addr, retrying until wait elapses. wait of zero tries
+// once.
+func listenOrWait(addr string, wait time.Duration) (net.Listener, error) {
+	deadline := time.Now().Add(wait)
+	for {
+		ln, err := net.Listen("tcp", addr)
+		if err == nil || !time.Now().Before(deadline) {
+			return ln, err
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // listenMetrics binds the Prometheus /metrics listener. If URNETWORK_METRICS
@@ -735,13 +828,21 @@ func applyMetricsLive(value string) error {
 // it remotely is an explicit URNETWORK_METRICS choice. The listener comes
 // back open: probing a port, closing it and binding it again let another
 // process take it in between.
-func listenMetrics() (net.Listener, error) {
+//
+// wait is how long to keep retrying the preferred address (the explicit
+// address, or 127.0.0.1:9100) before giving up or moving on to the next
+// port; a HotSwap candidate uses it while the parent releases its listener.
+func listenMetrics(wait time.Duration) (net.Listener, error) {
 	if addr := os.Getenv("URNETWORK_METRICS"); addr != "" {
-		return net.Listen("tcp", addr)
+		return listenOrWait(addr, wait)
 	}
 	var lastErr error
-	for _, port := range []int{9100, 9101, 9102, 9103} {
-		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	for i, port := range []int{9100, 9101, 9102, 9103} {
+		portWait := time.Duration(0)
+		if i == 0 {
+			portWait = wait
+		}
+		ln, err := listenOrWait(fmt.Sprintf("127.0.0.1:%d", port), portWait)
 		if err == nil {
 			return ln, nil
 		}
@@ -778,7 +879,7 @@ func applyPersistedRuntimeTuning(state *controlState) {
 	// the env var a persisted "on" had no startup consumer and
 	// `set metrics on` did not survive a restart. With the env var set,
 	// main.go owns the listener and this stays out of its way.
-	if v, ok := state.get("metrics"); ok && strings.EqualFold(v, "on") && os.Getenv("URNETWORK_METRICS") == "" {
+	if v, ok := state.get("metrics"); ok && strings.EqualFold(v, "on") && os.Getenv("URNETWORK_METRICS") == "" && !metricsHandoffPending.Load() {
 		if err := applyMetricsLive("on"); err != nil {
 			tlog("[control] failed to apply persisted metrics=on: %s\n", err)
 		}
