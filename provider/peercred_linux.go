@@ -10,9 +10,11 @@ import (
 )
 
 // verifyPeerCredentials checks that the connecting process has the same
-// UID as the provider. This prevents any other user on the system from
-// sending commands to the control socket (defense-in-depth alongside
-// the 0600 file permission on the socket).
+// UID as the provider, or is root (uid 0). Root can always manage any
+// provider (it already has filesystem access to the state dir and the
+// ability to signal the process). This prevents unprivileged users on
+// the system from sending commands to the control socket while allowing
+// root (systemd, cron, fleet scripts) to manage the provider.
 func verifyPeerCredentials(conn *net.UnixConn) error {
 	raw, err := conn.SyscallConn()
 	if err != nil {
@@ -32,8 +34,15 @@ func verifyPeerCredentials(conn *net.UnixConn) error {
 	}
 
 	providerUID := uint32(os.Getuid())
-	if ucred.Uid != providerUID {
-		return fmt.Errorf("peer cred: UID %d != provider UID %d", ucred.Uid, providerUID)
+	if ucred.Uid != providerUID && ucred.Uid != 0 {
+		return fmt.Errorf("peer cred: UID %d != provider UID %d (root=%d)", ucred.Uid, providerUID, uint32(0))
 	}
 	return nil
+}
+
+// peerAllowed reports whether the given peer UID is accepted by the
+// provider. Exported as a pure function so tests can exercise the logic
+// without needing real Unix connections.
+func peerAllowed(peerUID, providerUID uint32) bool {
+	return peerUID == providerUID || peerUID == 0
 }
