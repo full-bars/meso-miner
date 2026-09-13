@@ -111,52 +111,52 @@ func TestCompositeWeightStreakPenalty(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAdaptiveBlockSize(t *testing.T) {
-	// Reset global state
-	probeWindowState.mu.Lock()
-	probeWindowState.successCount = 0
-	probeWindowState.failureCount = 0
-	probeWindowState.windowStart = time.Now().UnixNano()
-	probeWindowState.mu.Unlock()
+	w := &probeWindow{}
+	w.mu.Lock()
+	w.successCount = 0
+	w.failureCount = 0
+	w.windowStart = time.Now().UnixNano()
+	w.mu.Unlock()
 
 	t.Run("no_data_returns_default", func(t *testing.T) {
-		probeWindowState.mu.Lock()
-		probeWindowState.successCount = 0
-		probeWindowState.failureCount = 0
-		probeWindowState.mu.Unlock()
-		got := getAdaptiveBlockSize(4)
+		w.mu.Lock()
+		w.successCount = 0
+		w.failureCount = 0
+		w.mu.Unlock()
+		got := w.blockSize(4)
 		if got != 4 {
 			t.Errorf("expected default 4, got %d", got)
 		}
 	})
 
 	t.Run("healthy_network_reduces_to_2", func(t *testing.T) {
-		probeWindowState.mu.Lock()
-		probeWindowState.successCount = 90
-		probeWindowState.failureCount = 10
-		probeWindowState.mu.Unlock()
-		got := getAdaptiveBlockSize(4)
+		w.mu.Lock()
+		w.successCount = 90
+		w.failureCount = 10
+		w.mu.Unlock()
+		got := w.blockSize(4)
 		if got != 2 {
 			t.Errorf("expected 2 for >80%% success, got %d", got)
 		}
 	})
 
 	t.Run("normal_network_keeps_4", func(t *testing.T) {
-		probeWindowState.mu.Lock()
-		probeWindowState.successCount = 60
-		probeWindowState.failureCount = 40
-		probeWindowState.mu.Unlock()
-		got := getAdaptiveBlockSize(4)
+		w.mu.Lock()
+		w.successCount = 60
+		w.failureCount = 40
+		w.mu.Unlock()
+		got := w.blockSize(4)
 		if got != 4 {
 			t.Errorf("expected 4 for 50-80%% success, got %d", got)
 		}
 	})
 
 	t.Run("degraded_network_increases_to_6", func(t *testing.T) {
-		probeWindowState.mu.Lock()
-		probeWindowState.successCount = 30
-		probeWindowState.failureCount = 70
-		probeWindowState.mu.Unlock()
-		got := getAdaptiveBlockSize(4)
+		w.mu.Lock()
+		w.successCount = 30
+		w.failureCount = 70
+		w.mu.Unlock()
+		got := w.blockSize(4)
 		if got != 6 {
 			t.Errorf("expected 6 for <50%% success, got %d", got)
 		}
@@ -164,33 +164,33 @@ func TestAdaptiveBlockSize(t *testing.T) {
 
 	t.Run("expired_window_returns_default", func(t *testing.T) {
 		// Set window to 20 seconds ago
-		probeWindowState.mu.Lock()
-		probeWindowState.windowStart = time.Now().Add(-20 * time.Second).UnixNano()
-		probeWindowState.successCount = 5
-		probeWindowState.failureCount = 95
-		probeWindowState.mu.Unlock()
-		got := getAdaptiveBlockSize(4)
+		w.mu.Lock()
+		w.windowStart = time.Now().Add(-20 * time.Second).UnixNano()
+		w.successCount = 5
+		w.failureCount = 95
+		w.mu.Unlock()
+		got := w.blockSize(4)
 		if got != 4 {
 			t.Errorf("expected default 4 for expired window, got %d", got)
 		}
 	})
 
-	t.Run("recordProbeResult_increments_counters", func(t *testing.T) {
-		probeWindowState.mu.Lock()
-		probeWindowState.successCount = 0
-		probeWindowState.failureCount = 0
-		probeWindowState.windowStart = time.Now().UnixNano()
-		probeWindowState.mu.Unlock()
+	t.Run("record_increments_counters", func(t *testing.T) {
+		w.mu.Lock()
+		w.successCount = 0
+		w.failureCount = 0
+		w.windowStart = time.Now().UnixNano()
+		w.mu.Unlock()
 		for i := 0; i < 5; i++ {
-			recordProbeResult(true)
+			w.record(true)
 		}
 		for i := 0; i < 3; i++ {
-			recordProbeResult(false)
+			w.record(false)
 		}
-		probeWindowState.mu.Lock()
-		s := probeWindowState.successCount
-		f := probeWindowState.failureCount
-		probeWindowState.mu.Unlock()
+		w.mu.Lock()
+		s := w.successCount
+		f := w.failureCount
+		w.mu.Unlock()
 		if s != 5 {
 			t.Errorf("expected 5 successes, got %d", s)
 		}
@@ -200,33 +200,66 @@ func TestAdaptiveBlockSize(t *testing.T) {
 	})
 
 	t.Run("concurrent_recording", func(t *testing.T) {
-		probeWindowState.mu.Lock()
-		probeWindowState.successCount = 0
-		probeWindowState.failureCount = 0
-		probeWindowState.windowStart = time.Now().UnixNano()
-		probeWindowState.mu.Unlock()
+		w.mu.Lock()
+		w.successCount = 0
+		w.failureCount = 0
+		w.windowStart = time.Now().UnixNano()
+		w.mu.Unlock()
 		var wg sync.WaitGroup
 		for i := 0; i < 100; i++ {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
-				recordProbeResult(i%3 != 0) // ~67% success
+				w.record(i%3 != 0) // ~67% success
 			}(i)
 		}
 		wg.Wait()
-		probeWindowState.mu.Lock()
-		s := probeWindowState.successCount
-		f := probeWindowState.failureCount
-		probeWindowState.mu.Unlock()
+		w.mu.Lock()
+		s := w.successCount
+		f := w.failureCount
+		w.mu.Unlock()
 		if s+f != 100 {
 			t.Errorf("expected 100 total probes, got %d", s+f)
 		}
 		// ~67 successes should give >50% → block size 4 or 2
-		got := getAdaptiveBlockSize(4)
+		got := w.blockSize(4)
 		if got != 2 && got != 4 {
 			t.Errorf("expected block size 2 or 4 for ~67%% success, got %d", got)
 		}
 	})
+}
+
+// TestAdaptiveBlockSizePerStrategy: windows scale the configured size and
+// never share state. A provider runs one ClientStrategy per proxy, so one
+// proxy's failing path must not widen another proxy's batch.
+func TestAdaptiveBlockSizePerStrategy(t *testing.T) {
+	healthy := &probeWindow{}
+	degraded := &probeWindow{}
+	for i := 0; i < 10; i++ {
+		healthy.record(true)
+		degraded.record(false)
+	}
+	if got := healthy.blockSize(8); got != 4 {
+		t.Errorf("healthy blockSize(8) = %d, want 4", got)
+	}
+	if got := degraded.blockSize(8); got != 12 {
+		t.Errorf("degraded blockSize(8) = %d, want 12", got)
+	}
+	if got := degraded.blockSize(1); got != 2 {
+		t.Errorf("degraded blockSize(1) = %d, want 2", got)
+	}
+	if got := healthy.blockSize(1); got != 1 {
+		t.Errorf("healthy blockSize(1) = %d, want 1", got)
+	}
+
+	a := NewClientStrategyWithDefaults(context.Background())
+	b := NewClientStrategyWithDefaults(context.Background())
+	for i := 0; i < 10; i++ {
+		a.probes.record(false)
+	}
+	if got := b.probes.blockSize(4); got != 4 {
+		t.Errorf("strategy b picked up strategy a's failures: blockSize = %d, want 4", got)
+	}
 }
 
 // ---------------------------------------------------------------------------

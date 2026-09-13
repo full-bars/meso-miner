@@ -38,74 +38,69 @@ type HttpPostRawFunction func(ctx context.Context, requestUrl string, requestBod
 type HttpGetRawFunction func(ctx context.Context, requestUrl string, byJwt string) ([]byte, error)
 
 // ---- adaptive parallel block size ----
-// Process-wide state tracks probe outcomes over a rolling 10-second window
-// so that the parallel probe batch shrinks on healthy networks and grows when
-// things degrade.
-//
-// CRITICAL #5 fix: replaced three separate atomics with a mutex-guarded struct
-// to eliminate the race where CAS zeroes counts non-atomically while another
-// goroutine reads them.
-var probeWindowState struct {
+
+// probeWindow tracks dial outcomes over a rolling 10-second window so the
+// parallel probe batch shrinks on a healthy network and grows when it
+// degrades. Each ClientStrategy owns one. A provider runs a strategy per
+// proxy, and a process-wide window let one proxy's failing path widen, or
+// one healthy path narrow, the batch for every other proxy.
+type probeWindow struct {
 	mu           sync.Mutex
 	windowStart  int64 // UnixNano of current window start
 	successCount int64
 	failureCount int64
 }
 
-// recordProbeResult registers a single probe outcome and resets the window
-// when more than 10 seconds have elapsed since the window opened.
-func recordProbeResult(success bool) {
+// record registers a single dial outcome and resets the window when more
+// than 10 seconds have elapsed since it opened.
+func (self *probeWindow) record(success bool) {
 	now := time.Now().UnixNano()
-	probeWindowState.mu.Lock()
-	start := probeWindowState.windowStart
-	if start == 0 || now-start > 10*int64(time.Second) {
-		probeWindowState.windowStart = now
-		probeWindowState.successCount = 0
-		probeWindowState.failureCount = 0
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	if self.windowStart == 0 || now-self.windowStart > 10*int64(time.Second) {
+		self.windowStart = now
+		self.successCount = 0
+		self.failureCount = 0
 	}
 	if success {
-		probeWindowState.successCount++
+		self.successCount++
 	} else {
-		probeWindowState.failureCount++
+		self.failureCount++
 	}
-	probeWindowState.mu.Unlock()
 }
 
-// getAdaptiveBlockSize returns a parallel probe count that reflects current
-// network health.  Falls back to defaultSize when no data is available.
+// blockSize scales the configured ParallelBlockSize by recent health:
 //
-//	>80 % success → 2 (healthy, save goroutines)
-//	50-80 %       → 4 (normal)
-//	<50 %         → 6 (degraded, probe harder)
-func getAdaptiveBlockSize(defaultSize int) int {
-	if defaultSize < 1 {
-		defaultSize = 1
+//	>80 % success → half (healthy, save goroutines)
+//	50-80 %       → configured
+//	<50 %         → one and a half times (degraded, probe harder)
+//
+// The default of 4 gives 2/4/6. Scaling instead of returning fixed values
+// keeps an operator's configured size meaningful. Returns the configured
+// size when the window holds no fresh data.
+func (self *probeWindow) blockSize(configured int) int {
+	if configured < 1 {
+		configured = 1
 	}
-	probeWindowState.mu.Lock()
-	start := probeWindowState.windowStart
-	if start == 0 {
-		probeWindowState.mu.Unlock()
-		return defaultSize
+	self.mu.Lock()
+	start := self.windowStart
+	s := self.successCount
+	f := self.failureCount
+	self.mu.Unlock()
+	if start == 0 || time.Now().UnixNano()-start > 10*int64(time.Second) {
+		return configured
 	}
-	now := time.Now().UnixNano()
-	if now-start > 10*int64(time.Second) {
-		probeWindowState.mu.Unlock()
-		return defaultSize // window expired, no fresh data
-	}
-	s := probeWindowState.successCount
-	f := probeWindowState.failureCount
-	probeWindowState.mu.Unlock()
 	total := s + f
 	if total == 0 {
-		return defaultSize
+		return configured
 	}
 	rate := float64(s) / float64(total)
 	if rate > 0.8 {
-		return 2
+		return max(1, configured/2)
 	} else if rate >= 0.5 {
-		return 4
+		return configured
 	}
-	return 6
+	return configured + max(1, configured/2)
 }
 
 func DefaultClientStrategySettings() *ClientStrategySettings {
@@ -197,6 +192,8 @@ type ClientStrategy struct {
 
 	nextConnectTime time.Time
 	failureCount    int
+
+	probes probeWindow
 }
 
 func (self *ClientStrategy) getBackoffTimeout() time.Duration {
@@ -570,7 +567,7 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 		// CRITICAL #1 fix: compute blockSize once per iteration to prevent
 		// the value from changing between the two call sites, which could
 		// make blockSize-p go negative and cause a slice bounds panic.
-		blockSize := getAdaptiveBlockSize(self.settings.ParallelBlockSize)
+		blockSize := self.probes.blockSize(self.settings.ParallelBlockSize)
 
 		dialerWeights := self.dialerWeights()
 
@@ -888,7 +885,9 @@ func (self *ClientStrategy) HttpParallel(request *http.Request) (*httpResult, er
 			}
 		}
 
-		dialer.Update(handleCtx, err, dialDur)
+		if dialer.Update(handleCtx, err, dialDur) {
+			self.probes.record(err == nil)
+		}
 
 		return newEvalResultFromHttpResponse(response, err)
 	}
@@ -920,7 +919,9 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 			}
 		}
 
-		dialer.Update(handleCtx, err, dialDur)
+		if dialer.Update(handleCtx, err, dialDur) {
+			self.probes.record(err == nil)
+		}
 
 		return newEvalResultFromHttpResponse(response, err)
 	}
@@ -937,7 +938,9 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 			}
 		}
 
-		dialer.Update(handleCtx, err, dialDur)
+		if dialer.Update(handleCtx, err, dialDur) {
+			self.probes.record(err == nil)
+		}
 
 		return newEvalResultFromHttpResponse(response, err)
 	}
@@ -963,7 +966,9 @@ func (self *ClientStrategy) WsDialContext(ctx context.Context, url string, reque
 			}
 		}
 
-		dialer.Update(handleCtx, err, dialDur)
+		if dialer.Update(handleCtx, err, dialDur) {
+			self.probes.record(err == nil)
+		}
 
 		return &evalResult{
 			wsConn: wsConn,
@@ -1322,7 +1327,10 @@ func (self *clientDialer) Weight() float32 {
 	return w
 }
 
-func (self *clientDialer) Update(handleCtx context.Context, err error, duration time.Duration) {
+// Update records a dial outcome and reports whether it counted. An error
+// after the handle context was canceled is a race loser, not a failure, and
+// is not counted.
+func (self *clientDialer) Update(handleCtx context.Context, err error, duration time.Duration) bool {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -1338,8 +1346,7 @@ func (self *clientDialer) Update(handleCtx context.Context, err error, duration 
 		} else {
 			self.avgLatencyNanos = int64(alpha*float64(nanos) + (1-alpha)*float64(self.avgLatencyNanos))
 		}
-		// Record probe success for adaptive block size
-		recordProbeResult(true)
+		return true
 	} else {
 		select {
 		case <-handleCtx.Done():
@@ -1351,10 +1358,10 @@ func (self *clientDialer) Update(handleCtx context.Context, err error, duration 
 			if self.consecutiveErrors > 20 {
 				self.consecutiveErrors = 20
 			}
-			// Record probe failure for adaptive block size
-			recordProbeResult(false)
+			return true
 		}
 	}
+	return false
 }
 
 func (self *clientDialer) IsExtender() bool {
