@@ -179,6 +179,23 @@ urnet-tools update
 
 > See [Adding Proxies](Adding-Proxies.md) for per-OS proxy-loading instructions and the Windows `.txt.txt` extension trap.
 
+### 📦 Tarball Install (Alternative)
+
+Starting with v3.23.0-fix.31.2, the Windows release tarball includes `urnet-tools` alongside the provider binary. If you prefer a manual or offline install:
+
+1. Download the release tarball from [GitHub Releases](https://github.com/full-bars/urnetwork-3.23-fix/releases).
+2. Extract the archive to your desired location (e.g. `%LOCALAPPDATA%\urnetwork`).
+3. Open **PowerShell** and run the included install script:
+
+```powershell
+.\Provider_Install_Win32.ps1
+```
+
+This registers the PATH entry and optional startup shortcut — the same result as the CDN installer, but sourced entirely from the tarball. No internet access is required at install time. The script detects `amd64`/`arm64` automatically and places the correct binaries.
+
+> [!TIP]
+> The tarball method is useful for air-gapped machines or when you want to pin a specific release version rather than always pulling `latest`.
+
 ## 📊 System Auditor & Host Optimization
 
 When the provider starts, it logs a **System Auditor** report that checks kernel limits and disk I/O performance:
