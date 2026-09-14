@@ -282,9 +282,9 @@ $CleanupStaleUpdater = {
     if (Test-Path $StalePid) {
         try {
             $OldPid = ([string](Get-Content -Path $StalePid -Raw)).Trim()
-            if ($OldPid -match '^\d+$') {
+            if ($OldPid -match '^\d+$' -and [int]$OldPid -ne $PID) {
                 $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $OldPid" -ErrorAction SilentlyContinue
-                if ($proc) {
+                if ($proc -and $proc.CommandLine -match 'urnetwork-updater') {
                     Write-Host "Terminating stale updater process (PID $OldPid, Name: $($proc.Name))"
                     Stop-Process -Id ([int]$OldPid) -Force -ErrorAction SilentlyContinue
                 }
@@ -317,7 +317,11 @@ if (-not (Test-Path $ExtractedTool)) {
 if (Test-Path $ExtractedTool) {
     Write-Host "Found urnet-tools.exe in extracted tarball ($ExtractedTool)"
     if (Test-Path $InstalledToolsBinaryPath) {
-        Move-Item -Path $InstalledToolsBinaryPath -Destination "$InstalledToolsBinaryPath.old" -Force
+        $OldBinary = "$InstalledToolsBinaryPath.old"
+        if (Test-Path $OldBinary) {
+            Remove-Item -Path $OldBinary -Force -ErrorAction SilentlyContinue
+        }
+        Move-Item -Path $InstalledToolsBinaryPath -Destination $OldBinary -Force
     }
     Move-Item -Path $ExtractedTool -Destination $InstalledToolsBinaryPath -Force
     $ToolGoInstalled = $true
@@ -345,7 +349,11 @@ if (-not $ToolGoInstalled -and $ToolAsset -and $ToolDigest) {
         }
         if ($ActualHash -eq $ExpectedHash) {
             if (Test-Path $InstalledToolsBinaryPath) {
-                Move-Item -Path $InstalledToolsBinaryPath -Destination "$InstalledToolsBinaryPath.old" -Force
+                $OldBinary = "$InstalledToolsBinaryPath.old"
+                if (Test-Path $OldBinary) {
+                    Remove-Item -Path $OldBinary -Force -ErrorAction SilentlyContinue
+                }
+                Move-Item -Path $InstalledToolsBinaryPath -Destination $OldBinary -Force
             }
             Move-Item -Path $ToolTemp -Destination $InstalledToolsBinaryPath
             $ToolGoInstalled = $true

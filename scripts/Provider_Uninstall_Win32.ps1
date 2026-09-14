@@ -55,9 +55,9 @@ $StalePid = Join-Path -Path $InstallDir -ChildPath "urnetwork-updater.pid"
 if (Test-Path $StalePid) {
     try {
         $OldPid = ([string](Get-Content -Path $StalePid -Raw)).Trim()
-        if ($OldPid -match '^\d+$') {
+        if ($OldPid -match '^\d+$' -and [int]$OldPid -ne $PID) {
             $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $OldPid" -ErrorAction SilentlyContinue
-            if ($proc) {
+            if ($proc -and $proc.CommandLine -match 'urnetwork-updater') {
                 Write-Host "Terminating stale updater process (PID $OldPid, Name: $($proc.Name))"
                 Stop-Process -Id ([int]$OldPid) -Force -ErrorAction SilentlyContinue
             }

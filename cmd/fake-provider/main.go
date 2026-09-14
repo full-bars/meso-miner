@@ -14,6 +14,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -72,6 +73,9 @@ func main() {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
 			fmt.Fprintf(os.Stderr, "fake-provider: accept: %v\n", err)
 			continue
 		}
@@ -108,6 +112,7 @@ func handleConn(conn net.Conn) {
 			time.Sleep(50 * time.Millisecond)
 			os.Exit(0)
 		}()
+		return
 	case "version":
 		resp.BuildVersion = "fake-provider-0.0.1"
 	default:
