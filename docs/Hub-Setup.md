@@ -110,7 +110,7 @@ urnet-tools report
 ```
 
 > [!NOTE]
-> Docker deployments use the same commands via `docker exec` under the hood — the `urnet-tools.ps1` PowerShell wrapper and the in-container `urnet-tools.sh` both expose `hub set` / `hub off` / `report`.
+> Docker deployments use the same commands via `docker exec` under the hood — the Go `urnet-tools` binary and the in-container `urnet-tools.sh` both expose `hub set` / `hub off` / `report`.
 
 ## 3. Secure the Connection (Recommended)
 

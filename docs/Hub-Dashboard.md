@@ -171,7 +171,7 @@ The `report` command writes to `~/.urnetwork/report_url`, which the provider re-
 
 **Runtime (Docker -- no restart):**
 
-The `urnet-docker` binary (v3.23.0-fix.27.0+; the legacy `urnet-tools.ps1` wrapper is deprecated) executes these commands inside the container via `docker exec`:
+The `urnet-docker` binary (v3.23.0-fix.27.0+; the legacy `urnet-tools.ps1` wrapper has been retired) executes these commands inside the container via `docker exec`:
 
 ```sh
 # Set or change

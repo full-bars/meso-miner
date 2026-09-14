@@ -83,8 +83,6 @@ urnetwork-3.23-fix/
 │   ├── Provider_Install_Win32.ps1
 │   ├── Provider_Uninstall_Linux.sh
 │   ├── Provider_Uninstall_Win32.ps1
-│   ├── urnet-tools.ps1           # Windows helper — DEPRECATED, retired in Phase 2 (use the Go binary)
-│   ├── urnetwork-updater.ps1     # Windows auto-updater
 │   ├── test_provider_install.sh  # CI: validates installer script logic
 │   └── test_fallback_logic.sh    # CI: validates fallback behavior
 │

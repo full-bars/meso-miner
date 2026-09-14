@@ -48,6 +48,30 @@ $ProviderExe = Join-Path -Path $InstallDir -ChildPath "urnetwork.exe"
 # installed path only.
 Get-WmiObject Win32_Process | Where-Object { $_.ExecutablePath -eq $ProviderExe } | ForEach-Object { $_.Terminate() }
 
+# Kill the legacy updater process (PS1-era) if still running.
+# Read the PID file first — the process runs under powershell.exe,
+# not "urnetwork-updater", so Get-Process never matches.
+$StalePid = Join-Path -Path $InstallDir -ChildPath "urnetwork-updater.pid"
+if (Test-Path $StalePid) {
+    try {
+        $OldPid = ([string](Get-Content -Path $StalePid -Raw)).Trim()
+        if ($OldPid -match '^\d+$' -and [int]$OldPid -ne $PID) {
+            $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $OldPid" -ErrorAction SilentlyContinue
+            if ($proc -and $proc.CommandLine -match 'urnetwork-updater') {
+                Write-Host "Terminating stale updater process (PID $OldPid, Name: $($proc.Name))"
+                Stop-Process -Id ([int]$OldPid) -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } catch {}
+    Remove-Item -Path $StalePid -Force -ErrorAction SilentlyContinue
+}
+
+# Remove Task Scheduler tasks created by the Go urnet-tools binary.
+# The Go tool's cleanupLifecycle does this too, but the uninstaller
+# must be thorough even on partially-managed installs.
+schtasks /Delete /TN "urnetwork-update" /F *>$null
+schtasks /Delete /TN "urnetwork-autostart" /F *>$null
+
 Write-Host "Removing installation directory: $InstallDir"
 Remove-Item -Path $InstallDir -Recurse -Force
 
@@ -84,6 +108,13 @@ if (Test-Path $ShortcutPath) {
     }
 }
 
+# Also remove the legacy update shortcut (created by urnet-tools.ps1).
+$UpdateShortcut = Join-Path -Path $StartupPath -ChildPath "urnetwork-update.lnk"
+if (Test-Path $UpdateShortcut) {
+    Write-Host "Removing startup entry: $UpdateShortcut"
+    Remove-Item -Path $UpdateShortcut -Force -ErrorAction SilentlyContinue
+}
+
 function Get-Path {
     if ($ForAllUsers) {
         return [System.Environment]::GetEnvironmentVariable("PATH", [System.EnvironmentVariableTarget]::Machine)
@@ -106,15 +137,24 @@ function Set-Path {
     }
 }
 
-$EnvValue = "$InstallDir\windows\$Arch"
-
+# The installer adds $InstallDir to PATH. Some legacy installs used
+# $InstallDir\windows\$Arch instead — remove both.
+$OldPaths = @($InstallDir, "$InstallDir\windows\$Arch")
 $EnvPath = Get-Path
+$EnvPath = if ($EnvPath) { $EnvPath } else { '' }
 $EnvPathSplitted = $EnvPath.Split(";")
 
-if ($EnvPathSplitted -contains $EnvValue) {
-    Write-Host "Updating PATH variable"
+$Removed = $false
+foreach ($OldPath in $OldPaths) {
+    if ($EnvPathSplitted -contains $OldPath) {
+        $EnvPathSplitted = @($EnvPathSplitted | Where-Object { $_ -ne $OldPath })
+        $Removed = $true
+    }
+}
 
-    $NewPath = ($EnvPathSplitted | Where-Object { $_ -ne $EnvValue -and $_ -ne "" }) -join ';'
+if ($Removed) {
+    Write-Host "Updating PATH variable"
+    $NewPath = ($EnvPathSplitted | Where-Object { $_ -ne "" }) -join ';'
     Set-Path -Value $NewPath
 
     if (!$?) {

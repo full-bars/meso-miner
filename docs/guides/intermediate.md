@@ -138,7 +138,7 @@ powershell -c "irm https://dl.fullbars.xyz/install-win.ps1 | iex"
 
 No admin rights required. This installs:
 - The provider binary at `%LOCALAPPDATA%\urnetwork\provider\urnetwork.exe`
-- The `urnet-tools` Go management binary (v3.23.0-fix.27.0+; the legacy `urnet-tools.ps1` wrapper is deprecated) and `urnetwork-updater.ps1` alongside it
+- The `urnet-tools` Go management binary (v3.23.0-fix.27.0+; the legacy `urnet-tools.ps1` wrapper has been retired)
 - A Startup shortcut so the provider launches on login
 - Configuration directory at `%USERPROFILE%\.urnetwork\`
 
