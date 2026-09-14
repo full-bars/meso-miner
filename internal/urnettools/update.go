@@ -914,8 +914,18 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 
 		// Early exit: if the old PID is dead and no new provider appeared,
 		// the restart failed outright — don't waste the full timeout.
-		if i > 3 && !pidChanged && !verifyPidIsAliveFn(oldPID) {
-			fmt.Printf("provider %s (pid %d) exited but no new provider found — restart may have failed\n", providerLabel(p), oldPID)
+		//
+		// Guards (all three fix real bugs found in review):
+		//  1. i > 10: systemd RestartSec=5s + process init routinely
+		//     takes 10–15s under load; 4 iterations (~13s) is too aggressive.
+		//  2. oldPID > 0: when updating a stopped provider or one whose PID
+		//     was not resolved, oldPID is 0 and pidIsAlive(0) always returns
+		//     false, causing a false-positive early exit.
+		//  3. !hotSwapTriggered: during HotSwap the candidate needs the full
+		//     80s window; early-exiting at ~25s would report a failed handoff
+		//     for a healthy in-progress takeover.
+		if !hotSwapTriggered && i > 10 && oldPID > 0 && !pidChanged && !verifyPidIsAliveFn(oldPID) {
+			fmt.Printf("provider %s (pid %d) exited but no new provider found after ~%ds — restart may have failed\n", providerLabel(p), oldPID, 3+i*2)
 			break
 		}
 	}
