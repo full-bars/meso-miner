@@ -20,8 +20,6 @@ import (
 	"github.com/docopt/docopt-go"
 )
 
-
-
 // HotswapMsgType defines the message actions exchanged over the IPC channel.
 type HotswapMsgType string
 
