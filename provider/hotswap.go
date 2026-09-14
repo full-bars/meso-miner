@@ -20,6 +20,8 @@ import (
 	"github.com/docopt/docopt-go"
 )
 
+
+
 // HotswapMsgType defines the message actions exchanged over the IPC channel.
 type HotswapMsgType string
 
@@ -164,6 +166,109 @@ func checkExecutable(path string) error {
 		}
 	}
 	return nil
+}
+
+// readyResult holds the result of reading a hotswap IPC message in a goroutine.
+type readyResult struct {
+	msg HotswapMessage
+	err error
+}
+
+// handoffBatonSendTakeover sends TAKEOVER to the candidate and waits for its
+// ACK, confirming the candidate has assumed live traffic. Returns nil on
+// success, or kills the session and returns an error on failure/timeout.
+func handoffBatonSendTakeover(session *HotswapParentSession, parentPID, childPID int) error {
+	// Send TAKEOVER to candidate FIRST before yielding
+	if err := writeHotswapMessage(session.Writer, HotswapMessage{
+		Type:    HotswapMsgTakeover,
+		PID:     parentPID,
+		Version: RequireVersion(),
+	}); err != nil {
+		tlog("❌ [hotswap] Failed to send TAKEOVER: %v. Aborting handoff; live provider retained.\n", err)
+		session.Kill()
+		return err
+	}
+
+	// Wait for mandatory ACK from candidate before yielding our own
+	// coordinator session. The candidate has not taken over traffic yet,
+	// so if the ACK fails or times out we can still abort with the
+	// parent's transports untouched.
+	ackCh := make(chan readyResult, 1)
+	go func() {
+		msg, err := readHotswapMessage(session.Reader)
+		ackCh <- readyResult{msg, err}
+	}()
+
+	select {
+	case res := <-ackCh:
+		if res.err != nil || res.msg.Type != HotswapMsgAck {
+			tlog("❌ [hotswap] Candidate failed active takeover (%v). Aborting handoff; live provider retained.\n", res.err)
+			session.Kill()
+			return fmt.Errorf("candidate takeover unconfirmed: %v", res.err)
+		}
+		tlog("⚡ [hotswap] Candidate PID %d confirmed active takeover (ACK received)!\n", childPID)
+	case <-time.After(HotSwapAckTimeout):
+		tlog("❌ [hotswap] Candidate takeover ACK timed out (>%s). Aborting handoff; live provider retained.\n", HotSwapAckTimeout)
+		session.Kill()
+		return fmt.Errorf("candidate takeover ACK timed out (>%s)", HotSwapAckTimeout)
+	}
+
+	return nil
+}
+
+// handoffDrainParent runs the common graceful-drain-then-exit logic shared by
+// both the Windows baton handoff and the Unix systemd handoff. It monitors the
+// candidate's liveness during the drain window, flushes retention events, and
+// exits cleanly (or non-zero if the candidate dies prematurely).
+func handoffDrainParent(ctx context.Context, cancel context.CancelFunc, session *HotswapParentSession, parentPID int) {
+	isHotSwapDraining.Store(true)
+	tlog("⚡ [hotswap] Parent PID %d entering graceful stream drain (max %s)...\n", parentPID, HotSwapDrainTimeout)
+
+	go func() {
+		// Monitor candidate child liveness during drain.
+		//
+		// Only when a real child process backs the session: Wait returns
+		// immediately otherwise, which makes this case ready at once and
+		// leaves the select below picking at random between it and
+		// ctx.Done() — reporting a healthy handoff as a dead candidate and
+		// exiting non-zero. A nil channel blocks forever, so the select then
+		// resolves on the drain timeout or ctx.Done() alone, which is the
+		// intended behaviour when there is no candidate process to outlive.
+		var childWaitCh <-chan error
+		if session.hasChildProcess() {
+			ch := make(chan error, 1)
+			go func() {
+				ch <- session.Wait()
+			}()
+			childWaitCh = ch
+		}
+
+		candidateDied := false
+		select {
+		case <-time.After(HotSwapDrainTimeout):
+			// Normal drain duration elapsed
+		case <-childWaitCh:
+			tlog("⚠️ [hotswap] Candidate process exited unexpectedly during parent drain!\n")
+			candidateDied = true
+		case <-ctx.Done():
+		}
+
+		flushRetentionEvents()
+		lifetimeStore.Flush()
+		isHotSwapDraining.Store(false)
+		cancel()
+		if candidateDied {
+			// The candidate already holds MainPID/traffic ownership; it died before
+			// taking over, so no process is left serving. Exit non-zero so systemd
+			// Restart=on-failure (or the Docker supervision loop) restarts the unit
+			// instead of leaving the node silently offline after a clean exit(0).
+			critLog("FATAL: hotswap candidate died during parent drain; exiting non-zero for supervisor restart")
+			exitFunc(1)
+			return
+		}
+		tlog("⚡ [hotswap] Graceful drain complete -> parent PID %d exiting cleanly.\n", parentPID)
+		exitFunc(0)
+	}()
 }
 
 // hotSwapExecutablePath returns the binary a handoff should launch: the path
@@ -483,10 +588,6 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 	defer session.Close()
 
 	// Wait for READY from candidate with timeout
-	type readyResult struct {
-		msg HotswapMessage
-		err error
-	}
 	readyCh := make(chan readyResult, 1)
 	go func() {
 		msg, err := readHotswapMessage(session.Reader)
@@ -515,6 +616,21 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 	case <-ctx.Done():
 		session.Kill()
 		return ctx.Err()
+	}
+
+	// Branch: Windows — Baton handoff (no execve, no systemd)
+	// On Windows, the candidate takes over traffic via named-pipe IPC, then the
+	// parent yields its coordinator session and drains in-flight streams before
+	// exiting. There is no Docker PID-1 execve path and no systemd to notify.
+	if runtime.GOOS == "windows" {
+		tlog("⚡ [hotswap] Windows detected: candidate pre-flight verified -> baton handoff\n")
+
+		if err := handoffBatonSendTakeover(session, parentPID, childPID); err != nil {
+			return err
+		}
+		yieldCoordinatorSession()
+		handoffDrainParent(ctx, cancel, session, parentPID)
+		return nil
 	}
 
 	// Branch: Docker Container (PID 1 or container environment) -> In-Place execve
@@ -596,45 +712,15 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 		return fmt.Errorf("%s: %w", msg, ErrNoNotifySocket)
 	}
 
-	// 1. Send TAKEOVER to candidate FIRST before yielding
-	if err := writeHotswapMessage(session.Writer, HotswapMessage{
-		Type:    HotswapMsgTakeover,
-		PID:     parentPID,
-		Version: RequireVersion(),
-	}); err != nil {
-		tlog("❌ [hotswap] Failed to send TAKEOVER: %v. Aborting handoff; live provider retained.\n", err)
-		session.Kill()
+	if err := handoffBatonSendTakeover(session, parentPID, childPID); err != nil {
 		return err
 	}
 
-	// 2. Wait for mandatory ACK from candidate before yielding our own coordinator
-	// session. The candidate has not taken over traffic yet, so if the ACK fails
-	// or times out we can still abort with the parent's transports untouched.
-	ackCh := make(chan readyResult, 1)
-	go func() {
-		msg, err := readHotswapMessage(session.Reader)
-		ackCh <- readyResult{msg, err}
-	}()
-
-	select {
-	case res := <-ackCh:
-		if res.err != nil || res.msg.Type != HotswapMsgAck {
-			tlog("❌ [hotswap] Candidate failed active takeover (%v). Aborting handoff; live provider retained.\n", res.err)
-			session.Kill()
-			return fmt.Errorf("candidate takeover unconfirmed: %v", res.err)
-		}
-		tlog("⚡ [hotswap] Candidate PID %d confirmed active takeover (ACK received)!\n", childPID)
-	case <-time.After(HotSwapAckTimeout):
-		tlog("❌ [hotswap] Candidate takeover ACK timed out (>%s). Aborting handoff; live provider retained.\n", HotSwapAckTimeout)
-		session.Kill()
-		return fmt.Errorf("candidate takeover ACK timed out (>%s)", HotSwapAckTimeout)
-	}
-
-	// 3. Only now yield the live coordinator session: the candidate has confirmed
+	// Yield the live coordinator session: the candidate has confirmed
 	// active takeover, so there is no window where neither process holds it.
 	yieldCoordinatorSession()
 
-	// 4. Update systemd service manager with new MainPID (if running under systemd)
+	// Update systemd service manager with new MainPID (if running under systemd)
 	if os.Getenv("INVOCATION_ID") != "" || os.Getenv("NOTIFY_SOCKET") != "" {
 		if err := notifySystemdMainPID(childPID); err != nil {
 			if errors.Is(err, ErrNoNotifySocket) {
@@ -647,56 +733,7 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 		}
 	}
 
-	// 5. Enter graceful stream drain mode
-	isHotSwapDraining.Store(true)
-	tlog("⚡ [hotswap] Parent PID %d entering graceful stream drain (max %s)...\n", parentPID, HotSwapDrainTimeout)
-
-	go func() {
-		// Monitor candidate child liveness during drain.
-		//
-		// Only when a real child process backs the session: Wait returns
-		// immediately otherwise, which makes this case ready at once and
-		// leaves the select below picking at random between it and
-		// ctx.Done() — reporting a healthy handoff as a dead candidate and
-		// exiting non-zero. A nil channel blocks forever, so the select then
-		// resolves on the drain timeout or ctx.Done() alone, which is the
-		// intended behaviour when there is no candidate process to outlive.
-		var childWaitCh <-chan error
-		if session.hasChildProcess() {
-			ch := make(chan error, 1)
-			go func() {
-				ch <- session.Wait()
-			}()
-			childWaitCh = ch
-		}
-
-		candidateDied := false
-		select {
-		case <-time.After(HotSwapDrainTimeout):
-			// Normal drain duration elapsed
-		case <-childWaitCh:
-			tlog("⚠️ [hotswap] Candidate process exited unexpectedly during parent drain!\n")
-			candidateDied = true
-		case <-ctx.Done():
-		}
-
-		flushRetentionEvents()
-		lifetimeStore.Flush()
-		isHotSwapDraining.Store(false)
-		cancel()
-		if candidateDied {
-			// The candidate already holds MainPID/traffic ownership; it died before
-			// taking over, so no process is left serving. Exit non-zero so systemd
-			// Restart=on-failure (or the Docker supervision loop) restarts the unit
-			// instead of leaving the node silently offline after a clean exit(0).
-			critLog("FATAL: hotswap candidate died during parent drain; exiting non-zero for supervisor restart")
-			exitFunc(1)
-			return
-		}
-		tlog("⚡ [hotswap] Graceful drain complete -> parent PID %d exiting cleanly.\n", parentPID)
-		exitFunc(0)
-	}()
-
+	handoffDrainParent(ctx, cancel, session, parentPID)
 	return nil
 }
 

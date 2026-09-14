@@ -7,9 +7,14 @@ import (
 	"syscall"
 )
 
-// triggerHotSwap on Windows is a stub until the named pipe adapter is connected.
+// triggerHotSwap sends {cmd: "hotswap"} over the provider's control socket
+// to initiate the in-process handoff. Windows has no SIGUSR2, so the
+// control socket is the only trigger path.
 func triggerHotSwap(p Provider) error {
-	return errors.New("zero-downtime hotswap is not yet supported on Windows. Use `urnet-tools restart` to apply updates (there will be a brief restart gap)")
+	if err := hotSwapPreflight(p); err != nil {
+		return err
+	}
+	return triggerHotSwapViaSocket(p)
 }
 
 // pidIsAlive reports whether a process with the given PID is still running.
