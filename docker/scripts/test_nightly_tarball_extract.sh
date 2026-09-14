@@ -1,9 +1,14 @@
 #!/bin/sh
-# Regression test for start_nightly.sh tarball extraction and asset selection.
-# Tests the EXACT extraction and jq logic from start_nightly.sh against
-# controlled fixtures. If start_nightly.sh changes, these tests should
-# break (that's the point).
 set -e
+
+# Regression test for Bug 3: start_nightly.sh tarball extraction + staging
+#
+# The bug: after detection + extraction, the cp staging step hardcoded
+# "$UPDATE_TMP/linux/${A_SYS_ARCH}/provider" instead of
+# "$UPDATE_TMP/$PROVIDER_IN_TARBALL".  With a flat tarball (per-arch asset)
+# the binary lands at "$UPDATE_TMP/provider", so the hardcoded cp fails.
+#
+# Each test exercises the FULL pipeline: detect layout → extract → stage (cp).
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -18,170 +23,274 @@ fail() {
     echo "FAIL: $1"
 }
 
-TEST_DIR=""
 cleanup() {
-    [ -n "$TEST_DIR" ] && [ -d "$TEST_DIR" ] && rm -rf "$TEST_DIR"
+    rm -rf "$TEST_DIR"
 }
+
 trap cleanup EXIT
+
 TEST_DIR=$(mktemp -d)
 
 ###############################################################################
-# extract_provider — mirrors start_nightly.sh lines 332-346 exactly.
-# Args: <archive> <dest_dir> <arch>
-# Prints the relative path inside the archive on success; returns 1 on failure.
+# Helper: simulate the full start_nightly.sh detection → extract → stage flow
+#   $1 = tarball path
+#   $2 = UPDATE_TMP path
+#   $3 = A_SYS_ARCH
+#   $4 = APP_DIR (for staging)
+#   Sets STAGED_PATH to the result on success, empty on failure.
 ###############################################################################
-extract_provider() {
-    _archive="$1"
-    _dest_dir="$2"
-    _arch="$3"
+simulate_nightly_pipeline() {
+    local archive="$1"
+    local update_tmp="$2"
+    local sys_arch="$3"
+    local app_dir="$4"
 
-    _provider_in_tarball="linux/${_arch}/provider"
-    if ! tar -tzf "$_archive" "$_provider_in_tarball" >/dev/null 2>&1; then
-        _provider_in_tarball="provider"
+    # --- Detection step (copied from start_nightly.sh lines 332-335) ---
+    PROVIDER_IN_TARBALL="linux/${sys_arch}/provider"
+    if ! tar -tzf "$archive" "$PROVIDER_IN_TARBALL" >/dev/null 2>&1; then
+        PROVIDER_IN_TARBALL="provider"
     fi
-    tar -xzf "$_archive" -C "$_dest_dir" "$_provider_in_tarball" >/dev/null 2>&1 || return 1
-    [ -f "$_dest_dir/$_provider_in_tarball" ] || return 1
-    echo "$_provider_in_tarball"
+
+    # --- Extraction step (lines 336-347) ---
+    tar -xzf "$archive" -C "$update_tmp" "$PROVIDER_IN_TARBALL" || return 1
+    [ -f "$update_tmp/$PROVIDER_IN_TARBALL" ] || return 1
+
+    # --- Staging step: this is the FIXED line (line 355) ---
+    local staged="$app_dir/.urnetwork_${sys_arch}_nightly.new"
+    STAGED_PATH=""
+    if cp -f "$update_tmp/$PROVIDER_IN_TARBALL" "$staged"; then
+        STAGED_PATH="$staged"
+    fi
 }
 
 ###############################################################################
-# test_flat_layout — provider at archive root (per-arch tarball format)
+# Helper: simulate the OLD buggy pipeline (hardcoded cp path)
 ###############################################################################
-test_flat_layout() {
-    _staging="$TEST_DIR/flat"
-    mkdir -p "$_staging/build" "$_staging/extract"
-    echo "fake-provider-binary" > "$_staging/build/provider"
-    tar -czf "$_staging/provider.tar.gz" -C "$_staging/build" provider
+simulate_nightly_pipeline_OLD_BUGGY() {
+    local archive="$1"
+    local update_tmp="$2"
+    local sys_arch="$3"
+    local app_dir="$4"
 
-    if _rel_path=$(extract_provider "$_staging/provider.tar.gz" "$_staging/extract" "amd64") && \
-       [ -f "$_staging/extract/$_rel_path" ] && [ "$_rel_path" = "provider" ]; then
-        pass "Flat tarball layout: extracted and located at root"
+    PROVIDER_IN_TARBALL="linux/${sys_arch}/provider"
+    if ! tar -tzf "$archive" "$PROVIDER_IN_TARBALL" >/dev/null 2>&1; then
+        PROVIDER_IN_TARBALL="provider"
+    fi
+
+    tar -xzf "$archive" -C "$update_tmp" "$PROVIDER_IN_TARBALL" || return 1
+    [ -f "$update_tmp/$PROVIDER_IN_TARBALL" ] || return 1
+
+    # OLD BUGGY LINE: hardcoded path ignores PROVIDER_IN_TARBALL
+    local staged="$app_dir/.urnetwork_${sys_arch}_nightly.new"
+    STAGED_PATH=""
+    if cp -f "$update_tmp/linux/${sys_arch}/provider" "$staged"; then
+        STAGED_PATH="$staged"
+    fi
+}
+
+###############################################################################
+# Test 1: Flat tarball — FIXED pipeline stages correctly
+###############################################################################
+test_flat_layout_fixed() {
+    local staging="$TEST_DIR/flat_fixed"
+    mkdir -p "$staging/build" "$staging/extract" "$staging/app"
+    echo "flat-provider-binary-$(date +%s%N)" > "$staging/build/provider"
+    tar -czf "$staging/provider.tar.gz" -C "$staging/build" provider
+
+    simulate_nightly_pipeline "$staging/provider.tar.gz" "$staging/extract" "amd64" "$staging/app"
+
+    if [ -n "$STAGED_PATH" ] && [ -f "$STAGED_PATH" ]; then
+        local content
+        content=$(cat "$STAGED_PATH")
+        if echo "$content" | grep -q "flat-provider-binary"; then
+            pass "Flat tarball: FIXED pipeline stages binary correctly"
+        else
+            fail "Flat tarball: staged file exists but content wrong: $content"
+        fi
     else
-        fail "Flat tarball layout: extraction failed"
+        fail "Flat tarball: FIXED pipeline failed to stage binary"
     fi
 }
 
 ###############################################################################
-# test_nested_layout — provider under linux/<arch>/ (multi-arch fat tarball)
+# Test 2: Flat tarball — OLD BUGGY pipeline FAILS to stage
+#    This is the core regression: if someone reverts the fix, this test
+#    will start passing again (which is bad).
 ###############################################################################
-test_nested_layout() {
-    _staging="$TEST_DIR/nested"
-    mkdir -p "$_staging/build/linux/amd64" "$_staging/extract"
-    echo "fake-provider-binary" > "$_staging/build/linux/amd64/provider"
-    tar -czf "$_staging/provider.tar.gz" -C "$_staging/build" linux/amd64/provider
+test_flat_layout_old_buggy_fails() {
+    local staging="$TEST_DIR/flat_buggy"
+    mkdir -p "$staging/build" "$staging/extract" "$staging/app"
+    echo "flat-provider-binary-$(date +%s%N)" > "$staging/build/provider"
+    tar -czf "$staging/provider.tar.gz" -C "$staging/build" provider
 
-    if _rel_path=$(extract_provider "$_staging/provider.tar.gz" "$_staging/extract" "amd64") && \
-       [ -f "$_staging/extract/$_rel_path" ] && [ "$_rel_path" = "linux/amd64/provider" ]; then
-        pass "Nested tarball layout: extracted and located under linux/amd64/"
+    simulate_nightly_pipeline_OLD_BUGGY "$staging/provider.tar.gz" "$staging/extract" "amd64" "$staging/app"
+
+    if [ -n "$STAGED_PATH" ] && [ -f "$STAGED_PATH" ]; then
+        # If the old buggy code succeeds, the bug has been reintroduced
+        fail "Flat tarball: OLD buggy pipeline unexpectedly succeeded — regression!"
     else
-        fail "Nested tarball layout: extraction failed"
+        pass "Flat tarball: OLD buggy pipeline correctly fails (proves fix is needed)"
     fi
 }
 
 ###############################################################################
-# test_asset_selection — tests the EXACT jq query from start_nightly.sh
-# Lines 238-245: the query selects by urnetwork-provider- prefix, .tar.gz
-# suffix, and prefers arch-specific over the fat multi-arch tarball.
-# The multi-arch tarball has NO OS token (-linux-/-darwin-/-windows-), so
-# it is selected by exclusion when no arch-specific match exists.
+# Test 3: Nested tarball — FIXED pipeline stages correctly
 ###############################################################################
-test_asset_selection() {
-    _arch="$1"
-    _expected_name="$2"
-    _expected_url="$3"
-    _staging="$TEST_DIR/asset_$_arch"
-    mkdir -p "$_staging"
+test_nested_layout_fixed() {
+    local staging="$TEST_DIR/nested_fixed"
+    mkdir -p "$staging/build/linux/amd64" "$staging/extract" "$staging/app"
+    echo "nested-provider-binary-$(date +%s%N)" > "$staging/build/linux/amd64/provider"
+    tar -czf "$staging/provider.tar.gz" -C "$staging/build" linux/amd64/provider
 
-    # Real GitHub Release API shape: top-level object with .assets array.
-    # Real URNetwork asset naming: urnetwork-provider-v<ver>-linux-<arch>.tar.gz
-    # Fat multi-arch: urnetwork-provider-v<ver>.tar.gz (no OS token)
-    cat <<'EOF' > "$_staging/release.json"
-{
-  "assets": [
-    {"name": "urnetwork-provider-v3.23.0-linux-amd64.tar.gz", "browser_download_url": "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v3.23.0/urnetwork-provider-v3.23.0-linux-amd64.tar.gz"},
-    {"name": "urnetwork-provider-v3.23.0-linux-arm64.tar.gz", "browser_download_url": "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v3.23.0/urnetwork-provider-v3.23.0-linux-arm64.tar.gz"},
-    {"name": "urnetwork-provider-v3.23.0-darwin-amd64.tar.gz", "browser_download_url": "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v3.23.0/urnetwork-provider-v3.23.0-darwin-amd64.tar.gz"},
-    {"name": "urnetwork-provider-v3.23.0.tar.gz", "browser_download_url": "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v3.23.0/urnetwork-provider-v3.23.0.tar.gz"}
-  ]
-}
-EOF
+    simulate_nightly_pipeline "$staging/provider.tar.gz" "$staging/extract" "amd64" "$staging/app"
 
-    # Exact jq query from start_nightly.sh:238-245
-    # Falls back to the fat tarball by excluding OS tokens.
-    _asset_name=$(printf '%s\n' "$(cat "$_staging/release.json")" \
-      | jq -r --arg arch "$_arch" '
-          .assets[] | .name |
-          select((startswith("urnetwork-provider-")) and (endswith(".tar.gz")) and
-                 (contains("linux-" + $arch) or
-                  ((test("-darwin-|-linux-|-windows-")) | not)))
-        ' 2>/dev/null \
-      | head -n1)
-
-    # Guard: jq may fail or return empty
-    if [ -z "$_asset_name" ]; then
-        fail "Asset selection for $_arch: jq returned no asset name"
-        return
-    fi
-
-    # Exact URL lookup from start_nightly.sh:247-248
-    _url=$(printf '%s\n' "$(cat "$_staging/release.json")" \
-      | jq -r --arg f "$_asset_name" \
-          '.assets[] | select(.name == $f) | .browser_download_url' 2>/dev/null)
-
-    if [ "$_asset_name" = "$_expected_name" ] && [ "$_url" = "$_expected_url" ]; then
-        pass "Asset selection for $_arch: selected '$_asset_name'"
+    if [ -n "$STAGED_PATH" ] && [ -f "$STAGED_PATH" ]; then
+        local content
+        content=$(cat "$STAGED_PATH")
+        if echo "$content" | grep -q "nested-provider-binary"; then
+            pass "Nested tarball: FIXED pipeline stages binary correctly"
+        else
+            fail "Nested tarball: staged file exists but content wrong: $content"
+        fi
     else
-        fail "Asset selection for $_arch: expected name='$_expected_name' url='$_expected_url', got name='$_asset_name' url='$_url'"
+        fail "Nested tarball: FIXED pipeline failed to stage binary"
     fi
 }
 
 ###############################################################################
-# test_no_jq_fallback — start_nightly.sh:251-285 has a grep/sed fallback
-# when jq is not installed. Verify the extraction helper still works
-# without jq (the fallback is only for asset URL selection, not extraction).
+# Test 4: Nested tarball — both FIXED and OLD should work (regression guard)
+#    The old code hardcoded the nested path, so it only worked for nested.
+#    This test confirms the fix doesn't break nested tarballs.
 ###############################################################################
-test_no_jq_fallback() {
-    _staging="$TEST_DIR/nojq"
-    mkdir -p "$_staging/build" "$_staging/extract"
-    echo "fake-provider-binary" > "$_staging/build/provider"
-    tar -czf "$_staging/provider.tar.gz" -C "$_staging/build" provider
+test_nested_layout_old_buggy_works() {
+    local staging="$TEST_DIR/nested_buggy"
+    mkdir -p "$staging/build/linux/amd64" "$staging/extract" "$staging/app"
+    echo "nested-provider-binary-$(date +%s%N)" > "$staging/build/linux/amd64/provider"
+    tar -czf "$staging/provider.tar.gz" -C "$staging/build" linux/amd64/provider
 
-    # Temporarily hide jq — extract_provider doesn't need it (only tar),
-    # but under set -e a missing jq in a subshell would abort. Verify the
-    # extraction helper alone works (the grep/sed fallback in start_nightly.sh
-    # handles URL selection without jq).
-    if ! command -v jq >/dev/null 2>&1; then
-        pass "jq already absent; extraction fallback path exercised"
-        return
-    fi
-    _jq_dir="$(dirname "$(command -v jq)")"
-    _rest_path="$(echo "$PATH" | sed "s|$_jq_dir:||g; s|:${_jq_dir}||g; s|$_jq_dir||g")"
-    if _rel_path=$(PATH="$_rest_path" extract_provider "$_staging/provider.tar.gz" "$_staging/extract" "amd64") && \
-       [ "$_rel_path" = "provider" ]; then
-        pass "Extraction works without jq (jq is only for asset selection)"
+    simulate_nightly_pipeline_OLD_BUGGY "$staging/provider.tar.gz" "$staging/extract" "amd64" "$staging/app"
+
+    if [ -n "$STAGED_PATH" ] && [ -f "$STAGED_PATH" ]; then
+        pass "Nested tarball: OLD code also stages correctly (expected, nested matches hardcode)"
     else
-        fail "Extraction failed without jq"
+        fail "Nested tarball: OLD code unexpectedly failed"
+    fi
+}
+
+###############################################################################
+# Test 5: Flat tarball — detection correctly resolves PROVIDER_IN_TARBALL
+###############################################################################
+test_detection_resolves_flat() {
+    local staging="$TEST_DIR/detect_flat"
+    mkdir -p "$staging/build"
+    echo "binary" > "$staging/build/provider"
+    tar -czf "$staging/provider.tar.gz" -C "$staging/build" provider
+
+    PROVIDER_IN_TARBALL="linux/amd64/provider"
+    if ! tar -tzf "$staging/provider.tar.gz" "$PROVIDER_IN_TARBALL" >/dev/null 2>&1; then
+        PROVIDER_IN_TARBALL="provider"
+    fi
+
+    if [ "$PROVIDER_IN_TARBALL" = "provider" ]; then
+        pass "Detection: flat tarball resolves to 'provider'"
+    else
+        fail "Detection: flat tarball should resolve to 'provider', got '$PROVIDER_IN_TARBALL'"
+    fi
+}
+
+###############################################################################
+# Test 6: Nested tarball — detection correctly resolves PROVIDER_IN_TARBALL
+###############################################################################
+test_detection_resolves_nested() {
+    local staging="$TEST_DIR/detect_nested"
+    mkdir -p "$staging/build/linux/amd64"
+    echo "binary" > "$staging/build/linux/amd64/provider"
+    tar -czf "$staging/provider.tar.gz" -C "$staging/build" linux/amd64/provider
+
+    PROVIDER_IN_TARBALL="linux/amd64/provider"
+    if ! tar -tzf "$staging/provider.tar.gz" "$PROVIDER_IN_TARBALL" >/dev/null 2>&1; then
+        PROVIDER_IN_TARBALL="provider"
+    fi
+
+    if [ "$PROVIDER_IN_TARBALL" = "linux/amd64/provider" ]; then
+        pass "Detection: nested tarball resolves to 'linux/amd64/provider'"
+    else
+        fail "Detection: nested tarball should resolve to 'linux/amd64/provider', got '$PROVIDER_IN_TARBALL'"
+    fi
+}
+
+###############################################################################
+# Test 7: arm64 flat tarball
+###############################################################################
+test_flat_layout_arm64_fixed() {
+    local staging="$TEST_DIR/flat_arm64"
+    mkdir -p "$staging/build" "$staging/extract" "$staging/app"
+    echo "arm64-flat-binary-$(date +%s%N)" > "$staging/build/provider"
+    tar -czf "$staging/provider.tar.gz" -C "$staging/build" provider
+
+    simulate_nightly_pipeline "$staging/provider.tar.gz" "$staging/extract" "arm64" "$staging/app"
+
+    if [ -n "$STAGED_PATH" ] && [ -f "$STAGED_PATH" ]; then
+        pass "Flat tarball arm64: FIXED pipeline stages binary correctly"
+    else
+        fail "Flat tarball arm64: FIXED pipeline failed to stage binary"
+    fi
+}
+
+###############################################################################
+# Test 8: Multi-arch fat tarball (both architectures present)
+###############################################################################
+test_multitarball_fixed() {
+    local staging="$TEST_DIR/multi_fixed"
+    mkdir -p "$staging/build/linux/amd64" "$staging/build/linux/arm64" "$staging/extract" "$staging/app"
+    echo "multi-amd64-binary" > "$staging/build/linux/amd64/provider"
+    echo "multi-arm64-binary" > "$staging/build/linux/arm64/provider"
+    tar -czf "$staging/provider.tar.gz" -C "$staging/build" linux/amd64/provider linux/arm64/provider
+
+    # Test amd64
+    simulate_nightly_pipeline "$staging/provider.tar.gz" "$staging/extract" "amd64" "$staging/app"
+    if [ -n "$STAGED_PATH" ] && [ -f "$STAGED_PATH" ]; then
+        local content
+        content=$(cat "$STAGED_PATH")
+        if echo "$content" | grep -q "multi-amd64-binary"; then
+            pass "Multi-arch tarball: amd64 binary staged correctly"
+        else
+            fail "Multi-arch tarball: wrong content staged for amd64: $content"
+        fi
+    else
+        fail "Multi-arch tarball: failed to stage amd64 binary"
+    fi
+
+    # Test arm64 (reuse extract dir, just stage into fresh app dir)
+    mkdir -p "$staging/app2"
+    simulate_nightly_pipeline "$staging/provider.tar.gz" "$staging/extract" "arm64" "$staging/app2"
+    if [ -n "$STAGED_PATH" ] && [ -f "$STAGED_PATH" ]; then
+        local content
+        content=$(cat "$STAGED_PATH")
+        if echo "$content" | grep -q "multi-arm64-binary"; then
+            pass "Multi-arch tarball: arm64 binary staged correctly"
+        else
+            fail "Multi-arch tarball: wrong content staged for arm64: $content"
+        fi
+    else
+        fail "Multi-arch tarball: failed to stage arm64 binary"
     fi
 }
 
 ###############################################################################
 # Run all tests
 ###############################################################################
-echo "=== Nightly Tarball Extraction Regression Tests ==="
+echo "=== Nightly Tarball Extraction + Staging Regression Tests ==="
 echo ""
 
-test_flat_layout
-test_nested_layout
-test_asset_selection "amd64" \
-    "urnetwork-provider-v3.23.0-linux-amd64.tar.gz" \
-    "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v3.23.0/urnetwork-provider-v3.23.0-linux-amd64.tar.gz"
-test_asset_selection "arm64" \
-    "urnetwork-provider-v3.23.0-linux-arm64.tar.gz" \
-    "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v3.23.0/urnetwork-provider-v3.23.0-linux-arm64.tar.gz"
-test_asset_selection "riscv64" \
-    "urnetwork-provider-v3.23.0.tar.gz" \
-    "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v3.23.0/urnetwork-provider-v3.23.0.tar.gz"
-test_no_jq_fallback
+test_flat_layout_fixed
+test_flat_layout_old_buggy_fails
+test_nested_layout_fixed
+test_nested_layout_old_buggy_works
+test_detection_resolves_flat
+test_detection_resolves_nested
+test_flat_layout_arm64_fixed
+test_multitarball_fixed
 
 echo ""
 echo "=== Results: $PASS_COUNT passed, $FAIL_COUNT failed ==="

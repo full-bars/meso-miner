@@ -225,19 +225,10 @@ func TestUpdateVerification_StillWaitingLog(t *testing.T) {
 		return "v0.0.0-stale"
 	}
 
-	// Override sleep to count iterations.
+	// Override sleep to count iterations and break the loop.
 	iterCount := 0
 	verifySleepFn = func(d time.Duration) {
 		iterCount++
-		// Break the loop after enough iterations to hit the i%5==0 path
-		// without hanging for 30 iterations.
-		if iterCount > 8 {
-			// Force the loop to stop by making the "old PID dead" path fire.
-			// At this point pidChanged is true, so that guard won't fire.
-			// Instead, we'll cap iterations by having discover return empty
-			// on the right iteration. But we can't inject that easily —
-			// just let it run to maxIterations.
-		}
 	}
 
 	// The loop runs 30 iterations max. We just want to confirm it doesn't

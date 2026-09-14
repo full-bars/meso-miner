@@ -848,9 +848,9 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 	// the loop fires, which previously read as "restart did not take
 	// effect" on the very first iteration.
 	verifySleepFn(3 * time.Second)
-	maxIterations := 30 // ~60s for standard restart (plus 3s settle delay)
+	maxIterations := 30 // ~90s for standard restart (adaptive 2-3s sleep + 3s settle)
 	if hotSwapTriggered {
-		maxIterations = 40 // ~80s to cover pre-flight + auth bring-up + takeover
+		maxIterations = 40 // ~120s to cover pre-flight + auth bring-up + takeover
 	}
 
 	pidChanged := false
@@ -885,7 +885,8 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 					// the running image of the unit we just restarted, and
 					// providerVersion's --version fallback is gated behind
 					// isRecognizedExecutable.
-					if procVersion := verifyProviderVersionFn(procExe); procVersion == cfg.Tag {
+					procVersion := verifyProviderVersionFn(procExe)
+					if procVersion == cfg.Tag {
 						// Report the image's real path, not the /proc
 						// handle the version was read through.
 						shown := procExe
@@ -905,7 +906,6 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 					// Version doesn't match yet — log what IS running so
 					// operators can see progress instead of a black box.
 					if i > 0 && i%5 == 0 {
-						procVersion := verifyProviderVersionFn(procExe)
 						fmt.Printf("still waiting for %s (pid %d running %q, iteration %d/%d)...\n", cfg.Tag, rp.PID, procVersion, i+1, maxIterations)
 					}
 				}
@@ -935,7 +935,7 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 		// Verification timed out — record the decline with reason
 		// "takeover_failed" so operators can see it in Prometheus.
 		verifyRecordDeclineFn(p.StateDir, "takeover_failed")
-		fmt.Printf("❌ HotSwap candidate failed to take over within %ds.\n", maxIterations*2)
+		fmt.Printf("❌ HotSwap candidate failed to take over within %ds.\n", maxIterations*3)
 		// oldPID's process exits (via its drain-timeout goroutine) only after
 		// the candidate confirmed active takeover — the same handoff gate
 		// hotswap.go's ACK-then-yield ordering guarantees. So oldPID being
@@ -947,7 +947,7 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 		// would use, and "live provider was never killed" would be false —
 		// so skip the rollback and report the real (unknown) state instead.
 		if !verifyPidIsAliveFn(oldPID) {
-			return fmt.Errorf("update %s: HotSwap candidate ACKed takeover and PID %d exited its drain, but verification could not confirm the new process is running %s within %ds; binary NOT rolled back (ownership already transferred) — check the provider's logs/dashboard to confirm which version is actually live", providerLabel(p), oldPID, cfg.Tag, maxIterations*2)
+			return fmt.Errorf("update %s: HotSwap candidate ACKed takeover and PID %d exited its drain, but verification could not confirm the new process is running %s within %ds; binary NOT rolled back (ownership already transferred) — check the provider's logs/dashboard to confirm which version is actually live", providerLabel(p), oldPID, cfg.Tag, maxIterations*3)
 		}
 		if backup != "" {
 			fmt.Printf("🔄 Restoring previous binary from backup %s...\n", backup)

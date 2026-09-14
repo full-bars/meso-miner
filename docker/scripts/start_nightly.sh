@@ -352,7 +352,7 @@ func_check_update() {
     # cannot truncate the running provider. Every state write is checked so a
     # partial failure cannot orphan a half-installed provider.
     STAGED="$APP_DIR/.urnetwork_${A_SYS_ARCH}_nightly.new"
-    if ! cp -f "$UPDATE_TMP/linux/${A_SYS_ARCH}/provider" "$STAGED"; then
+    if ! cp -f "$UPDATE_TMP/$PROVIDER_IN_TARBALL" "$STAGED"; then
         log "[ERROR] Failed to stage new provider binary." >&2
         log "[INFO] Update aborted; existing provider left untouched."
         rm -rf "$UPDATE_TMP" "$STAGED"

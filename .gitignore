@@ -33,3 +33,5 @@ prs.json
 review-egg-dsflash-v2.md
 /dist/
 fake-provider
+cov.html
+cov.out
