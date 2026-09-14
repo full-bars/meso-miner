@@ -4,6 +4,7 @@ package urnettools
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"syscall"
 	"time"
@@ -40,6 +41,16 @@ func cmdStopWindows(p Provider, force, dryRun bool) error {
 		}
 	} else {
 		fmt.Println("force stop: skipping graceful shutdown")
+		// Force mode: kill the process immediately without waiting.
+		if p.PID <= 0 {
+			return fmt.Errorf("cannot force-stop %s: no PID available", providerLabel(p))
+		}
+		if err := terminateProcess(p.PID); err != nil {
+			return fmt.Errorf("terminate process %d: %w", p.PID, err)
+		}
+		cleanupStaleSocket(sockPath)
+		fmt.Printf("forcefully terminated %s\n", providerLabel(p))
+		return nil
 	}
 
 	// Wait up to 15 seconds for the process to exit.
@@ -54,6 +65,7 @@ func cmdStopWindows(p Provider, force, dryRun bool) error {
 				if err := terminateProcess(p.PID); err != nil {
 					return fmt.Errorf("terminate process %d: %w", p.PID, err)
 				}
+				cleanupStaleSocket(sockPath)
 				fmt.Printf("forcefully terminated %s\n", providerLabel(p))
 				return nil
 			case <-ticker.C:
@@ -110,4 +122,16 @@ func terminateProcess(pid int) error {
 	// race with releasing sockets, ports, and file locks.
 	syscall.WaitForSingleObject(syscall.Handle(handle), 5000)
 	return nil
+}
+
+// cleanupStaleSocket removes a leftover provider.sock file after a forceful
+// termination or hard crash. The file is unreachable (nothing listening) at
+// this point; leaving it behind would block the next net.Listen on Windows.
+func cleanupStaleSocket(path string) {
+	if _, err := os.Stat(path); err != nil {
+		return // already gone
+	}
+	if err := os.Remove(path); err != nil {
+		fmt.Printf("warning: could not remove stale socket %s: %v\n", path, err)
+	}
 }

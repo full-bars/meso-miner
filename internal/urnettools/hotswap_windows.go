@@ -15,6 +15,10 @@ func triggerHotSwap(p Provider) error {
 // pidIsAlive reports whether a process with the given PID is still running.
 // Uses OpenProcess with PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE
 // and WaitForSingleObject with a zero timeout to check without blocking.
+//
+// ERROR_ACCESS_DENIED from OpenProcess indicates the process exists but
+// runs under a different user, SYSTEM, or elevated context — we cannot
+// query it but it is definitely alive.
 func pidIsAlive(pid int) bool {
 	if pid <= 0 {
 		return false
@@ -29,12 +33,18 @@ func pidIsAlive(pid int) bool {
 	procWait := kernel32.NewProc("WaitForSingleObject")
 	procClose := kernel32.NewProc("CloseHandle")
 
-	h, _, _ := procOpen.Call(
+	h, _, err := procOpen.Call(
 		uintptr(processQueryLimitedInfo|synchronize),
 		0, // bInheritHandle = FALSE
 		uintptr(pid),
 	)
 	if h == 0 {
+		// OpenProcess failed. ERROR_ACCESS_DENIED (0x5) means the process
+		// is alive but we lack permission to query it.
+		var errno syscall.Errno
+		if errors.As(err, &errno) && errno == syscall.ERROR_ACCESS_DENIED {
+			return true
+		}
 		return false
 	}
 	defer procClose.Call(h)

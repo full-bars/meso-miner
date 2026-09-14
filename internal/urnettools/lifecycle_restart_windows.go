@@ -5,64 +5,25 @@ package urnettools
 import (
 	"fmt"
 	"path/filepath"
-	"time"
 )
 
-// cmdRestartWindows restarts the provider on Windows. It first tries a
-// zero-downtime HotSwap via the control socket. If that fails or the
-// control socket is unreachable, it falls back to stop + start.
+// cmdRestartWindows restarts the provider on Windows. HotSwap is not
+// yet supported on Windows (see hotswap_windows.go triggerHotSwap stub),
+// so this always goes through stop + start. When force is true the stop
+// phase uses TerminateProcess directly instead of the 15-second graceful
+// shutdown timeout.
 func cmdRestartWindows(p Provider, force, dryRun bool) error {
-	if controlSocketReachable(p) {
-		// Try HotSwap: send {cmd: "hotswap"} to the socket. This
-		// triggers the in-process binary handoff (PR #613's Windows
-		// hotswap support).
-		sockPath := providerSocketPath(p)
-		fmt.Println("attempting zero-downtime HotSwap...")
-		resp, err := sendSocketRequest(sockPath, controlRequest{Cmd: "hotswap"})
-		if err == nil && resp.OK {
-			// HotSwap accepted — wait for the old process to die and
-			// the new provider to come up (poll pidIsAlive +
-			// controlSocketReachable).
-			oldPID := p.PID
-			deadline := time.After(30 * time.Second)
-			ticker := time.NewTicker(time.Second)
-			defer ticker.Stop()
-
-			// Give the handoff a moment to kick off.
-			time.Sleep(time.Second)
-
-			for {
-				select {
-				case <-deadline:
-					fmt.Println("warning: HotSwap did not complete within 30s")
-					return stopStartFallback(p)
-				case <-ticker.C:
-					if p.PID > 0 && !pidIsAlive(oldPID) && controlSocketReachable(p) {
-						fmt.Printf("restarted %s (HotSwap)\n", providerLabel(p))
-						return nil
-					}
-				}
-			}
-		}
-		// HotSwap failed or socket returned an error — fall through.
-		if err != nil {
-			fmt.Printf("HotSwap failed: %v — falling back to restart\n", err)
-		} else {
-			fmt.Printf("HotSwap rejected: %s — falling back to restart\n", resp.Error)
-		}
-	}
-
-	return stopStartFallback(p)
+	return stopStartFallback(p, force, dryRun)
 }
 
 // stopStartFallback stops the provider and starts it again.
-func stopStartFallback(p Provider) error {
+func stopStartFallback(p Provider, force, dryRun bool) error {
 	fmt.Printf("stopping %s...\n", providerLabel(p))
-	if err := cmdStopWindows(p, false, false); err != nil {
+	if err := cmdStopWindows(p, force, dryRun); err != nil {
 		return fmt.Errorf("stop: %w", err)
 	}
 	fmt.Printf("starting %s...\n", providerLabel(p))
-	if err := cmdStartWindows(p, false, false); err != nil {
+	if err := cmdStartWindows(p, force, dryRun); err != nil {
 		return fmt.Errorf("start: %w", err)
 	}
 	fmt.Printf("restarted %s\n", providerLabel(p))
@@ -80,5 +41,5 @@ func providerSocketPath(p Provider) string {
 // double-hotswap / state-tracking bypass that routing back to
 // cmdRestartWindows would cause.
 func restartProviderWindows(p Provider) error {
-	return stopStartFallback(p)
+	return stopStartFallback(p, false, false)
 }
