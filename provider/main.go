@@ -2880,6 +2880,9 @@ func provide(opts docopt.Opts) {
 	applyPersistedRuntimeTuning(globalControlState)
 	initPersistentErrors()
 	initAuditRing()
+	// The cancel function is captured by the control socket's "shutdown"
+	// command so a client can request graceful shutdown remotely.
+	globalControlState.shutdownFn = cancel
 	var cleanupControlSocket func()
 	if !isHotSwapCandidate {
 		var err error
@@ -3994,6 +3997,12 @@ func provide(opts docopt.Opts) {
 		metricsServer.Shutdown(ctx)
 	}
 	markCleanShutdown()
+	// Explicitly clean up the control socket before os.Exit(0) since
+	// Go defers do not run on os.Exit. Without this, provider.sock is
+	// permanently orphaned on disk across every restart.
+	if cleanupControlSocket != nil {
+		cleanupControlSocket()
+	}
 	os.Exit(0)
 }
 

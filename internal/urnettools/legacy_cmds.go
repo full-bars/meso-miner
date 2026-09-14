@@ -157,6 +157,9 @@ func cmdStart(args []string, force, dryRun bool) error {
 		fmt.Printf("[dry-run] would start %s (unit=%s, user=%s)\n", providerLabel(p), p.Unit, p.User)
 		return nil
 	}
+	if runtime.GOOS == "windows" {
+		return cmdStartWindows(p, force, dryRun)
+	}
 	fmt.Printf("starting %s...\n", providerLabel(p))
 	if err := unitCommand(p, "start"); err != nil {
 		fmt.Printf("FAILED to start %s: %v\n", providerLabel(p), err)
@@ -174,6 +177,9 @@ func cmdStop(args []string, force, dryRun bool) error {
 		fmt.Printf("[dry-run] would stop %s (unit=%s, user=%s)\n", providerLabel(p), p.Unit, p.User)
 		return nil
 	}
+	if runtime.GOOS == "windows" {
+		return cmdStopWindows(p, force, dryRun)
+	}
 	fmt.Printf("stopping %s...\n", providerLabel(p))
 	if err := unitCommand(p, "stop"); err != nil {
 		fmt.Printf("FAILED to stop %s: %v\n", providerLabel(p), err)
@@ -189,12 +195,15 @@ func cmdRestart(args []string, force, dryRun bool) error {
 	if err != nil {
 		return err
 	}
-	ok, err := confirmGate("restart "+p.Unit, p, force, dryRun)
+	ok, err := confirmGate("restart "+providerLabel(p), p, force, dryRun)
 	if err != nil {
 		return err
 	}
 	if !ok {
 		return nil // dry-run
+	}
+	if runtime.GOOS == "windows" {
+		return cmdRestartWindows(p, force, dryRun)
 	}
 	fmt.Printf("restarting %s...\n", providerLabel(p))
 	if err := unitCommand(p, "restart"); err != nil {
@@ -314,6 +323,11 @@ func cmdLogs(args []string) error {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
+	}
+	// Windows has no systemd/journalctl — print a diagnostic and exit cleanly.
+	if runtime.GOOS == "windows" {
+		fmt.Println("urnet-tools: journalctl is not available on Windows — logs are not supported via this command.")
+		return nil
 	}
 	// journalctl is a standalone binary, not a systemctl verb — calling it
 	// through unitCommand would execute `systemctl journalctl` (invalid).

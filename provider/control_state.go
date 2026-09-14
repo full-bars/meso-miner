@@ -60,6 +60,12 @@ type controlState struct {
 	// clears B). txMu makes the get-old → set/clear → persist → rollback unit
 	// atomic for this state.
 	txMu sync.Mutex
+	// shutdownFn, when non-nil, triggers the same graceful shutdown path
+	// as SIGTERM: cancel the main context so all goroutines drain, then
+	// the deferred flushRetentionEvents / cleanupControlSocket run. Set by
+	// main() before opening the control socket so the "shutdown" command
+	// can invoke it.
+	shutdownFn func()
 }
 
 // controlKeys are the only settings the socket accepts.
