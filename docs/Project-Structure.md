@@ -29,6 +29,15 @@ urnetwork-3.23-fix/
 │   ├── read_fd_frac_windows.go   # Windows file descriptor pressure stub
 │   ├── dup_linux_arm64.go        # ARM64-specific fd dup shim
 │   ├── dup_linux_generic.go      # Generic Linux fd dup shim
+│   ├── hotswap_windows.go        # Windows HotSwap via named pipes
+│   ├── hotswap_unix.go           # Linux HotSwap via Unix sockets
+│   ├── control_socket.go         # Control socket server (hotswap, shutdown, status commands)
+│   ├── control_state.go          # Persistent provider state management
+│   ├── restrict_socket_windows.go # Windows DACL socket permission hardening
+│   ├── metrics_listen.go         # Prometheus /metrics HTTP listener
+│   ├── metrics_provider.go       # Provider-specific metrics registration
+│   ├── contract_metrics.go       # Per-contract Prometheus counters
+│   ├── lifetime_metrics.go       # Provider lifetime Prometheus gauges
 │   └── Makefile                  # Cross-compile targets (amd64, arm64, darwin)
 │
 ├── hub/                          # Fleet bandwidth dashboard server
@@ -76,6 +85,12 @@ urnetwork-3.23-fix/
 │   ├── discover.go              # Provider discovery (/proc + systemd units)
 │   ├── update.go                # Interactive-first update, digest verify, atomic swap
 │   ├── legacy_cmds.go           # Parity commands (lifecycle, tuning, hub, optimize)
+│   ├── lifecycle_start_windows.go   # Windows provider start (schtasks/detached)
+│   ├── lifecycle_stop_windows.go    # Windows provider stop (socket shutdown + TerminateProcess)
+│   ├── lifecycle_restart_windows.go # Windows provider restart (HotSwap fallback)
+│   ├── lifecycle_windows.go         # Windows lifecycle helpers (schtasks, task naming)
+│   ├── lifecycle_stubs_notwindows.go # Stubs for non-Windows builds
+│   ├── hotswap_windows.go           # Windows HotSwap candidate launch
 │   └── ...                      # + tests (~73)
 │
 ├── scripts/                      # Installer and test scripts (installer stays shell)
@@ -101,6 +116,12 @@ urnetwork-3.23-fix/
 │   ├── Bittensor-Operations.md
 │   ├── Troubleshooting.md
 │   └── design/                   # Internal design docs (proxy health, hot-reload, bandwidth)
+│
+├── monitoring/                   # Prometheus + Grafana observability stack
+│   ├── docker-compose.yml        # Prometheus + Grafana stack
+│   ├── grafana/                  # Grafana dashboards and provisioning
+│   ├── prometheus/               # Prometheus scrape configuration
+│   └── setup.sh                  # Monitoring stack setup script
 │
 ├── releases/                     # Per-version release notes (v3.23.0-fix.*)
 │
@@ -134,5 +155,6 @@ urnetwork-3.23-fix/
     ├── proxy_health.go           # Proxy health scoring
     ├── tuning.go                 # Auto-tuning (turbo/lowmem modes)
     ├── log.go                    # Structured logging helpers
+    ├── metrics_prometheus.go     # Prometheus metrics registry and collector
     └── connect.go                # Top-level client/server entrypoint
 ```
