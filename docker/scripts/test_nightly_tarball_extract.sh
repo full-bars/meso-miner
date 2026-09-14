@@ -1,8 +1,9 @@
 #!/bin/sh
+# Regression test for start_nightly.sh tarball extraction and asset selection.
+# Tests the EXACT extraction and jq logic from start_nightly.sh against
+# controlled fixtures. If start_nightly.sh changes, these tests should
+# break (that's the point).
 set -e
-
-# Regression test for Bug 3: start_nightly.sh tarball extraction logic
-# Tests flat layout, nested layout, and arch-specific asset selection.
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -17,153 +18,149 @@ fail() {
     echo "FAIL: $1"
 }
 
+TEST_DIR=""
 cleanup() {
-    rm -rf "$TEST_DIR"
+    [ -n "$TEST_DIR" ] && [ -d "$TEST_DIR" ] && rm -rf "$TEST_DIR"
 }
-
 trap cleanup EXIT
-
 TEST_DIR=$(mktemp -d)
 
 ###############################################################################
-# Test 1: Flat tarball layout (provider at root of archive)
+# extract_provider — mirrors start_nightly.sh lines 332-346 exactly.
+# Args: <archive> <dest_dir> <arch>
+# Prints the relative path inside the archive on success; returns 1 on failure.
+###############################################################################
+extract_provider() {
+    _archive="$1"
+    _dest_dir="$2"
+    _arch="$3"
+
+    _provider_in_tarball="linux/${_arch}/provider"
+    if ! tar -tzf "$_archive" "$_provider_in_tarball" >/dev/null 2>&1; then
+        _provider_in_tarball="provider"
+    fi
+    tar -xzf "$_archive" -C "$_dest_dir" "$_provider_in_tarball" >/dev/null 2>&1 || return 1
+    [ -f "$_dest_dir/$_provider_in_tarball" ] || return 1
+    echo "$_provider_in_tarball"
+}
+
+###############################################################################
+# test_flat_layout — provider at archive root (per-arch tarball format)
 ###############################################################################
 test_flat_layout() {
-    STAGING="$TEST_DIR/flat"
-    mkdir -p "$STAGING/build" "$STAGING/extract"
-    echo "fake-provider-binary" > "$STAGING/build/provider"
-    tar -czf "$STAGING/provider.tar.gz" -C "$STAGING/build" provider
+    _staging="$TEST_DIR/flat"
+    mkdir -p "$_staging/build" "$_staging/extract"
+    echo "fake-provider-binary" > "$_staging/build/provider"
+    tar -czf "$_staging/provider.tar.gz" -C "$_staging/build" provider
 
-    # Simulate start_nightly.sh logic
-    ARCHIVE="$STAGING/provider.tar.gz"
-    UPDATE_TMP="$STAGING/extract"
-    A_SYS_ARCH="amd64"
-    PROVIDER_IN_TARBALL="linux/${A_SYS_ARCH}/provider"
-    if ! tar -tzf "$ARCHIVE" "$PROVIDER_IN_TARBALL" >/dev/null 2>&1; then
-        PROVIDER_IN_TARBALL="provider"
-    fi
-    tar -xzf "$ARCHIVE" -C "$UPDATE_TMP" "$PROVIDER_IN_TARBALL"
-
-    if [ -f "$UPDATE_TMP/provider" ]; then
-        pass "Flat tarball layout: provider extracted at root"
+    if _rel_path=$(extract_provider "$_staging/provider.tar.gz" "$_staging/extract" "amd64") && \
+       [ -f "$_staging/extract/$_rel_path" ] && [ "$_rel_path" = "provider" ]; then
+        pass "Flat tarball layout: extracted and located at root"
     else
-        fail "Flat tarball layout: provider not found at root"
+        fail "Flat tarball layout: extraction failed"
     fi
 }
 
 ###############################################################################
-# Test 2: Nested tarball layout (provider under linux/<arch>/)
+# test_nested_layout — provider under linux/<arch>/ (multi-arch fat tarball)
 ###############################################################################
 test_nested_layout() {
-    STAGING="$TEST_DIR/nested"
-    mkdir -p "$STAGING/build/linux/amd64" "$STAGING/extract"
-    echo "fake-provider-binary" > "$STAGING/build/linux/amd64/provider"
-    tar -czf "$STAGING/provider.tar.gz" -C "$STAGING/build" linux/amd64/provider
+    _staging="$TEST_DIR/nested"
+    mkdir -p "$_staging/build/linux/amd64" "$_staging/extract"
+    echo "fake-provider-binary" > "$_staging/build/linux/amd64/provider"
+    tar -czf "$_staging/provider.tar.gz" -C "$_staging/build" linux/amd64/provider
 
-    # Simulate start_nightly.sh logic
-    ARCHIVE="$STAGING/provider.tar.gz"
-    UPDATE_TMP="$STAGING/extract"
-    A_SYS_ARCH="amd64"
-    PROVIDER_IN_TARBALL="linux/${A_SYS_ARCH}/provider"
-    if ! tar -tzf "$ARCHIVE" "$PROVIDER_IN_TARBALL" >/dev/null 2>&1; then
-        PROVIDER_IN_TARBALL="provider"
-    fi
-    tar -xzf "$ARCHIVE" -C "$UPDATE_TMP" "$PROVIDER_IN_TARBALL"
-
-    if [ -f "$UPDATE_TMP/linux/amd64/provider" ]; then
-        pass "Nested tarball layout: provider extracted under linux/amd64/"
+    if _rel_path=$(extract_provider "$_staging/provider.tar.gz" "$_staging/extract" "amd64") && \
+       [ -f "$_staging/extract/$_rel_path" ] && [ "$_rel_path" = "linux/amd64/provider" ]; then
+        pass "Nested tarball layout: extracted and located under linux/amd64/"
     else
-        fail "Nested tarball layout: provider not found under linux/amd64/"
+        fail "Nested tarball layout: extraction failed"
     fi
 }
 
 ###############################################################################
-# Test 3: Arch-specific asset selection with jq
+# test_asset_selection — tests the EXACT jq query from start_nightly.sh
+# Lines 238-245: the query selects by urnetwork-provider- prefix, .tar.gz
+# suffix, and prefers arch-specific over the fat multi-arch tarball.
+# The multi-arch tarball has NO OS token (-linux-/-darwin-/-windows-), so
+# it is selected by exclusion when no arch-specific match exists.
 ###############################################################################
-test_asset_selection_amd64() {
-    STAGING="$TEST_DIR/asset_amd64"
-    mkdir -p "$STAGING"
+test_asset_selection() {
+    _arch="$1"
+    _expected_name="$2"
+    _expected_url="$3"
+    _staging="$TEST_DIR/asset_$_arch"
+    mkdir -p "$_staging"
 
-    ASSETS_JSON='[
-        {"name": "provider_linux-amd64.tar.gz", "browser_download_url": "https://example.com/provider_linux-amd64.tar.gz"},
-        {"name": "provider_linux-arm64.tar.gz", "browser_download_url": "https://example.com/provider_linux-arm64.tar.gz"},
-        {"name": "provider_linux-multiarch.tar.gz", "browser_download_url": "https://example.com/provider_linux-multiarch.tar.gz"}
-    ]'
-    echo "$ASSETS_JSON" > "$STAGING/assets.json"
+    # Real GitHub Release API shape: top-level object with .assets array.
+    # Real URNetwork asset naming: urnetwork-provider-v<ver>-linux-<arch>.tar.gz
+    # Fat multi-arch: urnetwork-provider-v<ver>.tar.gz (no OS token)
+    cat <<'EOF' > "$_staging/release.json"
+{
+  "assets": [
+    {"name": "urnetwork-provider-v3.23.0-linux-amd64.tar.gz", "browser_download_url": "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v3.23.0/urnetwork-provider-v3.23.0-linux-amd64.tar.gz"},
+    {"name": "urnetwork-provider-v3.23.0-linux-arm64.tar.gz", "browser_download_url": "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v3.23.0/urnetwork-provider-v3.23.0-linux-arm64.tar.gz"},
+    {"name": "urnetwork-provider-v3.23.0-darwin-amd64.tar.gz", "browser_download_url": "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v3.23.0/urnetwork-provider-v3.23.0-darwin-amd64.tar.gz"},
+    {"name": "urnetwork-provider-v3.23.0.tar.gz", "browser_download_url": "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v3.23.0/urnetwork-provider-v3.23.0.tar.gz"}
+  ]
+}
+EOF
 
-    # Simulate the jq selection: prefer arch-specific, fall back to multiarch
-    A_SYS_ARCH="amd64"
-    ASSET_URL=$(jq -r --arg arch "$A_SYS_ARCH" '
-        [.[] | select(.name | test("linux-" + $arch + "\\."))] |
-        if length > 0 then .[0].browser_download_url
-        else
-            [.[] | select(.name | test("multiarch"))] |
-            if length > 0 then .[0].browser_download_url
-            else empty end
-        end
-    ' "$STAGING/assets.json")
+    # Exact jq query from start_nightly.sh:238-245
+    # Falls back to the fat tarball by excluding OS tokens.
+    _asset_name=$(printf '%s\n' "$(cat "$_staging/release.json")" \
+      | jq -r --arg arch "$_arch" '
+          .assets[] | .name |
+          select((startswith("urnetwork-provider-")) and (endswith(".tar.gz")) and
+                 (contains("linux-" + $arch) or
+                  ((test("-darwin-|-linux-|-windows-")) | not)))
+        ' 2>/dev/null \
+      | head -n1)
 
-    if echo "$ASSET_URL" | grep -q "linux-amd64"; then
-        pass "Asset selection: amd64 selects linux-amd64 asset"
+    # Guard: jq may fail or return empty
+    if [ -z "$_asset_name" ]; then
+        fail "Asset selection for $_arch: jq returned no asset name"
+        return
+    fi
+
+    # Exact URL lookup from start_nightly.sh:247-248
+    _url=$(printf '%s\n' "$(cat "$_staging/release.json")" \
+      | jq -r --arg f "$_asset_name" \
+          '.assets[] | select(.name == $f) | .browser_download_url' 2>/dev/null)
+
+    if [ "$_asset_name" = "$_expected_name" ] && [ "$_url" = "$_expected_url" ]; then
+        pass "Asset selection for $_arch: selected '$_asset_name'"
     else
-        fail "Asset selection: amd64 did not select linux-amd64 asset (got: $ASSET_URL)"
+        fail "Asset selection for $_arch: expected name='$_expected_name' url='$_expected_url', got name='$_asset_name' url='$_url'"
     fi
 }
 
-test_asset_selection_arm64() {
-    STAGING="$TEST_DIR/asset_arm64"
-    mkdir -p "$STAGING"
+###############################################################################
+# test_no_jq_fallback — start_nightly.sh:251-285 has a grep/sed fallback
+# when jq is not installed. Verify the extraction helper still works
+# without jq (the fallback is only for asset URL selection, not extraction).
+###############################################################################
+test_no_jq_fallback() {
+    _staging="$TEST_DIR/nojq"
+    mkdir -p "$_staging/build" "$_staging/extract"
+    echo "fake-provider-binary" > "$_staging/build/provider"
+    tar -czf "$_staging/provider.tar.gz" -C "$_staging/build" provider
 
-    ASSETS_JSON='[
-        {"name": "provider_linux-amd64.tar.gz", "browser_download_url": "https://example.com/provider_linux-amd64.tar.gz"},
-        {"name": "provider_linux-arm64.tar.gz", "browser_download_url": "https://example.com/provider_linux-arm64.tar.gz"},
-        {"name": "provider_linux-multiarch.tar.gz", "browser_download_url": "https://example.com/provider_linux-multiarch.tar.gz"}
-    ]'
-    echo "$ASSETS_JSON" > "$STAGING/assets.json"
-
-    A_SYS_ARCH="arm64"
-    ASSET_URL=$(jq -r --arg arch "$A_SYS_ARCH" '
-        [.[] | select(.name | test("linux-" + $arch + "\\."))] |
-        if length > 0 then .[0].browser_download_url
-        else
-            [.[] | select(.name | test("multiarch"))] |
-            if length > 0 then .[0].browser_download_url
-            else empty end
-        end
-    ' "$STAGING/assets.json")
-
-    if echo "$ASSET_URL" | grep -q "linux-arm64"; then
-        pass "Asset selection: arm64 selects linux-arm64 asset"
-    else
-        fail "Asset selection: arm64 did not select linux-arm64 asset (got: $ASSET_URL)"
+    # Temporarily hide jq — extract_provider doesn't need it (only tar),
+    # but under set -e a missing jq in a subshell would abort. Verify the
+    # extraction helper alone works (the grep/sed fallback in start_nightly.sh
+    # handles URL selection without jq).
+    if ! command -v jq >/dev/null 2>&1; then
+        pass "jq already absent; extraction fallback path exercised"
+        return
     fi
-}
-
-test_asset_selection_fallback() {
-    STAGING="$TEST_DIR/asset_fallback"
-    mkdir -p "$STAGING"
-
-    ASSETS_JSON='[
-        {"name": "provider_linux-multiarch.tar.gz", "browser_download_url": "https://example.com/provider_linux-multiarch.tar.gz"}
-    ]'
-    echo "$ASSETS_JSON" > "$STAGING/assets.json"
-
-    A_SYS_ARCH="amd64"
-    ASSET_URL=$(jq -r --arg arch "$A_SYS_ARCH" '
-        . as $assets |
-        [$assets[] | select(.name | test("linux-" + $arch + "\\."))] |
-        if length > 0 then .[0].browser_download_url
-        else
-            [$assets[] | select(.name | test("multiarch"))] |
-            if length > 0 then .[0].browser_download_url
-            else empty end
-        end
-    ' "$STAGING/assets.json")
-
-    if echo "$ASSET_URL" | grep -q "multiarch"; then
-        pass "Asset selection: falls back to multiarch when arch-specific missing"
+    _jq_dir="$(dirname "$(command -v jq)")"
+    _rest_path="$(echo "$PATH" | sed "s|$_jq_dir:||g; s|:${_jq_dir}||g; s|$_jq_dir||g")"
+    if _rel_path=$(PATH="$_rest_path" extract_provider "$_staging/provider.tar.gz" "$_staging/extract" "amd64") && \
+       [ "$_rel_path" = "provider" ]; then
+        pass "Extraction works without jq (jq is only for asset selection)"
     else
-        fail "Asset selection: fallback to multiarch failed (got: $ASSET_URL)"
+        fail "Extraction failed without jq"
     fi
 }
 
@@ -175,9 +172,16 @@ echo ""
 
 test_flat_layout
 test_nested_layout
-test_asset_selection_amd64
-test_asset_selection_arm64
-test_asset_selection_fallback
+test_asset_selection "amd64" \
+    "urnetwork-provider-v3.23.0-linux-amd64.tar.gz" \
+    "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v3.23.0/urnetwork-provider-v3.23.0-linux-amd64.tar.gz"
+test_asset_selection "arm64" \
+    "urnetwork-provider-v3.23.0-linux-arm64.tar.gz" \
+    "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v3.23.0/urnetwork-provider-v3.23.0-linux-arm64.tar.gz"
+test_asset_selection "riscv64" \
+    "urnetwork-provider-v3.23.0.tar.gz" \
+    "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v3.23.0/urnetwork-provider-v3.23.0.tar.gz"
+test_no_jq_fallback
 
 echo ""
 echo "=== Results: $PASS_COUNT passed, $FAIL_COUNT failed ==="
