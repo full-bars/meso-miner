@@ -64,6 +64,7 @@ All notable changes to this project are documented here.
 - **Test harness global mutation**: `withGlobalEarningsStore` now uses `t.Cleanup` to restore state.
 
 ### Changed
+- **CFAA blocklist sync (PR #609)**: refreshed Computer Fraud and Abuse Act IP blocklists from upstream definitions.
 - **HotSwap decline messages**: all 5 decline points now include operator-facing guidance with actionable next steps instead of technical error strings.
 - **Proxy warmth test expectations**: updated to reflect warmth-first sort order.
 
