@@ -4,9 +4,31 @@ All notable changes to this project are documented here.
 
 ---
 
-## [Unreleased]
+## [v3.23.0-fix.31.2]
 
-_Nothing yet._
+### Added
+- **Zero-Downtime HotSwap on Windows (PR #613, #614)**: the in-place binary handover now works on Windows with SIGUSR2-equivalent process signaling and `execve` replacement; Docker containers can hot-swap the provider binary without restarting the container, with `/metrics` state carried across the handover.
+- **Windows lifecycle management (PR #616)**: `urnet-tools` now supports `start`, `stop`, `restart`, and control-socket shutdown on Windows via Task Scheduler and named-pipe control, bringing feature parity with the Linux systemd lifecycle.
+- **Go `urnet-tools` in Windows release tarball (PR #617)**: the Windows tarball now ships the compiled Go `urnet-tools` binary alongside the provider; legacy `urnet-tools.ps1` updater removed in favor of the Go-based self-update path.
+- **Automated WDSI submission bundle (PR #618)**: every release now produces a ready-to-submit WDSI (Windows Driver Signing Infrastructure) bundle automatically, removing manual preparation steps.
+- **Metrics reachable out of the box (PR #620)**: `/metrics` endpoint is now enabled by default and reachable without requiring manual `URNETWORK_PPROF` opt-in, so Prometheus scraping works immediately after install.
+- **Prometheus and Grafana monitoring bundle (PR #621)**: a ready-to-deploy monitoring stack ships with the release, including a Prometheus configuration that scrapes the provider's `/metrics` endpoint and a Grafana dashboard with pre-built panels for provider health, transfer throughput, proxy tiers, and contract metrics.
+
+### Fixed
+- **`/metrics` Prometheus parse errors (PR #619)**: fixed metric name and label formatting so the `/metrics` endpoint parses cleanly under Prometheus's text exposition format without scrape errors.
+- **Root allowed through control-socket peer check (PR #622)**: root callers are no longer rejected by the Unix socket peer credential check; non-root rejections now send a structured JSON error response instead of a bare message.
+- **`config` command discovery path (PR #623)**: `urnet-tools config` now resolves providers using the same discovery logic as `status`, eliminating mismatches where `status` found a provider but `config` could not.
+- **Docker nightly staging path and update settle delay (PR #624)**: corrected the tarball extraction path in the nightly Docker build and increased the post-update verification settle delay so slow-starting providers are not falsely flagged as failed.
+- **Throttled errors counted in Prometheus counter (PR #626)**: errors suppressed by the rate limiter were not incrementing the Prometheus error counter, so dashboards under-reported error rates during sustained failure storms.
+- **Three shakedown root-cause fixes (PR #627)**: addressed three distinct failure modes discovered during automated shakedown runs — incorrect script exit handling, missing prerequisite checks, and stale state between shakedown sections.
+- **`urnet-tools` provider deduplication by state dir (PR #628)**: when multiple unit files pointed at the same provider state directory, `urnet-tools` listed the same provider multiple times; units are now deduped by canonical state directory path.
+- **Docker nightly tarball extraction regression (PR #629)**: added a regression test and fixed the extraction path handling for nightly tarballs inside Docker containers.
+- **Smarter update verification loop with PID tracking (PR #630)**: the post-update verification now tracks the new process by PID instead of relying on a fixed settle delay, so it detects both success and failure faster and avoids false negatives on slow starts.
+- **HotSwap Docker execve arg sanitization (PR #614)**: Docker `execve` arguments for in-container HotSwap are now sanitized, preventing injection of untrusted values during the binary handover.
+- **`gofmt` compliance for `connect.go` (PR #612)**: formatted `connect.go` to pass the `gofmt` CI gate.
+
+### Changed
+- **Release engineering hardening (PR #617, #618, #629)**: Windows packaging cleaned of legacy updater remnants; WDSI bundle automated; Docker nightly extraction regression-tested to prevent silent packaging regressions.
 
 ---
 
