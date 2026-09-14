@@ -40,6 +40,12 @@ type updateConfig struct {
 	// Digest is the sha256 of the release tarball asset (hex). When empty,
 	// integrity verification is skipped (not recommended).
 	Digest string
+	// DigestExplicit is true when the caller provided --digest on the
+	// command line (as opposed to the digest being resolved from the
+	// release API). When explicit, the digest MUST be verified even on
+	// same-version updates — an attacker who controls a tag could ship a
+	// malicious binary with the same version string but different content.
+	DigestExplicit bool
 	// AssetURL is the download URL for the tarball.
 	AssetURL string
 	// StageDir is where downloads/extraction happen. MUST be on real disk —
@@ -119,6 +125,7 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 				return fmt.Errorf("--digest requires a value")
 			}
 			cfg.Digest = rest[i+1]
+			cfg.DigestExplicit = true
 			i++
 		case "--url":
 			if i+1 >= len(rest) {
@@ -316,6 +323,20 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 				}
 			} else {
 				skip = true
+			}
+		}
+		if skip {
+			// When the operator supplied --digest explicitly, the on-disk
+			// binary must match it even if the version string is the
+			// same — a tag could be swapped for a malicious binary with
+			// matching version metadata.
+			if cfg.DigestExplicit && p.Binary != "" && !p.BinaryDeleted {
+				if actual, err := fileSHA256(p.Binary); err != nil {
+					fmt.Fprintf(os.Stderr, "update %s: cannot verify digest on skipped binary: %v\n", providerLabel(p), err)
+				} else if !strings.EqualFold(actual, cfg.Digest) {
+					fmt.Printf("provider %s already on %s BUT on-disk sha256 (%s) does not match --digest (%s); updating\n", providerLabel(p), cfg.Tag, actual, cfg.Digest)
+					skip = false
+				}
 			}
 		}
 		if skip {

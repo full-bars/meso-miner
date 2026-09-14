@@ -116,7 +116,7 @@ func TestConfigCmd_TableOutput(t *testing.T) {
 	defer cleanup()
 
 	var buf bytes.Buffer
-	if err := runConfig(&buf, nil); err != nil {
+	if err := runConfig(&buf, []string{"--state-dir", filepath.Join(home, ".urnetwork")}); err != nil {
 		t.Fatalf("runConfig failed: %v", err)
 	}
 
@@ -195,7 +195,7 @@ func TestConfigCmd_JSONOutput(t *testing.T) {
 
 	for _, flag := range []string{"--json", "-j", "--json=true"} {
 		var buf bytes.Buffer
-		if err := runConfig(&buf, []string{flag}); err != nil {
+		if err := runConfig(&buf, []string{"--state-dir", filepath.Join(home, ".urnetwork"), flag}); err != nil {
 			t.Fatalf("runConfig(%s) failed: %v", flag, err)
 		}
 
@@ -229,7 +229,7 @@ func TestConfigCmd_SocketUnavailable(t *testing.T) {
 	stubDiscovery(t, []Provider{{StateDir: filepath.Join(home, ".urnetwork"), Running: true}}, nil)
 
 	var buf bytes.Buffer
-	err := runConfig(&buf, nil)
+	err := runConfig(&buf, []string{"--state-dir", filepath.Join(home, ".urnetwork")})
 	if err == nil {
 		t.Fatal("expected error when socket is unavailable, got nil")
 	}
@@ -253,7 +253,7 @@ func TestConfigCmd_ProviderReturnedError(t *testing.T) {
 	defer cleanup()
 
 	var buf bytes.Buffer
-	err := runConfig(&buf, nil)
+	err := runConfig(&buf, []string{"--state-dir", filepath.Join(home, ".urnetwork")})
 	if err == nil {
 		t.Fatal("expected error when provider returns ok=false, got nil")
 	}

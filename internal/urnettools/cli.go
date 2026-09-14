@@ -106,9 +106,19 @@ func cmdReport(args []string) error {
 		return err
 	}
 	providers := Discover()
-	p, err := selectTarget(providers, t)
+	p, narrowed, err := selectTargetOrSoleAccessible(providers, t, false)
 	if err != nil {
 		return err
+	}
+	// Managing another user's provider requires root; re-exec under sudo.
+	// report is a mutating control-socket command, so it needs the same
+	// elevation as status/summary — without it, verifyPeerCredentials
+	// rejects the root-connected socket (BUG: "connection reset by peer").
+	if elevated, err := maybeElevateForCrossUser("report", p, args, false, false); elevated {
+		return err
+	}
+	if narrowed {
+		printNarrowedNote(len(providers), p, "report URL")
 	}
 	if len(rest) < 1 {
 		return fmt.Errorf("report requires a URL (use 'report off' to disable)")
