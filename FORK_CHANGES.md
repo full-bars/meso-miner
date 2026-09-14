@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.30.9
+**Current Version**: v3.23.0-fix.31.2
 
 ---
 
@@ -3377,3 +3377,31 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 - `get` stays silent, because `urnet-tools status` polls it on every invocation.
 
 **Impact**: `⚙️ [control]` and `🏷️ [identity]` lines make configuration changes auditable from the standard logs.
+
+---
+
+## 163. v31.x Changes (v31.0 through v31.2)
+
+**Purpose**: Comprehensive upgrade spanning provider control infrastructure, Windows support, observability, update verification, CI automation, and security hardening across the v31.0–v31.2 release series.
+
+**Files Modified**: `provider/control_socket.go`, `provider/hotswap.go`, `provider/hotswap_windows.go`, `provider/metrics.go`, `provider/discovery.go`, `internal/urnettools/update.go`, `internal/urnettools/wdsi.go`, `internal/urnettools/windows.go`, `scripts/Provider_Install_Windows.ps1`, `docker/Dockerfile.nightly`, `docker/docker-compose.monitoring.yml`, and related test files.
+
+**Change**:
+
+- **Provider Control Plane & HotSwap (v31.0–v31.1)**: Unix domain socket control plane for live runtime setting changes without restarts. Offline pending queue for settings applied on next start. Zero-downtime HotSwap with systemd `Type=notify` migration and Docker in-place `execve` for seamless binary upgrades.
+
+- **Windows Provider Support (v31.2)**: HotSwap via Windows named pipes with equivalent lifecycle management (start/stop/restart/logs). Go `urnet-tools` included in the Windows tarball. `schtasks`-based auto-start registration. Control-socket shutdown for graceful teardown. DACL socket hardening to restrict access to the owning user.
+
+- **Monitoring & Metrics (v31.2)**: `/metrics` endpoint enabled by default on port 9091 in Prometheus exposition format. Throttled error counters to avoid metric cardinality explosion. Contract and lifetime metrics for provider session observability. Prometheus + Grafana Docker Compose bundle for one-command monitoring.
+
+- **Provider Discovery (v31.2)**: state-dir deduplication resolves unit+process duplicates where the same provider appears twice. `urnet-tools config` now uses the same discovery path as `status`, eliminating inconsistent provider listings.
+
+- **Update Verification (v31.2)**: Smarter settle loop with PID tracking to confirm the new process is actually alive. Early-exit guards prevent false failures when the update already completed. HotSwap window preservation ensures the settle check doesn't race against an in-progress handover.
+
+- **WDSI Automation (v31.2)**: Automated Windows Defender submission staging for new binaries. Deterministic text generation for submission metadata, removing non-reproducible timestamps and paths.
+
+- **Docker/Nightly (v31.2)**: Staging path fix so nightly builds land in the correct output directory. Tarball extraction tests run against real production code rather than stubs, catching packaging regressions before release.
+
+- **Security Hardening (v31.1–v31.2)**: Root peer check rejects non-root HotSwap candidates. JSON error response on connection rejection for machine-readable diagnostics. Docker execve argument sanitization prevents injection through crafted binary paths.
+
+**Impact**: v31.x brings full Windows parity, production-grade observability, resilient update verification, and tighter security boundaries — all while preserving zero-downtime upgrades on Linux.
