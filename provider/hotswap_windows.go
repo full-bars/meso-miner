@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -119,7 +120,20 @@ func spawnHotSwapCandidate(exe string, args []string) (*HotswapParentSession, er
 	cleanArgs := sanitizeCandidateArgs(args)
 
 	cmd := exec.Command(exe, cleanArgs...)
-	cmd.Env = append(os.Environ(),
+	// Strip stale URNETWORK_HOTSWAP_PIPE and URNETWORK_HOTSWAP from the
+	// inherited environment to prevent chained hotswaps from reading an
+	// obsolete pipe name. On Windows, GetEnvironmentVariable returns the
+	// first definition, so leaving stale entries causes the candidate to
+	// dial a dead pipe and abort (os.Exit 2).
+	cleanEnv := make([]string, 0, len(os.Environ())+2)
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, "URNETWORK_HOTSWAP_PIPE=") ||
+			strings.HasPrefix(e, EnvHotSwap+"=") {
+			continue
+		}
+		cleanEnv = append(cleanEnv, e)
+	}
+	cmd.Env = append(cleanEnv,
 		EnvHotSwap+"=1",
 		"URNETWORK_HOTSWAP_PIPE="+pipeName,
 	)

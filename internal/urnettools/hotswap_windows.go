@@ -3,7 +3,9 @@
 package urnettools
 
 import (
-	"syscall"
+	"errors"
+
+	"golang.org/x/sys/windows"
 )
 
 // triggerHotSwap sends {cmd: "hotswap"} over the provider's control socket
@@ -20,33 +22,25 @@ func triggerHotSwap(p Provider) error {
 // Uses OpenProcess with SYNCHRONIZE access and WaitForSingleObject: if the
 // wait returns WAIT_OBJECT_0, the process has exited; WAIT_TIMEOUT means it
 // is still running.
+//
+// ERROR_ACCESS_DENIED from OpenProcess means the process exists but the
+// caller lacks SYNCHRONIZE rights (e.g. urnet-tools running as a standard
+// user while the provider is elevated or a service). In that case we
+// conservatively report the process as alive to avoid false rollbacks.
 func pidIsAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	const (
-		processSynchronize = 0x00100000
-		waitObject0        = 0x00000000 // Process has exited
-		waitTimeout        = 0x00000102 // Process is still running
-	)
 
-	kernel32 := syscall.NewLazyDLL("kernel32.dll")
-	procOpen := kernel32.NewProc("OpenProcess")
-	procWait := kernel32.NewProc("WaitForSingleObject")
-
-	handle, _, _ := procOpen.Call(
-		uintptr(processSynchronize),
-		0, // bInheritHandle = FALSE
-		uintptr(pid),
-	)
-	if handle == 0 {
+	h, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(pid))
+	if err != nil {
+		if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+			return true // Process exists but caller lacks SYNCHRONIZE rights.
+		}
 		return false
 	}
-	defer syscall.CloseHandle(syscall.Handle(handle))
+	defer windows.CloseHandle(h)
 
-	ret, _, _ := procWait.Call(
-		handle,
-		0, // dwMilliseconds = 0 (immediate check)
-	)
-	return ret == waitTimeout // Still running
+	event, err := windows.WaitForSingleObject(h, 0)
+	return err == nil && event == 0x00000102 // WAIT_TIMEOUT
 }
