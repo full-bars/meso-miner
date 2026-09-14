@@ -140,8 +140,7 @@ def scan_file(path: str) -> int:
         f"  verdict: malicious={mal} suspicious={sus} harmless={har} undetected={und}", flush=True
     )
     print(f"  https://www.virustotal.com/gui/file/{fsha}", flush=True)
-    if SUMMARY_FILE:
-        _summary_rows.append((path, fsha, verdict, mal, sus, har, und))
+    _summary_rows.append((path, fsha, verdict, mal, sus, har, und))
     if mal > FAIL_THRESHOLD:
         print(f"  ^ FAIL: malicious ({mal}) > fail threshold ({FAIL_THRESHOLD})", flush=True)
         return 1

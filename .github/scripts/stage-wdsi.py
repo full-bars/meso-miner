@@ -143,6 +143,12 @@ def main():
             msft = last_results.get("Microsoft", {})
             detection_name = msft.get("result") or "Unknown"
             engine_version = msft.get("engine_version", "")
+            msft_category = msft.get("category", "")
+            # Skip files that Microsoft Defender didn't actually flag —
+            # aggregate malicious > 0 may come from other AV engines
+            if msft_category != "malicious" and not msft.get("result"):
+                print(f"  SKIP: {asset_name} — clean in Defender (other AVs flagged)")
+                continue
         except Exception as e:
             print(f"  WARNING: VT lookup for {sha} failed: {e}", file=sys.stderr)
 
