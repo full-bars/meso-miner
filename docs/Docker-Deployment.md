@@ -583,6 +583,26 @@ volumes:
 
 ---
 
+### 📊 Prometheus + Grafana Monitoring Bundle (v3.23.0-fix.31.2)
+
+As of v31.2, a `docker-compose.monitoring.yml` file is included in the repository for a ready-made Prometheus + Grafana stack that scrapes the provider's built-in `/metrics` endpoint on port `9091`:
+
+```bash
+# Start the provider + monitoring stack together
+docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+```
+
+This brings up:
+- **Prometheus** — configured to scrape `http://urnetwork:9091/metrics` at a 15s interval
+- **Grafana** — pre-loaded with a provider dashboard (default login `admin` / `admin`)
+
+> [!TIP]
+> If you run multiple provider containers, update the Prometheus scrape targets in `docker-compose.monitoring.yml` to point at each container's metrics port. Each container needs a unique host-side port mapping (e.g. `-p 9091:9091` on the first, `-p 9092:9091` on the second).
+
+The metrics endpoint is enabled by default — no environment variables are needed. To disable it on a specific container, add `-e URNETWORK_METRICS=0`.
+
+See also the [Configuration](Configuration.md#-monitoring--telemetry) reference for the full list of telemetry variables.
+
 ## 🐦 Pelican Panel
 
 As of `v3.23.0-fix.30.8`, the provider image is importable into the [Pelican game-server panel](https://github.com/pelican-dev/panel) as a one-click egg. The egg ships with the audit-preferred defaults pinned — vnStat off, IP checker off, and runtime self-update disabled.
