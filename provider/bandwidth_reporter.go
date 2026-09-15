@@ -314,7 +314,7 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string
 		// fleet dashboard goes stale with no signal on the provider side. the
 		// report cadence already rate-limits this, so log every occurrence.
 		if resp.StatusCode/100 != 2 {
-			tlog("[report] hub rejected report: %s\n", resp.Status)
+			tlog("[report] server rejected report: %s\n", resp.Status)
 		}
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
