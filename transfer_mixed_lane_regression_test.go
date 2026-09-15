@@ -294,39 +294,77 @@ func TestSendSequenceForgetsUnreliableFlightOnResendTimeout(t *testing.T) {
 		}
 	}
 
-	var sequence *SendSequence
+	var sequences []*SendSequence
 	client.sendBuffer.mutex.Lock()
 	for _, seq := range client.sendBuffer.sendSequences {
-		sequence = seq
+		sequences = append(sequences, seq)
 	}
 	client.sendBuffer.mutex.Unlock()
-	if sequence == nil || sequence.flightController == nil {
-		t.Fatal("no send sequence with a flight controller was found")
+	if len(sequences) == 0 {
+		t.Fatal("no send sequences were found")
 	}
 
-	flightController := sequence.flightController
-	if flightController.byteCount != 0 {
-		t.Fatalf("flight byteCount did not drop to zero after the RTO: %d", flightController.byteCount)
+	// The first RTO can be observed while policy.reliableRouteAvailable is
+	// still false (the reliable lane has not been proven yet), in which case
+	// observeUnreliableResendTimeout does not forget the item — it retries
+	// and the forget runs on a later RTO once the reliable lane is known.
+	// Wait for the flight to drain rather than asserting on the first
+	// observation.
+	drained := false
+	for !drained {
+		client.sendBuffer.mutex.Lock()
+		drained = true
+		for _, seq := range sequences {
+			if seq.flightController != nil && seq.flightController.byteCount != 0 {
+				drained = false
+				break
+			}
+		}
+		client.sendBuffer.mutex.Unlock()
+		if !drained {
+			select {
+			case <-ctx.Done():
+				break
+			case <-time.After(20 * time.Millisecond):
+			case <-deadline:
+				break
+			}
+		}
 	}
-	if flightController.messageCount != 0 {
-		t.Fatalf("flight messageCount did not drop to zero after the RTO: %d", flightController.messageCount)
+	if !drained {
+		t.Fatal("unreliable flight did not drain after the RTO (reliable lane never became available)")
 	}
-	// reduceForLoss halves 1024 to 512 on this same timeout. The old
-	// release/acknowledge path would grow part of that back immediately
-	// (additive increase applies once reduceForLoss turns off slow start);
-	// forget must leave the reduction standing.
-	// The flight policy in this environment never engages limited (no
-	// congestion signal), so reduceForLoss has nothing to halve — the
-	// halving interaction is covered deterministically by
-	// TestFlightControllerForgetKeepsLossReduction. What the RTO path must
-	// guarantee here is that the forgotten item's reservation is gone and
-	// the limit did not grow past its initial value.
-	if flightController.byteLimit > 1024 {
-		t.Fatalf(
-			"flight byteLimit after RTO = %d, want <= 1024 (forget must not grow the limit)",
-			flightController.byteLimit,
-		)
+
+	client.sendBuffer.mutex.Lock()
+	for _, seq := range sequences {
+		flightController := seq.flightController
+		if flightController == nil {
+			continue
+		}
+		if flightController.byteCount != 0 {
+			t.Fatalf("flight byteCount did not drop to zero after the RTO: %d", flightController.byteCount)
+		}
+		if flightController.messageCount != 0 {
+			t.Fatalf("flight messageCount did not drop to zero after the RTO: %d", flightController.messageCount)
+		}
+		// reduceForLoss halves the limit on the loss. The old
+		// release/acknowledge path would grow part of that back immediately
+		// (additive increase applies once reduceForLoss turns off slow start);
+		// forget must leave the reduction standing. The flight policy in
+		// this environment never engages limited (no congestion signal), so
+		// reduceForLoss has nothing to halve — the halving interaction is
+		// covered deterministically by
+		// TestFlightControllerForgetKeepsLossReduction. What the RTO path
+		// must guarantee here is that the forgotten item's reservation is
+		// gone and the limit did not grow past its initial value.
+		if flightController.byteLimit > 1024 {
+			t.Fatalf(
+				"flight byteLimit after RTO = %d, want <= 1024 (forget must not grow the limit)",
+				flightController.byteLimit,
+			)
+		}
 	}
+	client.sendBuffer.mutex.Unlock()
 }
 
 // Deterministic controller-level check of the invariant the RTO forget
