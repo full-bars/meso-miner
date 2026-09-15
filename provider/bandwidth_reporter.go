@@ -62,7 +62,7 @@ type systemMetrics struct {
 
 // proxyStatus is the compact per-proxy fields a heartbeat carries — status
 // and contract counters only, no byte-level detail. json tags must match
-// hub/main.go's proxyStatus.
+// the upstream proxyStatus.
 type proxyStatus struct {
 	ID                string `json:"id"`
 	Status            string `json:"status"`
@@ -71,10 +71,10 @@ type proxyStatus struct {
 }
 
 // heartbeatReport is the lightweight, high-frequency (10-30s) counterpart to
-// bandwidthReport: no byte-level detail, just enough for the hub to keep
+// bandwidthReport: no byte-level detail, just enough for the server to keep
 // "last seen", the Mbps rate, and per-proxy status/contracts live between
 // the much less frequent full /api/report ticks (5-15m default). Its json
-// tags must stay in sync with hub/main.go's heartbeatReport. Proxies is
+// tags must stay in sync with the upstream heartbeatReport. Proxies is
 // sparse by the time it's marshaled — see filterChangedProxies, applied by
 // runHeartbeatReporter before sending.
 type heartbeatReport struct {
@@ -89,8 +89,8 @@ type heartbeatReport struct {
 }
 
 // reportURLOverridePath returns ~/.urnetwork/report_url, a file an operator
-// can write at any time to set, change, or disable (write "off") the hub
-// target without restarting the provider. It takes precedence over
+// can write at any time to set, change, or disable (write "off") the
+// report target without restarting the provider. It takes precedence over
 // URNETWORK_REPORT_URL, which is read once at process start and otherwise
 // can't be changed without a restart.
 func reportURLOverridePath() (string, error) {
@@ -104,12 +104,12 @@ func reportURLOverridePath() (string, error) {
 // reportURLOverrideOff is the literal override-file content that force-
 // disables reporting, distinct from a blank file (which is a no-op that
 // falls back to envFallback — see resolveReportURL). This lets urnet-tools
-// hub off turn reporting off for an already-running process without a
-// restart, the same way hub set/link turn it on.
+// report off turn reporting off for an already-running process without a
+// restart, the same way report set/link turn it on.
 const reportURLOverrideOff = "off"
 
 // resolveReportURL checks the control-socket state first (see
-// control_state.go — set live via `urnet-tools hub set/off`), then falls
+// control_state.go — set live via `urnet-tools report set/off`), then falls
 // back to the legacy override file, then to envFallback. Re-resolved on
 // every call so a change takes effect on the reporter's next tick.
 // envFallback is the value captured from URNETWORK_REPORT_URL at startup,
@@ -137,7 +137,7 @@ func resolveReportURL(envFallback string) string {
 }
 
 // nodeNameOverridePath returns ~/.urnetwork/node_name, a file an operator can
-// write at any time to change the node identity reported to the hub without
+// write at any time to change the node identity reported to the fleet without
 // restarting. An empty file or missing file falls back to the startup hostname.
 func nodeNameOverridePath() (string, error) {
 	home, err := os.UserHomeDir()
@@ -168,7 +168,7 @@ func resolveNodeName(startupName string) string {
 }
 
 // reportIntervalOverridePath returns ~/.urnetwork/report_interval, a file an
-// operator can write at any time to change the hub report cadence without
+// operator can write at any time to change the report cadence without
 // restarting the provider. It takes precedence over URNETWORK_REPORT_INTERVAL,
 // which is read once at process start.
 func reportIntervalOverridePath() (string, error) {
@@ -205,17 +205,17 @@ func resolveReportInterval(startupInterval time.Duration) time.Duration {
 }
 
 // runBandwidthReporter periodically POSTs this node's per-proxy bandwidth and
-// system metrics to the fleet hub. The target is re-resolved every tick via
+// system metrics to the fleet. The target is re-resolved every tick via
 // resolveReportURL, so writing a URL (or "off") to ~/.urnetwork/report_url
-// turns reporting on, off, or repoints it at a different hub without a
+// turns reporting on, off, or repoints it at a different target without a
 // restart; envReportURL is only the startup-time fallback used when that
 // file doesn't exist or is blank. It is a best-effort telemetry loop: failures are logged but never
 // retried beyond the next tick. The cadence defaults to 5m and is
 // overridable via URNETWORK_REPORT_INTERVAL (min 10s). The 5m default keeps
-// the hub's historical SQLite write volume modest across a large fleet; set a
+// the server's historical SQLite write volume modest across a large fleet; set a
 // shorter interval where a more live dashboard matters. The bandwidthReport /
-// proxyReport JSON shape mirrors what the hub decodes, so keep the json tags
-// here in sync with hub/main.go.
+// proxyReport JSON shape mirrors what the server decodes, so keep the json tags
+// here in sync with the upstream.
 func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string, startTime time.Time) {
 	interval := 5 * time.Minute
 	if s := os.Getenv("URNETWORK_REPORT_INTERVAL"); s != "" {
@@ -226,7 +226,7 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string
 	_ = interval // keep the variable for resolveReportInterval; client created per tick below
 
 	// startup jitter so a fleet that restarts together doesn't post on the same
-	// wall-clock boundary and thundering-herd the hub. mirrors the proxy
+	// wall-clock boundary and thundering-herd the server. mirrors the proxy
 	// benchmark probes' jittered start.
 	select {
 	case <-ctx.Done():
@@ -309,7 +309,7 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string
 			tlog("[report] post failed: %v\n", err)
 			continue
 		}
-		// surface a rejecting hub instead of silently treating any response as
+		// surface a rejecting server instead of silently treating any response as
 		// success. without this a 401/404/5xx looks identical to a 200 and the
 		// fleet dashboard goes stale with no signal on the provider side. the
 		// report cadence already rate-limits this, so log every occurrence.
@@ -422,14 +422,14 @@ func buildReport(nodeID, host string, startTime time.Time) bandwidthReport {
 }
 
 // maxHeartbeatBackoff caps how far consecutive-failure backoff can stretch
-// the heartbeat interval. A fleet-wide hub outage on a flaky link (e.g.
+// the heartbeat interval. A fleet-wide server outage on a flaky link (e.g.
 // Detroit) should quiet down to at most one attempt every 5m per node
 // rather than retrying every base interval indefinitely.
 const maxHeartbeatBackoff = 5 * time.Minute
 
 // nextHeartbeatInterval doubles the wait for each consecutive heartbeat
 // failure (base, 2x, 4x, 8x, ...), capped at maxHeartbeatBackoff, so a
-// fleet doesn't retry-storm a hub that's down or unreachable. Resets to
+// fleet doesn't retry-storm a server that's down or unreachable. Resets to
 // base as soon as a heartbeat succeeds (consecutiveFailures back to 0).
 func nextHeartbeatInterval(base time.Duration, consecutiveFailures int) time.Duration {
 	if consecutiveFailures <= 0 {
@@ -522,12 +522,12 @@ func postHeartbeat(ctx context.Context, client *http.Client, apiURL string, hb h
 }
 
 // runHeartbeatReporter periodically POSTs a lightweight liveness/rate ping
-// to the hub's /api/heartbeat, on a much shorter cadence than
+// to the server's /api/heartbeat, on a much shorter cadence than
 // runBandwidthReporter's full /api/report (default 15s vs 5m). It shares
-// resolveReportURL/resolveNodeName with the full reporter so hub target and
-// node name changes apply to both without a restart. The hub only accepts a
+// resolveReportURL/resolveNodeName with the full reporter so report target and
+// node name changes apply to both without a restart. The server only accepts a
 // heartbeat for a node it already knows about (established by a prior full
-// report), so an all-heartbeats-rejected hub log is expected right after a
+// report), so an all-heartbeats-rejected server log is expected right after a
 // provider restart until the first /api/report lands.
 func runHeartbeatReporter(ctx context.Context, nodeID, host, envReportURL string, startTime time.Time) {
 	baseInterval := 15 * time.Second
@@ -550,10 +550,10 @@ func runHeartbeatReporter(ctx context.Context, nodeID, host, envReportURL string
 	defer func() { ticker.Stop() }()
 
 	// The client is cached across ticks and only rebuilt when the target
-	// hub URL changes, so a 15s heartbeat cadence doesn't pay a fresh
+	// report URL changes, so a 15s heartbeat cadence doesn't pay a fresh
 	// TCP+TLS handshake every tick the way a client-per-request would — at
 	// fleet scale (dozens of nodes) that handshake cost is what actually
-	// stresses a hub on a flaky link, not the ~200-byte JSON payload.
+	// stresses a server on a flaky link, not the ~200-byte JSON payload.
 	var client *http.Client
 	var activeReportURL string
 	consecutiveFailures := 0
@@ -620,7 +620,7 @@ func runHeartbeatReporter(ctx context.Context, nodeID, host, envReportURL string
 			}
 		}
 
-		// A flaky link to the hub (e.g. an outage) shouldn't have every
+		// A flaky link to the server (e.g. an outage) shouldn't have every
 		// node in the fleet retry-storming it every base interval — back
 		// off the next tick's wait on consecutive failures, capped, and
 		// snap straight back to baseInterval the moment it recovers.

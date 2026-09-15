@@ -3957,7 +3957,7 @@ func provide(opts docopt.Opts) {
 		statusServer := &http.Server{
 			Addr:    fmt.Sprintf(":%d", port),
 			Handler: &Status{},
-			// Matches hub/main.go: guards against Slowloris-style connection
+			// Guards against Slowloris-style connection
 			// exhaustion (dribbled headers, opened-and-idle connections).
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       120 * time.Second,

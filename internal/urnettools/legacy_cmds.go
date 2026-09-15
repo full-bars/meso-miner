@@ -15,7 +15,7 @@ import (
 )
 
 // This file ports the remaining legacy urnet-tools commands — service
-// management (start/stop/restart/logs), hub linking (set/off/install),
+// management (start/stop/restart/logs), reporting config (set/off/install),
 // tuning profiles (turbo/eco/lowmode/ramlogs/auto/optimize), and proxy
 // extras (health/traffic/remove-dead). Unlike the legacy shell tool, every
 // command targets the RESOLVED provider (via targeting) — never a

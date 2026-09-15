@@ -551,7 +551,7 @@ func newProxyCmd() *cobra.Command {
 }
 
 func newReportCmd() *cobra.Command {
-	return withHelp(newCobraCmd("report", "set hub report URL", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("report", "set report URL", nil, func(cmd *cobra.Command, args []string) error {
 		rest, err := parseDelegationArgs(args)
 		if err == errHelpShown {
 			return nil
@@ -560,7 +560,7 @@ func newReportCmd() *cobra.Command {
 			return err
 		}
 		return cmdReport(rest)
-	}), "Set the hub report URL for one targeted provider at runtime, or pass \"off\" to disable reporting. This writes an override file the provider's bandwidth reporter re-reads on its next tick, so no restart is needed.", "  urnet-tools report http://192.0.2.10:8080 --unit urnetwork-native.service\n  urnet-tools report off --unit urnetwork-native.service")
+	}), "Set the report URL for one targeted provider at runtime, or pass \"off\" to disable reporting. This writes an override file the provider's bandwidth reporter re-reads on its next tick, so no restart is needed.", "  urnet-tools report http://192.0.2.10:8080 --unit urnetwork-native.service\n  urnet-tools report off --unit urnetwork-native.service")
 }
 
 func newReinstallCmd() *cobra.Command {
