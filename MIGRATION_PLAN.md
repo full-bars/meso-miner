@@ -84,5 +84,13 @@ PR #634 (hub deprecation, −9,738 lines / 24 files in hub/ alone) merges BEFORE
 
 Key drift checks: NewClient/ParseByteCount byte-identical; NewClientWithDefaults dropped its settings param (call-site rename); v2026 has NO Prometheus surface (metrics layer is 100% fork-built, carries wholesale).
 
+## Phase 0.5 verdict (2026-09-15)
+
+Signature-drift pass over the ops layer's connect surface:
+- Identical in v2026 (byte-level): NewClient, NewClientWithTag, ClientOob, SetMemoryBudget, ResizeMessagePools, ParseByteCount.
+- Rename/call-site only: NewClientWithDefaults (settings param removed — callers pass settings explicitly), SendWithTimeout/SendMultiHopWithTimeout destination param TransferPath → Id (drop the path, pass the id).
+- Fork-built, carries wholesale: metrics/Prometheus surface, pool health, proxy health/quality, PQE counters, earnings, control+hotswap (vetted above).
+- **Estimate: Phase 2 sizing = call-site migration, not API rewrites. The ops layer's library seam is ~60 symbols, and sampled drift is shallow (params, not contracts). Expect days, not weeks, for the seam itself; the daemon-lifecycle differences (hotswap vs sn restart, urnet-tools update flow, metrics names) are the real work items, and they are additive/portable, not blocked on v2026 internals.**
+
 ## Next action
 Phase 0 semantics + complete the symbol map (provider/main.go + controls + urnet-tools update paths) → estimate Phase 2 sizing. That number decides weeks-vs-months.
