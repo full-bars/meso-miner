@@ -226,6 +226,171 @@ func TestSendSequenceFullUnreliableFlightOverflowsOntoReliableLane(t *testing.T)
 	}
 }
 
+// The third penalty: releasing a timed-out item from the unreliable flight
+// shared acknowledge's growth logic, so the same RTO that reduceForLoss just
+// halved the window for immediately grew part of it back. A timeout is not
+// delivery evidence: forgetUnreliableFlight must drop the item's bytes and
+// message count without ever growing a limit.
+func TestSendSequenceForgetsUnreliableFlightOnResendTimeout(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	settings := DefaultClientSettings()
+	settings.EncryptionSettings.Mode = EncryptionModeOff
+	settings.SendBufferSettings.UnreliableInitialFlightByteCount = 1024
+	settings.SendBufferSettings.UnreliableMinimumFlightByteCount = 8
+	settings.SendBufferSettings.UnreliableMaximumFlightByteCount = 1024 * 1024
+	settings.SendBufferSettings.UnreliableFlightIncreaseByteCount = 1150
+	settings.SendBufferSettings.MinResendInterval = 100 * time.Millisecond
+	settings.SendBufferSettings.RttMinResendInterval = 100 * time.Millisecond
+	settings.SendBufferSettings.MaxResendInterval = 250 * time.Millisecond
+	settings.SendBufferSettings.UnreliableMaxResendInterval = 250 * time.Millisecond
+	client := NewClient(ctx, NewId(), NewNoContractClientOob(), settings)
+	peerId := NewId()
+	client.ContractManager().AddNoContractPeer(peerId)
+
+	unreliableRoute := make(Route, 16)
+	reliableRoute := make(Route, 16)
+	fromPeer := make(Route, 16)
+	client.RouteManager().UpdateTransportWithProperties(
+		NewSendGatewayTransportWithType(TransportTypeP2p),
+		[]Route{unreliableRoute},
+		TransferCarrierProperties{Unreliable: true},
+	)
+	client.RouteManager().UpdateTransportWithProperties(
+		NewSendGatewayTransportWithType(TransportTypeH1),
+		[]Route{reliableRoute},
+		TransferCarrierProperties{},
+	)
+	client.RouteManager().UpdateTransport(NewReceiveGatewayTransport(), []Route{fromPeer})
+	t.Cleanup(func() {
+		cancel()
+		client.Close()
+		for _, route := range []Route{unreliableRoute, reliableRoute, fromPeer} {
+			for {
+				select {
+				case message := <-route:
+					MessagePoolReturn(message)
+				default:
+					goto next
+				}
+			}
+		next:
+		}
+	})
+
+	// the message rides the unreliable lane and is never acknowledged, so it
+	// times out and reduceForLoss halves the byte limit from 1024 to 512
+	sendTransferFlightTestMessage(t, client, peerId, 0)
+	takeTransferFlightTestPack(t, unreliableRoute)
+
+	deadline := time.After(10 * time.Second)
+	for client.SendRecoveryStats().UnreliableFlightTimeoutCount == 0 {
+		select {
+		case transferFrameBytes := <-reliableRoute:
+			// the reliable-only resend that follows the forgotten item
+			MessagePoolReturn(transferFrameBytes)
+		case <-time.After(20 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("resend timeout on the unreliable flight was never observed")
+		}
+	}
+
+	var sequence *SendSequence
+	client.sendBuffer.mutex.Lock()
+	for _, seq := range client.sendBuffer.sendSequences {
+		sequence = seq
+	}
+	client.sendBuffer.mutex.Unlock()
+	if sequence == nil || sequence.flightController == nil {
+		t.Fatal("no send sequence with a flight controller was found")
+	}
+
+	flightController := sequence.flightController
+	if flightController.byteCount != 0 {
+		t.Fatalf("flight byteCount did not drop to zero after the RTO: %d", flightController.byteCount)
+	}
+	if flightController.messageCount != 0 {
+		t.Fatalf("flight messageCount did not drop to zero after the RTO: %d", flightController.messageCount)
+	}
+	// reduceForLoss halves 1024 to 512 on this same timeout. The old
+	// release/acknowledge path would grow part of that back immediately
+	// (additive increase applies once reduceForLoss turns off slow start);
+	// forget must leave the reduction standing.
+	// The flight policy in this environment never engages limited (no
+	// congestion signal), so reduceForLoss has nothing to halve — the
+	// halving interaction is covered deterministically by
+	// TestFlightControllerForgetKeepsLossReduction. What the RTO path must
+	// guarantee here is that the forgotten item's reservation is gone and
+	// the limit did not grow past its initial value.
+	if flightController.byteLimit > 1024 {
+		t.Fatalf(
+			"flight byteLimit after RTO = %d, want <= 1024 (forget must not grow the limit)",
+			flightController.byteLimit,
+		)
+	}
+}
+
+// Deterministic controller-level check of the invariant the RTO forget
+// relies on: after reduceForLoss halves the window, forget must leave the
+// reduction standing, while acknowledge — the logic the old release path
+// shared — grows it back additively on the same event.
+func TestFlightControllerForgetKeepsLossReduction(t *testing.T) {
+	newLost := func(t *testing.T) *sendFlightController {
+		t.Helper()
+		settings := DefaultSendBufferSettings()
+		settings.UnreliableInitialFlightByteCount = 8 * 1024
+		settings.UnreliableMinimumFlightByteCount = 2 * 1024
+		settings.UnreliableMaximumFlightByteCount = 64 * 1024
+		settings.UnreliableFlightIncreaseByteCount = 1150
+		controller := newSendFlightController(settings)
+		if applied := controller.applyPolicy(transferFlightPolicySnapshot{
+			generation: 1,
+			limited:    true,
+		}); !applied {
+			t.Fatal("expected the flight policy to apply")
+		}
+		return controller
+	}
+
+	key := sendSchedulingKey{valid: true}
+
+	// forget: the halving survives the timeout
+	forgetter := newLost(t)
+	forgetter.sendForKey(forgetter.byteLimit, key)
+	if !forgetter.reduceForLoss() {
+		t.Fatal("expected reduceForLoss to reduce the byte limit")
+	}
+	halved := forgetter.byteLimit
+	if halved >= 8*1024 {
+		t.Fatalf("expected a reduced limit, got %d", halved)
+	}
+	forgetter.forget(8*1024, key, false)
+	if forgetter.byteCount != 0 || forgetter.messageCount != 0 {
+		t.Fatalf(
+			"forget did not drop the reservation: bytes=%d messages=%d",
+			forgetter.byteCount, forgetter.messageCount,
+		)
+	}
+	if forgetter.byteLimit != halved {
+		t.Fatalf(
+			"forget grew the limit back: %d, want %d",
+			forgetter.byteLimit, halved,
+		)
+	}
+
+	// acknowledge: the old release path's logic grows the same window back
+	acknowledger := newLost(t)
+	acknowledger.sendForKey(acknowledger.byteLimit, key)
+	acknowledger.reduceForLoss()
+	ackHalved := acknowledger.byteLimit
+	acknowledger.acknowledgeForKey(8*1024, key, false)
+	if acknowledger.byteLimit <= ackHalved {
+		t.Fatalf(
+			"expected acknowledge to grow the limit additively: %d <= %d",
+			acknowledger.byteLimit, ackHalved,
+		)
+	}
+}
+
 // The second penalty: a receiver replied to Packs that arrived on the
 // unreliable lane with ACKs on that same lane, where the provider's UDP socket
 // dropped them and every lost cumulative ACK timed out the sender's whole
