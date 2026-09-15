@@ -3,15 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
-	"fmt"
 	"io"
 	"math/rand"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,7 +15,6 @@ import (
 	"runtime/metrics"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/urnetwork/connect"
@@ -222,8 +217,6 @@ func resolveReportInterval(startupInterval time.Duration) time.Duration {
 // proxyReport JSON shape mirrors what the hub decodes, so keep the json tags
 // here in sync with hub/main.go.
 func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string, startTime time.Time) {
-	hubToken := os.Getenv("URNETWORK_HUB_TOKEN")
-
 	interval := 5 * time.Minute
 	if s := os.Getenv("URNETWORK_REPORT_INTERVAL"); s != "" {
 		if d, err := time.ParseDuration(s); err == nil && d >= 10*time.Second {
@@ -252,7 +245,6 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string
 	var client *http.Client
 	activeReportURL := ""
 	activeInterval := interval
-	var activeCACert []byte // nil = not yet read, empty = no CA cert
 	for {
 		select {
 		case <-ctx.Done():
@@ -274,13 +266,11 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string
 		activeHost := resolveNodeName(host)
 
 		reportURL := resolveReportURL(envReportURL)
-		caCert, _ := loadHubCACert()
-		if reportURL != activeReportURL || !bytes.Equal(caCert, activeCACert) {
-			activeCACert = caCert
+		if reportURL != activeReportURL {
 			client = newClientForURL(reportURL)
 			activeReportURL = reportURL
 			if reportURL == "" {
-				tlog("[report] hub reporting disabled (node=%s)\n", nodeID)
+				tlog("[report] reporting disabled (node=%s)\n", nodeID)
 			} else if apiURL, err := url.JoinPath(reportURL, "/api/report"); err == nil {
 				tlog("[report] posting bandwidth to %s every %s (node=%s)\n", apiURL, activeInterval, nodeID)
 			}
@@ -314,9 +304,6 @@ func runBandwidthReporter(ctx context.Context, nodeID, host, envReportURL string
 			continue
 		}
 		req.Header.Set("Content-Type", "application/json")
-		if hubToken != "" {
-			req.Header.Set("Authorization", "Bearer "+hubToken)
-		}
 		resp, err := client.Do(req)
 		if err != nil {
 			tlog("[report] post failed: %v\n", err)
@@ -514,8 +501,8 @@ func filterChangedProxies(prev map[string]proxyStatus, current []proxyStatus) ([
 	return changed, next
 }
 
-// postHeartbeat marshals and POSTs a heartbeat to the hub. Returns true on 2xx.
-func postHeartbeat(ctx context.Context, client *http.Client, apiURL, hubToken string, hb heartbeatReport) bool {
+// postHeartbeat marshals and POSTs a heartbeat to the report URL. Returns true on 2xx.
+func postHeartbeat(ctx context.Context, client *http.Client, apiURL string, hb heartbeatReport) bool {
 	body, err := json.Marshal(hb)
 	if err != nil {
 		return false
@@ -525,9 +512,6 @@ func postHeartbeat(ctx context.Context, client *http.Client, apiURL, hubToken st
 		return false
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if hubToken != "" {
-		req.Header.Set("Authorization", "Bearer "+hubToken)
-	}
 	resp, err := client.Do(req)
 	ok := err == nil && resp.StatusCode/100 == 2
 	if err == nil {
@@ -546,8 +530,6 @@ func postHeartbeat(ctx context.Context, client *http.Client, apiURL, hubToken st
 // report), so an all-heartbeats-rejected hub log is expected right after a
 // provider restart until the first /api/report lands.
 func runHeartbeatReporter(ctx context.Context, nodeID, host, envReportURL string, startTime time.Time) {
-	hubToken := os.Getenv("URNETWORK_HUB_TOKEN")
-
 	baseInterval := 15 * time.Second
 	if s := os.Getenv("URNETWORK_HEARTBEAT_INTERVAL"); s != "" {
 		if d, err := time.ParseDuration(s); err == nil && d >= 5*time.Second {
@@ -606,7 +588,7 @@ func runHeartbeatReporter(ctx context.Context, nodeID, host, envReportURL string
 		const maxHeartbeatProxies = 200
 		if len(changedProxies) <= maxHeartbeatProxies {
 			hb.Proxies = changedProxies
-			allOK := postHeartbeat(ctx, client, apiURL, hubToken, hb)
+			allOK := postHeartbeat(ctx, client, apiURL, hb)
 			if allOK {
 				prevProxyStatus = nextProxyStatus
 				consecutiveFailures = 0
@@ -622,7 +604,7 @@ func runHeartbeatReporter(ctx context.Context, nodeID, host, envReportURL string
 				}
 				batch := changedProxies[i:end]
 				hb.Proxies = batch
-				if ok := postHeartbeat(ctx, client, apiURL, hubToken, hb); ok {
+				if ok := postHeartbeat(ctx, client, apiURL, hb); ok {
 					for _, p := range batch {
 						prevProxyStatus[p.ID] = nextProxyStatus[p.ID]
 					}
@@ -666,87 +648,12 @@ func parseProxyIndex(key string) int {
 	return n
 }
 
-func hubPinPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".urnetwork", "hub.pin"), nil
-}
-
-func loadPinnedFPs() map[string]bool {
-	pins := map[string]bool{}
-	path, err := hubPinPath()
-	if err != nil {
-		return pins
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return pins
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			pins[line] = true
-		}
-	}
-	return pins
-}
-
-var loggedLegacyPinDeprecation atomic.Bool
-
 func newClientForURL(reportURL string) *http.Client {
 	if !strings.HasPrefix(reportURL, "https://") {
 		return &http.Client{Timeout: 10 * time.Second}
 	}
 
-	// CA-based verification
-	if pool, ok := loadHubCAPool(); ok {
-		serverName := ""
-		if u, err := url.Parse(reportURL); err == nil {
-			if host := u.Hostname(); host != "" && net.ParseIP(host) == nil {
-				serverName = host
-			}
-		}
-		return &http.Client{
-			Timeout: 10 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{
-					MinVersion:         tls.VersionTLS12,
-					InsecureSkipVerify: true, // we verify via VerifyConnection
-					VerifyConnection:   verifyHubChain(pool, serverName),
-				},
-			},
-		}
-	}
-
-	// Legacy fingerprint pinning (deprecated)
-	pins := loadPinnedFPs()
-	if len(pins) > 0 {
-		if loggedLegacyPinDeprecation.CompareAndSwap(false, true) {
-			tlog("[hub] hub.pin is deprecated — re-run 'urnet-tools hub link' to switch to CA-based trust\n")
-		}
-		tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
-		tlsCfg.InsecureSkipVerify = true
-		tlsCfg.VerifyConnection = func(cs tls.ConnectionState) error {
-			if len(cs.PeerCertificates) == 0 {
-				return fmt.Errorf("no peer certificates")
-			}
-			fp := fmt.Sprintf("SHA256:%x", sha256.Sum256(cs.PeerCertificates[0].Raw))
-			if pins[fp] {
-				return nil
-			}
-			return fmt.Errorf("certificate fingerprint %s is not pinned", fp)
-		}
-		return &http.Client{
-			Timeout: 10 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: tlsCfg,
-			},
-		}
-	}
-
-	// Try system CA pool (works with Cloudflare Tunnel, Caddy+LE, etc.)
+	// Use system trust store (works with public certs, Cloudflare Tunnel, Caddy+LE, etc.)
 	if pool, err := x509.SystemCertPool(); err == nil {
 		return &http.Client{
 			Timeout: 10 * time.Second,
@@ -759,213 +666,6 @@ func newClientForURL(reportURL string) *http.Client {
 		}
 	}
 
-	// Fail closed - no trust material
-	return &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				MinVersion: tls.VersionTLS12,
-				VerifyConnection: func(cs tls.ConnectionState) error {
-					return fmt.Errorf("no hub CA installed — run 'urnet-tools hub link https://hub:port' or hub onboarding before using HTTPS")
-				},
-			},
-		},
-	}
-}
-
-func hubCACertPath() (string, error) {
-	dir, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, ".urnetwork", "hub_ca.pem"), nil
-}
-
-func loadHubCACert() ([]byte, bool) {
-	path, err := hubCACertPath()
-	if err != nil {
-		return nil, false
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, false
-	}
-	return data, true
-}
-
-func loadHubCAPool() (*x509.CertPool, bool) {
-	data, ok := loadHubCACert()
-	if !ok {
-		return nil, false
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(data) {
-		return nil, false
-	}
-	return pool, true
-}
-
-// bootstrapHubCA fetches the hub's CA certificate at provider startup using
-// the hub token, so Docker users can deploy containers already authenticated
-// to their hub without running urnet-tools hub link manually.
-//
-// It tries a certificate-verified fetch first (system trust store) — this is
-// the fully safe path and covers hubs behind Cloudflare Tunnel or Caddy+LE
-// with a publicly-trusted cert; the hub token is never sent over an
-// unverified connection there. Only if that fails (the common case for a
-// direct password-derived CA hub, whose leaf isn't in any public trust store
-// yet) does it fall back to an unverified fetch, which is a TOFU bootstrap:
-// the token is sent before the hub's identity can be confirmed, and a
-// network attacker present at that exact moment could read it or hand back a
-// forged CA cert. That fallback is intentionally kept (it's what makes
-// zero-touch Docker bootstrap possible at all) but is logged loudly so it's
-// never a silent tradeoff — operators who can't accept it on their network
-// should run 'urnet-tools hub link' manually instead, which requires an
-// explicit onboard token rather than the standing fleet-wide hub token.
-//
-// Once the CA cert is written to hub_ca.pem, newClientForURL picks it up for
-// proper chain verification on all subsequent requests.
-func bootstrapHubCA(ctx context.Context, reportURL, hubToken string) {
-	if reportURL == "" || hubToken == "" {
-		return
-	}
-	if !strings.HasPrefix(reportURL, "https://") {
-		return
-	}
-
-	caPath, err := hubCACertPath()
-	if err != nil {
-		tlog("[hub] CA cert path error: %v\n", err)
-		return
-	}
-
-	if _, err := os.Stat(caPath); err == nil {
-		return
-	}
-
-	apiURL, err := url.JoinPath(reportURL, "/api/ca-cert")
-	if err != nil {
-		tlog("[hub] bootstrap URL error: %v\n", err)
-		return
-	}
-
-	tlog("[hub] bootstrapping CA cert from %s\n", apiURL)
-
-	caPEM, ok := fetchHubCACert(ctx, apiURL, hubToken, &http.Client{Timeout: 10 * time.Second})
-	if !ok {
-		tlog("[hub] WARNING: verified CA cert fetch failed (expected for a direct password-derived CA hub) — falling back to an unverified fetch. The hub token will be sent before the hub's identity is confirmed. Only safe if hub and provider share a trusted network at boot; run 'urnet-tools hub link %s' manually instead if you can't accept that.\n", reportURL)
-		insecureClient := &http.Client{
-			Timeout: 10 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
-		}
-		caPEM, ok = fetchHubCACert(ctx, apiURL, hubToken, insecureClient)
-		if !ok {
-			return
-		}
-	}
-
-	if err := writeHubCACertAtomic(caPath, caPEM); err != nil {
-		tlog("[hub] bootstrap CA cert write error: %v\n", err)
-		return
-	}
-
-	tlog("[hub] CA cert installed from hub token bootstrap\n")
-}
-
-// fetchHubCACert performs the actual GET against /api/ca-cert and extracts
-// ca_pem from the response. Errors are logged by the caller (the verified
-// attempt fails silently into the caller's fallback branch; the caller logs
-// once there instead of twice).
-func fetchHubCACert(ctx context.Context, apiURL, hubToken string, client *http.Client) (string, bool) {
-	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
-	if err != nil {
-		tlog("[hub] bootstrap request error: %v\n", err)
-		return "", false
-	}
-	req.Header.Set("Authorization", "Bearer "+hubToken)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", false
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		tlog("[hub] bootstrap CA cert rejected: %s — %s\n", resp.Status, strings.TrimSpace(string(body)))
-		return "", false
-	}
-
-	var result struct {
-		CAPEM string `json:"ca_pem"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		tlog("[hub] bootstrap CA cert parse error: %v\n", err)
-		return "", false
-	}
-
-	if result.CAPEM == "" {
-		tlog("[hub] bootstrap CA cert response missing ca_pem\n")
-		return "", false
-	}
-
-	return result.CAPEM, true
-}
-
-// writeHubCACertAtomic writes the CA cert via temp-file-then-rename so a
-// crash or power loss mid-write can never leave a truncated hub_ca.pem on
-// disk — the bootstrap's "skip if the file already exists" check in
-// bootstrapHubCA depends on that file only ever existing in a complete state.
-func writeHubCACertAtomic(caPath, caPEM string) error {
-	dir := filepath.Dir(caPath)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return err
-	}
-
-	tmp, err := os.CreateTemp(dir, ".hub_ca.pem.tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath) // no-op once the rename below succeeds
-
-	if _, err := tmp.WriteString(caPEM + "\n"); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(0600); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-
-	return os.Rename(tmpPath, caPath)
-}
-
-func verifyHubChain(pool *x509.CertPool, serverName string) func(cs tls.ConnectionState) error {
-	return func(cs tls.ConnectionState) error {
-		if len(cs.PeerCertificates) == 0 {
-			return fmt.Errorf("no peer certificates")
-		}
-
-		intermediates := x509.NewCertPool()
-		for _, cert := range cs.PeerCertificates[1:] {
-			intermediates.AppendCertsFromPEM(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}))
-		}
-
-		opts := x509.VerifyOptions{
-			Roots:         pool,
-			Intermediates: intermediates,
-			DNSName:       serverName,
-			KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		}
-		if _, err := cs.PeerCertificates[0].Verify(opts); err != nil {
-			return fmt.Errorf("hub CA verification failed (%w) — the hub may have been redeployed with a different password; re-run 'urnet-tools hub link' or hub onboarding", err)
-		}
-		return nil
-	}
+	// Fall back to system default (no custom root CAs)
+	return &http.Client{Timeout: 10 * time.Second}
 }
