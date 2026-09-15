@@ -300,7 +300,11 @@ func TestSendSequenceForgetsUnreliableFlightOnResendTimeout(t *testing.T) {
 			resendSeen = true
 		case <-time.After(20 * time.Millisecond):
 		case <-deadline:
-			break
+			// Abort, do not break: a consumed deadline must not be
+			// re-entered by the loop (a break would spin forever on
+			// fresh 20ms timers and hang the suite until the 600s
+			// shard timeout).
+			t.Fatal("the reliable-only resend after the RTO was never observed (reliable lane never proven)")
 		}
 	}
 	if !resendSeen {
