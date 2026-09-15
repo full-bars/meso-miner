@@ -2796,8 +2796,6 @@ func (self *SendSequence) Run() {
 					break
 				}
 
-				self.resendQueue.RemoveByMessageId(item.messageId)
-
 				// resend
 				var transferFrameBytes []byte
 				if self.sendItems[0].sequenceNumber == item.sequenceNumber && !item.head {
@@ -2806,8 +2804,15 @@ func (self *SendSequence) Run() {
 					transferFrameBytes, err = self.setHead(item)
 					if err != nil {
 						self.log.Errorf("[s]%s->%s...%s s(%s) exit could not set head = %s\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId, err)
+						// Item is still in both resendQueue and sendItems.
+						// dropItem handles: queue removal, sendItems removal,
+						// retained-byte budget, contract unack, error callback,
+						// and pool-return — all in one idempotent call.
+						self.dropItem(item, err)
 						return
 					}
+					// setHead succeeded — now safe to remove from resendQueue.
+					self.resendQueue.RemoveByMessageId(item.messageId)
 					MessagePoolReturn(item.transferFrameBytes)
 					item.head = true
 					item.transferFrameBytes = transferFrameBytes
@@ -2819,6 +2824,9 @@ func (self *SendSequence) Run() {
 					// 	return
 					// }
 					transferFrameBytes = item.transferFrameBytes
+					// Remove from resendQueue before re-add at the bottom
+					// of this loop with updated resendTime.
+					self.resendQueue.RemoveByMessageId(item.messageId)
 				}
 
 				reliableOnlyResend := false
