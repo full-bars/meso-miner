@@ -282,16 +282,29 @@ func TestSendSequenceForgetsUnreliableFlightOnResendTimeout(t *testing.T) {
 	sendTransferFlightTestMessage(t, client, peerId, 0)
 	takeTransferFlightTestPack(t, unreliableRoute)
 
+	// The reliable-only resend is written by the RTO handler only after
+	// forgetUnreliableFlight has completed, so consuming one resend is the
+	// completion signal for the forget — reading the controller afterwards
+	// races nothing. The first RTO can be observed while
+	// policy.reliableRouteAvailable is still false (the reliable lane is
+	// not yet proven), in which case observeUnreliableResendTimeout does
+	// not forget — but no resend is written either, so the wait below
+	// covers that by waiting for the resend, not the counter.
+	resendSeen := false
 	deadline := time.After(10 * time.Second)
-	for client.SendRecoveryStats().UnreliableFlightTimeoutCount == 0 {
+	for !resendSeen || client.SendRecoveryStats().UnreliableFlightTimeoutCount == 0 {
 		select {
 		case transferFrameBytes := <-reliableRoute:
 			// the reliable-only resend that follows the forgotten item
 			MessagePoolReturn(transferFrameBytes)
+			resendSeen = true
 		case <-time.After(20 * time.Millisecond):
 		case <-deadline:
-			t.Fatal("resend timeout on the unreliable flight was never observed")
+			break
 		}
+	}
+	if !resendSeen {
+		t.Fatal("the reliable-only resend after the RTO was never observed (reliable lane never proven)")
 	}
 
 	var sequences []*SendSequence
@@ -302,37 +315,6 @@ func TestSendSequenceForgetsUnreliableFlightOnResendTimeout(t *testing.T) {
 	client.sendBuffer.mutex.Unlock()
 	if len(sequences) == 0 {
 		t.Fatal("no send sequences were found")
-	}
-
-	// The first RTO can be observed while policy.reliableRouteAvailable is
-	// still false (the reliable lane has not been proven yet), in which case
-	// observeUnreliableResendTimeout does not forget the item — it retries
-	// and the forget runs on a later RTO once the reliable lane is known.
-	// Wait for the flight to drain rather than asserting on the first
-	// observation.
-	drained := false
-	for !drained {
-		client.sendBuffer.mutex.Lock()
-		drained = true
-		for _, seq := range sequences {
-			if seq.flightController != nil && seq.flightController.byteCount != 0 {
-				drained = false
-				break
-			}
-		}
-		client.sendBuffer.mutex.Unlock()
-		if !drained {
-			select {
-			case <-ctx.Done():
-				break
-			case <-time.After(20 * time.Millisecond):
-			case <-deadline:
-				break
-			}
-		}
-	}
-	if !drained {
-		t.Fatal("unreliable flight did not drain after the RTO (reliable lane never became available)")
 	}
 
 	client.sendBuffer.mutex.Lock()
