@@ -207,7 +207,6 @@ func TestProviderUsesRamlogsReadsPendingQueue(t *testing.T) {
 	}
 }
 
-
 // TestCmdProxyRequiresSubcommand: proxy with no subcommand errors cleanly.
 func TestCmdProxyRequiresSubcommand(t *testing.T) {
 	err := cmdProxy([]string{}, false, false)

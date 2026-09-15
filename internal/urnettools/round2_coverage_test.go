@@ -111,5 +111,3 @@ func TestInstallBinaryMissingSource(t *testing.T) {
 		t.Errorf("dst must not be created on a failed install, stat err = %v", err)
 	}
 }
-
-

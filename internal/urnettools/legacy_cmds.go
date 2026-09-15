@@ -469,9 +469,6 @@ func truthyOn(v string) bool {
 	}
 }
 
-
-
-
 // isELFExecutable reports whether path starts with the ELF magic bytes
 // (0x7f 'E' 'L' 'F'). Used to sanity-check downloaded binaries WITHOUT
 // executing them — running a freshly downloaded, unverified artifact is
@@ -555,8 +552,6 @@ func isRecognizedExecutable(path string) bool {
 		return isELFExecutable(path)
 	}
 }
-
-
 
 func runtimeGOARCH() string {
 	return runtime.GOARCH
