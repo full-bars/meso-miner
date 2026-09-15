@@ -64,5 +64,25 @@ The daemon features that live in fork `provider/` today, rewritten onto the v202
 4. H3 benefits require v2026-capable peers — upgrade fleet in waves, not all-at-once.
 5. sn/miner Bittensor coupling (claims/onchain) adds moving parts the fork doesn't need — keep behind flags.
 
+## Sequencing: hub removal first (2026-09-15 addendum)
+
+PR #634 (hub deprecation, −9,738 lines / 24 files in hub/ alone) merges BEFORE any migration work:
+- hub/ is upstream-origin carried code — ZERO fork-specific commits touched it since the v3.23 divergence → nothing of the fork's is lost.
+- Stripping first removes ~10K lines from the migration carry bucket, plus hub refs in CI/scripts/tests.
+- Sequence: merge #634 → cut hub-less v32 on the 3.23 line → THEN start Phase 1 off that (hub-less) base. Recompute the 343-commit delta against the stripped tree before Phase 1 gates.
+- Bonus: the fork already carries SN bridge types (SnEpochResult, SnPoolClaimArgs/Result) in internal/urnettools — the Bittensor seam is partially present in today's code.
+
+## Phase 0.5 sizing facts (2026-09-15)
+
+| Surface | connect.* symbols | Fork-built | Upstream-present |
+|---|---|---|---|
+| provider/ (whole dir) | 99 | 39 | 60 |
+| provider/main.go alone | 67 | 26 | 41 |
+| control_socket.go | 4 | 3 (metrics/persistent-err) | 1 (ParseByteCount, identical) |
+| internal/urnettools (whole tree) | 8 | 2 | 6 |
+| update.go | 0 | — | — |
+
+Key drift checks: NewClient/ParseByteCount byte-identical; NewClientWithDefaults dropped its settings param (call-site rename); v2026 has NO Prometheus surface (metrics layer is 100% fork-built, carries wholesale).
+
 ## Next action
 Phase 0 semantics + complete the symbol map (provider/main.go + controls + urnet-tools update paths) → estimate Phase 2 sizing. That number decides weeks-vs-months.
