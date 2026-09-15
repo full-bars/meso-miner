@@ -312,45 +312,49 @@ func TestSendSequenceForgetsUnreliableFlightOnResendTimeout(t *testing.T) {
 	}
 
 	var sequences []*SendSequence
-	client.sendBuffer.mutex.Lock()
-	for _, seq := range client.sendBuffer.sendSequences {
-		sequences = append(sequences, seq)
-	}
-	client.sendBuffer.mutex.Unlock()
+	func() {
+		client.sendBuffer.mutex.Lock()
+		defer client.sendBuffer.mutex.Unlock()
+		for _, seq := range client.sendBuffer.sendSequences {
+			sequences = append(sequences, seq)
+		}
+	}()
 	if len(sequences) == 0 {
 		t.Fatal("no send sequences were found")
 	}
 
-	client.sendBuffer.mutex.Lock()
-	for _, seq := range sequences {
-		flightController := seq.flightController
-		if flightController == nil {
-			continue
+	func() {
+		client.sendBuffer.mutex.Lock()
+		defer client.sendBuffer.mutex.Unlock()
+		for _, seq := range sequences {
+			flightController := seq.flightController
+			if flightController == nil {
+				continue
+			}
+			if flightController.byteCount != 0 {
+				t.Fatalf("flight byteCount did not drop to zero after the RTO: %d", flightController.byteCount)
+			}
+			if flightController.messageCount != 0 {
+				t.Fatalf("flight messageCount did not drop to zero after the RTO: %d", flightController.messageCount)
+			}
+			// reduceForLoss halves the limit on the loss. The old
+			// release/acknowledge path would grow part of that back immediately
+			// (additive increase applies once reduceForLoss turns off slow start);
+			// forget must leave the reduction standing. The flight policy in
+			// this environment never engages limited (no congestion signal), so
+			// reduceForLoss has nothing to halve — the halving interaction is
+			// covered deterministically by
+			// TestFlightControllerForgetKeepsLossReduction. What the RTO path
+			// must guarantee here is that the forgotten item's reservation is
+			// gone and the limit did not grow past its initial value.
+			if flightController.byteLimit > 1024 {
+				t.Fatalf(
+					"flight byteLimit after RTO = %d, want <= 1024 (forget must not grow the limit)",
+					flightController.byteLimit,
+				)
+			}
 		}
-		if flightController.byteCount != 0 {
-			t.Fatalf("flight byteCount did not drop to zero after the RTO: %d", flightController.byteCount)
-		}
-		if flightController.messageCount != 0 {
-			t.Fatalf("flight messageCount did not drop to zero after the RTO: %d", flightController.messageCount)
-		}
-		// reduceForLoss halves the limit on the loss. The old
-		// release/acknowledge path would grow part of that back immediately
-		// (additive increase applies once reduceForLoss turns off slow start);
-		// forget must leave the reduction standing. The flight policy in
-		// this environment never engages limited (no congestion signal), so
-		// reduceForLoss has nothing to halve — the halving interaction is
-		// covered deterministically by
-		// TestFlightControllerForgetKeepsLossReduction. What the RTO path
-		// must guarantee here is that the forgotten item's reservation is
-		// gone and the limit did not grow past its initial value.
-		if flightController.byteLimit > 1024 {
-			t.Fatalf(
-				"flight byteLimit after RTO = %d, want <= 1024 (forget must not grow the limit)",
-				flightController.byteLimit,
-			)
-		}
-	}
-	client.sendBuffer.mutex.Unlock()
+	}()
 }
 
 // Deterministic controller-level check of the invariant the RTO forget
