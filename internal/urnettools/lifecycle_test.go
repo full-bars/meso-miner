@@ -55,10 +55,6 @@ func TestCmdOptimizeNoProviderRequired(t *testing.T) {
 	}
 }
 
-// TestWriteDropinEnvRoundTrip was deleted — it used os.WriteFile/readFile
-// directly and exercised no production code. TestWriteDropinEnvMergeSameKeyReplace
-// already covers the merge logic.
-
 // TestTimerCalendarRewrite validates the OnCalendar substitution logic.
 func TestTimerCalendarRewrite(t *testing.T) {
 	dir := t.TempDir()
@@ -225,40 +221,6 @@ func TestCmdProxyRequiresSubcommand(t *testing.T) {
 
 // TestHubURLValidation was deleted — it called strings.HasPrefix on a local
 // variable and never exercised any production code.
-
-// TestWriteDropinEnvMergeSameKeyReplace: writing a drop-in with the same
-// environment key replaces the old value and keeps different keys.
-func TestWriteDropinEnvMergeSameKeyReplace(t *testing.T) {
-	dir := t.TempDir()
-	// Create an existing drop-in with two env lines.
-	existing := "[Service]\nEnvironment=\"URNETWORK_PROFILE=eco\"\nEnvironment=\"URNETWORK_RAMLOGS=1\"\n"
-	path := filepath.Join(dir, "tuning.conf")
-	if err := os.WriteFile(path, []byte(existing), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// Call the PRODUCTION merge helper — not a copy of its logic
-	// (reimplemented tests cannot detect regressions).
-	got, err := mergeDropinEnvFile(path, "URNETWORK_PROFILE=turbo-v4")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The old URNETWORK_PROFILE=eco should be gone.
-	if strings.Contains(got, "eco") {
-		t.Errorf("same-key replace failed: old value 'eco' still present: %s", got)
-	}
-	// The new URNETWORK_PROFILE=turbo-v4 should be there.
-	if !strings.Contains(got, "turbo-v4") {
-		t.Errorf("new value 'turbo-v4' missing: %s", got)
-	}
-	// URNETWORK_RAMLOGS=1 (different key) must be preserved.
-	if !strings.Contains(got, "URNETWORK_RAMLOGS=1") {
-		t.Errorf("different key 'URNETWORK_RAMLOGS' was dropped: %s", got)
-	}
-	// Exactly one [Service] header (a duplicate header would be a bug).
-	if n := strings.Count(got, "[Service]"); n != 1 {
-		t.Errorf("expected exactly one [Service] header, got %d:\n%s", n, got)
-	}
-}
 
 // TestCmdUninstallPathGuards: cmdUninstall must not remove "/" or paths with
 // degenerate basenames (. or /). Calls the PRODUCTION safeRemoveTarget guard

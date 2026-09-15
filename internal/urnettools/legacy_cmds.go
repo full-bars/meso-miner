@@ -470,120 +470,7 @@ func truthyOn(v string) bool {
 }
 
 
-// writeDropinEnv writes (or appends) an Environment= line to a drop-in
-// override file for the provider's unit, then reloads/restarts it.
-func writeDropinEnv(p Provider, name, envLine string) error {
-	dropDir, err := unitDropinDir(p)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(dropDir, 0o755); err != nil {
-		return err
-	}
-	path := filepath.Join(dropDir, name)
-	content, err := mergeDropinEnvFile(path, envLine)
-	if err != nil {
-		return err
-	}
-	// M7 fix: atomic write with unpredictable temp name + fsync (writeFileAtomic).
-	if err := writeFileAtomic(path, []byte(content), 0o644); err != nil {
-		return err
-	}
-	fmt.Printf("Wrote %s\n", path)
-	return restartAfterDropin(p)
-}
 
-// mergeDropinEnvFile returns the merged drop-in content for a new
-// Environment= line: it reads the existing file, keeps lines whose env key
-// differs, replaces same-key lines, and always re-emits exactly one
-// [Service] header. Pure (no I/O beyond the read) so tests can pin the
-// merge semantics without a real unit.
-func mergeDropinEnvFile(path, envLine string) (string, error) {
-	newKey := envLine
-	if i := strings.IndexByte(envLine, '='); i > 0 {
-		newKey = envLine[:i]
-	}
-	var kept []string
-	b, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		// Transient read error (EACCES, EIO, NFS) must not silently
-		// drop every existing override.
-		return "", fmt.Errorf("read %s: %w", path, err)
-	}
-	if err == nil {
-		for _, ln := range strings.Split(string(b), "\n") {
-			trimmed := strings.TrimSpace(ln)
-			if trimmed == "" || trimmed == "[Service]" {
-				continue // header is re-emitted below — avoid duplicates
-			}
-			if strings.HasPrefix(trimmed, "Environment=") {
-				val := strings.TrimPrefix(trimmed, "Environment=")
-				val = strings.Trim(val, `"`)
-				// Same key (e.g. URNETWORK_PROFILE) — replaced below.
-				if strings.HasPrefix(val, newKey) && (len(val) == len(newKey) || val[len(newKey)] == '=') {
-					continue
-				}
-			}
-			kept = append(kept, trimmed)
-		}
-	}
-	escaped := strings.ReplaceAll(envLine, "%", "%%")
-	kept = append(kept, fmt.Sprintf("Environment=%q", escaped))
-	return "[Service]\n" + strings.Join(kept, "\n") + "\n", nil
-}
-
-// removeDropinEnv removes a matching Environment line from a drop-in file
-// (or the whole file if it becomes empty).
-func removeDropinEnv(p Provider, name, envKey string) error {
-	dropDir, err := unitDropinDir(p)
-	if err != nil {
-		return err
-	}
-	path := filepath.Join(dropDir, name)
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		fmt.Printf("No %s found for %s\n", name, providerLabel(p))
-		return nil
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	// Exact-key removal, NOT substring: envKey "URNETWORK_PROFILE" must not
-	// drop a sibling "URNETWORK_PROFILE_EXTRA" line.
-	var kept []string
-	for _, ln := range strings.Split(string(b), "\n") {
-		trimmed := strings.TrimSpace(ln)
-		if trimmed == "" {
-			continue
-		}
-		if strings.HasPrefix(trimmed, "Environment=") {
-			val := strings.TrimPrefix(trimmed, "Environment=")
-			val = strings.Trim(val, `"`)
-			// Exact key match (key or key=value); anything else is kept.
-			if val == envKey || (strings.HasPrefix(val, envKey+"=")) {
-				continue // drop this line only
-			}
-		}
-		if trimmed == "[Service]" {
-			continue // header re-emitted below — avoid duplicates
-		}
-		kept = append(kept, trimmed)
-	}
-	if len(kept) == 0 {
-		if err := os.Remove(path); err != nil {
-			return err
-		}
-		fmt.Printf("Removed %s\n", path)
-	} else {
-		content := "[Service]\n" + strings.Join(kept, "\n") + "\n"
-		// M7 fix: atomic write with unpredictable temp name + fsync.
-		if err := writeFileAtomic(path, []byte(content), 0o644); err != nil {
-			return err
-		}
-		fmt.Printf("Updated %s (removed %s)\n", path, envKey)
-	}
-	return restartAfterDropin(p)
-}
 
 // isELFExecutable reports whether path starts with the ELF magic bytes
 // (0x7f 'E' 'L' 'F'). Used to sanity-check downloaded binaries WITHOUT
@@ -669,44 +556,7 @@ func isRecognizedExecutable(path string) bool {
 	}
 }
 
-// unitDropinDir returns the drop-in dir for the provider's unit.
-func unitDropinDir(p Provider) (string, error) {
-	if p.Unit == "" {
-		return "", fmt.Errorf("provider %s has no owning unit", providerLabel(p))
-	}
-	if isUserUnit(p.Unit) && p.User != "" {
-		home := homeForUser(p.User)
-		if home == "" {
-			return "", fmt.Errorf("cannot resolve home for user %s", p.User)
-		}
-		return filepath.Join(home, ".config/systemd/user/"+p.Unit+".d"), nil
-	}
-	return "/etc/systemd/system/" + p.Unit + ".d", nil
-}
 
-// restartAfterDropin reloads systemd and restarts the provider's unit.
-func restartAfterDropin(p Provider) error {
-	// Same guard as unitCommand: an empty unit must be rejected before any
-	// systemctl invocation.
-	if p.Unit == "" {
-		return fmt.Errorf("provider %s has no owning systemd unit", providerLabel(p))
-	}
-	if isUserUnit(p.Unit) && p.User != "" {
-		argsReload := append(systemctlUserArgs(p.User), "daemon-reload")
-		if err := exec.Command("systemctl", argsReload...).Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: daemon-reload failed (%v) — drop-in override may not take effect\n", err)
-		}
-		// Propagate the restart error like the system-unit branch below —
-		// an operator writing a drop-in override must learn when the
-		// provider never actually restarted.
-		argsRestart := append(systemctlUserArgs(p.User), "restart", p.Unit)
-		return exec.Command("systemctl", argsRestart...).Run()
-	}
-	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: daemon-reload failed (%v) — drop-in override may not take effect\n", err)
-	}
-	return exec.Command("systemctl", "restart", p.Unit).Run()
-}
 
 func runtimeGOARCH() string {
 	return runtime.GOARCH
@@ -718,18 +568,14 @@ func runtimeGOARCH() string {
 // is running, queued in pending_overrides.json otherwise) and then
 // restarting it. Mode names match the legacy tool.
 //
-// Historically this wrote URNETWORK_PROFILE/URNETWORK_RAMLOGS into a
-// tuning.conf systemd drop-in (writeDropinEnv/removeDropinEnv below) — the
-// same sed-editing pattern CLAUDE.md's override_set_env/override_rm_env
-// were written to replace on the shell-script side. profile and ramlogs
-// both still require the restart this function performs (buffer/worker
-// sizing baked into objects allocated once at startup, and a live
-// stdout/stderr ramlog redirect, respectively — not something the socket
-// can apply without a process restart), but the provider now picks up a
-// socket-set value on that restart via seedEnvFromControlState() in its own
-// init(), so writing through the socket instead of hand-editing a drop-in
-// file is safe and gets the operator the single source of truth
-// (`urnet-tools set`/`status`) already used for every other tunable.
+// profile and ramlogs both require a restart (buffer/worker sizing baked
+// into objects allocated once at startup, and a live stdout/stderr ramlog
+// redirect, respectively — not something the socket can apply without a
+// process restart), but the provider picks up a socket-set value on that
+// restart via seedEnvFromControlState() in its own init(), so writing
+// through the socket instead of hand-editing a drop-in file is safe and
+// gets the operator the single source of truth (`urnet-tools set`/`status`)
+// already used for every other tunable.
 func cmdTune(profile string, args []string, force, dryRun bool) error {
 	if len(args) == 0 {
 		// No mode given — show the current state for the targeted provider.

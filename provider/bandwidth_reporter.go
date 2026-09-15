@@ -653,16 +653,19 @@ func newClientForURL(reportURL string) *http.Client {
 		return &http.Client{Timeout: 10 * time.Second}
 	}
 
-	// Use system trust store (works with public certs, Cloudflare Tunnel, Caddy+LE, etc.)
+	// Clone DefaultTransport to inherit ProxyFromEnvironment, HTTP/2,
+	// and sane dial/TLS defaults. A bare &http.Transport{} loses all of
+	// these, breaking proxies behind corporate firewalls and degrading
+	// performance to HTTP/1.1 only.
+	tr := http.DefaultTransport.(*http.Transport).Clone()
 	if pool, err := x509.SystemCertPool(); err == nil {
+		tr.TLSClientConfig = &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			RootCAs:    pool,
+		}
 		return &http.Client{
-			Timeout: 10 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{
-					MinVersion: tls.VersionTLS12,
-					RootCAs:    pool,
-				},
-			},
+			Timeout:   10 * time.Second,
+			Transport: tr,
 		}
 	}
 
