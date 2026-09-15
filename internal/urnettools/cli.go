@@ -222,8 +222,6 @@ Proxy Management [target]:
   proxy trim <N>                  ✂   hold running proxies at N, shed worst first (F -> A)
   report [<url>|off]              📡  set report URL at runtime (no restart)
 
-Hub Management [target]:
-
 Maintenance [target]:
   reinstall                       🔧  reinstall provider
   uninstall                       🗑   uninstall provider
