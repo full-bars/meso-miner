@@ -2,7 +2,7 @@
 
 > **Navigation:** [Guides Index](README.md) · [🐣 Beginner](beginner.md) · [🧭 Intermediate](intermediate.md) · **🚀 Advanced**
 
-This guide covers multi-server fleet management, performance tuning, the hub dashboard, hot-reload, memory management, and troubleshooting production issues. It assumes you already have providers running and want to optimize, monitor, and scale.
+This guide covers multi-server fleet management, performance tuning, fleet monitoring, hot-reload, memory management, and troubleshooting production issues. It assumes you already have providers running and want to optimize, monitor, and scale.
 
 > [!NOTE]
 > This guide is Linux/Docker-focused because some commands are Linux-specific for hardware reasons:
@@ -18,7 +18,7 @@ This guide covers multi-server fleet management, performance tuning, the hub das
 
 - [Performance Profiles](#-performance-profiles)
 - [Fleet Management](#-fleet-management)
-- [Hub Dashboard](#-hub-dashboard)
+- [Hub Dashboard (Deprecated)](#-hub-dashboard-deprecated) *(v31.3+ — retained for reference)*
 - [Hot-Reload & Proxy Management](#-hot-reload--proxy-management)
 - [Memory & GC Tuning](#-memory--gc-tuning)
 - [Logging & Forensics](#-logging--forensics)
@@ -110,9 +110,10 @@ The emergency goroutine pin at >= 25000 goroutines provides an extra safety net.
 
 ---
 
-## 📊 Hub Dashboard
+## 📊 Hub Dashboard (Deprecated)
 
-Set up a hub server for fleet-wide visibility:
+> [!WARNING]
+> **Deprecated (v31.3+):** The hub dashboard has been removed. For fleet-wide visibility, use Prometheus metrics (`urnet-tools metrics on`) and the Grafana monitoring bundle. Historical hub documentation: [Hub Setup](../Hub-Setup.md), [Hub Dashboard](../Hub-Dashboard.md).
 
 ```sh
 urnet-tools hub install

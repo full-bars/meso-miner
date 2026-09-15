@@ -1,5 +1,8 @@
 # Hub Setup Guide
 
+> [!WARNING]
+> **Deprecated (v31.3+):** The hub dashboard has been removed from the codebase. This document is retained for historical reference only. For fleet-wide visibility, use Prometheus metrics (`urnet-tools metrics on`) with the [Monitoring bundle](Monitoring.md), or Grafana for custom dashboards.
+
 The Hub is a standalone dashboard binary that aggregates bandwidth and health reports from every provider node in your fleet into one live view. This guide covers installing it, pointing providers at it, securing it, and keeping it running.
 
 > [!TIP]

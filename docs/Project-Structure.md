@@ -40,10 +40,7 @@ urnetwork-3.23-fix/
 │   ├── lifetime_metrics.go       # Provider lifetime Prometheus gauges
 │   └── Makefile                  # Cross-compile targets (amd64, arm64, darwin)
 │
-├── hub/                          # Fleet bandwidth dashboard server
-│   ├── main.go                   # HTTP server: /api/report ingress, dashboard render
-│   ├── main_test.go              # 18 unit tests for rate calculation and state logic
-│   └── Dockerfile                # Containerized hub (Windows/Mac/any host, no systemd needed)
+├── hub/                          # [REMOVED v31.3+] Fleet bandwidth dashboard server (deprecated)
 │
 ├── protocol/                     # Protobuf definitions and generated Go code
 │   ├── *.proto                   # Source definitions (ip, transfer, frame, extender, audit)
@@ -105,8 +102,8 @@ urnetwork-3.23-fix/
 │   ├── Configuration.md
 │   ├── Docker-Deployment.md
 │   ├── Installation.md
-│   ├── Hub-Setup.md
-│   ├── Hub-Dashboard.md
+│   ├── Hub-Setup.md              # [deprecated v31.3+]
+│   ├── Hub-Dashboard.md          # [deprecated v31.3+]
 │   ├── High-Volume-Performance-Tuning.md
 │   ├── Multi-Container-Scaling.md
 │   ├── Proxy-Management.md
@@ -131,7 +128,7 @@ urnetwork-3.23-fix/
 │   ├── release.yml               # Tags a new release, scans (VirusTotal + ClamAV), uploads provider binaries
 │   ├── shakedown.yml             # Pre-release shakedown: fresh-droplet install + proxy + URL + docker test on v3.23.0-fix.* tags
 │   ├── shakedown-sweeper.yml     # Every 15 min: destroy orphaned shakedown-ci droplets >3h, reap stale SSH keys
-│   ├── hub-build.yml             # Build + push the hub Docker image
+│   ├── hub-build.yml             # [deprecated v31.3+] Build + push the hub Docker image
 │   ├── codeql.yml                # Weekly scheduled CodeQL security scan
 │   └── upstream_monitor.yml      # Twice-daily: watch urnetwork/connect PRs and commits, Discord alerts
 │
