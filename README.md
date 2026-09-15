@@ -21,7 +21,7 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 | Proxy source | Static file only | File and/or live URL feed, with scoped auto-cleanup |
 | Error noise | Log-level throttle (suppresses repeated lines) | Shared auth rate limiter reduces the error source itself — fewer API calls hit the failure path |
 | Proxy health grading | None | A–F reachability grade per proxy with continuous re-probing (`proxy health`, `proxy trim`) |
-|| Fleet visibility & accounting | None | Built-in CLI accounting (`usage`, `proxy traffic`), persistent byte splits, and Prometheus metrics (`urnet-tools metrics on`) |
+| Fleet visibility & accounting | None | Built-in CLI accounting (`usage`, `proxy traffic`), persistent byte splits, and Prometheus metrics (`urnet-tools metrics on`) |
 | Performance profiles | None | Auto / Turbo V4 / Turbo V8 / Eco / Lowmem — memory, window, and GC tuned per profile |
 | Crash diagnostics | Journal-only, logs lost on restart | Shared-memory RAM logs (`shmlog`) + disk-based critical event log, panic hooks |
 | Custom API/connect backend | One-off `--api_url`/`--connect_url` flags only, re-passed on every invocation | `choose_network` persists the URLs to disk; flags still override per-call |

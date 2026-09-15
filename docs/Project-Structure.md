@@ -16,7 +16,7 @@ urnetwork-3.23-fix/
 │   ├── proxy_reload.go           # SIGHUP-triggered hot-reload of proxy list
 │   ├── proxy_state.go            # In-memory proxy registry with startup stagger
 │   ├── proxy_benchmark.go        # Optional per-proxy SOCKS5 latency probes
-│   ├── bandwidth_reporter.go     # Posts bandwidth metrics to configured report URL
+│   ├── bandwidth_reporter.go     # Posts bandwidth metrics to configured fleet target
 │   ├── proxy_id.go               # Stable proxy identity across reloads
 │   ├── shmlog_linux.go           # Linux shared-memory log ring buffer
 │   ├── shmlog_fallback.go        # Fallback for non-Linux builds
@@ -81,7 +81,7 @@ urnetwork-3.23-fix/
 │   ├── target.go                # Targeting (--unit/--user/--network/--network-id/--state-dir)
 │   ├── discover.go              # Provider discovery (/proc + systemd units)
 │   ├── update.go                # Interactive-first update, digest verify, atomic swap
-│   ├── legacy_cmds.go           # Parity commands (lifecycle, tuning, optimize)
+│   ├── legacy_cmds.go           # Reporting config, lifecycle, tuning, and proxy commands
 │   ├── lifecycle_start_windows.go   # Windows provider start (schtasks/detached)
 │   ├── lifecycle_stop_windows.go    # Windows provider stop (socket shutdown + TerminateProcess)
 │   ├── lifecycle_restart_windows.go # Windows provider restart (HotSwap fallback)

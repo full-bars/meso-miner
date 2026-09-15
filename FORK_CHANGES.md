@@ -3414,7 +3414,7 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 
 **What was removed**:
 - The `hub/` package (standalone dashboard server)
-- Provider bandwidth reporting to external hub endpoints (`URNETWORK_REPORT_URL`, `URNETWORK_REPORT_INTERVAL`, `URNETWORK_HEARTBEAT_INTERVAL` env vars, and `bandwidth_reporter.go`)
+- Hub-specific reporting endpoints (`urnet-tools hub set`, `hub link`, `hub unlink`, `hub off`). The generic `report` command (`urnet-tools report set/off/status`) and HTTP POST reporting to any configured `report_url` or `URNETWORK_REPORT_URL` target **are preserved** — `bandwidth_reporter.go` still exists and posts to any configured fleet endpoint.
 - Hub-related CLI commands: `hub init`, `hub link`, `hub unlink`, `hub test`, `hub install`, `hub update`, `hub onboard-cmd`, `hub show-password`, `hub open-port`, `hub set`, `hub off`
 
 **Affects fork sections**: Sections 23 (Bandwidth Hub Dashboard), 29 (Hub Report Visibility & Reporter Startup Jitter), 52 (Hub Dashboard Per-Proxy Earning Column), and 64 (Hub TLS, Live Heartbeat, SSE Dashboard Push) are **archived** — retained for historical accuracy but no longer applicable.
