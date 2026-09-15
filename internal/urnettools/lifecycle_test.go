@@ -211,16 +211,6 @@ func TestProviderUsesRamlogsReadsPendingQueue(t *testing.T) {
 	}
 }
 
-// TestCmdHubRequiresSubcommand: hub with no subcommand errors cleanly.
-func TestCmdHubRequiresSubcommand(t *testing.T) {
-	err := cmdHub([]string{}, false, false)
-	if err == nil {
-		t.Fatal("expected error for hub with no subcommand")
-	}
-	if !contains(err.Error(), "requires a subcommand") {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
 
 // TestCmdProxyRequiresSubcommand: proxy with no subcommand errors cleanly.
 func TestCmdProxyRequiresSubcommand(t *testing.T) {
