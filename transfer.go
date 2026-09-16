@@ -1,6 +1,7 @@
 package connect
 
 import (
+	"cmp"
 	"context"
 	"crypto/ed25519"
 	"errors"
@@ -206,8 +207,19 @@ func DefaultReceiveBufferSettings() *ReceiveBufferSettings {
 		IdleTimeout:        120 * time.Second,
 		SequenceBufferSize: DefaultTransferBufferSize,
 		// AckBufferSize: DefaultTransferBufferSize,
-		AckCompressTimeout:  time.Duration(0),
-		MinMessageByteCount: ByteCount(1),
+		AckCompressTimeout: time.Duration(0),
+		// End one compression wait early when a hole becomes provable to the
+		// sender (this many selective acks pending above the head, its
+		// SelectiveAckGapThreshold) or when a head ack advances past
+		// selectively acked items (a hole filled, including the first head of
+		// a sequence whose opening item was missing). Written in sequence
+		// order, a partial batch can no longer prove the neighbours of one
+		// hole lost. Each reason wakes at most once per snapshot and at most
+		// once per AckCompressTimeout measured from its previous early write,
+		// so a sustained hole costs at most one extra write per interval per
+		// reason and the in-order ack rate is unchanged.
+		AckGapWakeSelectiveCount: 3,
+		MinMessageByteCount:      ByteCount(1),
 		// ResendAbuseThreshold: 4,
 		// ResendAbuseMultiple:  0.5,
 		MaxPeerAuditDuration: 60 * time.Second,
@@ -4406,6 +4418,18 @@ type ReceiveBufferSettings struct {
 	// AckBufferSize int
 
 	AckCompressTimeout time.Duration
+	// Selective acks pending above the head in one compression interval that
+	// end the wait early (a hole the sender can prove), and enable the early
+	// wake on a head ack that advances past selectively acked items (a hole
+	// filled, including the first head after a missing opening item). Should
+	// match the sender's SelectiveAckGapThreshold. Each of the two reasons
+	// ends at most one wait per AckCompressTimeout, measured from the early
+	// write it caused. A wake inside that interval leaves its acks to the
+	// timer. Zero keeps the fixed compression interval.
+	AckGapWakeSelectiveCount int
+
+	beforeAckCompressWaitForTest func(receiveSequenceId)
+	afterAckWriteForTest         func(receiveSequenceId)
 
 	MinMessageByteCount ByteCount
 
@@ -4721,6 +4745,14 @@ type ReceiveSequence struct {
 	session *peerEncryptionSession
 }
 
+func (self *ReceiveSequence) id() receiveSequenceId {
+	return receiveSequenceId{
+		Source:         self.source,
+		SequenceId:     self.sequenceId,
+		EncryptionRole: self.encryptionRole,
+	}
+}
+
 func NewReceiveSequence(
 	ctx context.Context,
 	client *Client,
@@ -4746,7 +4778,7 @@ func NewReceiveSequence(
 		receiveQueue:          newReceiveQueue(receiveBufferSettings.ReceiveQueueBudget, receiveBufferSettings.ReceiveQueueMinByteCount),
 		nextSequenceNumber:    0,
 		idleCondition:         NewIdleCondition(),
-		ackWindow:             newSequenceAckWindow(),
+		ackWindow:             newSequenceAckWindowWithGapWake(receiveBufferSettings.AckGapWakeSelectiveCount),
 		exit:                  make(chan struct{}),
 	}
 	// Never encrypt control-plane traffic. A ReceiveSequence's data source is
@@ -5004,6 +5036,64 @@ func (self *ReceiveSequence) Run() {
 		ackCompressTimer := time.NewTimer(0)
 		defer ackCompressTimer.Stop()
 
+		// Selective acks leave in ascending sequence order. The sender
+		// declares a hole lost once SelectiveAckGapThreshold later selective
+		// acks are visible and snapshots its acks between pack writes. A
+		// partial batch in map order would prove the neighbours of one real
+		// hole lost and resend them needlessly. The scratch slice is owned by
+		// this worker and reused across snapshots.
+		var selectiveAckScratch []*sequenceAck
+		writeSnapshot := func(ackSnapshot sequenceAckWindowSnapshot) bool {
+			wrote := false
+			if 0 < ackSnapshot.ackUpdateCount && ackSnapshot.headAck != nil {
+				writeAck(ackSnapshot.headAck)
+				wrote = true
+			}
+			if 0 < len(ackSnapshot.selectiveAcks) {
+				selectiveAckScratch = selectiveAckScratch[:0]
+				for messageId, ack := range ackSnapshot.selectiveAcks {
+					ack.messageId = messageId
+					ack.selective = true
+					selectiveAckScratch = append(selectiveAckScratch, ack)
+				}
+				if 1 < len(selectiveAckScratch) {
+					slices.SortFunc(selectiveAckScratch, func(a *sequenceAck, b *sequenceAck) int {
+						return cmp.Compare(a.sequenceNumber, b.sequenceNumber)
+					})
+				}
+				for _, ack := range selectiveAckScratch {
+					writeAck(ack)
+				}
+				wrote = true
+			}
+			return wrote
+		}
+
+		lastAckWriteTime := time.Time{}
+		// The gap wake's budget: each reason ends at most one compression
+		// wait per AckCompressTimeout, measured from the early write it
+		// caused. A wake inside that interval is declined and its acks ride
+		// the timer. A sustained hole under a continuous stream costs at
+		// most one extra write per interval per reason rather than one write
+		// per threshold of later acks.
+		ackCompressTimeout := self.receiveBufferSettings.AckCompressTimeout
+		var lastGapWakeWriteTime [len(gapWakeReasons)]time.Time
+		gapWakeGranted := gapWakeReason(0)
+		writePending := func() {
+			if writeSnapshot(self.ackWindow.Snapshot(true)) {
+				lastAckWriteTime = time.Now()
+				for i, reason := range gapWakeReasons {
+					if gapWakeGranted&reason != 0 {
+						lastGapWakeWriteTime[i] = lastAckWriteTime
+					}
+				}
+				if self.receiveBufferSettings.afterAckWriteForTest != nil {
+					self.receiveBufferSettings.afterAckWriteForTest(self.id())
+				}
+			}
+			gapWakeGranted = 0
+		}
+
 		for {
 			select {
 			case <-self.ctx.Done():
@@ -5021,28 +5111,48 @@ func (self *ReceiveSequence) Run() {
 				}
 			}
 
-			if 0 < self.receiveBufferSettings.AckCompressTimeout {
-				ackCompressTimer.Reset(self.receiveBufferSettings.AckCompressTimeout)
-				select {
-				case <-self.ctx.Done():
-					return
-				case <-ackCompressTimer.C:
+			// Sparse turns: do not delay the first ACK of an idle burst. If we
+			// have not written an ACK recently, write immediately. If we have,
+			// only wait the remainder of the interval so we never send ACKs older
+			// than AckCompressTimeout.
+			ackCompressWait := time.Duration(0)
+			if 0 < ackCompressTimeout && !lastAckWriteTime.IsZero() {
+				ackCompressWait = time.Until(lastAckWriteTime.Add(ackCompressTimeout))
+			}
+			if 0 < ackCompressWait {
+				ackCompressTimer.Reset(ackCompressWait)
+				if self.receiveBufferSettings.beforeAckCompressWaitForTest != nil {
+					self.receiveBufferSettings.beforeAckCompressWaitForTest(self.id())
+				}
+				for waiting := true; waiting; {
+					select {
+					case <-self.ctx.Done():
+						return
+					case <-ackCompressTimer.C:
+						waiting = false
+					case <-self.ackWindow.GapNotify():
+						// A hole became provable or filled: the sender is
+						// waiting on exactly these acks. Do not hold them
+						// for the rest of the interval, unless this reason
+						// already ended a wait within the last interval. A
+						// declined reason stays pending in the window and
+						// cannot signal again before the timer's write.
+						now := time.Now()
+						pending := self.ackWindow.GapWakeReasons()
+						for i, reason := range gapWakeReasons {
+							if pending&reason != 0 &&
+								!now.Before(lastGapWakeWriteTime[i].Add(ackCompressTimeout)) {
+								gapWakeGranted |= reason
+							}
+						}
+						if gapWakeGranted != 0 {
+							waiting = false
+						}
+					}
 				}
 			}
 
-			ackSnapshot = self.ackWindow.Snapshot(true)
-			if 0 < ackSnapshot.ackUpdateCount {
-				writeAck(ackSnapshot.headAck)
-			}
-			for messageId, ack := range ackSnapshot.selectiveAcks {
-				writeAck(&sequenceAck{
-					messageId:      messageId,
-					sequenceNumber: ack.sequenceNumber,
-					selective:      true,
-					tag:            ack.tag,
-					unwrapped:      ack.unwrapped,
-				})
-			}
+			writePending()
 		}
 	}, self.cancel)
 
@@ -5853,21 +5963,77 @@ type sequenceAckWindowSnapshot struct {
 	selectiveAcks  map[Id]*sequenceAck
 }
 
+// gapWakeReason names why the gap wake fired. It is a bit set so the two
+// reasons coalesce in one token and are budgeted separately by the consumer.
+type gapWakeReason uint8
+
+const (
+	// enough selective acks above the head are pending to prove a hole to
+	// the sender (its SelectiveAckGapThreshold)
+	gapWakeHoleProvable gapWakeReason = 1 << iota
+	// a head ack advanced past selectively acked items: the hole they were
+	// held behind filled, and the sender's flight is blocked on this ack
+	gapWakeHoleFilled
+)
+
+// gapWakeReasons lists the reasons in a fixed order for per-reason bookkeeping.
+var gapWakeReasons = [...]gapWakeReason{gapWakeHoleProvable, gapWakeHoleFilled}
+
 type sequenceAckWindow struct {
-	ackMonitor     *Monitor
-	ackLock        sync.Mutex
-	headAck        *sequenceAck
-	ackUpdateCount int
-	selectiveAcks  map[Id]*sequenceAck
+	ackMonitor            *Monitor
+	ackLock               sync.Mutex
+	headAck               *sequenceAck
+	ackUpdateCount        int
+	selectiveAcks         map[Id]*sequenceAck
+	gapNotify             chan struct{}
+	gapWakeSelectiveCount int
+	gapWakeSignaled       gapWakeReason
+	gapSelectiveAboveHead int
+	gapSelectiveMax       uint64
+	gapSelectiveSeen      bool
 }
 
 func newSequenceAckWindow() *sequenceAckWindow {
+	return newSequenceAckWindowWithGapWake(0)
+}
+
+func newSequenceAckWindowWithGapWake(gapWakeSelectiveCount int) *sequenceAckWindow {
 	return &sequenceAckWindow{
-		ackMonitor:     NewMonitor(),
-		headAck:        nil,
-		ackUpdateCount: 0,
-		selectiveAcks:  map[Id]*sequenceAck{},
+		ackMonitor:            NewMonitor(),
+		headAck:               nil,
+		ackUpdateCount:        0,
+		selectiveAcks:         map[Id]*sequenceAck{},
+		gapNotify:             make(chan struct{}, 1),
+		gapWakeSelectiveCount: gapWakeSelectiveCount,
 	}
+}
+
+// GapNotify is the early-wake edge for the consumer's compression wait. Like
+// Notify it never changes, so it is safe to fetch without a lock.
+func (self *sequenceAckWindow) GapNotify() <-chan struct{} {
+	return self.gapNotify
+}
+
+// signalGapWakeWithLock fires the gap wake once per reason per reset snapshot.
+func (self *sequenceAckWindow) signalGapWakeWithLock(reason gapWakeReason) {
+	if self.gapWakeSignaled&reason != 0 {
+		return
+	}
+	self.gapWakeSignaled |= reason
+	select {
+	case self.gapNotify <- struct{}{}:
+	default:
+	}
+}
+
+// GapWakeReasons reports the reasons signaled since the last reset snapshot.
+// The consumer reads it after taking a gap wake token. A reason it declines
+// stays pending here, so it cannot signal again before the snapshot that
+// writes its state.
+func (self *sequenceAckWindow) GapWakeReasons() gapWakeReason {
+	self.ackLock.Lock()
+	defer self.ackLock.Unlock()
+	return self.gapWakeSignaled
 }
 
 // Update records an ack in the window. An ack at or below the head — a late
@@ -5880,14 +6046,53 @@ func (self *sequenceAckWindow) Update(ack *sequenceAck) {
 
 	if self.headAck == nil || self.headAck.sequenceNumber < ack.sequenceNumber {
 		if ack.selective {
-			if prior, ok := self.selectiveAcks[ack.messageId]; ok && prior.unwrapped {
+			prior, hasPrior := self.selectiveAcks[ack.messageId]
+			if hasPrior && prior.unwrapped {
 				// coalesced selective ack for the same message: preserve
 				// any prior plaintext bit so a single late wrapped resend
 				// doesn't upgrade the ack format past the sender's reach.
 				ack.unwrapped = true
 			}
 			self.selectiveAcks[ack.messageId] = ack
+			if !hasPrior {
+				// inserted above the head (the enclosing condition). It is
+				// evidence of a hole until a head absorbs it.
+				self.gapSelectiveAboveHead += 1
+			}
+			if !self.gapSelectiveSeen || self.gapSelectiveMax < ack.sequenceNumber {
+				self.gapSelectiveMax = ack.sequenceNumber
+				self.gapSelectiveSeen = true
+			}
+			// enough selective acks above the head now prove a hole to the
+			// sender
+			if 0 < self.gapWakeSelectiveCount &&
+				self.gapWakeSelectiveCount <= self.gapSelectiveAboveHead {
+				self.signalGapWakeWithLock(gapWakeHoleProvable)
+			}
 		} else {
+			// a head advancing under outstanding selective acks is a hole
+			// filling. The sender's flight is head-blocked on this ack. The
+			// first head of a sequence whose opening item was missing is one
+			// too: the selective acks above it were written with no head at
+			// all.
+			if 0 < self.gapWakeSelectiveCount && self.gapSelectiveSeen &&
+				(self.headAck == nil || self.headAck.sequenceNumber < self.gapSelectiveMax) {
+				self.signalGapWakeWithLock(gapWakeHoleFilled)
+			}
+			// The head absorbs the pending selective acks at or below it.
+			// They stay in the map for the snapshot filter but are no longer
+			// evidence of a hole above the head. This is O(1) on the receive
+			// hot path: the head ack for a delivered item carries that item's
+			// message id. An item selectively acked in this snapshot is
+			// found by its key, and a head at or above the highest selective
+			// ack has absorbed everything. Never a scan of the map.
+			if 0 < self.gapSelectiveAboveHead {
+				if self.gapSelectiveMax <= ack.sequenceNumber {
+					self.gapSelectiveAboveHead = 0
+				} else if _, pending := self.selectiveAcks[ack.messageId]; pending {
+					self.gapSelectiveAboveHead -= 1
+				}
+			}
 			// cumulative head ack: or-in the prior head's plaintext bit
 			// (and any absorbed selective acks below the new head) so a
 			// single plaintext pack anywhere under the head keeps the
@@ -5965,6 +6170,15 @@ func (self *sequenceAckWindow) Snapshot(reset bool) sequenceAckWindowSnapshot {
 		// instead of allocating a fresh map; the caller holds only a copy.
 		self.ackUpdateCount = 0
 		clear(self.selectiveAcks)
+		self.gapSelectiveAboveHead = 0
+		// The signals correspond to state included in this snapshot. Drain
+		// them while ackLock excludes Update so the next empty snapshot cannot
+		// wake on a stale token, and re-arm the once-per-snapshot gap wake.
+		self.gapWakeSignaled = 0
+		select {
+		case <-self.gapNotify:
+		default:
+		}
 	}
 
 	return snapshot
