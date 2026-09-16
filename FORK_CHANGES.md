@@ -3405,3 +3405,25 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 - **Security Hardening (v31.1–v31.2)**: Root peer check rejects non-root HotSwap candidates. JSON error response on connection rejection for machine-readable diagnostics. Docker execve argument sanitization prevents injection through crafted binary paths.
 
 **Impact**: v31.x brings full Windows parity, production-grade observability, resilient update verification, and tighter security boundaries — all while preserving zero-downtime upgrades on Linux.
+
+## 164. v31.3–v31.4: Buffer-Leak Fixes and Flow-Honesty (PR #633, #640, #641, #637, #639, #635, #636)
+
+**Purpose**: Upstream-verified fixes for the message pool, the unreliable-flight window, and the receive hold, plus a refreshed content-filtering blocklist and forward-looking release documentation.
+
+**Files Modified**: `ip.go`, `ip_remote_multi_client.go`, `transfer.go`, `transfer_flight.go`, `message_pool.go`, `pool_leak_fix_test.go`, `transfer_hold_policy_test.go`, `transfer_mixed_lane_regression_test.go`, `releases/v3.23.0-fix.31.4.md`, `MIGRATION_PLAN.md`, `scripts/h3-workspace.sh`, and related tests.
+
+**Change**:
+
+- **Pooled-buffer leak fix (v31.3, PR #633)**: SendPacketWithTimeout and multi-client send paths dropped packets without returning the pooled byte buffer on channel-full, timeout, and cancellation paths. A busy relay pinned hundreds of megabytes in the message pool. Every drop/backpressure path now returns the buffer exactly once, with regression tests over the ownership contracts.
+
+- **Forget-on-RTO (v31.4, PR #640)**: a resend timeout halved the unreliable-flight window, then the old release path grew it back through the acknowledge path on the same event, so congestion reductions never stuck. The flight controller gains forget, which drops the item's reservation without limit growth; acknowledge remains the only grower.
+
+- **Committed-prefix receive hold (v31.4, PR #641)**: the receiver acknowledged held items on admission and then evicted already-acknowledged items when a full hold admitted an earlier arrival, and the sender learned only after two probes and the full 60-second selective-ack lease. The receiver now acks only the committed prefix that no arrival can evict; tentative items evict at zero cost. ReceiveHoldPolicy {CommittedPrefix, Evict, Refuse} selectable, with counters for commits and evictions.
+
+- **CFAA blocklist refresh (v31.3–v31.4, PR #637)**: content-filtering ranges synced from upstream.
+
+- **Hub deprecation notice (v31.3–v31.4, PR #635, #636)**: release notes and CHANGELOG carry a CAUTION callout; the hub subsystem is removed in the next release series.
+
+- **H3 + miner migration plan (v31.4, PR #639)**: MIGRATION_PLAN.md documents the path to the upstream v2026 H3 transport and the Bittensor miner daemon, with the workspace scaffold script and the Phase 0.5 symbol drift verdict.
+
+**Impact**: the v31.3–v31.4 pair removes the two most expensive silence-of-the-wire defects in the transfer layer (leaked buffers and withdrawn acknowledgements), makes congestion feedback truthful, and prepares the fork's documentation for the hub-removal and H3-migration transitions.
