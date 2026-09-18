@@ -25,3 +25,14 @@ func runningImagePath(pid int) (string, error) {
 	}
 	return exe, nil
 }
+
+// runningImageHandle returns a usable file handle path for the running
+// process's image. On Linux this is /proc/<pid>/exe; on other platforms
+// it falls back to runningImagePath. The handle is validated by
+// runningImagePath first to fail fast on nonexistent/inaccessible pids.
+func runningImageHandle(pid int) (string, error) {
+	if _, err := runningImagePath(pid); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("/proc/%d/exe", pid), nil
+}

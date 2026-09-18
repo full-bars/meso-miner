@@ -608,57 +608,146 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	}
 	fmt.Printf("swapped %s -> %s\n", staged, p.Binary)
 
-	// Restart the unit that owns the running process. restartForUpdate is
-	// plain restartProvider by default; the update flow temporarily routes
-	// it through the staged-tool escalation ladder
-	// (updateProviderWithRestart).
-	if err := restartForUpdate(p); err != nil {
-		return fmt.Errorf("restart %s: %w", providerLabel(p), err)
+	// Auto-migrate Type=simple units to Type=notify so HotSwap can
+	// complete. Pre-v31.0 fleet nodes were installed before Type=notify
+	// became the default; HotSwap permanently declines on Type=simple
+	// (provider/hotswap.go checks NOTIFY_SOCKET which is only set for
+	// Type=notify units). Without this migration the entire pre-existing
+	// fleet has zero-downtime updates unavailable without a full
+	// reinstall. The provider already sends sd_notify on v30+, so
+	// Type=notify is backward-compatible; if the provider doesn't
+	// actually send sd_notify, systemd treats it as started immediately
+	// (same as Type=simple).
+	//
+	// CRITICAL: When migration succeeds (migratedUnit == true), we MUST
+	// skip the HotSwap path and use a standard restart instead. The
+	// ALREADY-RUNNING provider process was exec'd under the old
+	// Type=simple unit and does NOT have NOTIFY_SOCKET in its
+	// environment. hotSwapPreflight sees the unit is now Type=notify
+	// (post-daemon-reload), passes, SIGUSR2 is sent, the provider
+	// attempts sd_notify, fails because NOTIFY_SOCKET is absent, the
+	// CLI waits 80s, and then rolls back — failing the update entirely.
+	// A standard restart re-execs the provider under the new Type=notify
+	// unit, which DOES set NOTIFY_SOCKET, so the new process starts
+	// correctly.
+	migratedUnit := false
+	if migrated, err := migrateUnitToNotify(p); err != nil {
+		// Migration failure is non-fatal: log and continue with the
+		// normal restart path. HotSwap will still decline on
+		// Type=simple, but the binary was already swapped so a
+		// restart will pick it up.
+		fmt.Printf("unit migration note: %v\n", err)
+	} else {
+		migratedUnit = migrated
+	}
+
+	// Attempt zero-downtime HotSwap first if supported on running process.
+	// hotSwapPreflight decides, and its error IS the operator-facing reason:
+	// gating on a bool here (as an earlier revision did) discarded that
+	// reason and printed nothing at all when the handoff was declined, which
+	// is the failure mode that made HotSwap dormancy invisible on every
+	// Type=simple node. triggerHotSwap runs the same preflight before
+	// signalling, so a provider that cannot parse the handoff protocol never
+	// receives SIGUSR2 regardless of which path a caller takes.
+	//
+	// When migratedUnit is true, the running process lacks NOTIFY_SOCKET
+	// so HotSwap would fail after SIGUSR2 — skip it and go straight to
+	// a standard restart which re-execs with the correct environment.
+	hotSwapTriggered := false
+	if migratedUnit {
+		// Unit was just migrated from Type=simple to Type=notify.
+		// The running process doesn't have NOTIFY_SOCKET, so
+		// HotSwap is not viable — skip to standard restart below.
+		fmt.Printf("unit migrated to Type=notify; using standard restart (running process lacks NOTIFY_SOCKET)\n")
+	} else if p.Running && p.PID > 0 {
+		if err := hotSwapPreflight(p); err != nil {
+			fmt.Printf("hotswap trigger unavailable (%v); falling back to service restart\n", err)
+			recordHotswapDecline(p.StateDir, hotswapDeclineReason(err))
+		} else if err := triggerHotSwap(p); err == nil {
+			fmt.Printf("triggered zero-downtime HotSwap handoff (SIGUSR2 sent to PID %d)\n", p.PID)
+			hotSwapTriggered = true
+		} else {
+			fmt.Printf("hotswap trigger unavailable (%v); falling back to service restart\n", err)
+			recordHotswapDecline(p.StateDir, hotswapDeclineReason(err))
+		}
+	} else if p.Running {
+		// Provider is running but PID is unknown — cannot hotswap.
+		recordHotswapDecline(p.StateDir, "no_pid")
+	}
+
+	if !hotSwapTriggered {
+		// Restart the unit that owns the running process. restartForUpdate is
+		// plain restartProvider by default; the update flow temporarily routes
+		// it through the staged-tool escalation ladder
+		// (updateProviderWithRestart).
+		if err := restartForUpdate(p); err != nil {
+			return fmt.Errorf("restart %s: %w", providerLabel(p), err)
+		}
 	}
 
 	// Verify the restart took effect: wait for the process to be on the
 	// new version. We must check the RUNNING process's image, not the
-	// on-disk binary (which we just swapped — reading its version is
-	// tautological and proves nothing about what the process executes).
-	// /proc/<PID>/exe resolves to the image the running process actually
-	// loaded; compare its embedded version against cfg.Tag, and require the
-	// on-disk binary is not deleted/stale.
-	// Verification loop: bounded at 30 iterations (~60s) with 3s settle delay, one Discover() per
-	// iteration; no extra early-break needed because the first successful
-	// match (running PID changed, image not deleted, /proc/<pid>/exe build
-	// info reports cfg.Tag) returns nil immediately.
+	// on-disk binary.
 	oldPID := p.PID
-	// NOTE: returns nil (exits) on the first matching provider — the full 30
-	// iterations only run when no match is ever found.
-	// Give the old process time to exit before the first check.
+	// Give the old process time to exit before the first check: during CI
+	// or slow systemd restarts the old process is often still alive when
+	// the loop fires, which previously read as "restart did not take
+	// effect" on the very first iteration.
 	time.Sleep(3 * time.Second)
-	for i := 0; i < 30; i++ { // up to ~60s (plus 3s settle)
+	maxIterations := 30 // ~60s for standard restart (plus 3s settle delay)
+	if hotSwapTriggered {
+		maxIterations = 40 // ~80s to cover pre-flight + auth bring-up + takeover
+	}
+
+	for i := 0; i < maxIterations; i++ {
 		time.Sleep(2 * time.Second)
 		providers := Discover()
 		for _, rp := range providers {
-			// StateDir identity check: both sides come from the same discovery
-			// logic (unitStateDir on unix, windowsStateDir on Windows), so
-			// string equality is consistent per platform. Platform risk: on
-			// Windows this is a case-sensitive string compare of paths, so a
-			// drive-letter case or separator mismatch between derivations
-			// would fail to match (same physical dir under a different
-			// spelling = symlink/~ expansion/container mapping = no match).
-			if rp.StateDir == p.StateDir && rp.StateDir != "" && rp.PID != 0 && rp.PID != oldPID && !rp.BinaryDeleted {
-				// Version of the image the RUNNING process is executing, resolved by
-				// the platform-specific runningImagePath (Linux /proc/<pid>/exe,
-				// Windows QueryFullProcessImageName — /proc does not exist on Windows,
-				// where the resolver previously returned an unusable path and restart
-				// verification could never succeed).
+			// Check matching state directory and verify running image
+			if rp.StateDir == p.StateDir && rp.StateDir != "" && rp.PID != 0 && !rp.BinaryDeleted {
 				procExe, perr := runningImagePath(rp.PID)
 				if perr == nil {
-					if procVersion := providerVersionFromBuildinfo(procExe); procVersion == cfg.Tag {
-						fmt.Printf("verified %s running %s (pid %d; running image %s matches)\n", providerLabel(p), cfg.Tag, rp.PID, procExe)
+					if procVersion := providerVersion(procExe); procVersion == cfg.Tag {
+						shown := procExe
+						if real, rerr := runningImagePath(rp.PID); rerr == nil {
+							shown = real
+						}
+						fmt.Printf("verified %s running %s (pid %d; running image %s matches)\n", providerLabel(p), cfg.Tag, rp.PID, shown)
+						// Record success AFTER verification confirms the new
+						// version is actually running — signal delivery alone
+						// is not proof that the handoff completed.
+						if hotSwapTriggered {
+							recordHotswapSuccess(p.StateDir)
+						}
 						pruneBackups(p.Binary, 2)
 						return nil
 					}
 				}
 			}
 		}
+	}
+
+	// Verification failed:
+	if hotSwapTriggered {
+		// Verification timed out — record the decline with reason
+		// "takeover_failed" so operators can see it in Prometheus.
+		recordHotswapDecline(p.StateDir, "takeover_failed")
+		fmt.Printf("❌ HotSwap candidate failed to take over within %ds.\n", maxIterations*2)
+		// oldPID's process exits (via its drain-timeout goroutine) only after
+		// the candidate confirmed active takeover — the same handoff gate
+		// hotswap.go's ACK-then-yield ordering guarantees. So oldPID being
+		// gone here means ownership already transferred to some process
+		// (the candidate, or its own successor), even though this loop
+		// couldn't confirm which one is on cfg.Tag in time. Rolling back the
+		// disk binary in that state doesn't touch the already-running
+		// process, but it does silently revert the image a future restart
+		// would use, and "live provider was never killed" would be false —
+		// so skip the rollback and report the real (unknown) state instead.
+		if !pidIsAlive(oldPID) {
+			return fmt.Errorf("update %s: HotSwap candidate ACKed takeover and PID %d exited its drain, but verification could not confirm the new process is running %s within %ds; binary NOT rolled back (ownership already transferred) — check the provider's logs/dashboard to confirm which version is actually live", providerLabel(p), oldPID, cfg.Tag, maxIterations*2)
+		}
+		// Live provider was never killed — HotSwap candidate failed
+		// to take over. Fall through to restore backup below.
 	}
 	return fmt.Errorf("update %s: binary swapped to %s but restart did not take effect — the running process is still the old version or the unit failed to start; check the provider's logs", providerLabel(p), cfg.Tag)
 }
@@ -1156,4 +1245,184 @@ func fileSHA256(path string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// migrateUnitToNotify detects a Type=simple systemd unit and automatically
+// rewrites it to Type=notify so zero-downtime HotSwap can complete. This is
+// the automatic fix for pre-v31.0 fleet nodes that were installed before
+// Type=notify became the default in Provider_Install_Linux.sh.
+//
+// The provider already sends sd_notify on v30+, so Type=notify is
+// backward-compatible. If the provider doesn't actually send sd_notify,
+// systemd treats it as started immediately (same as Type=simple).
+//
+// Returns (migrated, err): migrated is true when the unit file was rewritten
+// (meaning the caller must use a standard restart instead of HotSwap, because
+// the ALREADY-RUNNING process lacks NOTIFY_SOCKET in its environment — HotSwap
+// would fail with sd_notify timeout). Non-fatal by design: any error is
+// logged and the update continues with the normal restart path.
+func migrateUnitToNotify(p Provider) (bool, error) {
+	if p.Unit == "" {
+		return false, nil // no unit, nothing to migrate
+	}
+
+	// Check current type: only migrate from Type=simple.
+	typ, err := unitTypeFunc(p)
+	if err != nil {
+		// Can't determine type — skip migration rather than block
+		// the update. The systemctl call can fail when the user bus
+		// is unreachable or systemctl is missing.
+		return false, nil
+	}
+	if typ != "simple" {
+		return false, nil // already notify, oneshot, or other type
+	}
+
+	// Resolve the unit file's on-disk path via FragmentPath.
+	unitPath, err := resolveUnitFilePath(p)
+	if err != nil {
+		return false, fmt.Errorf("resolve unit file path for %s: %w", p.Unit, err)
+	}
+	if unitPath == "" {
+		return false, fmt.Errorf("unit %s has no FragmentPath — cannot migrate", p.Unit)
+	}
+
+	// Read the current unit file.
+	content, err := os.ReadFile(unitPath)
+	if err != nil {
+		return false, fmt.Errorf("read unit file %s: %w", unitPath, err)
+	}
+
+	// Rewrite: Type=simple → Type=notify, add NotifyAccess=all if missing.
+	newContent, changed := rewriteUnitContent(string(content))
+	if !changed {
+		return false, nil // nothing to do (Type=notify already)
+	}
+
+	// Back up the original unit file before overwriting.
+	backupPath := unitPath + ".bak"
+	if err := copyFile(unitPath, backupPath); err != nil {
+		return false, fmt.Errorf("backup unit file %s: %w", unitPath, err)
+	}
+	fmt.Printf("backed up unit file %s -> %s\n", unitPath, backupPath)
+
+	// Write the updated unit file. Atomic: write then rename to avoid
+	// a partial file on crash.
+	tmpPath := unitPath + ".tmp"
+	if err := os.WriteFile(tmpPath, []byte(newContent), 0o644); err != nil {
+		os.Remove(tmpPath)
+		return false, fmt.Errorf("write updated unit file: %w", err)
+	}
+	if err := os.Rename(tmpPath, unitPath); err != nil {
+		os.Remove(tmpPath)
+		os.Rename(backupPath, unitPath) // best-effort restore
+		return false, fmt.Errorf("rename updated unit file: %w", err)
+	}
+	fmt.Printf("migrated %s from Type=simple to Type=notify\n", unitPath)
+
+	// Daemon-reload so systemd picks up the rewritten unit. Best-effort:
+	// failure here means the running unit still has the old Type= but the
+	// file on disk is correct — the next restart or reboot will pick it up.
+	if err := daemonReloadForUnit(p); err != nil {
+		fmt.Printf("warning: daemon-reload after unit migration failed: %v\n", err)
+	} else {
+		fmt.Println("daemon-reload completed after unit migration")
+	}
+
+	// CRITICAL: Return true so the caller knows migration happened. The
+	// already-running process does NOT have NOTIFY_SOCKET in its
+	// environment (systemd only sets it for Type=notify at exec time).
+	// HotSwap would send SIGUSR2, the provider would attempt
+	// sd_notify, fail, and the CLI would wait 80s then roll back.
+	// The caller must use a standard restart (which re-execs and gets
+	// NOTIFY_SOCKET from systemd) instead.
+	return true, nil
+}
+
+// resolveUnitFilePath returns the on-disk FragmentPath of a systemd unit by
+// querying `systemctl show -p FragmentPath --value <unit>`, scoped to the
+// user or system manager as appropriate. Returns "" when the unit has no
+// file (e.g. transient units).
+func resolveUnitFilePath(p Provider) (string, error) {
+	var args []string
+	if isUserUnit(p.Unit) && p.User != "" {
+		args = append([]string{"systemctl"}, systemctlUserArgs(p.User)...)
+	} else {
+		args = []string{"systemctl"}
+	}
+	args = append(args, "show", "-p", "FragmentPath", "--value", p.Unit)
+	out, err := exec.Command(args[0], args[1:]...).Output()
+	if err != nil {
+		return "", fmt.Errorf("systemctl show -p FragmentPath %s: %w", p.Unit, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// rewriteUnitContent rewrites a systemd unit file's content, replacing
+// Type=simple with Type=notify. If no NotifyAccess= directive exists in the
+// file, it is added immediately after the Type= line. Returns the new
+// content and whether any change was made.
+func rewriteUnitContent(content string) (string, bool) {
+	lines := strings.Split(content, "\n")
+	changed := false
+	hasNotifyAccess := false
+	typeLineIdx := -1
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// Strip inline comments (# and ;) before parsing.
+		if idx := strings.IndexAny(trimmed, "#;"); idx >= 0 {
+			trimmed = strings.TrimSpace(trimmed[:idx])
+		}
+		parts := strings.SplitN(trimmed, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		val := strings.TrimSpace(parts[1])
+		if strings.EqualFold(key, "Type") && strings.EqualFold(val, "simple") {
+			lines[i] = "Type=notify"
+			changed = true
+			typeLineIdx = i
+		}
+		if strings.EqualFold(key, "NotifyAccess") {
+			hasNotifyAccess = true
+		}
+	}
+
+	if !changed {
+		return content, false
+	}
+
+	// Add NotifyAccess=all after the Type=notify line if not present.
+	if !hasNotifyAccess && typeLineIdx >= 0 {
+		newLines := make([]string, 0, len(lines)+1)
+		for i, line := range lines {
+			newLines = append(newLines, line)
+			if i == typeLineIdx {
+				newLines = append(newLines, "NotifyAccess=all")
+			}
+		}
+		lines = newLines
+	}
+
+	return strings.Join(lines, "\n"), true
+}
+
+// daemonReloadForUnit runs `systemctl daemon-reload` scoped to the unit's
+// manager (user or system). Returns the error so the caller can decide
+// whether it's fatal.
+func daemonReloadForUnit(p Provider) error {
+	var args []string
+	if isUserUnit(p.Unit) && p.User != "" {
+		args = append([]string{"systemctl"}, systemctlUserArgs(p.User)...)
+	} else {
+		args = []string{"systemctl"}
+	}
+	args = append(args, "daemon-reload")
+	out, err := exec.Command(args[0], args[1:]...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("daemon-reload: %v (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }

@@ -36,3 +36,9 @@ func runningImagePath(pid int) (string, error) {
 	}
 	return windows.UTF16ToString(buf[:size]), nil
 }
+
+// runningImageHandle returns a usable file handle path for the running
+// process's image. On Windows this is the same as runningImagePath.
+func runningImageHandle(pid int) (string, error) {
+	return runningImagePath(pid)
+}
