@@ -47,9 +47,14 @@ func stubDiscovery(t *testing.T, systemd, docker []Provider) {
 	origS, origD := discoverSystemdFn, discoverDockerFn
 	discoverSystemdFn = func() []Provider { return systemd }
 	discoverDockerFn = func() []Provider { return docker }
+	origP, origT := discoverProcessesFn, discoverStoppedFn
+	discoverProcessesFn = func() []Provider { return systemd }
+	discoverStoppedFn = func(running []Provider) []Provider { return docker }
 	t.Cleanup(func() {
 		discoverSystemdFn = origS
 		discoverDockerFn = origD
+		discoverProcessesFn = origP
+		discoverStoppedFn = origT
 	})
 }
 
