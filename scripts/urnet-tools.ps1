@@ -2,7 +2,7 @@
 # urnet-tools: URnetwork provider manager
 # Author: full-bars (GitHub), onlyinthe707 / "mesocyclone" (Discord)
 # Based on: Ar Rakin, Ryan Mello (original)
-# https://github.com/full-bars/urnetwork-3.23-fix
+# https://github.com/full-bars/meso-miner
 
 <#
 .SYNOPSIS
@@ -89,7 +89,7 @@
     None. Does not take any input.
 
 .LINK
-    https://github.com/full-bars/urnetwork-3.23-fix
+    https://github.com/full-bars/meso-miner
 #>
 
 param(
@@ -124,7 +124,7 @@ if (-not $IsLinux) {
     $BinarySuffix = ".exe"
 }
 
-$GithubURLBase = "https://api.github.com/repos/full-bars/urnetwork-3.23-fix"
+$GithubURLBase = "https://api.github.com/repos/full-bars/meso-miner"
 
 function Get-Path {
     return [Environment]::GetEnvironmentVariable("PATH", [System.EnvironmentVariableTarget]::User)
@@ -170,15 +170,17 @@ function Check-Update {
         return $Tag
     }
 
-    # GitHub API unavailable: fall back to the dl.fullbars.xyz Worker. It only
-    # exposes a tag (no published-date), so compare tags directly instead of
-    # the install-date check used above.
-    Write-Warning "GitHub API unavailable, trying dl.fullbars.xyz fallback..."
+    # GitHub API unavailable: fall back to the GitHub latest-release redirect.
+    # It only yields a tag (no published-date), so compare tags directly
+    # instead of the install-date check used above.
+    Write-Warning "GitHub API unavailable, trying GitHub latest-release redirect..."
     $Tag = $null
     try {
-        $Tag = (Invoke-RestMethod -Uri "https://dl.fullbars.xyz/latest-version").Trim()
+        $resp = Invoke-WebRequest -Uri "https://github.com/full-bars/meso-miner/releases/latest" -MaximumRedirection 0 -ErrorAction Stop
+    } catch {
+        $loc = $_.Exception.Response.Headers["Location"]
+        if ($loc) { $Tag = ([Uri]$loc).Segments[-1] }
     }
-    catch {}
 
     if (-not $Tag) {
         Write-Error "Failed to fetch release information from GitHub API. Are you sure the version exists and your internet connection is working?"
@@ -546,14 +548,14 @@ switch ($Command) {
         Write-Host "Executing installer script of version $Tag"
 
         $TempScriptPath = Join-Path $env:TEMP -ChildPath "urnetwork-installer.ps1"
-        Invoke-RestMethod "https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_Win32.ps1" -OutFile $TempScriptPath
+        Invoke-RestMethod "https://raw.githubusercontent.com/full-bars/meso-miner/$Tag/scripts/Provider_Install_Win32.ps1" -OutFile $TempScriptPath
 
         if (!$?) {
             Write-Error "Failed to download the installer script"
             exit 1
         }
 
-        & $TempScriptPath -Destination $InstalledPath -NonInteractive
+        & $TempScriptPath -Destination $InstalledPath -NonInteractive -Version $Tag
 
         if (-not $?) {
             Write-Error "Update failed"
@@ -588,10 +590,10 @@ switch ($Command) {
 
         Do-Uninstall
         Write-Host "Downloading the installer script of version $InstalledTag"
-        Write-Host "Executing installer script of version $InstallerTag"
+        Write-Host "Executing installer script of version $InstalledTag"
 
         $TempScriptPath = Join-Path $env:TEMP -ChildPath "urnetwork-installer.ps1"
-        Invoke-RestMethod "https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_Win32.ps1" -OutFile $TempScriptPath
+        Invoke-RestMethod "https://raw.githubusercontent.com/full-bars/meso-miner/$InstalledTag/scripts/Provider_Install_Win32.ps1" -OutFile $TempScriptPath
 
         if (!$?) {
             Write-Error "Failed to download the installer script"

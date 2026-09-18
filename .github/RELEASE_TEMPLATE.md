@@ -9,22 +9,22 @@
 
 **🐧 Linux:**
 ```sh
-curl -fSsL https://dl.fullbars.xyz/install.sh | sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh
 ```
 
 **🍎 macOS:**
 ```sh
-curl -fSsL https://dl.fullbars.xyz/install-mac.sh | sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh
 ```
 
 **🪟 Windows (PowerShell):**
 ```powershell
-irm https://dl.fullbars.xyz/install-win.ps1 | iex
+irm https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Win32.ps1 | iex
 ```
 
 **🐳 Docker:**
 ```sh
-docker pull ghcr.io/full-bars/urnetwork-3.23-fix:{Version}
+docker pull ghcr.io/full-bars/meso-miner:{Version}
 ```
 
 **🔄 Updating an existing install:**

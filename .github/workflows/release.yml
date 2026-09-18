@@ -43,7 +43,7 @@ jobs:
         env:
           GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
         run: |
-          VERSION=${GITHUB_REF_NAME:-v3.23.0-fix.1}
+          VERSION=${GITHUB_REF_NAME:-latest}
           for attempt in 1 2 3; do
             echo "Build attempt $attempt..."
             if GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
@@ -60,7 +60,7 @@ jobs:
         env:
           GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
         run: |
-          VERSION=${GITHUB_REF_NAME:-v3.23.0-fix.1}
+          VERSION=${GITHUB_REF_NAME:-latest}
           for attempt in 1 2 3; do
             echo "Build attempt $attempt..."
             if GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
@@ -77,7 +77,7 @@ jobs:
         env:
           GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
         run: |
-          VERSION=${GITHUB_REF_NAME:-v3.23.0-fix.1}
+          VERSION=${GITHUB_REF_NAME:-latest}
           for attempt in 1 2 3; do
             echo "Build attempt $attempt..."
             if GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \

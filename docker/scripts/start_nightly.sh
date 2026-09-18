@@ -28,7 +28,7 @@ JWT_FILE="$HOME/.urnetwork/jwt"
 ENABLE_VNSTAT="${ENABLE_VNSTAT:-true}"
 ENABLE_IP_CHECKER="${ENABLE_IP_CHECKER:-false}"
 IP_CHECKER_URL="https://raw.githubusercontent.com/techroy23/IP-Checker/refs/heads/main/app.sh"
-API_URL="https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/latest"
+API_URL="https://api.github.com/repos/full-bars/meso-miner/releases/latest"
 VERSION_FILE="$APP_DIR/version.txt"
 UPDATE_TIME="12:00"
 

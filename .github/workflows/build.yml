@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - fix/v3.23-custom
     tags:
       - 'v*'
   pull_request:
@@ -14,7 +13,6 @@ on:
       - 'releases/**'
     branches:
       - main
-      - fix/v3.23-custom
   workflow_dispatch:
 
 # Supersede in-flight PR runs: this is the most expensive workflow in the
@@ -236,7 +234,7 @@ jobs:
 
           jq -e '.meta.version == "PLCN_v3"
                  and (.docker_images | length == 1)
-                 and ([.docker_images[]][0] | test("^ghcr\\.io/full-bars/urnetwork-3.23-fix:latest$"))
+                 and ([.docker_images[]][0] | test("^ghcr\\.io/full-bars/meso-miner:latest$"))
                  and .startup_commands.Default == "sh /app/entrypoint.sh"
                  and (.config.startup | fromjson | .done == "Provider")' "$egg" >/dev/null \
             || { echo "FAIL: egg JSON structure invalid"; exit 1; }
@@ -345,12 +343,12 @@ jobs:
           images: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            # :latest is the STABLE release — only on v3.23.0-fix.* tags.
-            # group=0 keeps the FULL semver tag (v3.23.0-fix.30.2) so
+            # :latest is the STABLE release — only on v2026.*-meso tags.
+            # group=0 keeps the FULL meso tag (v2026.9.18-1049118720-meso) so
             # docker pull with the exact release tag works (matches
             # release notes, the shakedown, and docker.go). group=1
-            # stripped the v3.23.0-fix. prefix and broke those pulls.
-            type=match,pattern=v3\.23\.0-fix\..*,group=0
+            # stripped the v2026.* prefix and broke those pulls.
+            type=match,pattern=v2026\.\d+\.\d+-\d+-meso(-(rc|alpha|beta)\d*)?,group=0
             # A pre-release must NOT become :latest. release.yml already marks
             # the GitHub Release itself pre-release on -rc/-alpha/-beta, but
             # that gate keys off the SUFFIX while this one keyed off the
@@ -359,7 +357,7 @@ jobs:
             # published :latest, silently exposing every Docker node that
             # pulls it. The suffix checks below make both gates agree, so an
             # -rc tag is safe to push under the normal naming convention.
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v3.23.0-fix.') && !contains(github.ref, '-rc') && !contains(github.ref, '-alpha') && !contains(github.ref, '-beta') }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v2026.') && !contains(github.ref, '-rc') && !contains(github.ref, '-alpha') && !contains(github.ref, '-beta') }}
             # :main (and :sha-<short>) track current main continuously.
             type=ref,event=branch
             type=sha,format=short
@@ -372,7 +370,7 @@ jobs:
           else
             # For main branch, get the most recent provider tag. Scoped to
             # v3.23.0-fix.* so unrelated tag schemes in this repo (e.g. the
-            VERSION=$(git describe --tags --abbrev=0 --match 'v3.23.0-fix.*' 2>/dev/null || echo "v3.23.0-fix.1")
+            VERSION=$(git describe --tags --abbrev=0 --match 'v2026.*' 2>/dev/null || echo "v2026.0.0-0-meso")
           fi
           echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
 
@@ -399,7 +397,7 @@ jobs:
         if: ${{ github.event_name != 'pull_request' && startsWith(github.ref, 'refs/tags/') && (contains(github.ref, '-rc') || contains(github.ref, '-alpha') || contains(github.ref, '-beta')) }}
         run: |
           set -euo pipefail
-          REPO="full-bars/urnetwork-3.23-fix"
+          REPO="full-bars/meso-miner"
           TAG="${GITHUB_REF_NAME}"
           TOK=$(curl -sf "https://ghcr.io/token?scope=repository:${REPO}:pull&service=ghcr.io" \
                 | grep -o '"token":"[^"]*' | cut -d'"' -f4)

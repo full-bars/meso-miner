@@ -14,6 +14,16 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ORIG_SCRIPT="$REPO_ROOT/docker/scripts/urnet-tools.sh"
 
+# Resolve the real mktemp BEFORE the mock bin shadows it on PATH. The mktemp
+# stub below delegates to this path; hardcoding e.g. /usr/sbin/mktemp breaks
+# on runners where coreutils lives at /usr/bin/mktemp (ubuntu-latest).
+REAL_MKTEMP="$(command -v mktemp)"
+if [ -z "$REAL_MKTEMP" ]; then
+    echo "❌ FATAL: no mktemp found on PATH"
+    exit 1
+fi
+export REAL_MKTEMP
+
 TEMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TEMP_DIR"' EXIT
 
@@ -80,6 +90,12 @@ SCRIPT_COPY="$TEMP_DIR/urnet-tools.sh"
 sed "s#/app/urnetwork_#${APP_DIR}/urnetwork_#" "$ORIG_SCRIPT" > "$SCRIPT_COPY"
 chmod +x "$SCRIPT_COPY"
 
+# urnet-tools.sh sources update_verify.sh from its own directory (with an
+# /app/ fallback that does not exist on the host). The digest-extraction
+# helpers therefore must sit next to the script copy or do_update aborts
+# under set -eu before the download ever starts.
+cp "$REPO_ROOT/docker/scripts/update_verify.sh" "$TEMP_DIR/update_verify.sh"
+
 # A deliberately-regressed sibling copy: the staged_provider mktemp template
 # gets a ".new" suffix appended after XXXXXX, mirroring the exact class of
 # bug this PR fixed for the tarball mktemp call, but on the OTHER mktemp
@@ -104,7 +120,7 @@ if grep -q 'mktemp /tmp/urnetwork-update-XXXXXX.tar.gz' "$SCRIPT_COPY"; then
     exit 1
 fi
 # Anchor the positive check to the ACTUAL executable assignment, not a bare
-# string match that a comment or doc line could also satisfy (coderabbit).
+# string match that a comment or doc line could also satisfy.
 if ! grep -q 'tmpdir="$(mktemp -d /tmp/urnetwork-update-XXXXXX)"' "$SCRIPT_COPY"; then
     echo "❌ FATAL: expected busybox-safe tmpdir mktemp -d assignment not found in script copy (script may have changed)"
     exit 1
@@ -113,7 +129,7 @@ fi
 MOCKBIN="$TEMP_DIR/mockbin"
 mkdir -p "$MOCKBIN"
 
-# Opus hardening: a busybox-enforcing mktemp stub. busybox mktemp requires the
+# A busybox-enforcing mktemp stub. busybox mktemp requires the
 # template to END in XXXXXX; any suffix (e.g. ".tar.gz" or ".new") fails with
 # "Invalid argument". GNU coreutils (the host) accepts both, so without this
 # stub a regressed template in a non-tarball mktemp call (e.g. staged_provider)
@@ -126,7 +142,7 @@ case "$template" in
     *XXXXXX) ;;
     *) echo "mktemp: : Invalid argument" >&2; exit 1 ;;
 esac
-exec "/usr/sbin/mktemp" "$@"
+exec "$REAL_MKTEMP" "$@"
 EOF
 chmod +x "$MOCKBIN/mktemp"
 
@@ -153,28 +169,33 @@ done
 url="${!#}"
 
 if [ -z "$outfile" ]; then
-    printf '{"tag_name":"%s","assets":[{"name":"urnetwork-linux-amd64.tar.gz","browser_download_url":"%s"}]}' \
-        "${MOCK_VERSION:-}" "${MOCK_DOWNLOAD_URL:-}"
+    # Publish a sha256 digest for the tarball asset, matching what the mock
+    # download will write (do_update refuses to download when the release
+    # JSON carries no digest). Same defaulting rule as the download branch.
+    mock_digest="$(printf '%s' "${MOCK_TARBALL_CONTENT:-dummy-tarball-bytes}" | sha256sum | awk '{print $1}')"
+    printf '{"tag_name":"%s","assets":[{"name":"urnetwork-linux-amd64.tar.gz","digest":"sha256:%s","browser_download_url":"%s"}]}' \
+        "${MOCK_VERSION:-}" "$mock_digest" "${MOCK_DOWNLOAD_URL:-}"
     exit 0
 fi
 
+# Downloads now target GitHub directly (no CDN). Primary/mirror are
+# distinguished by -o attempt count: the first download is the primary
+# attempt, any later call is the mirror retry. MOCK_PRIMARY_FAIL /
+# MOCK_MIRROR_FAIL then control which attempt(s) fail, and a partial
+# primary write lets tests assert the mirror retry overwrites the same path.
 case "$url" in
-    *dl.fullbars.xyz*)
-        if [ "${MOCK_PRIMARY_FAIL:-0}" = "1" ]; then
-            # Simulate a partial/truncated download: real curl can write
-            # bytes to -o before the transfer dies and it exits non-zero.
-            # This lets tests assert the mirror retry overwrites (not
-            # appends to) whatever primary already wrote to the same path.
-            if [ -n "${MOCK_PRIMARY_PARTIAL_CONTENT:-}" ]; then
-                printf '%s' "$MOCK_PRIMARY_PARTIAL_CONTENT" > "$outfile"
-            fi
-            exit 22
-        fi
-        printf '%s' "${MOCK_TARBALL_CONTENT:-dummy-tarball-bytes}" > "$outfile"
-        exit 0
-        ;;
     *github.com*)
-        [ "${MOCK_MIRROR_FAIL:-0}" = "1" ] && exit 22
+        attempt="$(grep -c -- ' -o ' "$CURL_LOG" 2>/dev/null || echo 0)"
+        if [ "$attempt" = "1" ]; then
+            if [ "${MOCK_PRIMARY_FAIL:-0}" = "1" ]; then
+                if [ -n "${MOCK_PRIMARY_PARTIAL_CONTENT:-}" ]; then
+                    printf '%s' "$MOCK_PRIMARY_PARTIAL_CONTENT" > "$outfile"
+                fi
+                exit 22
+            fi
+        else
+            [ "${MOCK_MIRROR_FAIL:-0}" = "1" ] && exit 22
+        fi
         printf '%s' "${MOCK_TARBALL_CONTENT:-dummy-tarball-bytes}" > "$outfile"
         exit 0
         ;;
@@ -187,8 +208,24 @@ EOF
 cat > "$MOCKBIN/jq" <<'EOF'
 #!/bin/bash
 # Mock jq. Ignores stdin content and returns canned values keyed off the
-# requested filter, driven by MOCK_VERSION / MOCK_DOWNLOAD_URL.
-filter="$2"
+# requested filter, driven by MOCK_VERSION / MOCK_DOWNLOAD_URL. Handles both
+# the plain `jq -r FILTER` form and the `jq -r --arg name value FILTER` form
+# used by the digest extraction (previously $2 was the literal "--arg", so
+# the digest filter returned empty and do_update aborted before downloading).
+filter=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --arg|--argjson)
+            # Skip the flag, the variable name, and its value; the filter
+            # (if any) follows.
+            shift 3
+            continue
+            ;;
+        -r|-e|-c) ;;
+        *) filter="$1" ;;
+    esac
+    shift
+done
 cat >/dev/null
 case "$filter" in
     *tag_name*)
@@ -196,6 +233,11 @@ case "$filter" in
         ;;
     *browser_download_url*)
         printf '%s\n' "${MOCK_DOWNLOAD_URL:-}"
+        ;;
+    *.digest*)
+        # Return the sha256 of exactly the bytes the mock download writes,
+        # so upd_verify_digest accepts the tarball.
+        printf '%s\n' "$(printf '%s' "${MOCK_TARBALL_CONTENT:-dummy-tarball-bytes}" | sha256sum | awk '{print $1}')"
         ;;
     *)
         printf '\n'
@@ -218,7 +260,13 @@ done
 [ "${MOCK_TAR_FAIL:-0}" = "1" ] && exit 1
 
 if [ -n "$tmpdir" ] && [ "${MOCK_TAR_NO_PROVIDER:-0}" != "1" ]; then
-    printf '#!/bin/sh\necho mock-provider\n' > "$tmpdir/provider"
+    # The provider binary's --version must match the update's expected
+    # version (MOCK_VERSION) so the script's post-respawn verification
+    # succeeds on the FIRST loop pass instead of sleeping the full
+    # respawn_timeout (30s) on every run_update. Default to MOCK_PROVIDER
+    # _VERSION when set, else fall back to MOCK_VERSION, else mock-provider.
+    mock_prov_version="${MOCK_PROVIDER_VERSION:-${MOCK_VERSION:-mock-provider}}"
+    printf '#!/bin/sh\necho "%s"\n' "$mock_prov_version" > "$tmpdir/provider"
     chmod +x "$tmpdir/provider"
 fi
 exit 0
@@ -241,7 +289,15 @@ EOF
 
 cat > "$MOCKBIN/pgrep" <<'EOF'
 #!/bin/bash
-# Real pgrep exits non-zero when no process matches; harmless for our mocks.
+# Default: report the provider as running (exit 0, MOCK_PGREP_PID) so the
+# script's post-respawn verification succeeds immediately after an update.
+# The old-pid wait then re-checks kill -0 against the fake pid, fails, and
+# moves on instantly — no 15s shutdown wait either. Set MOCK_PGREP_FOUND=0
+# in a test that wants to exercise the "provider not running" path.
+if [ "${MOCK_PGREP_FOUND:-1}" = "1" ]; then
+    printf '%s\n' "${MOCK_PGREP_PID:-4242}"
+    exit 0
+fi
 exit 1
 EOF
 
@@ -277,6 +333,9 @@ reset_fixture() {
     MOCK_ARCH=x86_64
     MOCK_TARBALL_CONTENT=""
     MOCK_PRIMARY_PARTIAL_CONTENT=""
+    MOCK_PROVIDER_VERSION=""
+    MOCK_PGREP_FOUND=1
+    MOCK_PGREP_PID=4242
     # do_update writes its update-pending marker under "$HOME/.urnetwork".
     # Point HOME at a disposable per-fixture dir so tests never touch the
     # real invoking user's home directory, and so each test starts with a
@@ -301,6 +360,9 @@ run_update() {
         MOCK_TAR_FAIL="${MOCK_TAR_FAIL:-0}" \
         MOCK_TAR_NO_PROVIDER="${MOCK_TAR_NO_PROVIDER:-0}" \
         MOCK_ARCH="${MOCK_ARCH:-x86_64}" \
+        MOCK_PROVIDER_VERSION="${MOCK_PROVIDER_VERSION:-}" \
+        MOCK_PGREP_FOUND="${MOCK_PGREP_FOUND:-1}" \
+        MOCK_PGREP_PID="${MOCK_PGREP_PID:-4242}" \
         MOCK_PRIMARY_PARTIAL_CONTENT="${MOCK_PRIMARY_PARTIAL_CONTENT:-}" \
         CURL_LOG="$CURL_LOG" \
         HOME="${MOCK_HOME:-$TEMP_DIR/home}" \
@@ -323,7 +385,7 @@ test_primary_success() {
     before="$(snapshot_tmp_artifacts)"
 
     MOCK_VERSION="v9.9.9-mock-1"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-1/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/meso-miner/releases/download/v9.9.9-mock-1/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=0
     unset ec
     run_update
@@ -362,7 +424,7 @@ test_mirror_fallback_success() {
     before="$(snapshot_tmp_artifacts)"
 
     MOCK_VERSION="v9.9.9-mock-2"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-2/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/meso-miner/releases/download/v9.9.9-mock-2/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=1
     MOCK_MIRROR_FAIL=0
     unset ec
@@ -403,7 +465,7 @@ test_both_downloads_fail() {
     before="$(snapshot_tmp_artifacts)"
 
     MOCK_VERSION="v9.9.9-mock-3"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-3/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/meso-miner/releases/download/v9.9.9-mock-3/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=1
     MOCK_MIRROR_FAIL=1
     unset ec
@@ -434,7 +496,7 @@ test_extraction_fails() {
     before="$(snapshot_tmp_artifacts)"
 
     MOCK_VERSION="v9.9.9-mock-4"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-4/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/meso-miner/releases/download/v9.9.9-mock-4/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=0
     MOCK_TAR_FAIL=1
     unset ec
@@ -461,7 +523,7 @@ test_provider_missing_in_tarball() {
     before="$(snapshot_tmp_artifacts)"
 
     MOCK_VERSION="v9.9.9-mock-5"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-5/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/meso-miner/releases/download/v9.9.9-mock-5/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=0
     MOCK_TAR_NO_PROVIDER=1
     unset ec
@@ -489,7 +551,7 @@ echo "=== SECTION 6: Tarball filename is unique per run (not the old fixed name)
 test_tarball_name_is_unpredictable() {
     reset_fixture
     MOCK_VERSION="v9.9.9-mock-6a"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-6a/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/meso-miner/releases/download/v9.9.9-mock-6a/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=1
     MOCK_MIRROR_FAIL=1
     unset ec
@@ -498,7 +560,7 @@ test_tarball_name_is_unpredictable() {
 
     reset_fixture
     MOCK_VERSION="v9.9.9-mock-6b"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-6b/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/meso-miner/releases/download/v9.9.9-mock-6b/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=1
     MOCK_MIRROR_FAIL=1
     unset ec
@@ -531,6 +593,9 @@ run_idle_update() {
         MOCK_MIRROR_FAIL="${MOCK_MIRROR_FAIL:-0}" \
         MOCK_TAR_FAIL="${MOCK_TAR_FAIL:-0}" \
         MOCK_TAR_NO_PROVIDER="${MOCK_TAR_NO_PROVIDER:-0}" \
+        MOCK_PROVIDER_VERSION="${MOCK_PROVIDER_VERSION:-}" \
+        MOCK_PGREP_FOUND="${MOCK_PGREP_FOUND:-1}" \
+        MOCK_PGREP_PID="${MOCK_PGREP_PID:-4242}" \
         MOCK_ARCH="${MOCK_ARCH:-x86_64}" \
         CURL_LOG="$CURL_LOG" \
         HOME="${MOCK_HOME:-$TEMP_DIR/home}" \
@@ -543,7 +608,7 @@ run_idle_update() {
 test_idle_update_window_zero() {
     reset_fixture
     MOCK_VERSION="v9.9.9-idle-1"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-idle-1/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/meso-miner/releases/download/v9.9.9-idle-1/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=0
     unset ec
     run_idle_update
@@ -577,7 +642,7 @@ test_idle_update_custom_threshold() {
     printf '50\n' > "$HEALTH_DIR/billable_rate"
 
     MOCK_VERSION="v9.9.9-idle-2"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-idle-2/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/meso-miner/releases/download/v9.9.9-idle-2/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=0
     unset ec
     out="$(
@@ -587,6 +652,9 @@ test_idle_update_custom_threshold() {
         MOCK_MIRROR_FAIL="${MOCK_MIRROR_FAIL:-0}" \
         MOCK_TAR_FAIL="${MOCK_TAR_FAIL:-0}" \
         MOCK_TAR_NO_PROVIDER="${MOCK_TAR_NO_PROVIDER:-0}" \
+        MOCK_PROVIDER_VERSION="${MOCK_PROVIDER_VERSION:-}" \
+        MOCK_PGREP_FOUND="${MOCK_PGREP_FOUND:-1}" \
+        MOCK_PGREP_PID="${MOCK_PGREP_PID:-4242}" \
         MOCK_ARCH="${MOCK_ARCH:-x86_64}" \
         CURL_LOG="$CURL_LOG" \
         URNETWORK_PROXY_HEALTH_DIR="$HEALTH_DIR" \
@@ -615,7 +683,7 @@ test_zero_byte_tarball_fails_cleanly() {
     before="$(snapshot_tmp_artifacts)"
 
     MOCK_VERSION="v9.9.9-mock-9"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-9/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/meso-miner/releases/download/v9.9.9-mock-9/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=0
     MOCK_TARBALL_CONTENT=""
     # A 0-byte/truncated archive is exactly what a real tar would reject;
@@ -646,7 +714,7 @@ test_partial_primary_overwritten_by_mirror() {
     before="$(snapshot_tmp_artifacts)"
 
     MOCK_VERSION="v9.9.9-mock-9b"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-9b/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/meso-miner/releases/download/v9.9.9-mock-9b/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=1
     MOCK_MIRROR_FAIL=0
     # Primary writes a short garbage prefix to the shared tarball path
@@ -683,28 +751,26 @@ test_partial_primary_overwritten_by_mirror
 # SECTION 10: update-pending marker lifecycle
 # ============================================================================
 echo ""
-echo "=== SECTION 10: update-pending marker is created on success ==="
+echo "=== SECTION 10: update-pending marker is removed on the success path ==="
 
-test_marker_created_on_success() {
+test_marker_removed_on_success() {
     reset_fixture
 
     MOCK_VERSION="v9.9.9-mock-10"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-10/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/meso-miner/releases/download/v9.9.9-mock-10/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=0
     unset ec
     run_update
 
     assert_exit_code "0" "$ec" "Marker on success: update exits 0"
 
+    # do_update creates the marker before install and removes it (clearing
+    # the EXIT trap) on the success path, so after a successful run_update
+    # the marker must be ABSENT.
     marker="$MOCK_HOME/.urnetwork/update-pending"
-    if [ -f "$marker" ]; then
-        echo "  ✅ PASS: Marker on success: update-pending marker present after successful update"
-    else
-        echo "  ❌ FAIL: Marker on success: update-pending marker missing at $marker"
-        FAILS=$((FAILS + 1))
-    fi
+    assert_file_absent "$marker" "Marker on success: update-pending marker removed after successful update"
 }
-test_marker_created_on_success
+test_marker_removed_on_success
 
 echo ""
 echo "=== SECTION 10b: update-pending marker is removed when the final mv fails ==="
@@ -714,7 +780,7 @@ test_marker_removed_on_mv_failure() {
     before="$(snapshot_tmp_artifacts)"
 
     MOCK_VERSION="v9.9.9-mock-10b"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-10b/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/meso-miner/releases/download/v9.9.9-mock-10b/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=0
 
     # Force `mv -f "$staged_provider" "$provider_bin"` to fail by removing
@@ -749,20 +815,17 @@ test_marker_dir_respects_custom_home() {
     MOCK_HOME="$CUSTOM_HOME"
 
     MOCK_VERSION="v9.9.9-mock-10c"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-10c/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/meso-miner/releases/download/v9.9.9-mock-10c/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=0
     unset ec
     run_update
 
     assert_exit_code "0" "$ec" "Custom HOME: update exits 0"
 
+    # Success path removes the marker (see SECTION 10), so it must be absent
+    # under the custom HOME as well.
     marker="$CUSTOM_HOME/.urnetwork/update-pending"
-    if [ -f "$marker" ]; then
-        echo "  ✅ PASS: Custom HOME: marker written under the custom HOME's .urnetwork dir"
-    else
-        echo "  ❌ FAIL: Custom HOME: marker missing at $marker"
-        FAILS=$((FAILS + 1))
-    fi
+    assert_file_absent "$marker" "Custom HOME: no update-pending marker left under the custom HOME after success"
 
     default_marker="$TEMP_DIR/home/.urnetwork/update-pending"
     assert_file_absent "$default_marker" "Custom HOME: default MOCK_HOME marker_dir left untouched"
@@ -781,7 +844,7 @@ test_arch_x86_64_maps_to_amd64() {
     reset_fixture
     MOCK_ARCH=x86_64
     MOCK_VERSION="v9.9.9-mock-11a"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-11a/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/meso-miner/releases/download/v9.9.9-mock-11a/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=0
     unset ec
     run_update
@@ -801,7 +864,7 @@ test_arch_aarch64_maps_to_arm64() {
     reset_fixture
     MOCK_ARCH=aarch64
     MOCK_VERSION="v9.9.9-mock-11b"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-11b/urnetwork-linux-arm64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/meso-miner/releases/download/v9.9.9-mock-11b/urnetwork-linux-arm64.tar.gz"
     MOCK_PRIMARY_FAIL=0
     unset ec
     run_update
@@ -825,7 +888,7 @@ test_arch_unsupported_exits_before_side_effects() {
     before="$(snapshot_tmp_artifacts)"
     MOCK_ARCH="riscv64"
     MOCK_VERSION="v9.9.9-mock-11c"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-11c/urnetwork-linux-riscv64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/meso-miner/releases/download/v9.9.9-mock-11c/urnetwork-linux-riscv64.tar.gz"
     unset ec
     run_update
 
@@ -855,7 +918,7 @@ test_mktemp_stub_catches_staged_provider_regression() {
     before="$(snapshot_tmp_artifacts)"
 
     MOCK_VERSION="v9.9.9-mock-12"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-12/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/full-bars/meso-miner/releases/download/v9.9.9-mock-12/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=0
     unset ec
     RUN_SCRIPT="$REGRESSED_STAGED_SCRIPT" run_update

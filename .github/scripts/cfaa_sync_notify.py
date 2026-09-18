@@ -29,7 +29,7 @@ OPENROUTER_MODELS = [
     "z-ai/glm-5-3-flash",  # GLM 5.3 Flash via OpenRouter (cheap)
 ]
 
-USER_AGENT = "CFAA-Sync-Bot (https://github.com/full-bars/urnetwork-3.23-fix, 1.0)"
+USER_AGENT = "CFAA-Sync-Bot (https://github.com/full-bars/meso-miner, 1.0)"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 
@@ -47,7 +47,7 @@ def call_openrouter(model: str, prompt: str, api_key: str) -> str | None:
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
-            "HTTP-Referer": "https://github.com/full-bars/urnetwork-3.23-fix",
+            "HTTP-Referer": "https://github.com/full-bars/meso-miner",
             "User-Agent": USER_AGENT,
         },
         method="POST",
