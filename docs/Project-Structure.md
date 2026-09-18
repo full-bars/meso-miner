@@ -12,18 +12,35 @@ urnetwork-3.23-fix/
 ├── provider/                     # Provider CLI binary
 │   ├── main.go                   # Entrypoint: auth / provide / auth-provide commands
 │   ├── proxy_health_log.go       # Per-proxy health state machine and dead-proxy detection
+│   ├── proxy_slow_retry.go       # Slow-retry state: 24h daily gate, 14-day drop ceiling, persistence
 │   ├── proxy_reload.go           # SIGHUP-triggered hot-reload of proxy list
 │   ├── proxy_state.go            # In-memory proxy registry with startup stagger
 │   ├── proxy_benchmark.go        # Optional per-proxy SOCKS5 latency probes
+│   ├── bandwidth_reporter.go     # Posts bandwidth metrics to configured fleet target
 │   ├── proxy_id.go               # Stable proxy identity across reloads
 │   ├── shmlog_linux.go           # Linux shared-memory log ring buffer
 │   ├── shmlog_fallback.go        # Fallback for non-Linux builds
+│   ├── direct.go                 # Dynamic direct native connection controller
+│   ├── proxy_paste.go            # Bulk proxy ingestion and format normalization
+│   ├── ssrf_guard.go             # SSRF guard for proxy source URL fetching
+│   ├── doh_cache.go              # Persistent DNS-over-HTTPS resolver cache
+│   ├── client_jwt_hotrestart.go  # Identity snapshotting across hot restarts
+│   ├── read_fd_frac_unix.go      # Linux/Unix file descriptor pressure reader
+│   ├── read_fd_frac_windows.go   # Windows file descriptor pressure stub
 │   ├── dup_linux_arm64.go        # ARM64-specific fd dup shim
 │   ├── dup_linux_generic.go      # Generic Linux fd dup shim
+│   ├── hotswap_windows.go        # Windows HotSwap via named pipes
+│   ├── hotswap_unix.go           # Linux HotSwap via Unix sockets
+│   ├── control_socket.go         # Control socket server (hotswap, shutdown, status commands)
+│   ├── control_state.go          # Persistent provider state management
+│   ├── restrict_socket_windows.go # Windows DACL socket permission hardening
+│   ├── metrics_listen.go         # Prometheus /metrics HTTP listener
+│   ├── metrics_provider.go       # Provider-specific metrics registration
+│   ├── contract_metrics.go       # Per-contract Prometheus counters
+│   ├── lifetime_metrics.go       # Provider lifetime Prometheus gauges
 │   └── Makefile                  # Cross-compile targets (amd64, arm64, darwin)
 │
-│   ├── main.go                   # HTTP server: /api/report ingress, dashboard render
-│   ├── main_test.go              # 18 unit tests for rate calculation and state logic
+├── hub/                          # [REMOVED v31.3+] Fleet bandwidth dashboard server (deprecated)
 │
 ├── protocol/                     # Protobuf definitions and generated Go code
 │   ├── *.proto                   # Source definitions (ip, transfer, frame, extender, audit)
@@ -44,6 +61,10 @@ urnetwork-3.23-fix/
 │   ├── scripts/                  # start_jwt.sh, start_stable.sh, start_nightly.sh, urnet-tools.sh
 │   └── ...                       # Selected by BUILD env var at container start
 │
+├── pelican/                      # Pelican game-server panel egg
+│   ├── egg-urnetwork-323fix.json # PLCN_v3 egg definition (BUILD, USER_AUTH, PASSWORD, AUTHCODE)
+│   └── README.md                 # Panel deployment guide, env vars, PELICAN-gated updates
+│
 ├── workers/                      # Cloudflare Worker sources (dl.fullbars.xyz + friends)
 │   ├── dl/                       # Script proxy + install.fullbars.xyz smart dispatcher/landing page
 │   ├── dl-fullbars/               # latest-version + releases/download GitHub release mirror
@@ -60,7 +81,13 @@ urnetwork-3.23-fix/
 │   ├── target.go                # Targeting (--unit/--user/--network/--network-id/--state-dir)
 │   ├── discover.go              # Provider discovery (/proc + systemd units)
 │   ├── update.go                # Interactive-first update, digest verify, atomic swap
-│   ├── legacy_cmds.go           # Parity commands (lifecycle, tuning, optimize)
+│   ├── legacy_cmds.go           # Reporting config, lifecycle, tuning, and proxy commands
+│   ├── lifecycle_start_windows.go   # Windows provider start (schtasks/detached)
+│   ├── lifecycle_stop_windows.go    # Windows provider stop (socket shutdown + TerminateProcess)
+│   ├── lifecycle_restart_windows.go # Windows provider restart (HotSwap fallback)
+│   ├── lifecycle_windows.go         # Windows lifecycle helpers (schtasks, task naming)
+│   ├── lifecycle_stubs_notwindows.go # Stubs for non-Windows builds
+│   ├── hotswap_windows.go           # Windows HotSwap candidate launch
 │   └── ...                      # + tests (~73)
 │
 ├── scripts/                      # Installer and test scripts (installer stays shell)
@@ -68,8 +95,6 @@ urnetwork-3.23-fix/
 │   ├── Provider_Install_Win32.ps1
 │   ├── Provider_Uninstall_Linux.sh
 │   ├── Provider_Uninstall_Win32.ps1
-│   ├── urnet-tools.ps1           # Windows helper — DEPRECATED, retired in Phase 2 (use the Go binary)
-│   ├── urnetwork-updater.ps1     # Windows auto-updater
 │   ├── test_provider_install.sh  # CI: validates installer script logic
 │   └── test_fallback_logic.sh    # CI: validates fallback behavior
 │
@@ -77,13 +102,23 @@ urnetwork-3.23-fix/
 │   ├── Configuration.md
 │   ├── Docker-Deployment.md
 │   ├── Installation.md
+│   ├── Hub-Setup.md              # [deprecated v31.3+]
+│   ├── Hub-Dashboard.md          # [deprecated v31.3+]
 │   ├── High-Volume-Performance-Tuning.md
 │   ├── Multi-Container-Scaling.md
 │   ├── Proxy-Management.md
 │   ├── Proxy-URL-Sources.md
 │   ├── Traffic-Amplification.md
+│   ├── Adding-Proxies.md
+│   ├── Bittensor-Operations.md
 │   ├── Troubleshooting.md
 │   └── design/                   # Internal design docs (proxy health, hot-reload, bandwidth)
+│
+├── monitoring/                   # Prometheus + Grafana observability stack
+│   ├── docker-compose.yml        # Prometheus + Grafana stack
+│   ├── grafana/                  # Grafana dashboards and provisioning
+│   ├── prometheus/               # Prometheus scrape configuration
+│   └── setup.sh                  # Monitoring stack setup script
 │
 ├── releases/                     # Per-version release notes (v3.23.0-fix.*)
 │
@@ -116,5 +151,6 @@ urnetwork-3.23-fix/
     ├── proxy_health.go           # Proxy health scoring
     ├── tuning.go                 # Auto-tuning (turbo/lowmem modes)
     ├── log.go                    # Structured logging helpers
+    ├── metrics_prometheus.go     # Prometheus metrics registry and collector
     └── connect.go                # Top-level client/server entrypoint
 ```

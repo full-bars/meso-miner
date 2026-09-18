@@ -1,5 +1,23 @@
 # ⚙️ Configuration Reference
 
+> [!IMPORTANT]
+> **As of v3.23.0-fix.31.0, systemd and native installs configure the provider
+> through the control socket, not by hand-editing `override.conf`.**
+> `URNETWORK_PROFILE`, `URNETWORK_RAMLOGS`, `GOMEMLIMIT` and `GOGC` are now held
+> in the provider's runtime state and set with `urnet-tools`:
+>
+> ```bash
+> urnet-tools turbo v8          # profile
+> urnet-tools ramlogs on        # ramlogs
+> urnet-tools set gogc 200      # any runtime tuning key
+> ```
+>
+> The environment variables below still work and remain the configuration
+> surface for **Docker**, where they are passed to the container. On systemd,
+> prefer `urnet-tools`: it is the single source of truth that `urnet-tools set`
+> and `urnet-tools status` both read, and a hand-edited drop-in can silently
+> disagree with it. See [Control Socket & Runtime Settings](#-control-socket--runtime-settings).
+
 ## 🌍 Environment Variables
 
 Quick jump:
@@ -26,10 +44,11 @@ Quick jump:
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `URNETWORK_PROFILE` | - | Advanced provider profile: `auto`, `lowmem`, `eco`, `turbo-v4`, or `turbo-v8`. For turbo, prefer `TURBO`. |
+| `URNETWORK_PROFILE` | - | Advanced provider profile: `auto`, `lowmem`, `eco`, `turbo-v4`, or `turbo-v8`. For turbo, prefer `TURBO`. On systemd/native, set this with `urnet-tools turbo/eco/lowmode/auto` rather than a drop-in (v31+). |
 | `TURBO` | - | Set to `v4` or `v8` to enable turbo mode. Prefer this variable for Docker turbo mode. |
-| `URNETWORK_RAMLOGS` | `0` | Set to `1` to redirect provider logs to RAM instead of stdout. Cannot be used with Docker `--log-opt`. |
+| `URNETWORK_RAMLOGS` | `0` | Set to `1` to redirect provider logs to RAM instead of stdout. Cannot be used with Docker `--log-opt`. On systemd/native, set this with `urnet-tools ramlogs on\|off` (v31+). |
 | `URNETWORK_MESSAGE_POOL_SHARD_COUNT` | `16` | Number of internal mutex shards per message-pool size class. Higher values reduce lock contention at high packet rates. Must be a power of two, 1–256. Set to `1` to disable sharding (pre-v24.35 behavior). Sane values: `8` (moderate), `16` (default), `32` (high-pps tier3+). |
+| `URNETWORK_METRICS` | - | Exact bind address for the Prometheus `/metrics` endpoint, for example `100.64.0.10:9100`. Overrides `urnet-tools metrics listen`. Leave it unset and `urnet-tools metrics on` chooses: loopback plus the machine's Tailscale address on bare metal, every interface inside a container. Never bind a public interface. See [Monitoring](Monitoring.md). |
 | `URNETWORK_SKIP_AUDIT` | `0` | Set to `1` to skip the startup system audit (disk speed benchmark, ulimit, conntrack checks). Useful in Docker where host sysctls aren't visible. |
 | `GOTRACEBACK` | - | Set to `crash` to produce full goroutine stack traces on Go runtime crashes. Add `Environment="GOTRACEBACK=crash"` to the systemd override.conf. |
 
@@ -56,12 +75,17 @@ Quick jump:
 | :--- | :--- | :--- |
 | `ENABLE_VNSTAT` | `true` | Enables the traffic monitor on port 8080. |
 | `ENABLE_IP_CHECKER` | `false` | Diagnostic only. Prints your full public IP to container logs on startup via an external script. Distinct from dashboard identity reporting, which sends only a redacted IP. |
+| `/metrics` endpoint | `:9091` | **Since v3.23.0-fix.31.2**, the Prometheus metrics endpoint is enabled by default on port `9091`. No `URNETWORK_METRICS` environment variable is required — the provider starts the metrics listener automatically. Scrape `http://<host>:9091/metrics` from Prometheus or any compatible collector. To disable it, set `URNETWORK_METRICS=0`. |
+| `URNETWORK_PUBLIC_IP` | `<auto-detected>` | Override the public IP shown in the dashboard identity label. Display only; does not change the actual egress IP. Auto-detected via `ip.me` on native/systemd installs; auto-set by Docker startup scripts. Create `~/.urnetwork/disable_ip_autodetect` or run `urnet-tools ip-detect off` to prevent autodetection. See [Node-Identity.md](Node-Identity.md). |
 | `URNETWORK_HEALTH_INTERVAL` | `5m` | How often to emit a `[health]` heartbeat log line. Includes uptime, RAM stats, and active connection count. Accepts Go duration strings such as `10m` or `1h`. Minimum `1m`. |
 | `URNETWORK_PPROF` | - | Set to a `host:port` to enable the loopback-only diagnostics server (e.g. `127.0.0.1:6060`). Off by default. Serves `/debug/pprof/*`, `/metrics/pool`, and `/metrics/errors`; only literal loopback IPs are accepted (hostnames are rejected). Pull profiles via an SSH tunnel, e.g. `ssh -L 6060:127.0.0.1:6060 host` then `go tool pprof http://127.0.0.1:6060/debug/pprof/profile`. |
 | `URNETWORK_PROXY_BENCHMARK` | - | Set to `true` to enable per-proxy latency monitoring. Off by default. Probes: TCP connect every 5 min (raw RTT to proxy port), SOCKS5 CONNECT every 15 min (end-to-end through proxy). Staggered startup jitter prevents thundering herd. ~104 GB/month at 10k proxies. |
 | `URNETWORK_PROXY_BENCHMARK_ENDPOINT` | `connect.bringyour.com:443` | Target for the SOCKS5 CONNECT latency probe. Measured end-to-end through each proxy. |
+| `URNETWORK_REPORT_URL` | - | *(Deprecated v31.3+)* HTTP URL of a bandwidth hub server. Was used to POST JSON reports with per-proxy metrics. See `docs/Hub-Dashboard.md` for historical reference. |
+| `URNETWORK_REPORT_INTERVAL` | `5m` | *(Deprecated v31.3+)* How often bandwidth reports were posted to `URNETWORK_REPORT_URL`. No longer functional. |
+| `URNETWORK_HEARTBEAT_INTERVAL` | `15s` | *(Deprecated v31.3+)* Provider heartbeat cadence to the hub. No longer functional. |
 | `URNETWORK_AUTH_UNLIMITED` | `false` | Bypass the auth rate limiter; every auth attempt fires immediately. Equivalent to creating `~/.urnetwork/fast_auth`. Only for trusted or benchmark environments. |
-| `URNETWORK_PUBLIC_IP` | `<auto-detected>` | Override the public IP shown in the dashboard identity label. Display only; does not change the actual egress IP. Auto-detected via `ip.me` on native/systemd installs; auto-set by Docker startup scripts. Create `~/.urnetwork/disable_ip_autodetect` or run `urnet-tools ip-detect off` to prevent autodetection. See [Node-Identity.md](Node-Identity.md). |
+| `URNETWORK_PUBLIC_IP` | `<detected>` | Override the public IP shown in the dashboard identity label. Display only; does not change the actual egress IP. Auto-set by Docker startup scripts. |
 | `URNETWORK_SHM_LOG` | `/dev/shm/urnetwork.log` | Path for the RAM log. |
 | `URNETWORK_PROXY_HEALTH_DIR` | `<home>/.urnetwork` | Directory for persistent `proxy_health.state` and `proxy_traffic.state` files (Docker: `/root/.urnetwork`). |
 | `URNETWORK_CONTAINER_NAME` | `<container-id>` | Container name used in copy-paste `docker exec <name> tail -f` hints for RAM logs. |
@@ -103,6 +127,42 @@ Since v3.23.0-fix.25.14, the provider writes a per-process event log to `~/.urne
 cat ~/.urnetwork/events.log
 ```
 
+## 🔌 Control Socket & Runtime Settings
+
+*(v3.23.0-fix.31.0+, systemd and native installs)*
+
+| Path | Purpose |
+| :--- | :--- |
+| `~/.urnetwork/provider.sock` | Unix domain socket, owner-only `0600`. The live control plane `urnet-tools` talks to. |
+| `~/.urnetwork/provider_state.json` | Persisted runtime state. The provider is its single writer (atomic temp file + rename). |
+| `~/.urnetwork/pending_overrides.json` | Queue for changes made while the provider is stopped. Flock-guarded, merged atomically on the next start, then removed. |
+
+```bash
+urnet-tools set                     # list current overrides
+urnet-tools set report-interval 300 # change one, live, no restart
+urnet-tools set report-interval off # clear it
+```
+
+**Confirming a change landed.** The provider logs every accepted and rejected
+change, which is the authoritative signal rather than the CLI's exit code:
+
+```text
+⚙️ [control] set report-interval=300 (was unset)
+⚙️ [control] applied 2 queued override(s) from pending_overrides.json: profile=v8, cleared gogc
+❌ [control] set gogc=abc rejected: ...
+```
+
+`profile` and `ramlogs` still require the restart that `urnet-tools` performs
+for you: buffer and worker sizing is baked into objects allocated once at
+startup, and ramlogs is a live stdout redirect. The value is set through the
+socket either way, so `urnet-tools set` and `status` stay the single source of
+truth.
+
+> [!TIP]
+> `urnet-tools status` reports whether the socket is actually bound. A running
+> PID with no reachable socket is a startup failure or a same-user collision,
+> not a healthy provider.
+
 ## 🎛️ Profile Selection
 
 | Profile | Docker Value | Best For | RAM |
@@ -127,7 +187,7 @@ You can view the full list of dead and degraded proxies, as well as a live event
 > The proxy health files are stored in `URNETWORK_PROXY_HEALTH_DIR` (defaults to `<home>/.urnetwork` or `/root/.urnetwork` in Docker). Heartbeat intervals are tied to `URNETWORK_HEALTH_INTERVAL` (defaults to 5m).
 
 > [!NOTE]
-> The status server (served on the provider's `--port`) sets `ReadHeaderTimeout: 10s` and `IdleTimeout: 120s`, so dribbled-header (Slowloris-style) clients cannot hold connections open indefinitely; `WriteTimeout` is deliberately unset so live streams are not killed.
+> The status server (served on the provider's `--port`) sets `ReadHeaderTimeout: 10s` and `IdleTimeout: 120s` to prevent dribbled-header (Slowloris-style) clients from holding connections open indefinitely; `WriteTimeout` is deliberately unset so live streams are not killed.
 
 ## 🩹 Pressure system (self-heal)
 

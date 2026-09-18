@@ -20,7 +20,6 @@ log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') >>> UrNetwork >>> $*"
 }
 
-# Default to "stable" if BUILD is not set
 # Default BUILD: stable, unless an auth code is supplied — a positional JWT
 # argument or URNETWORK_AUTH_CODE means the caller is authenticating with a
 # code (not a user/password), so use jwt mode automatically. An explicit

@@ -45,23 +45,10 @@ show_help ()
     echo "  proxy refresh            🔄  Re-read configs and hot-reload proxies"
     echo "  proxy summary            📊  Fleet summary (sources, health, counts)"
     echo "  proxy remove-dead        💀  Interactively prune dead/degraded/failing"
-    echo "  report [<url>|off]       📡  Show or set hub report URL"
+    echo "  report [<url>|off]       📡  Show or set report URL"
     echo "  fast-auth [on|off]       ⚡  Bypass auth rate limiter without restart"
     echo "  self-heal [on|off]       🏥  Auto-regulate proxies (load gate + cleanup) (default: off)"
     echo "  set [<k> [<v>|off]]      ⚙   Show or change runtime tuning overrides"
-    echo ""
-    echo "Hub Management:"
-    echo "  hub init                        🔐  Initialize hub and generate CA certificate"
-    echo "  hub link <url> [--token]        🔗  Fetch CA cert and pin the hub's identity"
-    echo "  hub unlink                      ✂   Revert to HTTP (remove pin + CA cert)"
-    echo "  hub test [<url>]                🔍  Probe TLS connection, verify certificate"
-    echo "  hub set <host:port>             📡  Configure legacy HTTP hub report URL"
-    echo "  hub off                         📴  Stop reporting to hub (no restart)"
-    echo "  hub onboard-cmd                 🎫  Mint 15-min join token, print curl|sh line"
-    echo "  hub show-password               🔑  Show CA password (printed once after init)"
-    echo "  hub open-port <port>            🔓  Open port in firewall"
-    echo "  hub install [--docker]          📦  Install hub as systemd service (or Docker container with --docker)"
-    echo "  hub update [--docker]           ⬆  Update hub to latest version"
     echo ""
     echo "Maintenance:"
     echo "  reinstall               Reinstall provider"
@@ -360,7 +347,7 @@ network_fetch ()
 }
 
 # tls_fetch URL — like network_fetch but tolerates self-signed certificates
-# (-k for curl, --no-check-certificate for wget). Used during hub link TOFU
+# (-k for curl, --no-check-certificate for wget). Used during TLS TOFU
 # provisioning when the TLS cert hasn't been pinned yet.
 tls_fetch () {
     url="$1"
@@ -663,9 +650,31 @@ install_systemd_units ()
 Description=URnetwork Provider
 
 [Service]
+# Type=simple (the default), deliberately NOT Type=notify.
+#
+# Type=notify makes \`systemctl start\` block until the provider sends
+# sd_notify(READY=1), and provide() only sends it from provideWithProxy --
+# i.e. after a proxy (or the direct/native path) has brought up a transport.
+# That is unbounded: the per-proxy auth retry loop backs off legitimately for
+# hours on a rate-limited or unreachable API, and a provider with direct
+# disabled and no proxies configured never sends it at all.
+#
+# Worse, the unit file and the provider binary ship through different
+# channels (this script from git, the binary from a GitHub release), so any
+# skew -- a fresh install that lands an older release, or a rollback via
+# \`urnet-tools update --tag\` -- pairs a Type=notify unit with a binary that
+# has no sd_notify support whatsoever, and every start/restart hangs forever.
+# That is what wedged the pre-release shakedown for 2h until the CI watchdog
+# killed it (exit 124).
+#
+# HotSwap's MainPID transfer needs NOTIFY_SOCKET and is therefore unavailable
+# under Type=simple; internal/urnettools/hotswap.go already gates on the
+# unit's Type= and declines cleanly with an operator message, and
+# provider/hotswap.go aborts the handoff rather than corrupting MainPID.
 Environment="HOST_HOSTNAME=$(hostname)"
 ExecStart=$install_path/bin/urnetwork provide
-Restart=no
+Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=default.target
@@ -678,7 +687,7 @@ Description=URnetwork Update
 
 [Service]
 Type=oneshot
-ExecStart=$install_path/bin/urnet-tools update
+ExecStart=$install_path/bin/urnet-tools update -y
 EOF
     
     pr_info "Installing urnetwork-update.timer in %s" "$systemd_update_timer"
@@ -1694,23 +1703,13 @@ show_logs ()
     fi
 }
 
-# override_set_env KEY VALUE
-# Idempotently sets Environment="KEY=VALUE" in the systemd override.conf.
-# Removes any existing line with the same KEY before appending, so running
-# this multiple times never creates duplicates. Creates the file with a
-# [Service] header if it doesn't exist.
-override_set_env() {
-    local key="$1" value="$2"
-    local override_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/urnetwork.service.d"
-    local override_file="$override_dir/override.conf"
-    mkdir -p "$override_dir"
-    if [ ! -f "$override_file" ]; then
-        printf '[Service]\n' > "$override_file"
-    fi
-    # Remove any existing line with this key (matches any value after =)
-    sed -i '/^Environment="'"$key"'=/d' "$override_file"
-    printf 'Environment="%s=%s"\n' "$key" "$value" >> "$override_file"
-}
+# override_set_env was retired: every call site that used to write
+# URNETWORK_PROFILE/RAMLOGS/HOT_RESTART/GOMEMLIMIT/GOGC/REPORT_URL into
+# override.conf now goes through queue_pending_override/queue_pending_clear
+# instead (see below) — the control-socket pending-overrides queue the
+# provider itself owns, rather than hand-edited systemd drop-in text.
+# override_rm_env is kept: two call sites still use it for one-time cleanup
+# of a stale URNETWORK_REPORT_URL an older urnet-tools version may have left behind.
 
 # override_rm_env KEY
 # Removes Environment="KEY=..." from override.conf. Cleans up empty files.
@@ -1728,15 +1727,149 @@ override_rm_env() {
     fi
 }
 
+# _append_pending_op JSON_OBJECT [HOME_DIR]
+# Appends one entry to HOME_DIR/.urnetwork/pending_overrides.json's JSON
+# array — the exact file and format the provider's own
+# mergePendingOverrides() consumes (provider/pending_overrides.go) and
+# urnet-tools' control-socket client writes when it can't reach the
+# provider's live socket (internal/urnettools/control_client.go). Both of
+# those also write this file (mergePendingOverrides reads-then-deletes it at
+# provider startup; urnet-tools queues to it from a separate invocation), so
+# this function holds the same pending_overrides.json.lock they do for the
+# whole read-modify-write, and writes via a unique same-directory temp file
+# + atomic rename so a reader never observes a half-written array.
+_append_pending_op() {
+    local entry="$1"
+    local home="${2:-$HOME}"
+    local dir="$home/.urnetwork"
+    local file="$dir/pending_overrides.json"
+    local lock="$dir/pending_overrides.json.lock"
+    mkdir -p "$dir"
+    (
+        # dash only supports single-digit fds (SC3023), so this uses fd 9
+        # rather than the more conventional 200.
+        flock -x 9
+        local tmp
+        tmp=$(mktemp "$dir/.pending_overrides.json.tmp-XXXXXX") || exit 1
+        # An empty array ("[]" on one line, however it is spaced) counts as
+        # empty: its only line is the whole array, so dropping the last line
+        # below would leave ",\n  entry\n]", invalid JSON the provider
+        # cannot parse, and every queued override would be lost.
+        if [ -s "$file" ] && [ "$(tr -d ' \t\r\n' < "$file")" != "[]" ]; then
+            # The last line is exactly "]": this function writes that shape
+            # (see the else branch and the append below), and urnet-tools
+            # writes the file with json.MarshalIndent. Safe to drop it and
+            # re-close the array.
+            sed '$d' "$file" > "$tmp" && printf ',\n  %s\n]\n' "$entry" >> "$tmp"
+        else
+            printf '[\n  %s\n]\n' "$entry" > "$tmp"
+        fi
+        mv "$tmp" "$file"
+    ) 9>"$lock"
+}
+
+# json_string STRING
+# Emits STRING as a COMPLETE, quoted JSON string literal (surrounding
+# double quotes included, with backslash, double-quote, tab, and CR
+# backslash-escaped) for embedding into pending_overrides.json. Deliberately
+# named json_string (not json_escape) and returns a full literal rather than
+# just escaped contents: a helper that hands back bare escaped text invites
+# a caller to forget the surrounding quotes, which is exactly the bug this
+# replaced (queue_pending_override used to emit `"key": ramlogs` — value
+# unquoted — which is not valid JSON at all, so every queued override was
+# silently unparseable and mergePendingOverrides() never applied it).
+# Values here can carry ", \ or a newline (e.g. a report_url with a query
+# string); an unescaped one silently corrupts the queue file the provider
+# parses at startup. Parity with urnet-tools' Go json.Marshal. POSIX sh only
+# (no ANSI-C $'...' quoting — this script runs under dash).
+json_string() {
+    printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' \
+        -e 's/"/\\"/g' \
+        -e 's/	/\\t/g' \
+        -e 's/\r/\\r/g')"
+    # Embedded newlines are not handled here (sed is line-oriented); callers
+    # pass single-line values (keys, report_url, profile names, toggles).
+}
+
+# queue_pending_override KEY VALUE [HOME_DIR]
+# Queues a control-socket "set" for KEY, applied on the provider's next
+# start. HOME_DIR defaults to $HOME — pass the provider user's actual home
+# explicitly when running under sudo (e.g. `$actual_home`), since $HOME is
+# root's under sudo and the provider resolves its queue via its own
+# os.UserHomeDir(), not root's.
+queue_pending_override() {
+    local key="$1" value="$2" home="${3:-$HOME}"
+    _append_pending_op "{\"op\": \"set\", \"key\": $(json_string "$key"), \"value\": $(json_string "$value")}" "$home"
+}
+
+# queue_pending_clear KEY [HOME_DIR]
+# Queues a control-socket "clear" for KEY (revert to startup default),
+# applied on the provider's next start. See queue_pending_override for
+# HOME_DIR.
+queue_pending_clear() {
+    local key="$1" home="${2:-$HOME}"
+    _append_pending_op "{\"op\": \"clear\", \"key\": $(json_string "$key")}" "$home"
+}
+
+# repair_pending_overrides_ownership HOME_DIR OWNER
+# Restores OWNER:OWNER ownership on the pending-overrides queue file, its
+# lock file, and the containing .urnetwork directory. MUST be called after
+# every queue_pending_override/queue_pending_clear invoked from a
+# root/sudo context on another user's behalf (e.g. do_optimize, which
+# re-execs itself under sudo): _append_pending_op creates
+# pending_overrides.json (mode 0600) and pending_overrides.json.lock as
+# whatever UID is currently running — root — while the provider itself
+# runs as OWNER and opens both via its own os.UserHomeDir() during
+# mergePendingOverrides. Root-owned queue/lock files mean the provider can
+# neither take the lock nor read the queue, so the queued override is
+# silently never applied. Safe to call even if nothing was created yet
+# (e.g. the disk-benchmark branch in do_optimize only queues
+# conditionally).
+repair_pending_overrides_ownership() {
+    local home="$1" owner="$2"
+    local dir="$home/.urnetwork"
+    [ -n "$owner" ] || return 0
+    [ -d "$dir" ] || return 0
+    chown "$owner":"$owner" "$dir" 2>/dev/null || true
+    [ -f "$dir/pending_overrides.json" ] && chown "$owner":"$owner" "$dir/pending_overrides.json" 2>/dev/null
+    [ -f "$dir/pending_overrides.json.lock" ] && chown "$owner":"$owner" "$dir/pending_overrides.json.lock" 2>/dev/null
+    return 0
+}
+
+# read_control_value KEY
+# Best-effort current value for KEY, for status display only (the running
+# provider's own in-memory state, if reachable, is the real source of
+# truth — this script doesn't dial the control socket). A pending
+# (not-yet-applied) queue entry wins over the last-persisted value, same
+# order the provider itself applies them in: a queued "clear" is
+# definitively unset (prints nothing) rather than falling through to a
+# stale persisted value; a queued "set" prints its value; no pending entry
+# at all falls through to provider_state.json.
+read_control_value() {
+    local key="$1"
+    local pending_file="$HOME/.urnetwork/pending_overrides.json"
+    local persisted_file="$HOME/.urnetwork/provider_state.json"
+    if [ -f "$pending_file" ]; then
+        local last
+        last=$(grep '"key": "'"$key"'"' "$pending_file" 2>/dev/null | tail -1)
+        if [ -n "$last" ]; then
+            case "$last" in
+                *'"op": "clear"'*) return 0 ;;
+                *) printf '%s' "$last" | sed -n 's/.*"value": "\([^"]*\)".*/\1/p'; return 0 ;;
+            esac
+        fi
+    fi
+    [ -f "$persisted_file" ] || return 0
+    grep '"'"$key"'":' "$persisted_file" 2>/dev/null | sed -n 's/.*"'"$key"'": *"\([^"]*\)".*/\1/p' | head -1
+}
+
 # hot_restart_is_enabled
-# Reports whether URNETWORK_HOT_RESTART=0 is NOT set in the override.conf —
-# matches provider/main.go's hotRestartEnabled() (on by default unless
-# explicitly disabled). Single source of truth so confirm_restart() and
-# toggle_hotrestart() can't drift.
+# Reports whether hot-restart is enabled: on by default unless the
+# control-socket "hot_restart" key is explicitly "off" — matches
+# provider/main.go's hotRestartEnabled(). Single source of truth so
+# confirm_restart() and toggle_hotrestart() can't drift.
 hot_restart_is_enabled() {
-    local override_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/urnetwork.service.d"
-    local override_file="$override_dir/override.conf"
-    if [ -f "$override_file" ] && grep -q 'URNETWORK_HOT_RESTART=0' "$override_file" 2>/dev/null; then
+    if [ "$(read_control_value hot_restart)" = "off" ]; then
         return 1
     fi
     return 0
@@ -1772,61 +1905,27 @@ firewall_hint() {
     return 1
 }
 
-# override_set_env_for_hub KEY VALUE
-# Same as override_set_env but targets urnetwork-hub.service (the hub's systemd
-# unit) instead of urnetwork.service (the provider's unit).
-override_set_env_for_hub() {
-    local key="$1" value="$2"
-    local override_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/urnetwork-hub.service.d"
-    local override_file="$override_dir/override.conf"
-    mkdir -p "$override_dir"
-    if [ ! -f "$override_file" ]; then
-        printf '[Service]\n' > "$override_file"
-    fi
-    sed -i '/^Environment="'"$key"'=/d' "$override_file"
-    printf 'Environment="%s=%s"\n' "$key" "$value" >> "$override_file"
-}
-
-# override_rm_env_for_hub KEY
-# Same as override_rm_env but targets urnetwork-hub.service.
-override_rm_env_for_hub() {
-    local key="$1"
-    local override_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/urnetwork-hub.service.d"
-    local override_file="$override_dir/override.conf"
-    if [ -f "$override_file" ]; then
-        sed -i '/^Environment="'"$key"'=/d' "$override_file"
-        if [ "$(grep -cvE '(^\[)|(^$)' "$override_file")" -eq 0 ]; then
-            rm -f "$override_file"
-            rmdir "$override_dir" 2>/dev/null || true
-        fi
-    fi
-}
-
 toggle_ramlogs ()
 {
     mode="$1"
-    override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
-    override_file="$override_dir/override.conf"
 
     case "$mode" in
         on)
             confirm_restart "Enabling RAM logging requires restarting the URNetwork provider."
             pr_info "Enabling RAM logging..."
-            override_set_env "URNETWORK_RAMLOGS" "1"
-            systemctl --user daemon-reload
+            queue_pending_override "ramlogs" "on"
             systemctl --user restart urnetwork.service
             pr_info "RAM logging enabled and service restarted."
             ;;
         off)
             confirm_restart "Disabling RAM logging requires restarting the URNetwork provider."
             pr_info "Disabling RAM logging..."
-            override_rm_env "URNETWORK_RAMLOGS"
-            systemctl --user daemon-reload
+            queue_pending_override "ramlogs" "off"
             systemctl --user restart urnetwork.service
             pr_info "RAM logging disabled and service restarted."
             ;;
         "")
-            if [ -f "$override_file" ] && grep -q 'URNETWORK_RAMLOGS=1' "$override_file" 2>/dev/null; then
+            if [ "$(read_control_value ramlogs)" = "on" ]; then
                 pr_info "RAM logging is enabled."
             else
                 pr_info "RAM logging is off."
@@ -1871,8 +1970,6 @@ detect_mem_limit_mib ()
 toggle_lowmode ()
 {
     mode="$1"
-    override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
-    override_file="$override_dir/override.conf"
 
     case "$mode" in
         on)
@@ -1881,27 +1978,25 @@ toggle_lowmode ()
             ram_mib=$(detect_mem_limit_mib)
             gomem_mib=$(( ram_mib * 85 / 100 ))
             pr_info "Dynamic GOMEMLIMIT set to ${gomem_mib}MiB (85%% of ${ram_mib}MiB detected RAM)"
-            override_set_env "URNETWORK_PROFILE" "lowmem"
-            override_set_env "GOMEMLIMIT" "${gomem_mib}MiB"
-            override_set_env "GOGC" "50"
-            systemctl --user daemon-reload
+            queue_pending_override "profile" "lowmem"
+            queue_pending_override "gomemlimit" "${gomem_mib}MiB"
+            queue_pending_override "gogc" "50"
             systemctl --user restart urnetwork.service
             pr_info "Lowmode enabled and service restarted."
             ;;
         off)
             confirm_restart "Disabling lowmode requires restarting the URNetwork provider."
             pr_info "Disabling lowmode..."
-            override_rm_env "URNETWORK_PROFILE"
-            override_rm_env "GOMEMLIMIT"
-            override_rm_env "GOGC"
-            systemctl --user daemon-reload
+            queue_pending_clear "profile"
+            queue_pending_clear "gomemlimit"
+            queue_pending_clear "gogc"
             systemctl --user restart urnetwork.service
             pr_info "Lowmode disabled and service restarted."
             ;;
         "")
-            if [ -f "$override_file" ] && grep -q 'URNETWORK_PROFILE=lowmem' "$override_file" 2>/dev/null; then
-                gomem=$(grep 'GOMEMLIMIT=' "$override_file" 2>/dev/null | sed 's/.*GOMEMLIMIT=\([^"]*\).*/\1/')
-                gogc=$(grep 'GOGC=' "$override_file" 2>/dev/null | sed 's/.*GOGC=\([^"]*\).*/\1/')
+            if [ "$(read_control_value profile)" = "lowmem" ]; then
+                gomem=$(read_control_value gomemlimit)
+                gogc=$(read_control_value gogc)
                 pr_info "Lowmode is enabled. (GOMEMLIMIT=${gomem:-?}, GOGC=${gogc:-?})"
             else
                 pr_info "Lowmode is off."
@@ -1922,16 +2017,14 @@ toggle_hotrestart ()
         on)
             confirm_restart "Enabling hot-restart requires restarting the URNetwork provider."
             pr_info "Enabling hot-restart..."
-            override_rm_env "URNETWORK_HOT_RESTART"
-            systemctl --user daemon-reload
+            queue_pending_override "hot_restart" "on"
             systemctl --user restart urnetwork.service
             pr_info "Hot-restart enabled and service restarted."
             ;;
         off)
             confirm_restart "Disabling hot-restart requires restarting the URNetwork provider."
             pr_info "Disabling hot-restart..."
-            override_set_env "URNETWORK_HOT_RESTART" "0"
-            systemctl --user daemon-reload
+            queue_pending_override "hot_restart" "off"
             systemctl --user restart urnetwork.service
             pr_info "Hot-restart disabled and service restarted."
             ;;
@@ -1952,8 +2045,6 @@ toggle_hotrestart ()
 toggle_ecomode ()
 {
     mode="$1"
-    override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
-    override_file="$override_dir/override.conf"
 
     case "$mode" in
         on)
@@ -1962,27 +2053,25 @@ toggle_ecomode ()
             ram_mib=$(detect_mem_limit_mib)
             gomem_mib=$(( ram_mib * 75 / 100 ))
             pr_info "Dynamic GOMEMLIMIT set to ${gomem_mib}MiB (75%% of ${ram_mib}MiB detected RAM)"
-            override_set_env "URNETWORK_PROFILE" "eco"
-            override_set_env "GOMEMLIMIT" "${gomem_mib}MiB"
-            override_set_env "GOGC" "50"
-            systemctl --user daemon-reload
+            queue_pending_override "profile" "eco"
+            queue_pending_override "gomemlimit" "${gomem_mib}MiB"
+            queue_pending_override "gogc" "50"
             systemctl --user restart urnetwork.service
             pr_info "Eco mode enabled and service restarted."
             ;;
         off)
             confirm_restart "Disabling eco mode requires restarting the URNetwork provider."
             pr_info "Disabling eco mode..."
-            override_rm_env "URNETWORK_PROFILE"
-            override_rm_env "GOMEMLIMIT"
-            override_rm_env "GOGC"
-            systemctl --user daemon-reload
+            queue_pending_clear "profile"
+            queue_pending_clear "gomemlimit"
+            queue_pending_clear "gogc"
             systemctl --user restart urnetwork.service
             pr_info "Eco mode disabled and service restarted."
             ;;
         "")
-            if [ -f "$override_file" ] && grep -q 'URNETWORK_PROFILE=eco' "$override_file" 2>/dev/null; then
-                gomem=$(grep 'GOMEMLIMIT=' "$override_file" 2>/dev/null | sed 's/.*GOMEMLIMIT=\([^"]*\).*/\1/')
-                gogc=$(grep 'GOGC=' "$override_file" 2>/dev/null | sed 's/.*GOGC=\([^"]*\).*/\1/')
+            if [ "$(read_control_value profile)" = "eco" ]; then
+                gomem=$(read_control_value gomemlimit)
+                gogc=$(read_control_value gogc)
                 pr_info "Eco mode is enabled. (GOMEMLIMIT=${gomem:-?}, GOGC=${gogc:-?})"
             else
                 pr_info "Eco mode is off."
@@ -1998,28 +2087,24 @@ toggle_ecomode ()
 toggle_automode ()
 {
     mode="$1"
-    override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
-    override_file="$override_dir/override.conf"
 
     case "$mode" in
         on)
             confirm_restart "Enabling auto-tune profile requires restarting the URNetwork provider."
             pr_info "Enabling auto-tune profile..."
-            override_set_env "URNETWORK_PROFILE" "auto"
-            systemctl --user daemon-reload
+            queue_pending_override "profile" "auto"
             systemctl --user restart urnetwork.service
             pr_info "Auto-tune enabled and service restarted."
             ;;
         off)
             confirm_restart "Disabling auto-tune profile requires restarting the URNetwork provider."
             pr_info "Disabling auto-tune profile..."
-            override_rm_env "URNETWORK_PROFILE"
-            systemctl --user daemon-reload
+            queue_pending_clear "profile"
             systemctl --user restart urnetwork.service
             pr_info "Auto-tune disabled and service restarted."
             ;;
         "")
-            if [ -f "$override_file" ] && grep -q 'URNETWORK_PROFILE=auto' "$override_file" 2>/dev/null; then
+            if [ "$(read_control_value profile)" = "auto" ]; then
                 pr_info "Auto-tune is currently enabled."
             else
                 pr_info "Auto-tune is currently off."
@@ -2035,33 +2120,32 @@ toggle_automode ()
 toggle_turbomode ()
 {
     mode="$1"
-    override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
-    override_file="$override_dir/override.conf"
 
     case "$mode" in
         v4|v8)
             confirm_restart "Enabling turbo mode requires restarting the URNetwork provider."
             pr_info "Enabling turbo %s..." "$mode"
-            override_set_env "URNETWORK_PROFILE" "turbo-${mode}"
-            systemctl --user daemon-reload
+            queue_pending_override "profile" "turbo-${mode}"
             systemctl --user restart urnetwork.service
             pr_info "Turbo %s enabled and service restarted." "$mode"
             ;;
         off)
             confirm_restart "Disabling turbo mode requires restarting the URNetwork provider."
             pr_info "Disabling turbo mode..."
-            override_rm_env "URNETWORK_PROFILE"
-            systemctl --user daemon-reload
+            queue_pending_clear "profile"
             systemctl --user restart urnetwork.service
             pr_info "Turbo mode disabled and service restarted."
             ;;
         "")
-            if [ -f "$override_file" ] && grep -q 'URNETWORK_PROFILE=turbo-' "$override_file" 2>/dev/null; then
-                level=$(grep 'URNETWORK_PROFILE=turbo-' "$override_file" | sed 's/.*turbo-\([^"]*\).*/\1/')
-                pr_info "Turbo mode is enabled: %s" "$level"
-            else
-                pr_info "Turbo mode is off."
-            fi
+            current=$(read_control_value profile)
+            case "$current" in
+                turbo-*)
+                    pr_info "Turbo mode is enabled: %s" "${current#turbo-}"
+                    ;;
+                *)
+                    pr_info "Turbo mode is off."
+                    ;;
+            esac
             ;;
         *)
             pr_err "Usage: urnet-tools turbo <v4|v8|off>"
@@ -2172,18 +2256,12 @@ setup_zram_manual () {
 do_report ()
 {
     mode="$1"
-    override_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/urnetwork.service.d"
-    override_file="$override_dir/override.conf"
 
     if [ -z "$mode" ]; then
         # Show current setting
-        if [ -f "$override_file" ]; then
-            url=$(grep '^Environment="URNETWORK_REPORT_URL=' "$override_file" | sed 's/^Environment="URNETWORK_REPORT_URL=//; s/"$//')
-            if [ -n "$url" ]; then
-                pr_info "Report URL: %s" "$url"
-            else
-                pr_info "Report URL: not configured"
-            fi
+        url=$(read_control_value report_url)
+        if [ -n "$url" ]; then
+            pr_info "Report URL: %s" "$url"
         else
             pr_info "Report URL: not configured"
         fi
@@ -2193,14 +2271,12 @@ do_report ()
     case "$mode" in
         off)
             pr_info "Removing report URL (takes effect on next provider restart)..."
-            override_rm_env "URNETWORK_REPORT_URL"
-            systemctl --user daemon-reload
+            queue_pending_clear "report_url"
             pr_info "Report URL removed. Restart provider to apply: systemctl --user restart urnetwork.service"
             ;;
         *)
             pr_info "Setting report URL to %s (takes effect on next provider restart)..." "$mode"
-            override_set_env "URNETWORK_REPORT_URL" "$mode"
-            systemctl --user daemon-reload
+            queue_pending_override "report_url" "$mode"
             pr_info "Report URL set to %s. Restart provider to apply: systemctl --user restart urnetwork.service" "$mode"
             ;;
     esac
@@ -2304,7 +2380,7 @@ do_set ()
         echo ""
         echo "Available keys:"
         echo ""
-        echo "  node-name           <string>    Node name reported to the fleet hub (default: hostname)"
+        echo "  node-name           <string>    Node name reported to the fleet (default: hostname)"
         echo "  report-interval     <duration>  Bandwidth report cadence (default: 5m, min: 10s)"
         echo "  proxy-url-max       <int>       Max proxies from URL feeds, 0 = unlimited (default: 0)"
         echo "  proxy-url-refresh   <duration>  URL proxy list refresh interval (default: 1h, min: 10s)"
@@ -2373,1213 +2449,6 @@ do_set ()
     mkdir -p "$base_dir"
     printf '%s' "$value" > "$file"
     pr_info "%s set to %s — takes effect on next provider tick." "$key" "$value"
-}
-
-# --- hub (Docker, opt-in via --docker) ---
-#
-# 'hub install'/'hub update' default to a native systemd binary install
-# (below). --docker runs the hub as a container instead, for operators who'd
-# rather not manage a systemd service — the same containerized path Mac and
-# Windows always use (they have no native hub binary at all).
-
-hub_docker_image="ghcr.io/full-bars/urnetwork-3.23-fix-hub"
-hub_docker_container="urnetwork-hub"
-hub_docker_volume="urnetwork-hubdata"
-hub_docker_conf="$HOME/.urnetwork/hub-docker.conf"
-
-hub_docker_require() {
-    if ! command -v docker > /dev/null; then
-        pr_err "Docker is required for --docker mode."
-        pr_err "Install: https://docs.docker.com/engine/install/"
-        exit 1
-    fi
-    if ! docker info > /dev/null 2>&1; then
-        pr_err "Docker is installed but not running (or this user lacks permission)."
-        exit 1
-    fi
-}
-
-# hub_docker_run TAG PORT TOKEN: (re)creates the hub container. Assumes any
-# previous container with the same name has already been removed by the
-# caller (install refuses to overwrite; update stops+removes first).
-hub_docker_run() {
-    _tag="$1" _port="$2" _token="$3"
-    _run_args="-d --name $hub_docker_container --restart unless-stopped -p ${_port}:8080 -v ${hub_docker_volume}:/data"
-    if [ -n "$_token" ]; then
-        _run_args="$_run_args -e URNETWORK_HUB_TOKEN=$_token"
-    fi
-    # shellcheck disable=SC2086
-    docker run $_run_args "$hub_docker_image:$_tag"
-}
-
-do_hub_docker_install() {
-    tag="latest"
-    port="8080"
-    token=""
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            --tag) tag="$2"; shift 2 ;;
-            --port) port="$2"; shift 2 ;;
-            --token) token="$2"; shift 2 ;;
-            *) pr_err "Unknown argument: %s" "$1"; exit 1 ;;
-        esac
-    done
-
-    hub_docker_require
-
-    if docker ps -a --format '{{.Names}}' | grep -qx "$hub_docker_container"; then
-        pr_err "Hub container '%s' already exists. Use 'urnet-tools hub update --docker' to upgrade it," "$hub_docker_container"
-        pr_err "or 'docker rm -f %s' to remove it first." "$hub_docker_container"
-        exit 1
-    fi
-
-    pr_info "Pulling %s:%s..." "$hub_docker_image" "$tag"
-    docker pull "$hub_docker_image:$tag" || { pr_err "docker pull failed"; exit 1; }
-
-    if ! hub_docker_run "$tag" "$port" "$token"; then
-        pr_err "Failed to start hub container"
-        exit 1
-    fi
-
-    mkdir -p "$HOME/.urnetwork"
-    { printf 'tag=%s\n' "$tag"; printf 'port=%s\n' "$port"; printf 'token=%s\n' "$token"; } > "$hub_docker_conf"
-
-    pr_info "Hub container started."
-    pr_info "  Dashboard: http://localhost:%s" "$port"
-    pr_info "  Data:      docker volume '%s' (persists across updates)" "$hub_docker_volume"
-    pr_info ""
-    pr_info "Next steps:"
-    pr_info "  urnet-tools hub set http://<this-host>:%s   # point your providers at the hub" "$port"
-    pr_info "  docker logs -f %s                            # stream hub logs" "$hub_docker_container"
-}
-
-do_hub_docker_update() {
-    tag=""
-    force=0
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            --tag) tag="$2"; shift 2 ;;
-            -f|--force) force=1; shift ;;
-            *) pr_err "Unknown argument: %s" "$1"; exit 1 ;;
-        esac
-    done
-
-    hub_docker_require
-
-    if ! docker ps -a --format '{{.Names}}' | grep -qx "$hub_docker_container"; then
-        pr_err "No hub container found. Run 'urnet-tools hub install --docker' first."
-        exit 1
-    fi
-
-    # An explicit --tag must win over the persisted conf, but the conf file
-    # is just 'tag=...' shell assignments — sourcing it would silently
-    # clobber $tag if we didn't save the flag value first.
-    _explicit_tag="$tag"
-    port="8080"
-    token=""
-    if [ -f "$hub_docker_conf" ]; then
-        # shellcheck disable=SC1090
-        . "$hub_docker_conf"
-    fi
-    if [ -n "$_explicit_tag" ]; then
-        tag="$_explicit_tag"
-    elif [ -z "$tag" ]; then
-        tag="latest"
-    fi
-
-    pr_info "Pulling %s:%s..." "$hub_docker_image" "$tag"
-    docker pull "$hub_docker_image:$tag" || { pr_err "docker pull failed"; exit 1; }
-
-    if [ "$force" != "1" ]; then
-        running_image="$(docker inspect --format '{{.Image}}' "$hub_docker_container" 2>/dev/null)"
-        pulled_image="$(docker inspect --format '{{.Id}}' "$hub_docker_image:$tag" 2>/dev/null)"
-        if [ -n "$running_image" ] && [ "$running_image" = "$pulled_image" ]; then
-            pr_info "Hub is already running %s:%s. Nothing to do. Use --force to recreate anyway." "$hub_docker_image" "$tag"
-            return
-        fi
-    fi
-
-    pr_info "Recreating hub container (data volume '%s' is preserved)..." "$hub_docker_volume"
-    docker stop "$hub_docker_container" > /dev/null 2>&1
-    docker rm "$hub_docker_container" > /dev/null 2>&1
-
-    if ! hub_docker_run "$tag" "$port" "$token"; then
-        pr_err "Failed to start hub container"
-        exit 1
-    fi
-
-    { printf 'tag=%s\n' "$tag"; printf 'port=%s\n' "$port"; printf 'token=%s\n' "$token"; } > "$hub_docker_conf"
-    pr_info "Hub updated and running %s:%s." "$hub_docker_image" "$tag"
-}
-
-do_hub () {
-    cmd="$1"
-    shift || true
-
-    # --docker opt-in: scanned here (rather than in each case arm's own
-    # parsing) so the flag can appear anywhere in the remaining args.
-    if [ "$cmd" = "install" ] || [ "$cmd" = "update" ]; then
-        _hub_docker_mode=0
-        _hub_docker_rest=""
-        for _hub_arg in "$@"; do
-            case "$_hub_arg" in
-                --docker) _hub_docker_mode=1 ;;
-                *) _hub_docker_rest="$_hub_docker_rest $_hub_arg" ;;
-            esac
-        done
-        if [ "$_hub_docker_mode" -eq 1 ]; then
-            if [ "$cmd" = "install" ]; then
-                # shellcheck disable=SC2086
-                do_hub_docker_install $_hub_docker_rest
-            else
-                # shellcheck disable=SC2086
-                do_hub_docker_update $_hub_docker_rest
-            fi
-            return
-        fi
-    fi
-
-    override_dir="$HOME/.config/systemd/user/urnetwork.service.d"
-    hub_conf="$override_dir/hub.conf"
-
-    hub_service_dir="$HOME/.config/systemd/user"
-    hub_service="$hub_service_dir/urnetwork-hub.service"
-    hub_bin="$install_path/bin/urnetwork-hub"
-
-    case "$cmd" in
-        init)
-            do_hub_init
-            ;;
-
-        link)
-            if [ $# -eq 0 ]; then
-                pr_err "Usage: urnet-tools hub link <https://hub-host:port> [--token <onboard-token>]"
-                pr_err "Fetches the hub's CA certificate and configures TLS trust so all"
-                pr_err "future reports are encrypted and verified."
-                exit 1
-            fi
-            do_hub_link "$@"
-            ;;
-
-        test)
-            do_hub_test "$@"
-            ;;
-
-        show-password)
-            do_hub_show_password
-            ;;
-
-        onboard-cmd)
-            do_hub_onboard_cmd
-            ;;
-
-        open-port)
-            port="$1"
-            if [ -z "$port" ]; then
-                pr_err "Usage: urnet-tools hub open-port <port>"
-                exit 1
-            fi
-            if ! firewall_hint "$port"; then
-                pr_err "No supported firewall detected."
-                pr_err "Open port %s manually in your firewall." "$port"
-                exit 1
-            fi
-            ;;
-
-        unlink)
-            do_hub_unlink
-            ;;
-
-        set)
-            url="$1"
-            if [ -z "$url" ]; then
-                pr_err "Usage: urnet-tools hub set <http://host:port>"
-                pr_err "Example: urnet-tools hub set http://192.0.2.10:8080"
-                pr_err "Note: https:// also works when the hub is behind a reverse proxy like Caddy"
-                exit 1
-            fi
-
-            # Basic sanity check: must start with http:// or https://
-            case "$url" in
-                http://*|https://*) ;;
-                *)
-                    pr_err "Invalid URL '%s': must begin with http:// or https://" "$url"
-                    exit 1
-                    ;;
-            esac
-
-            # Same ~/.urnetwork/report_url override the provider polls every
-            # report tick (see resolveReportURL in bandwidth_reporter.go) —
-            # matches hub link/unlink, so no restart is needed.
-            report_file="$HOME/.urnetwork/report_url"
-            mkdir -p "$HOME/.urnetwork"
-            printf '%s\n' "$url" > "$report_file.tmp"
-            mv "$report_file.tmp" "$report_file"
-            pr_info "Report URL set to %s" "$url"
-
-            # Clean up any legacy systemd env override from an older
-            # urnet-tools version so a future restart doesn't reintroduce a
-            # stale URL that would otherwise take precedence over a blank
-            # override file.
-            if [ "$has_systemd" -eq 1 ] && [ -f "$hub_conf" ]; then
-                rm -f "$hub_conf"
-                rmdir "$override_dir" 2>/dev/null || true
-                systemctl --user daemon-reload 2>/dev/null || true
-            fi
-
-            pr_info "The change takes effect on the next report tick (no restart needed)."
-            ;;
-
-        off)
-            # "off" is a sentinel resolveReportURL recognizes as force-disabled,
-            # distinct from a blank/missing file (which is a no-op that falls
-            # back to URNETWORK_REPORT_URL from startup, if any was set).
-            report_file="$HOME/.urnetwork/report_url"
-            mkdir -p "$HOME/.urnetwork"
-            printf '%s\n' "off" > "$report_file.tmp"
-            mv "$report_file.tmp" "$report_file"
-
-            if [ "$has_systemd" -eq 1 ] && [ -f "$hub_conf" ]; then
-                pr_info "Removing legacy hub override: %s" "$hub_conf"
-                rm -f "$hub_conf"
-                rmdir "$override_dir" 2>/dev/null || true
-                systemctl --user daemon-reload 2>/dev/null || true
-            fi
-
-            pr_info "Hub reporting disabled. Takes effect on the next report tick (no restart needed)."
-            ;;
-
-        install)
-            if [ "$has_systemd" -eq 0 ]; then
-                pr_err "systemd is not available on this system"
-                exit 1
-            fi
-
-            # Resolve which tag to download the hub binary from
-            hub_tag="${URNETWORK_HUB_TAG:-}"
-            if [ -z "$hub_tag" ] && [ -f "$version_file" ]; then
-                hub_tag="$(cat "$version_file")"
-            fi
-            if [ -z "$hub_tag" ]; then
-                hub_tag=latest
-            fi
-
-            # Resolve 'latest' to a real tag
-            if [ "$hub_tag" = "latest" ]; then
-                pr_info "Resolving latest release tag..."
-                api_url="$api_base/releases/latest"
-                release="$(network_fetch "$api_url" 2>/dev/null || true)"
-                hub_tag="$(get_version_from_api_response "$release" 2>/dev/null)"
-
-                if [ -z "$hub_tag" ] && command -v curl > /dev/null; then
-                    tag_url=$(curl -Ls -o /dev/null -w %{url_effective} \
-                        "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest")
-                    if [ -n "$tag_url" ] && [ "$tag_url" != "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest" ]; then
-                        hub_tag="${tag_url##*/}"
-                    fi
-                fi
-
-                if [ -z "$hub_tag" ]; then
-                    if worker_tag="$(network_fetch "https://dl.fullbars.xyz/latest-version" 2>/dev/null)"; then
-                        hub_tag="$(printf "%s" "$worker_tag" | tr -d '[:space:]')"
-                    fi
-                fi
-
-                if [ -z "$hub_tag" ]; then
-                    pr_err "Could not resolve the latest release tag. Try: URNETWORK_HUB_TAG=vX.Y.Z urnet-tools hub install"
-                    exit 1
-                fi
-            fi
-
-            hub_dl_url="https://dl.fullbars.xyz/releases/download/${hub_tag}/urnetwork-hub-${hub_tag}-linux-${arch}"
-            hub_mirror_url="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/${hub_tag}/urnetwork-hub-${hub_tag}-linux-${arch}"
-            pr_info "Downloading hub binary from: %s" "$hub_dl_url"
-
-            mkdir -p "$install_path/bin"
-            tmp_hub="$(mktemp)"
-            trap 'rm -f "$tmp_hub"' EXIT
-
-            if ! download_asset "$hub_dl_url" "$tmp_hub"; then
-                pr_warn "Primary download failed, trying GitHub mirror..."
-                if ! download_asset "$hub_mirror_url" "$tmp_hub"; then
-                    pr_err "Failed to download hub binary from both primary and mirror"
-                    pr_err "Make sure this release includes a hub binary asset."
-                    exit 1
-                fi
-            fi
-
-            chmod 755 "$tmp_hub"
-            mv "$tmp_hub" "$hub_bin"
-            trap - EXIT
-            pr_info "Hub binary installed at: %s" "$hub_bin"
-
-            # Create the hub data directory
-            hub_data_dir="$HOME/.local/share/urnetwork-hub"
-            mkdir -p "$hub_data_dir"
-
-            pr_info "Installing urnetwork-hub.service..."
-            cat > "$hub_service" <<EOF
-[Unit]
-Description=URnetwork Hub Dashboard
-
-[Service]
-ExecStart=$hub_bin -addr :8080 -data $hub_data_dir
-Restart=on-failure
-RestartSec=5s
-
-[Install]
-WantedBy=default.target
-EOF
-
-            systemctl --user daemon-reload || { pr_err "daemon-reload failed"; exit 1; }
-
-            if systemctl --user enable --now urnetwork-hub.service; then
-                pr_info "Hub service enabled and started."
-                pr_info "Dashboard available at: http://localhost:8080"
-                pr_info ""
-                pr_info "Next steps:"
-                pr_info "  urnet-tools hub set http://<this-host>:8080   # point your providers at the hub"
-                pr_info "  journalctl --user -fu urnetwork-hub.service    # stream hub logs"
-                pr_info ""
-                pr_info "Tip: https:// also works when the hub is behind a reverse proxy like Caddy"
-                pr_info "     e.g. urnet-tools hub set https://hub.example.com"
-            else
-                pr_err "Failed to enable or start urnetwork-hub.service"
-                pr_err "Try: journalctl --user -xe | grep hub"
-                exit 1
-            fi
-            ;;
-
-        update)
-            force=0
-            hub_tag_arg=""
-
-            while [ $# -gt 0 ]; do
-                case "$1" in
-                    -f|--force)
-                        force=1
-                        shift
-                        ;;
-                    -t|--tag)
-                        if [ -z "$2" ]; then
-                            opt_requires_arg "$1"
-                            exit 1
-                        fi
-                        hub_tag_arg="$2"
-                        if [ "$hub_tag_arg" != "latest" ] && [ "$(printf '%s' "$hub_tag_arg" | cut -c -1)" != "v" ]; then
-                            hub_tag_arg="v$hub_tag_arg"
-                        fi
-                        shift 2
-                        ;;
-                    -*)
-                        pr_warn "Ignoring unknown option '%s'" "$1"
-                        shift
-                        ;;
-                    *)
-                        pr_err "Unexpected argument '%s' (try 'urnet-tools hub update' without extra args)" "$1"
-                        exit 1
-                        ;;
-                esac
-            done
-
-            do_hub_update "$hub_tag_arg" "$force"
-            ;;
-
-        "")
-            pr_err "Usage: urnet-tools hub <init|link|unlink|set|off|install|update|test|show-password|onboard-cmd>"
-            exit 1
-            ;;
-
-        *)
-            pr_err "Unknown hub command: %s (try 'init', 'link', 'unlink', 'set', 'off', 'install', 'update', 'test', 'show-password', or 'onboard-cmd')" "$cmd"
-            exit 1
-            ;;
-    esac
-}
-
-do_hub_test () {
-    url="$1"
-    ca_file="$HOME/.urnetwork/hub_ca.pem"
-    pin_file="$HOME/.urnetwork/hub.pin"
-    report_file="$HOME/.urnetwork/report_url"
-
-    if [ -z "$url" ]; then
-        if [ -f "$report_file" ]; then
-            url="$(cat "$report_file" | tr -d '\n')"
-        fi
-    fi
-    if [ -z "$url" ]; then
-        pr_err "No hub URL configured. Specify one or run 'urnet-tools hub link https://...' first."
-        exit 1
-    fi
-
-    url="${url%/}"
-    case "$url" in
-        https://*) ;;
-        *) pr_err "URL must use https:// for TLS verification (got: %s)" "$url"; exit 1 ;;
-    esac
-
-    host="${url#https://}"
-    host="${host%%:*}"
-    port_tmp="${url#https://}"
-    port_tmp="${port_tmp#*:}"
-    if [ "$port_tmp" = "${url#https://}" ]; then port=443; else port="$port_tmp"; fi
-
-    pr_info "Testing TLS to %s:%s ..." "$host" "$port"
-
-    # CA-based verification path (preferred)
-    if [ -f "$ca_file" ]; then
-        if [ ! -s "$ca_file" ]; then
-            pr_err "CA certificate file is empty — re-run 'urnet-tools hub link' to re-fetch."
-            exit 1
-        fi
-        if ! command -v openssl > /dev/null; then
-            pr_err "openssl is required for CA-based verification."
-            exit 1
-        fi
-        result=$(echo "" | openssl s_client -connect "${host}:${port}" -servername "$host" -CAfile "$ca_file" 2>&1)
-        if echo "$result" | grep -q "Verify return code: 0"; then
-            pr_info "TLS OK — CA chain verification passed."
-            return 0
-        else
-            pr_err "TLS FAILED — CA chain verification error."
-            echo "$result" | grep "Verify return code:"
-            exit 1
-        fi
-    fi
-
-    # Legacy fingerprint-based verification path (hub.pin)
-    expected=""
-    if [ -f "$pin_file" ]; then
-        expected="$(cat "$pin_file" | tr -d ' \n')"
-        case "$expected" in
-            SHA256:*) ;;
-            *) expected="" ;;
-        esac
-    fi
-
-    if [ -n "$expected" ]; then
-        pr_info "Pinned fingerprint: %s" "$expected"
-    fi
-
-    if command -v openssl > /dev/null; then
-        actual_hex=$(echo "" | openssl s_client -connect "${host}:${port}" -servername "$host" 2>/dev/null | openssl x509 -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':' | tr '[:upper:]' '[:lower:]')
-        if [ -z "$actual_hex" ]; then
-            pr_err "Could not connect to %s:%s or retrieve certificate." "$host" "$port"
-            pr_err ""
-            pr_err "Check:"
-            pr_err "  1. Is the hub running?"
-            pr_err "     systemctl --user status urnetwork-hub.service"
-            pr_err "  2. Is port %s open?" "$port"
-            firewall_hint "$port"
-            exit 1
-        fi
-        actual="SHA256:${actual_hex}"
-        pr_info "Hub certificate:  %s" "$actual"
-
-        if [ -n "$expected" ]; then
-            if [ "$expected" = "$actual" ]; then
-                pr_info "TLS OK — fingerprint matches."
-                return 0
-            else
-                pr_err "TLS FAILED — fingerprint MISMATCH!"
-                pr_err "Expected:  %s" "$expected"
-                pr_err "Got:       %s" "$actual"
-                pr_err "To re-pin: urnet-tools hub link %s" "$url"
-                exit 1
-            fi
-        else
-            pr_info "TLS OK — connected. Run 'urnet-tools hub link %s' to pin." "$url"
-        fi
-    elif command -v curl > /dev/null; then
-        pr_info "openssl not found, using curl fallback..."
-        cert_json=$(tls_fetch "$url/api/cert" 2>/dev/null)
-        if [ -z "$cert_json" ]; then
-            pr_err "Could not reach hub at %s." "$url"
-            exit 1
-        fi
-        fp=$(printf '%s' "$cert_json" | sed -n 's/.*"fingerprint" *: *"\([^"]*\)".*/\1/p')
-        if [ -z "$fp" ]; then
-            pr_err "Hub responded but did not return a fingerprint."
-            exit 1
-        fi
-        pr_info "Hub fingerprint: %s" "$fp"
-        if [ -n "$expected" ]; then
-            if [ "$expected" = "$fp" ]; then
-                pr_info "TLS OK — fingerprint matches."
-            else
-                pr_err "TLS FAILED — fingerprint MISMATCH!"
-                exit 1
-            fi
-        else
-            pr_info "TLS OK — connected. Run 'urnet-tools hub link %s' to pin." "$url"
-        fi
-    else
-        pr_err "Neither openssl nor curl found."
-        exit 1
-    fi
-}
-
-do_hub_update () {
-    hub_tag_arg="$1"
-    force="$2"
-    hub_data_dir="$HOME/.local/share/urnetwork-hub"
-    hub_version_file="$hub_data_dir/.hub_version"
-
-    if [ "$has_systemd" -eq 0 ]; then
-        pr_err "systemd is not available on this system"
-        exit 1
-    fi
-
-    # Resolve which tag to download
-    hub_tag="$hub_tag_arg"
-    if [ -z "$hub_tag" ]; then
-        hub_tag="${URNETWORK_HUB_TAG:-}"
-    fi
-    if [ -z "$hub_tag" ] && [ -f "$hub_version_file" ]; then
-        hub_tag="$(cat "$hub_version_file")"
-    fi
-    if [ -z "$hub_tag" ]; then
-        hub_tag=latest
-    fi
-
-    if [ "$hub_tag" = "latest" ]; then
-        pr_info "Resolving latest release tag..."
-        api_url="$api_base/releases/latest"
-        release="$(network_fetch "$api_url" 2>/dev/null || true)"
-        hub_tag="$(get_version_from_api_response "$release" 2>/dev/null)"
-
-        if [ -z "$hub_tag" ] && command -v curl > /dev/null; then
-            tag_url=$(curl -Ls -o /dev/null -w %{url_effective} \
-                "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest")
-            if [ -n "$tag_url" ] && [ "$tag_url" != "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest" ]; then
-                hub_tag="${tag_url##*/}"
-            fi
-        fi
-
-        if [ -z "$hub_tag" ]; then
-            if worker_tag="$(network_fetch "https://dl.fullbars.xyz/latest-version" 2>/dev/null)"; then
-                hub_tag="$(printf "%s" "$worker_tag" | tr -d '[:space:]')"
-            fi
-        fi
-
-        if [ -z "$hub_tag" ]; then
-            pr_err "Could not resolve the latest release tag. Try: URNETWORK_HUB_TAG=vX.Y.Z urnet-tools hub update"
-            exit 1
-        fi
-    fi
-
-    pr_info "Target version: %s" "$hub_tag"
-
-    # Idempotency check: skip if already at this version and not forced
-    if [ "$force" != "1" ] && [ -f "$hub_version_file" ]; then
-        current="$(cat "$hub_version_file")"
-        if [ "$current" = "$hub_tag" ]; then
-            if [ -x "$hub_bin" ]; then
-                pr_info "Hub binary is already at version %s. Nothing to do." "$hub_tag"
-                pr_info "Use --force to re-download and reinstall."
-                return
-            fi
-        fi
-    fi
-
-    # State tracking for transactional rollback
-    _service_was_active=false
-    _db_was_backed_up=false
-    _binary_was_backed_up=false
-    _binary_was_swapped=false
-
-    _restore_and_abort() {
-        local fail_step="$1"
-        local fail_msg="$2"
-        pr_err "%s" "$fail_msg"
-
-        if [ "$_binary_was_swapped" = true ]; then
-            pr_warn "Rolling back: restoring previous binary and database..."
-            if [ -f "${hub_bin}.old" ]; then
-                mv "${hub_bin}.old" "$hub_bin" || pr_warn "Could not restore old binary from ${hub_bin}.old"
-            fi
-            if [ "$_db_was_backed_up" = true ] && [ -f "${hub_data_dir}/hub.db.bak" ]; then
-                cp "${hub_data_dir}/hub.db.bak" "${hub_data_dir}/hub.db" || pr_warn "Could not restore database backup"
-                pr_info "Database restored from backup."
-            fi
-        elif [ "$_binary_was_backed_up" = true ]; then
-            pr_warn "Rolling back: restoring previous binary..."
-            if [ -f "${hub_bin}.old" ]; then
-                mv "${hub_bin}.old" "$hub_bin" || pr_warn "Could not restore old binary"
-            fi
-        fi
-
-        if [ "$_service_was_active" = true ]; then
-            pr_info "Starting previous hub service..."
-            systemctl --user start urnetwork-hub.service 2>/dev/null || true
-            sleep 1
-            if systemctl --user is-active --quiet urnetwork-hub.service 2>/dev/null; then
-                pr_info "Hub service restarted with the previous binary."
-            else
-                pr_warn "Could not restart hub service. Check: journalctl --user -u urnetwork-hub.service -n 30"
-            fi
-        fi
-
-        pr_err "Hub update failed at: %s" "$fail_step"
-        exit 1
-    }
-
-    # Step 1: Stop hub service if running
-    pr_info "Checking hub service state..."
-    if systemctl --user is-active --quiet urnetwork-hub.service 2>/dev/null; then
-        _service_was_active=true
-        pr_info "Stopping hub service..."
-        systemctl --user stop urnetwork-hub.service || _restore_and_abort "stop-service" "Failed to stop hub service"
-        pr_info "Hub service stopped."
-    else
-        pr_info "Hub service is not running."
-    fi
-
-    # Step 2: Back up database
-    if [ -f "${hub_data_dir}/hub.db" ]; then
-        pr_info "Backing up database to hub.db.bak..."
-        cp "${hub_data_dir}/hub.db" "${hub_data_dir}/hub.db.bak" || _restore_and_abort "backup-db" "Failed to back up database"
-        _db_was_backed_up=true
-        pr_info "Database backed up."
-    else
-        pr_info "No database found — nothing to back up."
-    fi
-
-    # Step 3: Download new binary to a temp file on the same filesystem
-    # so that the final mv is an atomic rename, not a cross-filesystem copy.
-    hub_dl_url="https://dl.fullbars.xyz/releases/download/${hub_tag}/urnetwork-hub-${hub_tag}-linux-${arch}"
-    hub_mirror_url="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/${hub_tag}/urnetwork-hub-${hub_tag}-linux-${arch}"
-    pr_info "Downloading hub binary from: %s" "$hub_dl_url"
-
-    mkdir -p "$install_path/bin"
-    _tmp_hub="${hub_bin}.new"
-
-    if ! download_asset "$hub_dl_url" "$_tmp_hub"; then
-        pr_warn "Primary download failed, trying GitHub mirror..."
-        rm -f "$_tmp_hub"
-        if ! download_asset "$hub_mirror_url" "$_tmp_hub"; then
-            rm -f "$_tmp_hub"
-            _restore_and_abort "download" "Failed to download hub binary from both primary and mirror"
-        fi
-    fi
-    pr_info "Download complete."
-
-    # Step 4: Verify downloaded binary
-    chmod 755 "$_tmp_hub"
-    if ! _tmp_version="$("$_tmp_hub" --version 2>/dev/null)"; then
-        rm -f "$_tmp_hub"
-        _restore_and_abort "verify-binary" "Downloaded binary is not executable or does not report a version"
-    fi
-    pr_info "Downloaded binary version: %s" "$(printf '%s' "$_tmp_version" | head -n 1)"
-
-    # Step 5: Back up current binary (copy, not move, so the binary is
-    # never missing even if the user hits Ctrl+C mid-update).
-    if [ -f "$hub_bin" ]; then
-        pr_info "Backing up current binary to ${hub_bin}.old..."
-        cp "$hub_bin" "${hub_bin}.old" || _restore_and_abort "backup-binary" "Failed to back up current binary"
-        _binary_was_backed_up=true
-        pr_info "Binary backed up."
-    fi
-
-    # Step 6: Atomic swap (same-filesystem rename — either succeeds or
-    # leaves the old binary untouched).
-    pr_info "Installing new binary..."
-    if ! mv "$_tmp_hub" "$hub_bin"; then
-        _restore_and_abort "swap-binary" "Failed to install new binary at $hub_bin"
-    fi
-    _binary_was_swapped=true
-    chmod 755 "$hub_bin"
-    pr_info "New binary installed at: %s" "$hub_bin"
-
-    # Step 7: Ensure systemd unit exists
-    if [ ! -f "$hub_service" ]; then
-        pr_info "Systemd unit not found — installing hub service unit..."
-        mkdir -p "$hub_service_dir"
-        cat > "$hub_service" <<EOF
-[Unit]
-Description=URnetwork Hub Dashboard
-
-[Service]
-ExecStart=$hub_bin -addr :8080 -data $hub_data_dir
-Restart=on-failure
-RestartSec=5s
-
-[Install]
-WantedBy=default.target
-EOF
-        systemctl --user daemon-reload || _restore_and_abort "daemon-reload" "Failed to reload systemd after creating unit"
-        pr_info "Hub service unit installed."
-    fi
-
-    # Step 8: daemon-reload (in case unit changed or binary path updated)
-    systemctl --user daemon-reload || _restore_and_abort "daemon-reload" "Failed to reload systemd"
-
-    # Step 9: Start hub service
-    if [ "$_service_was_active" = true ]; then
-        pr_info "Starting hub service..."
-        systemctl --user start urnetwork-hub.service || _restore_and_abort "start-service" "Failed to start hub service after update"
-        sleep 2
-        if ! systemctl --user is-active --quiet urnetwork-hub.service 2>/dev/null; then
-            _restore_and_abort "verify-service" "Hub service started but is not active. Check: journalctl --user -u urnetwork-hub.service -n 30"
-        fi
-        pr_info "Hub service started successfully."
-    else
-        pr_info "Hub service was not previously running — leaving it stopped."
-        pr_info "Start it with: systemctl --user start urnetwork-hub.service"
-    fi
-
-    # Step 10: Write version file
-    printf '%s\n' "$hub_tag" > "$hub_version_file"
-    pr_info "Version recorded: %s" "$hub_tag"
-
-    # Cleanup binary backup
-    if [ -f "${hub_bin}.old" ]; then
-        rm -f "${hub_bin}.old"
-        pr_info "Binary backup removed."
-    fi
-
-    pr_info ""
-    pr_info "Hub updated successfully to %s." "$hub_tag"
-    if [ -f "${hub_data_dir}/hub.db.bak" ]; then
-        pr_info "Database backup preserved at: ${hub_data_dir}/hub.db.bak"
-    fi
-    if [ "$_service_was_active" = true ]; then
-        pr_info "Dashboard: http://localhost:8080"
-        if [ -f "${hub_data_dir}/tls.crt" ]; then
-            pr_info "TLS dashboard: https://localhost:8443"
-        fi
-    fi
-}
-
-do_hub_init () {
-    hub_data_dir="$HOME/.local/share/urnetwork-hub"
-    ca_cert="$hub_data_dir/ca.crt"
-    password=""
-
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            --password|-p)
-                if [ -z "$2" ]; then
-                    pr_err "Option --password requires a value."
-                    exit 1
-                fi
-                password="$2"
-                shift 2
-                ;;
-            *)
-                pr_err "Unknown argument: %s (usage: init [--password <pw>])" "$1"
-                exit 1
-                ;;
-        esac
-    done
-
-    if [ "$has_systemd" -eq 0 ]; then
-        pr_err "systemd is not available on this system"
-        exit 1
-    fi
-
-    if [ -f "$ca_cert" ]; then
-        if command -v openssl > /dev/null; then
-            fp=$(openssl x509 -in "$ca_cert" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':' | tr '[:upper:]' '[:lower:]')
-            fp="SHA256:${fp}"
-        else
-            fp="(openssl not found)"
-        fi
-        pr_info "Hub CA is already initialized."
-        pr_info "CA fingerprint: %s" "$fp"
-        pr_info ""
-        pr_info "On each provider, run:"
-        pr_info "  urnet-tools hub link https://<this-host>:8443"
-        pr_info ""
-        pr_info "Or use the onboard token for zero-touch provisioning:"
-        pr_info "  urnet-tools hub onboard-cmd"
-        return
-    fi
-
-    if [ -f "$hub_data_dir/hub.password" ] && [ ! -f "$ca_cert" ]; then
-        pr_warn "hub.password exists but ca.crt is missing — a previous init may have"
-        pr_warn "been interrupted. Re-running init will overwrite the existing password."
-        pr_warn "If you continue, you may need to re-link all providers."
-        pr_warn ""
-        case "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" in
-            1|yes|true|y) ;;
-            *)
-                printf "Proceed? (y/n) "
-                read -r answer
-                case "$answer" in
-                    [Yy]|[Yy][Ee][Ss]) ;;
-                    *) pr_err "Aborted by user."; exit 1 ;;
-                esac
-                ;;
-        esac
-    fi
-
-    # Write password to hub.data dir before start so hub derives CA from it
-    if [ -n "$password" ]; then
-        mkdir -p "$hub_data_dir"
-        printf '%s' "$password" > "$hub_data_dir/hub.password.tmp"
-        mv "$hub_data_dir/hub.password.tmp" "$hub_data_dir/hub.password"
-        chmod 600 "$hub_data_dir/hub.password"
-        pr_info "Password written to hub data directory."
-    else
-        pr_info "No password provided — hub will auto-generate one."
-        pr_info "After init, run 'urnet-tools hub show-password' to retrieve it."
-    fi
-
-    # Enable TLS on the hub by writing URNETWORK_HUB_TLS_ADDR into its
-    # systemd drop-in. The hub binary reads this env var and starts an
-    # HTTPS listener on the given address.
-    override_set_env_for_hub "URNETWORK_HUB_TLS_ADDR" ":8443"
-    systemctl --user daemon-reload || { pr_err "daemon-reload failed"; exit 1; }
-
-    if systemctl --user is-active --quiet urnetwork-hub.service 2>/dev/null; then
-        systemctl --user restart urnetwork-hub.service || { pr_err "Failed to restart hub"; exit 1; }
-    else
-        if systemctl --user is-enabled urnetwork-hub.service 2>/dev/null | grep -q 'masked'; then
-            pr_err "urnetwork-hub.service is masked — unmask it first: systemctl --user unmask urnetwork-hub.service"
-            exit 1
-        fi
-        systemctl --user start urnetwork-hub.service || { pr_err "Failed to start hub"; exit 1; }
-    fi
-
-    pr_info "Hub started with TLS. Waiting for CA certificate..."
-    sleep 5
-
-    if [ ! -f "$ca_cert" ]; then
-        pr_err "CA certificate not generated. Check hub logs:"
-        pr_err "  journalctl --user -u urnetwork-hub.service --no-pager -n 30"
-        exit 1
-    fi
-
-    if command -v openssl > /dev/null; then
-        fingerprint=$(openssl x509 -in "$ca_cert" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':' | tr '[:upper:]' '[:lower:]')
-        fingerprint="SHA256:${fingerprint}"
-    else
-        fingerprint="(openssl not found)"
-    fi
-
-    pr_info ""
-    pr_info "Ensure port 8443 is open in your firewall so providers can reach the hub:"
-    firewall_hint 8443 || pr_info "  (open port 8443/tcp in your firewall)"
-
-    pr_info "Hub TLS is ready."
-    pr_info "CA fingerprint: %s" "$fingerprint"
-    pr_info ""
-    pr_info "On each provider, run:"
-    pr_info "  urnet-tools hub link https://<this-host>:8443"
-    pr_info ""
-    pr_info "Or mint an onboard token for the whole fleet at once:"
-    pr_info "  urnet-tools hub onboard-cmd"
-}
-
-do_hub_show_password () {
-    hub_data_dir="$HOME/.local/share/urnetwork-hub"
-    if [ ! -x "$hub_bin" ]; then
-        pr_err "Hub binary not executable at %s" "$hub_bin"
-        exit 1
-    fi
-    pr_info "Hub password (keep this secret, do not paste it anywhere public):"
-    pr_info ""
-    "$hub_bin" -show-password -data "$hub_data_dir" || exit 1
-}
-
-do_hub_onboard_cmd () {
-    hub_data_dir="$HOME/.local/share/urnetwork-hub"
-    if [ ! -x "$hub_bin" ]; then
-        pr_err "Hub binary not executable at %s" "$hub_bin"
-        exit 1
-    fi
-
-    output=$("$hub_bin" -mint-onboard-token -data "$hub_data_dir") || {
-        pr_err "Failed to mint onboard token:"
-        pr_err "%s" "$output"
-        exit 1
-    }
-
-    token=$(printf '%s' "$output" | sed -n 's/^Token: *//p')
-    expires=$(printf '%s' "$output" | sed -n 's/^Expires: *//p')
-    ca_fp=$(printf '%s' "$output" | sed -n 's/^CA fingerprint: *//p')
-
-    if [ -z "$token" ] || [ -z "$expires" ]; then
-        pr_err "Unexpected output from hub:"
-        printf '%s\n' "$output"
-        exit 1
-    fi
-
-    # Best-effort local IP for the one-liner
-    local_ip=""
-    if command -v hostname > /dev/null; then
-        # Prefer the first IPv4 address — IPv6 needs brackets in URLs
-        local_ip=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -m1 '\.')
-    fi
-
-    pr_info "Token:      %s" "$token"
-    pr_info "Expires:    %s" "$expires"
-    pr_info "CA fingerprint: %s" "$ca_fp"
-    pr_info ""
-    pr_info "On each provider, run this one-liner:"
-    pr_info ""
-
-    if [ -n "$local_ip" ]; then
-        pr_info "  curl -fsSL http://%s:8080/onboard.sh | sh -s -- %s" "$local_ip" "$token"
-        pr_info ""
-        pr_info "  (if %s is not the address providers reach, substitute the correct host)" "$local_ip"
-    else
-        pr_info "  curl -fsSL http://<this-host>:8080/onboard.sh | sh -s -- %s" "$token"
-    fi
-
-    pr_info ""
-    pr_info "The token is reusable for 15 minutes — paste once and onboard the whole fleet."
-}
-
-do_hub_link () {
-    url=""
-    token=""
-
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            --token)
-                if [ -z "$2" ]; then
-                    pr_err "Option --token requires a value."
-                    exit 1
-                fi
-                token="$2"
-                shift 2
-                ;;
-            *)
-                if [ -z "$url" ]; then
-                    url="$1"
-                    shift
-                else
-                    pr_err "Unexpected argument: %s" "$1"
-                    exit 1
-                fi
-                ;;
-        esac
-    done
-
-    if [ -z "$url" ]; then
-        pr_err "Usage: urnet-tools hub link <https://hub-host:port> [--token <onboard-token>]"
-        pr_err "Fetches the hub's CA certificate and configures TLS trust so all"
-        pr_err "future reports are encrypted and verified."
-        exit 1
-    fi
-
-    case "$url" in
-        https://*) ;;
-        *)
-            pr_err "Hub link URL must start with https://"
-            exit 1
-            ;;
-    esac
-
-    url="${url%/}"
-    hub_dir="$HOME/.urnetwork"
-    ca_file="$hub_dir/hub_ca.pem"
-    pin_file="$hub_dir/hub.pin"
-    report_file="$hub_dir/report_url"
-
-    # Warn if linking would reconfigure a provider tied to a different host
-    extract_host() {
-        h="$1"
-        h="${h#https://}"
-        h="${h#http://}"
-        h="${h%%:*}"
-        printf '%s' "$h" | tr '[:upper:]' '[:lower:]'
-    }
-    if [ -f "$report_file" ]; then
-        old_host=$(extract_host "$(cat "$report_file" | tr -d '\n')")
-        new_host=$(extract_host "$url")
-        if [ "$old_host" != "$new_host" ]; then
-            pr_warn "This provider directory is already linked to a different hub host."
-            pr_warn "  Current: %s" "$old_host"
-            pr_warn "  New:     %s" "$new_host"
-            pr_warn ""
-            pr_warn "Linking to a different host will reconfigure all providers sharing"
-            pr_warn "this directory — containers with bind mounts, native installs on"
-            pr_warn "the same user, etc."
-            pr_warn ""
-        case "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" in
-            1|yes|true|y) ;;
-            *)
-                printf "Proceed? (y/n) "
-                read -r answer
-                case "$answer" in
-                    [Yy]|[Yy][Ee][Ss]) ;;
-                    *) pr_err "Aborted by user."; exit 1 ;;
-                esac
-                ;;
-        esac
-        fi
-    fi
-
-    # Token-based flow: fetch CA cert from the onboarding endpoint
-    if [ -n "$token" ]; then
-        pr_info "Fetching hub CA certificate via onboard token..."
-        encoded_token=$(printf '%s' "$token" | sed 's/+/%2B/g; s/=/%3D/g; s/\//%2F/g')
-        cert_json=$(tls_fetch "${url}/api/ca-cert?token=${encoded_token}") || {
-            pr_err "Could not reach hub at %s with the given token." "$url"
-            pr_err "Is the hub running and is the token still valid (15 min TTL)?"
-            exit 1
-        }
-
-        ca_pem=$(printf '%s' "$cert_json" | sed -n 's/.*"ca_pem" *: *"\([^"]*\)".*/\1/p')
-        ca_fingerprint=$(printf '%s' "$cert_json" | sed -n 's/.*"ca_fingerprint" *: *"\([^"]*\)".*/\1/p')
-
-        if [ -z "$ca_pem" ]; then
-            pr_err "Hub responded but did not return a CA certificate (may be running an older version)."
-            pr_err "Response: %s" "$cert_json"
-            exit 1
-        fi
-
-        pr_info ""
-        pr_info "Hub CA fingerprint: %s" "$ca_fingerprint"
-        pr_info ""
-
-        # Write CA cert: decode JSON-escaped PEM (embedded \n) to real newlines
-        mkdir -p "$hub_dir"
-        printf '%s' "$ca_pem" | sed 's/\\n/\n/g' > "$ca_file.tmp"
-        mv "$ca_file.tmp" "$ca_file"
-        chmod 600 "$ca_file"
-        rm -f "$pin_file"
-        pr_info "CA certificate saved to %s" "$ca_file"
-    else
-        # Legacy/TOFU flow: fetch /api/cert (which now returns ca_pem too)
-        pr_info "Fetching hub certificate from %s/api/cert ..." "$url"
-        cert_json=$(tls_fetch "${url}/api/cert") || {
-            pr_err "Could not reach hub at %s. Is the hub running and reachable?" "$url"
-            exit 1
-        }
-
-        ca_pem=$(printf '%s' "$cert_json" | sed -n 's/.*"ca_pem" *: *"\([^"]*\)".*/\1/p')
-        ca_fingerprint=$(printf '%s' "$cert_json" | sed -n 's/.*"ca_fingerprint" *: *"\([^"]*\)".*/\1/p')
-        # Also try legacy fingerprint field (old hubs without CA support)
-        legacy_fp=$(printf '%s' "$cert_json" | sed -n 's/.*"fingerprint" *: *"\([^"]*\)".*/\1/p')
-
-        if [ -n "$ca_pem" ]; then
-            # New CA-capable hub
-            pr_info ""
-            pr_info "Hub CA fingerprint:"
-            pr_info "  %s" "$ca_fingerprint"
-            pr_info ""
-
-            case "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" in
-                1|yes|true|y) ;;
-                *)
-                    printf "Accept this fingerprint? (y/n) "
-                    read -r answer
-                    case "$answer" in
-                        [Yy]|[Yy][Ee][Ss]) ;;
-                        *) pr_err "Aborted by user."; exit 1 ;;
-                    esac
-                    ;;
-            esac
-
-            mkdir -p "$hub_dir"
-            printf '%s' "$ca_pem" | sed 's/\\n/\n/g' > "$ca_file.tmp"
-            mv "$ca_file.tmp" "$ca_file"
-            chmod 600 "$ca_file"
-            rm -f "$pin_file"
-            pr_info "CA certificate saved to %s" "$ca_file"
-        elif [ -n "$legacy_fp" ]; then
-            # Legacy hub (old TOFU flow)
-            pr_warn "Hub does not support CA-based trust (missing ca_pem in response)."
-            pr_warn "Falling back to legacy fingerprint pinning."
-
-            pr_info ""
-            pr_info "Hub certificate fingerprint:"
-            pr_info "  %s" "$legacy_fp"
-            pr_info ""
-
-            case "$(printf '%s' "${HUB_LINK_YES:-0}" | tr '[:upper:]' '[:lower:]')" in
-                1|yes|true|y) ;;
-                *)
-                    printf "Accept this fingerprint? (y/n) "
-                    read -r answer
-                    case "$answer" in
-                        [Yy]|[Yy][Ee][Ss]) ;;
-                        *) pr_err "Aborted by user."; exit 1 ;;
-                    esac
-                    ;;
-            esac
-
-            mkdir -p "$hub_dir"
-            printf '%s\n' "$legacy_fp" > "$pin_file.tmp"
-            mv "$pin_file.tmp" "$pin_file"
-            pr_info "Fingerprint pinned to %s" "$pin_file"
-        else
-            pr_err "Could not extract CA certificate or fingerprint from hub response."
-            pr_err "Response: %s" "$cert_json"
-            exit 1
-        fi
-    fi
-
-    printf '%s\n' "$url" > "$report_file.tmp"
-    mv "$report_file.tmp" "$report_file"
-    pr_info "Report URL set to %s" "$url"
-
-    # Clean up stale systemd env overrides that could confuse the report URL
-    # after an older urnet-tools version wrote them. The provider reads the
-    # file above at runtime (resolveReportURL), but the env var in the
-    # override file would still take effect on next restart if left behind.
-    if [ "$has_systemd" -eq 1 ]; then
-        override_rm_env "URNETWORK_REPORT_URL"
-        if [ -f "$hub_conf" ]; then
-            rm -f "$hub_conf"
-            rmdir "$override_dir" 2>/dev/null || true
-        fi
-        systemctl --user daemon-reload 2>/dev/null || true
-    fi
-
-    pr_info ""
-    pr_info "Success. The provider will now send encrypted reports to %s." "$url"
-    pr_info "The change takes effect on the next report tick (no restart needed)."
-}
-
-do_hub_unlink () {
-    hub_dir="$HOME/.urnetwork"
-    pin_file="$hub_dir/hub.pin"
-    ca_file="$hub_dir/hub_ca.pem"
-    report_file="$hub_dir/report_url"
-
-    rm -f "$pin_file"
-    pr_info "Removed %s" "$pin_file"
-    if [ -f "$ca_file" ]; then
-        rm -f "$ca_file"
-        pr_info "Removed %s" "$ca_file"
-    fi
-
-    # Rewrite the report URL from https:// to http:// on the same host, port 8080,
-    # if it currently points to an HTTPS URL.
-    if [ -f "$report_file" ]; then
-        current="$(cat "$report_file")"
-        case "$current" in
-            https://*)
-                # Extract host from https://host:port → http://host:8080
-                host_port="${current#https://}"
-                host="${host_port%%:*}"
-                new_url="http://${host}:8080"
-                printf '%s\n' "$new_url" > "$report_file.tmp"
-                mv "$report_file.tmp" "$report_file"
-                pr_info "Report URL changed to %s (insecure)" "$new_url"
-                ;;
-            *)
-                pr_info "Report URL is %s (not HTTPS, left unchanged)" "$current"
-                ;;
-        esac
-    fi
-
-    # Also clean up any stale URNETWORK_REPORT_URL in systemd overrides so
-    # a future restart doesn't re-enable a URL the operator just unlinked.
-    if [ "$has_systemd" -eq 1 ]; then
-        override_rm_env "URNETWORK_REPORT_URL"
-        systemctl --user daemon-reload 2>/dev/null || true
-    fi
-
-    pr_info ""
-    pr_info "Unlinked. Reports are no longer encrypted."
-    pr_info "To re-link, run: urnet-tools hub link https://<hub-host>:8443"
 }
 
 do_proxy () {
@@ -3901,8 +2770,9 @@ EOF
         if [ "$speed_mb" -lt 50 ]; then
             pr_info "Slow disk detected (< 50 MB/s). High-volume logs will bottleneck your server."
             pr_info "Automatically enabling permanent RAM logging for performance..."
-            
-            override_set_env "URNETWORK_RAMLOGS" "1"
+
+            queue_pending_override "ramlogs" "on" "$actual_home"
+            repair_pending_overrides_ownership "$actual_home" "$actual_user"
         fi
     fi
 
@@ -4239,11 +3109,6 @@ case "$operation" in
 
     proxy)
         do_proxy "$@"
-        exit 0
-        ;;
-
-    hub)
-        do_hub "$@"
         exit 0
         ;;
 

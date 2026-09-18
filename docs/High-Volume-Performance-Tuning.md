@@ -21,7 +21,7 @@ Turbo mode can also be set via the `TURBO=v4` / `TURBO=v8` Docker environment va
 
 ## 🔧 System Optimizer (`urnet-tools optimize`)
 
-A provider deploying many proxies can easily saturate default OS limits, even before the deployment feels "high volume" in day-to-day language. The `optimize` command (run as root) applies full system-level tuning to the host for large proxy lists and high-volume network traffic:
+A provider deploying many proxies can easily saturate default OS limits, even before the deployment feels "high volume" in day-to-day language. The `optimize` command applies full system-level tuning to the host for large proxy lists and high-volume network traffic. Run it as your normal user — it re-executes itself under `sudo` when it needs root, and applies the live settings and reboot-persisted file atomically (rolling back on any failure):
 
 1.  **File Descriptors**: Bumps `ulimit -n` to 1,048,576.
 2.  **Conntrack Table**: Raises `nf_conntrack_max` to 2,097,152 (standard across all RAM sizes based on fleet observations).
@@ -50,7 +50,7 @@ All values compared across upstream defaults and fork profiles. "Fork default" i
 
 | Parameter | Upstream | Fork default | Lowmem | Eco | Auto Extreme | Turbo V4 | Turbo V8 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `InitialContractTransferByteCount` | 16 KiB | 2 MiB | 256 KiB | 2 MiB | 2 MiB | 2 MiB | 2 MiB |
+| `InitialContractTransferByteCount` | 16 KiB | 2 MiB | 128 KiB | 2 MiB | 2 MiB | 2 MiB | 2 MiB |
 | `ContractTransferByteSeqScale` | 4 | 3 | 4 | 4 | 3 | 2 | 3 |
 | `ContractFillFraction` | 0.8 | dynamic* | 0.7 | 0.7 | dynamic* | dynamic* | dynamic* |
 | `CreateContractTimeout` | 30 s | 60 s | 60 s | 60 s | 60 s | 60 s | 60 s |
