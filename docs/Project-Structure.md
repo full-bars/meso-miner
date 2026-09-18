@@ -40,8 +40,6 @@ urnetwork-3.23-fix/
 │   ├── lifetime_metrics.go       # Provider lifetime Prometheus gauges
 │   └── Makefile                  # Cross-compile targets (amd64, arm64, darwin)
 │
-├── hub/                          # [REMOVED v31.3+] Fleet bandwidth dashboard server (deprecated)
-│
 ├── protocol/                     # Protobuf definitions and generated Go code
 │   ├── *.proto                   # Source definitions (ip, transfer, frame, extender, audit)
 │   ├── *.pb.go                   # Generated — do not edit directly
@@ -102,8 +100,6 @@ urnetwork-3.23-fix/
 │   ├── Configuration.md
 │   ├── Docker-Deployment.md
 │   ├── Installation.md
-│   ├── Hub-Setup.md              # [deprecated v31.3+]
-│   ├── Hub-Dashboard.md          # [deprecated v31.3+]
 │   ├── High-Volume-Performance-Tuning.md
 │   ├── Multi-Container-Scaling.md
 │   ├── Proxy-Management.md

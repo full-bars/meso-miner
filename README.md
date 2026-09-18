@@ -230,7 +230,7 @@ The `monitoring/` bundle runs Prometheus and Grafana with a ready-made fleet
 dashboard. See [Monitoring](docs/Monitoring.md).
 
 > [!NOTE]
-> **Fleet Dashboard (Deprecated):** The multi-node aggregation hub dashboard has been removed as of v31.3+. For fleet-wide visibility, use Prometheus metrics (`urnet-tools metrics on`) with the [Monitoring bundle](docs/Monitoring.md), or Grafana for custom dashboards. Historical documentation is retained at [Hub Setup](docs/Hub-Setup.md) and [Hub Dashboard](docs/Hub-Dashboard.md) for reference.
+> **Fleet Dashboard (Removed):** The multi-node aggregation hub was removed in v32.0. For fleet-wide visibility, use Prometheus metrics (`urnet-tools metrics on`) with the [Monitoring bundle](docs/Monitoring.md), or Grafana for custom dashboards.
 
 ---
 
@@ -256,8 +256,6 @@ dashboard. See [Monitoring](docs/Monitoring.md).
 - [Proxy Management & Hot-Reload](docs/Proxy-Management.md)
 - [High-Volume Performance Tuning](docs/High-Volume-Performance-Tuning.md)
 - [Monitoring](docs/Monitoring.md)
-- [Hub Setup](docs/Hub-Setup.md) *(deprecated — removed in v31.3+)*
-- [Hub Dashboard](docs/Hub-Dashboard.md) *(deprecated — removed in v31.3+)*
 - [Project Structure](docs/Project-Structure.md)
 - [Log Message Reference](LOG_REFERENCE.md)
 - [Go urnet-tools Reference](docs/urnet-tools-go.md)
