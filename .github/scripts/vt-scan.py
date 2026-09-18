@@ -155,7 +155,7 @@ def scan_file(path: str) -> int:
 _summary_rows = []  # (path, sha, verdict, mal, sus, har, und) accumulated for the proof block
 
 
-def write_json(json_path: str) -> None:
+def write_json(json_path: str) -> bool:
     """Write machine-readable scan results JSON for downstream automation."""
     rows_out = []
     for path, fsha, verdict, mal, sus, har, und in _summary_rows:
@@ -171,8 +171,10 @@ def write_json(json_path: str) -> None:
     try:
         with open(json_path, "w") as f:
             json.dump(rows_out, f, indent=2)
+        return True
     except OSError as e:
         print(f"  (json write failed: {e})", flush=True)
+        return False
 
 
 def write_summary() -> None:
@@ -270,8 +272,8 @@ def main() -> int:
             rc = r
         time.sleep(2)
     write_summary()
-    if JSON_FILE:
-        write_json(JSON_FILE)
+    if JSON_FILE and not write_json(JSON_FILE):
+        rc = 1
     print(f"RESULT: {'PASS' if rc == 0 else 'FAIL'}", flush=True)
     return rc
 
