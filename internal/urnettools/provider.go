@@ -6,6 +6,7 @@
 package urnettools
 
 import (
+	"bytes"
 	"context"
 	"debug/buildinfo"
 	"encoding/base64"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -172,12 +174,24 @@ func providerVersion(binary string) string {
 	if v := providerVersionFromBuildinfo(binary); v != "" {
 		return v
 	}
+	if v := providerVersionFromStamp(binary); v != "" {
+		return v
+	}
 	return providerVersionFromExec(binary)
 }
 
 // providerVersionFromBuildinfo extracts the version from Go build info
 // without executing the binary. Returns "" when no version is recorded
 // (e.g. -trimpath builds).
+//
+// The Main.Version fallback deliberately rejects Go module pseudo-versions.
+// This repo's main module carries no semver tag, so a release binary's
+// buildinfo reports Main.Version as v0.0.0-20260905040828-776a45a81f1b --
+// non-empty, and completely unrelated to the provider release. Returning it
+// made providerVersion()'s `!= ""` guard short-circuit before the --version
+// fallback could ever run, so on every -trimpath release build (which is all
+// of them) callers silently compared a pseudo-version against a real tag and
+// always got false.
 func providerVersionFromBuildinfo(binary string) string {
 	info, err := buildinfo.ReadFile(binary)
 	if err != nil {
@@ -201,10 +215,24 @@ func providerVersionFromBuildinfo(binary string) string {
 			return v
 		}
 	}
-	if info.Main.Version != "" && info.Main.Version != "(devel)" {
-		return info.Main.Version
+	if v := info.Main.Version; v != "" && v != "(devel)" && !isGoPseudoVersion(v) {
+		return v
 	}
 	return ""
+}
+
+// goPseudoVersionSuffix matches the trailing "<yyyymmddhhmmss>-<12 hex>" of a
+// Go module pseudo-version. The separator before the timestamp is a hyphen in
+// the v0.0.0-20260905040828-776a45a81f1b form and a dot in the
+// vX.Y.Z-0.<ts>-<rev> / vX.Y.Z-pre.0.<ts>-<rev> forms, and a module with no
+// go.mod carries a trailing +incompatible. A pseudo-version is derived from a
+// commit, never from a provider release tag, so it is never a valid answer to
+// "what version is this provider?".
+var goPseudoVersionSuffix = regexp.MustCompile(`[-.][0-9]{14}-[0-9a-f]{12}(\+.*)?$`)
+
+// isGoPseudoVersion reports whether v is a Go module pseudo-version.
+func isGoPseudoVersion(v string) bool {
+	return goPseudoVersionSuffix.MatchString(v)
 }
 
 // providerVersionFromExec runs the binary with --version under a 3-second
@@ -216,6 +244,69 @@ func providerVersionFromBuildinfo(binary string) string {
 // arbitrary attacker-chosen binaries via exec -a argv[0] trick. Without
 // this check, any local user can escalate to root on fleet nodes where
 // the operator runs sudo urnet-tools.
+// providerVersionFromStamp reads a greppable version marker embedded as
+// program data by -ldflags "-X main.VersionStamp=URNET_VERSION_STAMP=...".
+// Unlike buildinfo (stripped by -trimpath) and exec (requires a runnable
+// binary), this reads raw bytes from the file — it works on stopped
+// providers, cross-architecture binaries, and every -trimpath release build.
+const versionStampPrefix = "URNET_VERSION_STAMP="
+
+func providerVersionFromStamp(binary string) string {
+	if !isRecognizedExecutable(binary) {
+		return ""
+	}
+	f, err := os.Open(binary)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	// Read in 64 KB chunks with 1-byte overlap to catch markers split across
+	// chunk boundaries. The marker is short (< 64 bytes) so one overlap
+	// window always captures it.
+	const chunkSize = 64 * 1024
+	buf := make([]byte, chunkSize)
+	prevTail := []byte{}
+	for {
+		n, err := f.Read(buf)
+		if n == 0 {
+			break
+		}
+		chunk := buf[:n]
+		search := append(prevTail, chunk...)
+		// Search for the stamp, skipping false matches where the value
+		// doesn't start with 'v' (all release versions are v-prefixed).
+		off := 0
+		for {
+			idx := bytes.Index(search[off:], []byte(versionStampPrefix))
+			if idx < 0 {
+				break
+			}
+			idx += off
+			rest := search[idx+len(versionStampPrefix):]
+			if len(rest) == 0 || rest[0] != 'v' {
+				off = idx + len(versionStampPrefix)
+				continue
+			}
+			// The value ends at the first NUL, space, or end of available bytes.
+			end := bytes.IndexAny(rest, " \x00\n\r\t")
+			if end < 0 {
+				end = len(rest)
+			}
+			return string(rest[:end])
+		}
+		if len(chunk) > 1 {
+			prevTail = chunk[len(chunk)-1:]
+		} else {
+			prevTail = chunk
+		}
+		if err != nil {
+			break
+		}
+	}
+	return ""
+}
+
 func providerVersionFromExec(binary string) string {
 	// Defense-in-depth: refuse to execute anything that does not look like a
 	// provider binary. Discovery already gates this via isProviderArg before

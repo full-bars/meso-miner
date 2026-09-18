@@ -99,7 +99,7 @@ Core Commands:
   auth [<code>] [target]  authenticate provider inside container
   choose-network <api> <connect> [target]  set API/connect endpoints inside container
   summary [target]        activity & performance summary for container
-  report <url> [target]   set hub report URL inside container (no restart)
+  report <url> [target]   set report URL inside container (no restart)
   update [<container>]     update a container's provider in place (no recreate), or the host binary
   version                 print tool version
 
@@ -120,9 +120,7 @@ Performance & Tuning [target]:
   set <key> [<value>|off]   runtime tuning override in container state
   fast-auth <on|off|status> manage auth rate limiter bypass marker
 
-Hub & Session Management [target]:
-  hub link <url> [--token]  link container provider to central hub
-  hub unlink                remove hub trust and report URL
+Session Management [target]:
   session save <file>       export encrypted identity+proxy bundle
   session load <file>       import encrypted bundle into container
 
@@ -789,7 +787,7 @@ func cmdDockerUsage(args []string) error {
 	return containerExecByName(p.Unit, inner...)
 }
 
-// cmdDockerReport configures the hub report URL inside the container.
+// cmdDockerReport configures the report URL inside the container.
 func cmdDockerReport(args []string) error {
 	providers := DiscoverDocker()
 	t, rest, err := dockerTargetFromArgs(args, providers)
@@ -834,6 +832,22 @@ func cmdDockerSet(args []string) error {
 	return containerExecByName(p.Unit, inner...)
 }
 
+// cmdDockerRename delegates `urnet-docker rename <name>` into the container,
+// forwarding to the container's urnet-tools rename command.
+func cmdDockerRename(args []string) error {
+	providers := DiscoverDocker()
+	t, rest, err := dockerTargetFromArgs(args, providers)
+	if err != nil {
+		return err
+	}
+	p, err := selectTargetInteractive(providers, t)
+	if err != nil {
+		return err
+	}
+	inner := append([]string{"urnet-tools", "rename"}, rest...)
+	return containerExecByName(p.Unit, inner...)
+}
+
 // cmdDockerFastAuth manages the auth rate limiter bypass marker in the container.
 func cmdDockerFastAuth(args []string) error {
 	providers := DiscoverDocker()
@@ -871,7 +885,7 @@ func cmdDockerSession(args []string) error {
 // in-container urnet-tools proxy invocation.
 func cmdDockerProxy(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | add-source <url> | remove-source <url> | refresh | remove-dead | health | traffic | summary | trim <N> | exclude")
+		return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | refresh | add-source <url> | remove-source <url> | remove-dead | trim <N> | exclude")
 	}
 	sub := args[0]
 	rest := args[1:]

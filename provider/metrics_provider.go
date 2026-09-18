@@ -1,9 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -223,23 +226,45 @@ func snapshotErrors() map[string]uint64 {
 	return out
 }
 
+// readHotswapDeclinesFromDisk reads the hotswap decline/success counters
+// that the urnet-tools CLI writes to <stateDir>/.hotswap_declines.json.
+// Returns nil when the file is absent or unreadable (normal: no updates
+// have been attempted on this provider yet).
+func readHotswapDeclinesFromDisk() map[string]int64 {
+	stateDir := mustStateDir()
+	if stateDir == "" {
+		return nil
+	}
+	path := filepath.Join(stateDir, ".hotswap_declines.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var dc struct {
+		Counts map[string]int64 `json:"counts"`
+	}
+	if err := json.Unmarshal(data, &dc); err != nil || dc.Counts == nil {
+		return nil
+	}
+	return dc.Counts
+}
+
 // providerExtraMetrics generates the Prometheus text-format lines that only
 // the provider can supply. Called by connect.PrometheusHandler on every scrape.
 func providerExtraMetrics() string {
 	detectStartup()
 	var b strings.Builder
 
-	uptime := time.Since(providerStartTime).Seconds()
-
-	// --- Provider info (version, proxy count, human-readable uptime) ---
+	// --- Provider info (version) ---
+	// A gauge fixed at 1 that carries the version as a label. The classic
+	// text format this handler serves has no "info" type, and Prometheus
+	// rejects the entire scrape on one. Uptime and the proxy count are their
+	// own metrics (urnet_uptime_seconds, urnet_proxy_pool_size); as labels
+	// they changed on every scrape and created a new series each time.
 	proxyVersion := RequireVersion()
-	proxyCount := 0
-	fmt.Fprintf(&b, "# HELP urnet_info Provider identity and uptime (Grafana display metric).\n")
-	fmt.Fprintf(&b, "# TYPE urnet_info info\n")
-	fmt.Fprintf(&b, "urnet_info{version=%q,proxies=%q,uptime=%q} 1\n",
-		proxyVersion,
-		fmt.Sprintf("%d", proxyCount),
-		connect.FormatDuration(uptime))
+	fmt.Fprintf(&b, "# HELP urnet_info Provider identity: the version label, value always 1.\n")
+	fmt.Fprintf(&b, "# TYPE urnet_info gauge\n")
+	fmt.Fprintf(&b, "urnet_info{version=%s} 1\n", connect.PrometheusLabelValue(proxyVersion))
 
 	// --- Startup diagnostics (crash/restart/upgrade) ---
 	startupDiag.mu.Lock()
@@ -272,8 +297,8 @@ func providerExtraMetrics() string {
 
 	if prevVersion != "" {
 		fmt.Fprintf(&b, "# HELP urnet_startup_previous_version Version before last upgrade.\n")
-		fmt.Fprintf(&b, "# TYPE urnet_startup_previous_version info\n")
-		fmt.Fprintf(&b, "urnet_startup_previous_version{version=%q} 1\n", prevVersion)
+		fmt.Fprintf(&b, "# TYPE urnet_startup_previous_version gauge\n")
+		fmt.Fprintf(&b, "urnet_startup_previous_version{version=%s} 1\n", connect.PrometheusLabelValue(prevVersion))
 	}
 
 	// --- Control socket commands ---
@@ -311,8 +336,17 @@ func providerExtraMetrics() string {
 	if errCounts := snapshotErrors(); errCounts != nil {
 		fmt.Fprintf(&b, "# HELP urnet_lifetime_errors_total Persistent error counts by category (survive restarts).\n")
 		fmt.Fprintf(&b, "# TYPE urnet_lifetime_errors_total counter\n")
-		for cat, count := range errCounts {
-			fmt.Fprintf(&b, "urnet_lifetime_errors_total{category=%q} %d\n", cat, count)
+		for _, cat := range slices.Sorted(maps.Keys(errCounts)) {
+			fmt.Fprintf(&b, "urnet_lifetime_errors_total{category=%s} %d\n", connect.PrometheusLabelValue(string(cat)), errCounts[cat])
+		}
+	}
+
+	// --- Hotswap decline/success counters (written by urnet-tools CLI) ---
+	if hsCounts := readHotswapDeclinesFromDisk(); len(hsCounts) > 0 {
+		fmt.Fprintf(&b, "# HELP urnet_hotswap_outcomes_total HotSwap attempt outcomes since last install.\n")
+		fmt.Fprintf(&b, "# TYPE urnet_hotswap_outcomes_total counter\n")
+		for _, reason := range slices.Sorted(maps.Keys(hsCounts)) {
+			fmt.Fprintf(&b, "urnet_hotswap_outcomes_total{reason=%s} %d\n", connect.PrometheusLabelValue(reason), hsCounts[reason])
 		}
 	}
 
@@ -326,16 +360,22 @@ func providerExtraMetrics() string {
 	fmt.Fprintf(&b, "# TYPE urnet_sessions_classical gauge\n")
 	fmt.Fprintf(&b, "urnet_sessions_classical %d\n", pq.ActiveClas)
 
-	fmt.Fprintf(&b, "# HELP urnet_sessions_opened_total Sessions opened in time windows.\n")
+	// Hour/day/week are sliding windows and go down as sessions age out, so
+	// they are gauges. Only the lifetime count is a counter; rate() over a
+	// value that decreases reads every drop as a counter reset.
+	fmt.Fprintf(&b, "# HELP urnet_sessions_opened_total Sessions opened over the provider's lifetime.\n")
 	fmt.Fprintf(&b, "# TYPE urnet_sessions_opened_total counter\n")
-	fmt.Fprintf(&b, "urnet_sessions_opened_total{window=\"hour\",encryption=\"pqe\"} %d\n", pq.PQEHour)
-	fmt.Fprintf(&b, "urnet_sessions_opened_total{window=\"day\",encryption=\"pqe\"} %d\n", pq.PQEDay)
-	fmt.Fprintf(&b, "urnet_sessions_opened_total{window=\"week\",encryption=\"pqe\"} %d\n", pq.PQEWeek)
-	fmt.Fprintf(&b, "urnet_sessions_opened_total{window=\"lifetime\",encryption=\"pqe\"} %d\n", pq.PQELifetime)
-	fmt.Fprintf(&b, "urnet_sessions_opened_total{window=\"hour\",encryption=\"classical\"} %d\n", pq.ClasHour)
-	fmt.Fprintf(&b, "urnet_sessions_opened_total{window=\"day\",encryption=\"classical\"} %d\n", pq.ClasDay)
-	fmt.Fprintf(&b, "urnet_sessions_opened_total{window=\"week\",encryption=\"classical\"} %d\n", pq.ClasWeek)
-	fmt.Fprintf(&b, "urnet_sessions_opened_total{window=\"lifetime\",encryption=\"classical\"} %d\n", pq.ClasLifetime)
+	fmt.Fprintf(&b, "urnet_sessions_opened_total{encryption=\"pqe\"} %d\n", pq.PQELifetime)
+	fmt.Fprintf(&b, "urnet_sessions_opened_total{encryption=\"classical\"} %d\n", pq.ClasLifetime)
+
+	fmt.Fprintf(&b, "# HELP urnet_sessions_opened_recent Sessions opened in the last hour, day, or week.\n")
+	fmt.Fprintf(&b, "# TYPE urnet_sessions_opened_recent gauge\n")
+	fmt.Fprintf(&b, "urnet_sessions_opened_recent{window=\"hour\",encryption=\"pqe\"} %d\n", pq.PQEHour)
+	fmt.Fprintf(&b, "urnet_sessions_opened_recent{window=\"day\",encryption=\"pqe\"} %d\n", pq.PQEDay)
+	fmt.Fprintf(&b, "urnet_sessions_opened_recent{window=\"week\",encryption=\"pqe\"} %d\n", pq.PQEWeek)
+	fmt.Fprintf(&b, "urnet_sessions_opened_recent{window=\"hour\",encryption=\"classical\"} %d\n", pq.ClasHour)
+	fmt.Fprintf(&b, "urnet_sessions_opened_recent{window=\"day\",encryption=\"classical\"} %d\n", pq.ClasDay)
+	fmt.Fprintf(&b, "urnet_sessions_opened_recent{window=\"week\",encryption=\"classical\"} %d\n", pq.ClasWeek)
 
 	// --- Resource pressure ---
 	pressure := currentPressure()
@@ -351,15 +391,12 @@ func providerExtraMetrics() string {
 
 	// --- Proxy grades ---
 	state, stateErr := readProxyState()
-	if stateErr == nil {
-		proxyCount = len(state.Proxies)
-	}
 	urlState, urlErr := readProxyURLState()
 
 	if stateErr == nil {
-		fmt.Fprintf(&b, "# HELP urnet_proxies_total Total proxies known.\n")
-		fmt.Fprintf(&b, "# TYPE urnet_proxies_total gauge\n")
-		fmt.Fprintf(&b, "urnet_proxies_total %d\n", len(state.Proxies))
+		fmt.Fprintf(&b, "# HELP urnet_proxies_known Proxies in the provider's proxy state.\n")
+		fmt.Fprintf(&b, "# TYPE urnet_proxies_known gauge\n")
+		fmt.Fprintf(&b, "urnet_proxies_known %d\n", len(state.Proxies))
 
 		gradeDist := map[string]int{"A": 0, "B": 0, "C": 0, "D": 0, "E": 0, "F": 0, "ungraded": 0}
 		healthDist := map[string]int{}
@@ -376,14 +413,14 @@ func providerExtraMetrics() string {
 		}
 		fmt.Fprintf(&b, "# HELP urnet_proxy_grades Count by grade tier.\n")
 		fmt.Fprintf(&b, "# TYPE urnet_proxy_grades gauge\n")
-		for tier, count := range gradeDist {
-			fmt.Fprintf(&b, "urnet_proxy_grades{tier=%q} %d\n", tier, count)
+		for _, tier := range slices.Sorted(maps.Keys(gradeDist)) {
+			fmt.Fprintf(&b, "urnet_proxy_grades{tier=%s} %d\n", connect.PrometheusLabelValue(tier), gradeDist[tier])
 		}
 
 		fmt.Fprintf(&b, "# HELP urnet_proxy_health Count by health status.\n")
 		fmt.Fprintf(&b, "# TYPE urnet_proxy_health gauge\n")
-		for health, count := range healthDist {
-			fmt.Fprintf(&b, "urnet_proxy_health{status=%q} %d\n", health, count)
+		for _, health := range slices.Sorted(maps.Keys(healthDist)) {
+			fmt.Fprintf(&b, "urnet_proxy_health{status=%s} %d\n", connect.PrometheusLabelValue(health), healthDist[health])
 		}
 
 		if !state.StartedAt.IsZero() {
@@ -413,9 +450,11 @@ func providerExtraMetrics() string {
 		fmt.Fprintf(&b, "# TYPE urnet_proxy_graded_stale gauge\n")
 		fmt.Fprintf(&b, "urnet_proxy_graded_stale %d\n", staleGraded)
 
-		fmt.Fprintf(&b, "# HELP urnet_proxy_auth_failures_total Auth failures across all proxies.\n")
-		fmt.Fprintf(&b, "# TYPE urnet_proxy_auth_failures_total counter\n")
-		fmt.Fprintf(&b, "urnet_proxy_auth_failures_total %d\n", totalAuthFailures)
+		// A sum over the proxies currently in state: removing a proxy drops
+		// it, so this is a gauge, not a counter.
+		fmt.Fprintf(&b, "# HELP urnet_proxy_auth_failures Auth failures summed over the proxies currently in state.\n")
+		fmt.Fprintf(&b, "# TYPE urnet_proxy_auth_failures gauge\n")
+		fmt.Fprintf(&b, "urnet_proxy_auth_failures %d\n", totalAuthFailures)
 	}
 
 	// --- URL proxy grades ---
@@ -432,8 +471,8 @@ func providerExtraMetrics() string {
 		}
 		fmt.Fprintf(&b, "# HELP urnet_url_proxy_grades URL proxy grade distribution.\n")
 		fmt.Fprintf(&b, "# TYPE urnet_url_proxy_grades gauge\n")
-		for tier, count := range urlGradeDist {
-			fmt.Fprintf(&b, "urnet_url_proxy_grades{tier=%q} %d\n", tier, count)
+		for _, tier := range slices.Sorted(maps.Keys(urlGradeDist)) {
+			fmt.Fprintf(&b, "urnet_url_proxy_grades{tier=%s} %d\n", connect.PrometheusLabelValue(tier), urlGradeDist[tier])
 		}
 		fmt.Fprintf(&b, "# HELP urnet_url_proxy_ungraded URL proxies not yet graded.\n")
 		fmt.Fprintf(&b, "# TYPE urnet_url_proxy_ungraded gauge\n")

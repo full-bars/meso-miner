@@ -3,6 +3,7 @@ package urnettools
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -54,32 +55,54 @@ func (a usageAggregates) BillableExceedsTotal() bool {
 // so LIFETIME survives history rotation. Streams from file handles (no
 // os.ReadFile + string copy) so large capped history files do not peak at
 // ~2x their size in memory (CR Major).
-func readUsageHistory(stateDir string) []usageSnapshot {
+func readUsageHistory(stateDir string) ([]usageSnapshot, error) {
 	var snaps []usageSnapshot
+	var lastErr error
 	for _, name := range []string{"usage_history.jsonl.1", "usage_history.jsonl"} {
 		f, err := os.Open(filepath.Join(stateDir, name))
 		if err != nil {
-			continue // missing file (the .1 is optional) — skip
-		}
-		sc := bufio.NewScanner(f)
-		sc.Buffer(make([]byte, 0, 1<<20), 1<<20)
-		for sc.Scan() {
-			line := strings.TrimSpace(sc.Text())
-			if line == "" {
-				continue
+			if os.IsNotExist(err) {
+				continue // missing file (the .1 is optional) — skip
 			}
-			var s usageSnapshot
-			if err := json.Unmarshal([]byte(line), &s); err != nil {
-				continue // ragged/partial last line — skip
-			}
-			snaps = append(snaps, s)
+			// Non-NotExist errors (EACCES, EIO, etc.) are real failures
+			// that should not be silently swallowed — the caller would
+			// otherwise print "No usage history yet" on a permission error.
+			lastErr = fmt.Errorf("open %s: %w", name, err)
+			continue
 		}
-		f.Close()
+		func() {
+			defer f.Close()
+			sc := bufio.NewScanner(f)
+			sc.Buffer(make([]byte, 0, 1<<20), 1<<20)
+			for sc.Scan() {
+				line := strings.TrimSpace(sc.Text())
+				if line == "" {
+					continue
+				}
+				var s usageSnapshot
+				if err := json.Unmarshal([]byte(line), &s); err != nil {
+					continue // ragged/partial last line — skip
+				}
+				snaps = append(snaps, s)
+			}
+			if err := sc.Err(); err != nil {
+				// Scanner errors include bufio.ErrTooLong (line exceeds the
+				// 1 MiB buffer cap) — the cap is intentional but the silent
+				// truncation must be visible to the operator.
+				lastErr = fmt.Errorf("scan %s: %w", name, err)
+			}
+		}()
 	}
 	// Callers (usageWindow, usageLifetime) assume chronological order; the
 	// combined .1 + main files and clock skew can violate that, so sort here.
 	sort.SliceStable(snaps, func(i, j int) bool { return snaps[i].TS.Before(snaps[j].TS) })
-	return snaps
+	// Always surface open/permission errors even when partial data was
+	// read — callers treat a nil error as "everything is fine" and the
+	// operator would otherwise miss a permission failure or I/O error.
+	if lastErr != nil {
+		return snaps, lastErr
+	}
+	return snaps, nil
 }
 
 // usageLifetime returns the lifetime (across-restart) usage. Segment-summed

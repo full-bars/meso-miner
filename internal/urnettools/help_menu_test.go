@@ -72,7 +72,6 @@ func TestEveryToolsCommandHelpIsPerCommand(t *testing.T) {
 		{"lowmode", "lowmode"},
 		{"ramlogs", "ramlogs"},
 		{"optimize", "optimize"},
-		{"hot-restart", "hot-restart"},
 		{"fast-auth", "fast-auth"},
 		{"set", "set"},
 		{"auth", "auth"},
@@ -84,6 +83,7 @@ func TestEveryToolsCommandHelpIsPerCommand(t *testing.T) {
 		{"auto-update", "auto-update"},
 		{"auto-start", "auto-start"},
 		{"self-heal", "self-heal"},
+		{"config", "config"},
 	}
 	for _, c := range cmds {
 		checkHelp(t, Run, c.name, []string{c.name}, c.token)
@@ -98,7 +98,6 @@ func TestToolsCommandAliasesHelpIsPerCommand(t *testing.T) {
 		{"fastauth", "fast-auth"},
 		{"autoupdate", "auto-update"},
 		{"autostart", "auto-start"},
-		{"hotrestart", "hot-restart"},
 		{"choose_network", "choose-network"},
 	}
 	for _, a := range aliases {

@@ -132,7 +132,8 @@ type ProxySchedule struct {
 	Stagger  time.Duration
 }
 
-// prioritizeAndScheduleProxies sorts proxies by provenance and warmth, then computes cumulative launch delays.
+// prioritizeAndScheduleProxies sorts proxies by warmth, then provenance, then earnings,
+// then computes cumulative launch delays.
 // Note: the proxies slice is reordered in place.
 func prioritizeAndScheduleProxies(
 	proxies []*connect.ProxySettings,
@@ -143,11 +144,18 @@ func prioritizeAndScheduleProxies(
 		currentNetworkID = currentProviderNetworkID()
 	}
 	warmthMap := make(map[string]ProxyWarmthTier, len(proxies))
+	// Earnings are read once per proxy rather than inside the comparator:
+	// the store is mutex-guarded and a sort does O(n log n) comparisons, so
+	// reading per comparison would take the lock tens of thousands of times
+	// on a node carrying thousands of proxies.
+	earningsMap := make(map[string]float64, len(proxies))
+	now := time.Now()
 	var warmCount, renewableCount, coldCount int
 
 	for _, s := range proxies {
 		tier := evaluateProxyWarmth(s.Address, currentNetworkID)
 		warmthMap[s.Address] = tier
+		earningsMap[s.Address] = proxyEarningsScore(s.Address, now)
 		switch tier {
 		case WarmthValid:
 			warmCount++
@@ -158,27 +166,95 @@ func prioritizeAndScheduleProxies(
 		}
 	}
 
+	// trusted reports whether an address launches with the file list rather
+	// than behind it. File and internal proxies are trusted by provenance.
+	// A URL-sourced address is trusted once it has actually moved real
+	// billable traffic: at that point it is no longer an unproven address
+	// off a public list, it is a known earner, and making it wait behind
+	// every file proxy costs real throughput during the warmup window.
+	trusted := func(addr string) bool {
+		return proxySourceOf[addr] != "url" || earningsMap[addr] >= earningsPromotionBytes
+	}
+
 	sort.SliceStable(proxies, func(i, j int) bool {
 		addrI := proxies[i].Address
 		addrJ := proxies[j].Address
-		srcI := proxySourceOf[addrI]
-		srcJ := proxySourceOf[addrJ]
 
-		// 1. Primary rule: File-sourced (or internal) proxies before URL-sourced proxies
-		if (srcI != "url") != (srcJ != "url") {
-			return srcI != "url"
-		}
-
-		// 2. Secondary rule: Higher warmth tier dials first
+		// 1. Primary rule: higher warmth tier dials first. Warmth is the
+		//    primary rule because a cold identity must mint against the
+		//    rate-limited auth API. Promoting a rich cold proxy ahead of a
+		//    warm proxy would spend a scarce mint slot and stall an identity
+		//    that could have dialled straight through.
 		tierI := warmthMap[addrI]
 		tierJ := warmthMap[addrJ]
 		if tierI != tierJ {
 			return tierI > tierJ
 		}
 
-		// 3. Stable fallback preserves original order
+		// 2. Secondary rule: trusted provenance dials first. File-sourced
+		//    and internal proxies always qualify; a URL-sourced proven
+		//    earner is promoted into the same group.
+		trustI := trusted(addrI)
+		trustJ := trusted(addrJ)
+		if trustI != trustJ {
+			return trustI
+		}
+
+		// 3. Tertiary rule: within one tier and group, the bigger earner
+		//    dials first. This is where the ranking does most of its work,
+		//    since the warm tier is where launches are cheap.
+		earnI := earningsMap[addrI]
+		earnJ := earningsMap[addrJ]
+		if earnI != earnJ {
+			return earnI > earnJ
+		}
+
+		// 4. Stable fallback preserves original order
 		return false
 	})
+
+	// Exploration quota: interleave 1 unproven proxy for every 5 top-earners
+	// among cold proxies to prevent permanent starvation. Without this, a
+	// node that restarts frequently starves unproven proxies behind the
+	// cumulative cold-proxy ramp delay and they never accumulate traffic.
+	//
+	// "unproven" means untrusted provenance (URL-sourced, below promotion
+	// threshold). The interleave picks from the tail of the sorted list
+	// (cold unproven proxies) and inserts one after every 5 trusted cold
+	// proxies, preserving the relative order within each group.
+	trustedCold := make([]*connect.ProxySettings, 0, len(proxies))
+	unprovenCold := make([]*connect.ProxySettings, 0, len(proxies))
+	for _, s := range proxies {
+		if warmthMap[s.Address] == WarmthCold {
+			if trusted(s.Address) {
+				trustedCold = append(trustedCold, s)
+			} else {
+				unprovenCold = append(unprovenCold, s)
+			}
+		}
+	}
+	if len(unprovenCold) > 0 && len(trustedCold) > 0 {
+		reordered := make([]*connect.ProxySettings, 0, len(proxies))
+		// Append warm + renewable proxies first (they always go first).
+		for _, s := range proxies {
+			if warmthMap[s.Address] != WarmthCold {
+				reordered = append(reordered, s)
+			}
+		}
+		// Interleave trusted cold with unproven cold.
+		unprovenIdx := 0
+		for i, s := range trustedCold {
+			reordered = append(reordered, s)
+			if (i+1)%5 == 0 && unprovenIdx < len(unprovenCold) {
+				reordered = append(reordered, unprovenCold[unprovenIdx])
+				unprovenIdx++
+			}
+		}
+		for ; unprovenIdx < len(unprovenCold); unprovenIdx++ {
+			reordered = append(reordered, unprovenCold[unprovenIdx])
+		}
+		copy(proxies, reordered)
+	}
 
 	schedules := make([]ProxySchedule, len(proxies))
 	var cumulativeDelay time.Duration
@@ -186,7 +262,11 @@ func prioritizeAndScheduleProxies(
 	for i, s := range proxies {
 		tier := warmthMap[s.Address]
 		isURL := proxySourceOf[s.Address] == "url"
-		stagger := proxyLaunchStagger(tier, isURL)
+		promoted := isURL && earningsMap[s.Address] >= earningsPromotionBytes
+		// Promoted URL proxies belong with the cold file group; they have
+		// earned trusted provenance and should not be penalised with the
+		// conservative ColdURLStagger.
+		stagger := proxyLaunchStagger(tier, isURL && !promoted)
 
 		schedules[i] = ProxySchedule{
 			Settings: s,

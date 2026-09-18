@@ -158,7 +158,7 @@ func checkReadableAsUser(path, user string) error {
 // Usage: urnet-tools proxy add <file> | clear | remove | refresh [targets]
 func cmdProxy(args []string, force, dryRun bool) error {
 	if len(args) == 0 {
-		return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | refresh | add-source <url> | remove-source <url> | health | traffic | summary | remove-dead | trim <N> | exclude")
+		return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | refresh | add-source <url> | remove-source <url> | health | traffic | ids | remove-dead | trim <N>")
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -184,21 +184,23 @@ Subcommands:
   remove-source <url>    remove a URL proxy source
   health                 proxy health from state files (single target)
   traffic                proxy traffic from state files (single target)
+  ids                    client_id per proxy from JWT store (single target)
   remove-dead            remove dead/degraded proxies (single target)
   trim <N>               hold running proxies at N, shed the A-F-worst (single target)
+  exclude                targeting flag, not a subcommand (see 'urnet-tools help')
 
 Examples (proxy add):
   urnet-tools proxy add ~/proxies.txt                 # Linux / macOS
   urnet-tools proxy add C:\Users\<you>\proxies.txt     # Windows (\ or / separators)
 
 Targets and batch flags work as for other commands (--unit/--user/--network,
---all/--include/--exclude/--select). See 'urnet-tools help' for targeting.
+--all/--include/--exclude). See 'urnet-tools help' for targeting.
 `)
 			return nil
 		}
 	}
 	// LENIENT target parse for ALL subcommands: proxy defines its own
-	// batch flags (--all/--select/--include/--exclude) consumed below, and
+	// batch flags (--all/--include/--exclude) consumed below, and
 	// refresh/remove-dead additionally pass provider-binary flags through
 	// (e.g. --force). Strict parsing here rejected those as unknown before
 	// the loop ran. Leftover
@@ -218,8 +220,6 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 		switch {
 		case a == "--all" || a == "-all":
 			all = true
-		case a == "--select":
-			interactive = !force
 		case strings.HasPrefix(a, "--include="):
 			include = splitLabels(strings.TrimPrefix(a, "--include="))
 		case strings.HasPrefix(a, "--exclude="):
@@ -303,8 +303,8 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 		}
 		for _, target := range positionals {
 			if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
-				if all || len(include) > 0 || len(exclude) > 0 || interactive != forceInteractive(force) {
-					return fmt.Errorf("proxy add with URL operates on ONE provider — --all/--include/--exclude/--select do not apply; use --unit/--user/--network to target it")
+				if all || len(include) > 0 || len(exclude) > 0 {
+					return fmt.Errorf("proxy add with URL operates on ONE provider — --all/--include/--exclude do not apply; use --unit/--user/--network to target it")
 				}
 				p, err := selectTarget(providers, t)
 				if err != nil {
@@ -393,8 +393,8 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 		// subcommand, so URL proxies (a core fleet feature) were
 		// unmanageable through the new tool. Single-target (a URL source
 		// is per-provider), like health/traffic.
-		if all || len(include) > 0 || len(exclude) > 0 || interactive != forceInteractive(force) {
-			return fmt.Errorf("proxy %s operates on ONE provider — --all/--include/--exclude/--select do not apply; use --unit/--user/--network to target it", sub)
+		if all || len(include) > 0 || len(exclude) > 0 {
+			return fmt.Errorf("proxy %s operates on ONE provider — --all/--include/--exclude do not apply; use --unit/--user/--network to target it", sub)
 		}
 		if len(positionals) < 1 {
 			return fmt.Errorf("proxy %s requires a URL", sub)
@@ -413,8 +413,8 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 		return providerSubcommand(p, append([]string{"proxy", sub}, positionals...)...)
 	case "trim":
 		// Single-target, destructive: shed the A-F-worst proxies down to N.
-		if all || len(include) > 0 || len(exclude) > 0 || interactive != forceInteractive(force) {
-			return fmt.Errorf("proxy trim operates on ONE provider — --all/--include/--exclude/--select do not apply; use --unit/--user/--network to target it")
+		if all || len(include) > 0 || len(exclude) > 0 {
+			return fmt.Errorf("proxy trim operates on ONE provider — --all/--include/--exclude do not apply; use --unit/--user/--network to target it")
 		}
 		if len(positionals) < 1 {
 			return fmt.Errorf("proxy trim requires a target count, e.g. 'proxy trim 500' (or 'proxy trim off' to clear)")
@@ -440,7 +440,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 	case "paste":
 		// Paste proxies from stdin/file: normalizes formats, fetches URL sources, adds + refreshes.
 		// Single-target — the paste targets one provider at a time.
-		if all || len(include) > 0 || len(exclude) > 0 || interactive != forceInteractive(force) {
+		if all || len(include) > 0 || len(exclude) > 0 {
 			return fmt.Errorf("proxy paste operates on ONE provider — use --unit/--user/--network to target it")
 		}
 		p, err := selectTarget(providers, t)
@@ -457,12 +457,12 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 		pasteArgs = append(pasteArgs, positionals...)
 		return providerSubcommand(p, pasteArgs...)
 
-	case "health", "traffic", "remove-dead":
+	case "health", "traffic", "ids", "remove-dead":
 		// These are single-target subcommands (selectTarget, not
 		// selectTargets) — batch flags are meaningless here and must not be
 		// silently dropped.
-		if all || len(include) > 0 || len(exclude) > 0 || interactive != forceInteractive(force) {
-			return fmt.Errorf("proxy %s operates on ONE provider — --all/--include/--exclude/--select do not apply; use --unit/--user/--network to target it", sub)
+		if all || len(include) > 0 || len(exclude) > 0 {
+			return fmt.Errorf("proxy %s operates on ONE provider — --all/--include/--exclude do not apply; use --unit/--user/--network to target it", sub)
 		}
 		p, err := selectTarget(providers, t)
 		if err != nil {
@@ -476,6 +476,8 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 			return cmdProxyHealthTarget(p)
 		case "traffic":
 			return cmdProxyTrafficTarget(p)
+		case "ids":
+			return cmdProxyIDsTarget(p)
 		default: // remove-dead
 			if dryRun {
 				fmt.Printf("[dry-run] would remove dead/degraded proxies on %s\n", providerLabel(p))
@@ -484,7 +486,7 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 			return providerSubcommand(p, append([]string{"proxy", "remove-dead"}, positionals...)...)
 		}
 	default:
-		return fmt.Errorf("unknown proxy subcommand %q (add|paste|clear|health|traffic|refresh|remove-dead|add-source|remove-source|trim)", sub)
+		return fmt.Errorf("unknown proxy subcommand %q (add|paste|clear|health|traffic|ids|refresh|remove-dead|add-source|remove-source|trim)", sub)
 	}
 
 	// Destructive gate for clear/remove; add/refresh are additive.

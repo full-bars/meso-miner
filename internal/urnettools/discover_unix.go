@@ -138,12 +138,42 @@ func discoverProcesses() []Provider {
 			continue
 		}
 		p.Network, p.NetworkID, p.JWTExpires, _ = decodeJWT(filepath.Join(p.StateDir, "jwt"))
-		// S-C1 fix: use buildinfo-only version resolution for discovered
-		// processes. providerVersionFromExec execs the binary as root —
-		// a local user can plant a real ELF via `exec -a urnetwork-provider
-		// ./malicious` and the magic-byte check passes. Discovery must never
-		// exec a foreign binary. Accept empty version for -trimpath builds.
-		p.Version = providerVersionFromBuildinfo(p.Binary)
+		// Version resolution, and why it is split by liveness.
+		//
+		// S-C1: discovery must never exec a binary named by a filesystem
+		// path. A local user can plant a real ELF there via
+		// `exec -a urnetwork-provider ./malicious` and the magic-byte check
+		// still passes, so p.Binary is only ever read, never run.
+		//
+		// Buildinfo alone, however, cannot answer the question for any
+		// release: every release is built with -trimpath, which strips
+		// -ldflags (and so main.Version) out of buildinfo, and Main.Version
+		// holds a module pseudo-version that isGoPseudoVersion correctly
+		// rejects. So this returned "" for every release build, which is
+		// what left `urnet-tools version` blank and gave HotSwap's version
+		// gate nothing to fall back on.
+		//
+		// For a RUNNING provider there is a third option that is safe
+		// precisely because it is not a filesystem path: /proc/<pid>/exe
+		// names the inode already executing. Nothing a local user does can
+		// substitute it, and it stays readable after an update renames over
+		// the binary — so it answers "what is this process running?" rather
+		// than "what is on disk under this name?", which is the question
+		// callers actually ask.
+		if p.PID > 0 {
+			// Ask the provider first: it is the only source that reports
+			// what the process IS rather than what sits on disk under its
+			// name. Falls through for providers older than the version
+			// command, and for one whose socket never bound.
+			if v, ok := providerVersionFromSocket(p); ok {
+				p.Version = v
+			} else if handle, err := runningImageHandle(p.PID); err == nil {
+				p.Version = providerVersion(handle)
+			}
+		}
+		if p.Version == "" {
+			p.Version = providerVersionFromBuildinfo(p.Binary)
+		}
 		out = append(out, p)
 	}
 	return out
@@ -223,7 +253,7 @@ func attachUnits(procs []Provider) {
 		// .../system.slice/urnetwork-native.service. Only accept names that
 		// look like a provider unit (isProviderUnit) — on a GH runner the
 		// provider inherits the runner's cgroup, and an unfiltered name would
-		// make hot-restart systemctl-restart the wrong unit.
+		// make restart systemctl-restart the wrong unit.
 		if idx := strings.LastIndex(s, ".service"); idx >= 0 {
 			start := strings.LastIndex(s[:idx], "/")
 			if start >= 0 {
@@ -270,13 +300,62 @@ func discoverSystemUnits(running []Provider) []Provider {
 	}
 	// unitUser maps unit name -> User= value, resolved on demand.
 	unitUser := func(unit string) string {
-		b, err := execWithTimeout(5*time.Second, "systemctl", "show", unit, "-p", "User", "--value")
-		if err != nil {
-			return ""
-		}
-		return strings.TrimSpace(string(b))
+		return unitProperty(nil, unit, "User")
 	}
-	return parseUnitLines(string(out), running, unitUser)
+	// unitBinary maps unit name -> ExecStart executable, resolved on demand.
+	unitBinary := func(unit string) string {
+		return parseExecStartPath(unitProperty(nil, unit, "ExecStart"))
+	}
+	return parseUnitLines(string(out), running, unitUser, unitBinary)
+}
+
+// unitProperty returns a single `systemctl show` property value for a unit.
+// scope is the systemctl scope prefix ("--user", or "--user -M <user>@") and
+// may be nil for the system manager.
+func unitProperty(scope []string, unit, prop string) string {
+	args := append(append([]string{}, scope...), "show", unit, "-p", prop, "--value")
+	b, err := execWithTimeout(5*time.Second, "systemctl", args...)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// parseExecStartPath extracts the executable path from a systemd ExecStart
+// property value. systemd renders it as a bracketed record --
+//
+//	{ path=/opt/urnetwork/bin/urnetwork ; argv[]=/opt/... provide ; ... }
+//
+// so the bare `--value` output is not itself a path. A multi-line value (a
+// unit with several ExecStart= lines) resolves to the first entry, matching
+// the ExecStart that systemd runs first. Returns "" when no path is present,
+// which keeps the caller's existing "no resolvable binary path" behaviour
+// rather than inventing one.
+func parseExecStartPath(raw string) string {
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if i := strings.Index(line, "path="); i >= 0 {
+			rest := line[i+len("path="):]
+			// The record separates fields with " ; "; a path may not
+			// contain a space in systemd's own rendering.
+			if j := strings.IndexAny(rest, " ;"); j >= 0 {
+				rest = rest[:j]
+			}
+			if strings.HasPrefix(rest, "/") {
+				return rest
+			}
+			continue
+		}
+		// Older systemd (and some `show` variants) emit the raw command
+		// line instead of the bracketed record.
+		if strings.HasPrefix(line, "/") {
+			return strings.Fields(line)[0]
+		}
+	}
+	return ""
 }
 
 // parseUnitLines parses `systemctl list-units`/`list-unit-files` output
@@ -291,7 +370,7 @@ func discoverSystemUnits(running []Provider) []Provider {
 // identical Provider rows without the dedup here (observed live on a fleet
 // box: every enabled-but-inactive unit doubled in `urnet-tools logs`'s
 // ambiguity list).
-func parseUnitLines(text string, running []Provider, userFor func(unit string) string) []Provider {
+func parseUnitLines(text string, running []Provider, userFor, binaryFor func(unit string) string) []Provider {
 	var out []Provider
 	seen := map[string]bool{}
 	for _, line := range strings.Split(text, "\n") {
@@ -304,15 +383,51 @@ func parseUnitLines(text string, running []Provider, userFor func(unit string) s
 			continue
 		}
 		// Skip units already backed by a running process (matched by unit
-		// name via the provider's Unit field, set below).
-		if unitIn(running, unit) {
+		// name via the provider's Unit field, set below).  Also catches
+		// duplicates from user-level systemd where attachUnits cannot
+		// parse the cgroup to set Unit — falls back to state-dir match.
+		if alreadyBackedByRunning(running, unit, userFor) {
 			continue
 		}
 		if seen[unit] {
 			continue
 		}
 		seen[unit] = true
-		out = append(out, providerFromUnit(unit, userFor(unit)))
+		binary := ""
+		if binaryFor != nil {
+			binary = binaryFor(unit)
+			// Corroborate the name match against what the unit actually
+			// runs. Matching on name alone requires a deny-list of every
+			// sibling program that shares the provider prefix (update,
+			// dashboard, sentinel, ...), which is unbounded: each new one is
+			// a fresh false positive that floods the same-user candidate
+			// list and blocks narrowToAccessible's auto-pick, as
+			// provider-dashboard did on 2026-08-17 and urnetwork-sentinel
+			// did on 2026-09-09. ExecStart is evidence rather than a guess,
+			// so where it is readable it decides. Where it is not (empty),
+			// require a .urnetwork state dir as secondary evidence — a
+			// name-only match is not enough when we cannot verify the
+			// binary (prevents urnetwork-rebind-*, urnetwork-custom-*, etc.
+			// from appearing as phantom providers).
+			if binary != "" && !isProviderArg(binary) {
+				continue
+			}
+			if binary == "" {
+				// ExecStart not readable.  An exact name match
+				// (e.g. "urnetwork") is a provider by definition;
+				// a prefix match (e.g. "urnetwork-rebind-*") needs
+				// corroborating evidence — require a .urnetwork
+				// state dir.  Prevents phantom providers from
+				// non-provider siblings that share the prefix.
+				if !isExactProviderBinary(unit) {
+					user := userFor(unit)
+					if sd := unitStateDir(user); !dirExists(sd) {
+						continue
+					}
+				}
+			}
+		}
+		out = append(out, providerFromUnit(unit, userFor(unit), binary))
 	}
 	return out
 }
@@ -373,7 +488,16 @@ func discoverUserUnits(running []Provider) []Provider {
 		if err != nil {
 			continue // no session bus / user manager for this user
 		}
-		out = append(out, parseUnitLines(string(b), running, func(string) string { return user })...)
+		// Same systemctl scope the listing above used, so ExecStart is
+		// read from the manager that actually owns the unit.
+		scope := []string{"--user"}
+		if user != current {
+			scope = append(scope, "-M", user+"@")
+		}
+		out = append(out, parseUnitLines(string(b), running,
+			func(string) string { return user },
+			func(unit string) string { return parseExecStartPath(unitProperty(scope, unit, "ExecStart")) },
+		)...)
 	}
 	return out
 }

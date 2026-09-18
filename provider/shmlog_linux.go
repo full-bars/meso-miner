@@ -9,12 +9,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 const (
-	shmLogPath      = "/dev/shm/urnetwork.log"
-	shmLogMaxSize   = 5 * 1024 * 1024 // 5MB target cap
-	shmLogTrimRatio = 3               // keep newest 1/trimRatio, discard oldest (trimRatio-1)/trimRatio
+	shmLogPath    = "/dev/shm/urnetwork.log"
+	shmLogMaxSize = 5 * 1024 * 1024 // 5MB target cap
+	// keep the newest (trimRatio-1)/trimRatio, discard the oldest 1/trimRatio
+	shmLogTrimRatio = 3
 
 	// Second, smaller buffer holding ONLY high-value lines (see
 	// isImportantLogLine) so the earnings/health signal survives for hours
@@ -30,6 +33,36 @@ const (
 // concurrency-safe (tests restore it via defer; keep t.Parallel out of the
 // shmlog tests).
 var ramlogsDockerEnvPath = "/.dockerenv"
+
+// ramlogOrigStdout and ramlogOrigStderr are close-on-exec copies of the
+// descriptors stdout and stderr pointed at before initSHMLogger replaced them
+// with the ramlog pipe; -1 until then. restoreStdioBeforeExec hands them back.
+var ramlogOrigStdout, ramlogOrigStderr = -1, -1
+
+// dupCloseOnExec duplicates fd with FD_CLOEXEC set atomically, so the copy
+// never leaks into a child process.
+func dupCloseOnExec(fd int) (int, error) {
+	return unix.FcntlInt(uintptr(fd), unix.F_DUPFD_CLOEXEC, 0)
+}
+
+// restoreFD points target at the file behind saved. dup2 leaves target
+// without FD_CLOEXEC, so it survives an execve.
+func restoreFD(saved, target int) {
+	if saved >= 0 {
+		_ = dup2(saved, target)
+	}
+}
+
+// restoreStdioBeforeExec points stdout and stderr back at what they were
+// before the ramlog redirect, for an in-place execve (Docker HotSwap). The
+// ramlog pipe is drained by a goroutine in this process, which exec throws
+// away; left in place, the new image's first write dies of SIGPIPE before it
+// logs anything, and the container's start script restarts it after its crash
+// backoff. The new image sets up its own ramlog pipe as usual.
+func restoreStdioBeforeExec() {
+	restoreFD(ramlogOrigStdout, int(os.Stdout.Fd()))
+	restoreFD(ramlogOrigStderr, int(os.Stderr.Fd()))
+}
 
 // shmInitOnce ensures initSHMLogger's banners, dup2, and goroutines are
 // set up exactly once, even when called from multiple code paths (e.g.
@@ -70,8 +103,12 @@ func ramlogsTailHintWithTemplate() string {
 
 func initSHMLogger() {
 	shmInitOnce.Do(func() {
-		// O_APPEND preserves log across restarts so post-mortem analysis is possible.
-		f, err := os.OpenFile(shmLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		// O_APPEND preserves log across restarts so post-mortem analysis is
+		// possible. O_RDWR rather than O_WRONLY because the trimmer below has
+		// to read the newest portion back out before truncating; on a
+		// write-only descriptor that read fails with EBADF and the trim
+		// destroys the history it is supposed to keep.
+		f, err := os.OpenFile(shmLogPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "failed to open shm log: %v\n", err)
 			return
@@ -98,13 +135,23 @@ func initSHMLogger() {
 			return
 		}
 
+		// Keep the original stdout/stderr for restoreStdioBeforeExec.
+		if fd, err := dupCloseOnExec(int(os.Stdout.Fd())); err == nil {
+			ramlogOrigStdout = fd
+		}
+		if fd, err := dupCloseOnExec(int(os.Stderr.Fd())); err == nil {
+			ramlogOrigStderr = fd
+		}
+
 		dup2(int(w.Fd()), int(os.Stdout.Fd()))
 		dup2(int(w.Fd()), int(os.Stderr.Fd()))
 
 		var fMu sync.Mutex
 
 		// Second buffer: high-value lines only. Best-effort; nil disables mirroring.
-		fImp, impErr := os.OpenFile(shmImportantLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		// O_RDWR for the same reason as the main log: the trimmer reads before
+		// it truncates.
+		fImp, impErr := os.OpenFile(shmImportantLogPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 		if impErr != nil {
 			fmt.Fprintf(os.Stderr, "failed to open important shm log: %v\n", impErr)
 			fImp = nil
@@ -163,17 +210,14 @@ func initSHMLogger() {
 				for {
 					time.Sleep(5 * time.Second)
 					fImpMu.Lock()
-					fi, err := fImp.Stat()
-					if err == nil && fi.Size() > shmImportantLogMaxSize {
-						keep := fi.Size() * (shmLogTrimRatio - 1) / shmLogTrimRatio
-						b := make([]byte, keep)
-						fImp.ReadAt(b, fi.Size()-keep)
-						fImp.Truncate(0)
-						fImp.Seek(0, 0)
-						fImp.Write(b)
+					err := trimRAMLog(fImp, shmImportantLogMaxSize, shmLogTrimRatio)
+					if err == nil {
+						fImp.Sync()
 					}
-					fImp.Sync()
 					fImpMu.Unlock()
+					if err != nil {
+						reportTrimFailure(&impTrimWarned, &impTrimWarnTime, shmImportantLogPath, err)
+					}
 				}
 			}()
 		}
@@ -187,16 +231,11 @@ func initSHMLogger() {
 			for {
 				time.Sleep(5 * time.Second)
 				fMu.Lock()
-				fi, err := f.Stat()
-				if err == nil && fi.Size() > shmLogMaxSize {
-					keep := fi.Size() * (shmLogTrimRatio - 1) / shmLogTrimRatio
-					b := make([]byte, keep)
-					f.ReadAt(b, fi.Size()-keep)
-					f.Truncate(0)
-					f.Seek(0, 0)
-					f.Write(b)
-				}
+				err := trimRAMLog(f, shmLogMaxSize, shmLogTrimRatio)
 				fMu.Unlock()
+				if err != nil {
+					reportTrimFailure(&mainTrimWarned, &mainTrimWarnTime, shmLogPath, err)
+				}
 			}
 		}()
 

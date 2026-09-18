@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -18,16 +19,18 @@ import (
 
 // controlRequest is one line of the control socket protocol.
 type controlRequest struct {
-	Cmd    string `json:"cmd"` // "set", "clear", "get", or "history"
-	Key    string `json:"key"`
+	Cmd    string `json:"cmd"` // "set", "clear", "get", "status", or "history"
+	Key    string `json:"key,omitempty"`
 	Value  string `json:"value,omitempty"`
 	Limit  int    `json:"limit,omitempty"`
 	Cursor string `json:"cursor,omitempty"`
 }
 
 // AuditEntry mirrors the provider's CommandAudit for JSON wire format.
+// The provider serialises Timestamp as an RFC3339 string (time.Time),
+// so we accept it as a string here rather than int64.
 type AuditEntry struct {
-	Timestamp int64  `json:"timestamp"`
+	Timestamp string `json:"timestamp"`
 	Cmd       string `json:"cmd"`
 	Key       string `json:"key"`
 	Value     string `json:"value"`
@@ -35,15 +38,36 @@ type AuditEntry struct {
 	OK        bool   `json:"ok"`
 }
 
+// SettingInfo is the per-key detail returned by the "status" command.
+type SettingInfo struct {
+	Value  string `json:"value"`
+	Source string `json:"source"`
+	SetAt  string `json:"set_at,omitempty"`
+}
+
 // controlResponse is one line response from the control socket.
 type controlResponse struct {
-	OK           bool         `json:"ok"`
-	Value        string       `json:"value,omitempty"`
-	Found        bool         `json:"found,omitempty"`
-	Error        string       `json:"error,omitempty"`
-	NeedsRestart bool         `json:"needs_restart,omitempty"`
-	Entries      []AuditEntry `json:"entries,omitempty"`
-	NextCursor   string       `json:"next_cursor,omitempty"`
+	OK           bool                   `json:"ok"`
+	Value        string                 `json:"value,omitempty"`
+	Found        bool                   `json:"found,omitempty"`
+	Error        string                 `json:"error,omitempty"`
+	NeedsRestart bool                   `json:"needs_restart,omitempty"`
+	Entries      []AuditEntry           `json:"entries,omitempty"`
+	NextCursor   string                 `json:"next_cursor,omitempty"`
+	Settings     map[string]SettingInfo `json:"settings,omitempty"`
+	// StartupValues maps restart-required keys to the values the running
+	// provider actually started with (from env vars set at startup).
+	// The dashboard compares these against current control-state values
+	// to decide whether a restart banner is warranted.
+	StartupValues map[string]string `json:"startup_values,omitempty"`
+	// BuildVersion is the provider's own release version, answered by the
+	// "version" command. Mirrors the provider-side field of the same name.
+	BuildVersion string `json:"build_version,omitempty"`
+	// MetricsAddrs are the addresses the provider's /metrics listens on,
+	// answered by "status". Empty when metrics is off or the provider
+	// predates the field.
+	MetricsAddrs []string `json:"metrics_addrs,omitempty"`
+	Raw          []byte   `json:"-"`
 }
 
 // pendingOp is an entry in ~/.urnetwork/pending_overrides.json.
@@ -86,6 +110,9 @@ var controlKeyCanonical = map[string]string{
 	"profile":                     "profile",
 	"ramlogs":                     "ramlogs",
 	"ram-logs":                    "ramlogs",
+	"metrics":                     "metrics",
+	"metrics_listen":              "metrics_listen",
+	"metrics-listen":              "metrics_listen",
 }
 
 // canonicalControlKey resolves any user-supplied key name to the socket's
@@ -134,6 +161,19 @@ func validateControlValue(canonicalKey, value string) error {
 		default:
 			return fmt.Errorf("hot_restart: must be on or off (got %q)", value)
 		}
+	case "metrics":
+		switch strings.ToLower(value) {
+		case "on", "off":
+		default:
+			return fmt.Errorf("metrics: must be on or off (got %q)", value)
+		}
+	case "metrics_listen":
+		if strings.EqualFold(value, "auto") || strings.EqualFold(value, "off") {
+			return nil
+		}
+		if ap, err := netip.ParseAddrPort(value); err != nil || ap.Port() == 0 {
+			return fmt.Errorf("metrics_listen: must be auto or an IP address with a port, like 100.64.0.10:9100 or 0.0.0.0:9100 (got %q)", value)
+		}
 	case "ramlogs":
 		switch strings.ToLower(value) {
 		case "on", "off", "1", "0", "true", "false":
@@ -151,13 +191,16 @@ func validateControlValue(canonicalKey, value string) error {
 			return fmt.Errorf("gomemlimit: invalid byte count %q: %w", value, err)
 		}
 	case "gogc":
-		if value != "off" {
+		// "off" clears the override, as it does for every tuning key.
+		// "disabled" is the distinct value that turns collection off, so a
+		// plain "off" can never hand an operator an unbounded heap.
+		if !strings.EqualFold(value, "off") && !strings.EqualFold(value, "disabled") {
 			n, err := strconv.Atoi(value)
 			if err != nil {
-				return fmt.Errorf("gogc: must be an integer percentage or 'off' (got %q)", value)
+				return fmt.Errorf("gogc: must be an integer percentage, 'off' to clear, or 'disabled' to turn collection off (got %q)", value)
 			}
 			if n < 0 {
-				return fmt.Errorf("gogc: must be a non-negative percentage or 'off' (got %q)", value)
+				return fmt.Errorf("gogc: must be a non-negative percentage, 'off' to clear, or 'disabled' to turn collection off (got %q)", value)
 			}
 		}
 	}
@@ -212,10 +255,36 @@ func sendSocketRequest(sockPath string, req controlRequest) (controlResponse, er
 		return controlResponse{}, err
 	}
 	var resp controlResponse
-	if err := json.NewDecoder(bufio.NewReader(conn)).Decode(&resp); err != nil {
+	reader := bufio.NewReader(conn)
+	line, err := reader.ReadBytes('\n')
+	if err != nil && len(line) == 0 {
 		return controlResponse{}, err
 	}
+	if err := json.Unmarshal(line, &resp); err != nil {
+		return controlResponse{}, err
+	}
+	resp.Raw = line
 	return resp, nil
+}
+
+// controlSocketPath returns ~/.urnetwork/provider.sock — the default Unix
+// domain socket path for the provider control plane.
+func controlSocketPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".urnetwork", "provider.sock"), nil
+}
+
+// dialControlSocket connects to the provider's control socket
+// (~/.urnetwork/provider.sock), sends the given request, and decodes the response.
+func dialControlSocket(req controlRequest) (controlResponse, error) {
+	sockPath, err := controlSocketPath()
+	if err != nil {
+		return controlResponse{}, err
+	}
+	return sendSocketRequest(sockPath, req)
 }
 
 // controlSocketReachable reports whether the provider's control socket
@@ -417,4 +486,31 @@ func queryControlOverride(p Provider, canonicalKey string) (value string, source
 	}
 
 	return "", "", false, nil
+}
+
+// providerVersionFromSocket asks a running provider what version it is, over
+// its own control socket.
+//
+// This is the only source that answers the question directly. Every other one
+// infers it from the filesystem and can be wrong in a way the caller cannot
+// detect: buildinfo is empty on -trimpath release builds, and reading or
+// exec'ing a path is answering "what is on disk under this name?" — which an
+// update's binary swap changes underneath a running process, and which a
+// local user can point somewhere else. The socket is bound by the process
+// itself inside its own state dir, so a reply can only have come from the
+// provider that owns it.
+//
+// Returns ok=false when the provider is too old to know the command, when the
+// socket is not bound, or on any transport error. Callers fall back rather
+// than treat a miss as "no version".
+func providerVersionFromSocket(p Provider) (string, bool) {
+	if p.StateDir == "" {
+		return "", false
+	}
+	sockPath := filepath.Join(p.StateDir, "provider.sock")
+	resp, err := sendSocketRequest(sockPath, controlRequest{Cmd: "version"})
+	if err != nil || !resp.OK || resp.BuildVersion == "" {
+		return "", false
+	}
+	return resp.BuildVersion, true
 }
