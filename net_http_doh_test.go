@@ -509,10 +509,29 @@ func TestDohStatsSeededOrdering(t *testing.T) {
 
 	cache := NewDohCache(settings)
 
-	// the seeded server must lead the ordering
-	ordered := cache.stats.order([]string{fast.URL, slow.URL})
-	if ordered[0] != slow.URL {
-		t.Fatalf("seeded server should lead ordering, got %v", ordered)
+	// the seed must land on the seeded server's own URL and nowhere else
+	seeded := cache.stats.scores()
+	if seeded[slow.URL] <= 0 {
+		t.Fatalf("seeded server has no score after seeding: %v", seeded)
+	}
+	if _, ok := seeded[fast.URL]; ok {
+		t.Fatalf("unseeded server picked up a score: %v", seeded)
+	}
+
+	// order is a weighted random permutation, not a sort: the unseeded
+	// server keeps the exploration floor, so with weights of about 8.05 vs
+	// 0.05 it leads roughly 0.6% of draws. A single draw asserting the
+	// seeded server leads therefore failed about one run in 160. Assert the
+	// bias over many draws instead, as TestServerStatsOrderBias does.
+	const samples = 2000
+	seededFirst := 0
+	for i := 0; i < samples; i++ {
+		if cache.stats.order([]string{fast.URL, slow.URL})[0] == slow.URL {
+			seededFirst++
+		}
+	}
+	if seededFirst < samples*95/100 {
+		t.Fatalf("seeded server should lead the ordering: led %d/%d draws", seededFirst, samples)
 	}
 
 	// a live query records the winner under its own URL; it must never be
