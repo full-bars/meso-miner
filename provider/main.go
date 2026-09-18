@@ -161,9 +161,28 @@ func paceMonitor(ctx context.Context) {
 // -ldflags "-X main.Version=$WARP_VERSION-$WARP_VERSION_CODE"
 var Version string
 
+// VersionStamp is an alternative version marker embedded as program data
+// (not buildinfo). Unlike -ldflags main.Version which is stripped by
+// -trimpath, VersionStamp survives because it is a Go string literal written
+// into the binary's data segment. urnet-tools reads this via a file grep
+// when buildinfo is empty (the -trimpath case), enabling version detection
+// on stopped providers and fixing the false "failed to update" on
+// v30.9 -> v31 upgrades.
+// Set via: -ldflags "-X main.VersionStamp=URNET_VERSION_STAMP=$VERSION"
+var VersionStamp string
+
+// VersionStampRef prevents the linker from dead-code eliminating VersionStamp
+// when -trimpath strips buildinfo. The stamp is read by urnet-tools from the
+// binary file to detect the provider version without executing it.
 func init() {
 	// debug.SetGCPercent(10)
 
+	// Must run before initGlog(): initGlog reads URNETWORK_PROFILE/
+	// URNETWORK_RAMLOGS from the environment to make its one-shot,
+	// unrepeatable decision about redirecting stdout/stderr to a ramlog.
+	// See startup_env_seed.go for why this can't just be a later call in
+	// provide() the way every other control-socket key works.
+	seedEnvFromControlState()
 	initGlog()
 
 	// initPprof()
@@ -339,9 +358,28 @@ func applyTurboSettings(clientSettings *connect.ClientSettings, localUserNatSett
 	// Faster contract ramp: reach StandardContractTransferByteCount in 3 contracts instead of 4
 	clientSettings.ContractManagerSettings.ContractTransferByteSeqScale = 3
 
-	if os.Getenv("GOGC") == "" {
+	if os.Getenv("GOGC") == "" && !persistedRuntimeTuningActive("gogc") {
 		debug.SetGCPercent(200)
 	}
+}
+
+// applyTurboMemoryLimit sets GOMEMLIMIT to 80% of effective RAM for the
+// turbo profiles, unless an operator-explicit value already wins: the
+// GOMEMLIMIT env var, --max-memory, or a persisted control-socket
+// gomemlimit (see persistedRuntimeTuningActive for the full precedence
+// order). Called on every provideWithProxy invocation (once per proxy), so
+// this guard has to be checked every time, not just at startup — the first
+// version of this code only checked the env var and silently clobbered a
+// persisted gomemlimit back to the turbo default on the next proxy add.
+func applyTurboMemoryLimit(profile string, maxMemory connect.ByteCount) {
+	if profile != "turbo-v4" && profile != "turbo-v8" {
+		return
+	}
+	if os.Getenv("GOMEMLIMIT") != "" || maxMemory != 0 || persistedRuntimeTuningActive("gomemlimit") {
+		return
+	}
+	ramBytes := detectEffectiveRAMLimitBytes()
+	debug.SetMemoryLimit(ramBytes * 80 / 100)
 }
 
 // applyPoolAutoSize scales the message pool free-list capacity to RAM/32 at
@@ -375,13 +413,14 @@ func applyEcoSettings(maxMemory connect.ByteCount) {
 		return
 	}
 
-	if os.Getenv("GOGC") == "" {
+	if os.Getenv("GOGC") == "" && !persistedRuntimeTuningActive("gogc") {
 		debug.SetGCPercent(50)
 	}
 
-	// Only set GOMEMLIMIT if neither --max-memory nor the GOMEMLIMIT env var
-	// were provided explicitly; those take precedence.
-	if os.Getenv("GOMEMLIMIT") == "" && maxMemory == 0 {
+	// Only set GOMEMLIMIT if neither --max-memory, the GOMEMLIMIT env var,
+	// nor a persisted control-socket value were provided explicitly; those
+	// take precedence (see persistedRuntimeTuningActive for the full order).
+	if os.Getenv("GOMEMLIMIT") == "" && maxMemory == 0 && !persistedRuntimeTuningActive("gomemlimit") {
 		ramBytes := detectEffectiveRAMLimitBytes()
 		ecoLimit := ramBytes * 75 / 100
 		debug.SetMemoryLimit(ecoLimit)
@@ -543,8 +582,27 @@ func jwtContainsClientId(byJwt string) bool {
 }
 
 // hotRestartEnabled reports whether persisted client JWTs should be reused
-// across process restarts. On by default unless URNETWORK_HOT_RESTART=0.
+// across process restarts. Checks the control-socket state first (see
+// control_state.go — `urnet-tools hot-restart on|off`), then the
+// URNETWORK_HOT_RESTART env var (systemd override.conf, historically the
+// only way to set this). On by default unless disabled by either. The client
+// accepts on/off/1/0/true/false/yes/no for the hot_restart key
+// (validateControlValue), so treat any recognized "off" form — and only those
+// — as disabled; everything else stays on, matching the historical
+// URNETWORK_HOT_RESTART != "0" default-on semantics.
 func hotRestartEnabled() bool {
+	if v, ok := globalControlState.get("hot_restart"); ok {
+		switch v {
+		case "off", "0", "false", "no":
+			return false
+		case "on", "1", "true", "yes":
+			return true
+		default:
+			// Unknown stored value: don't silently flip behavior off a bad
+			// write; keep the historical default-on baseline.
+			return true
+		}
+	}
 	return os.Getenv("URNETWORK_HOT_RESTART") != "0"
 }
 
@@ -843,20 +901,30 @@ func main() {
 	// If in auto mode and RAM logs aren't already explicitly on, we audit the disk speed
 	// BEFORE initializing the logger. This allows us to auto-enable it.
 	autoRamLogTriggered := false
+	finishAudit := bannerPhase("System audit")
 	if profile == "auto" && isLongRunningSubcommand() {
 		manualRamLogs := (ramlogs == "1")
 		slowDisk, _ := RunStartupAudit()
 		if slowDisk && !manualRamLogs {
-			tlog("[audit] Disk speed is suboptimal. Auto-enabling RAM logs for performance.\n")
-			os.Setenv("URNETWORK_RAMLOGS", "1")
+			finishAudit("slow disk → auto RAM logs", "⚠")
 			autoRamLogTriggered = true
+		} else {
+			detail := "disk OK"
+			if slowDisk {
+				detail = "slow disk (RAM logs manually set)"
+			}
+			finishAudit(detail)
 		}
 	} else if isLongRunningSubcommand() {
-		// Even if not in auto, run audit for visibility
 		RunStartupAudit()
+		finishAudit("manual profile")
+	} else {
+		finishAudit("not long-running")
 	}
 
+	finishInit := bannerPhase("Logger init")
 	initGlog()
+	finishInit("glog + stderr")
 
 	// If auto-tuner enabled RAM logs, perform the countdown handover now.
 	// Only for the long-running provide process — see isLongRunningSubcommand.
@@ -1064,7 +1132,9 @@ Options:
 	} else if provide_, _ := opts.Bool("provide"); provide_ {
 		provide(opts)
 	} else if authProvide, _ := opts.Bool("auth-provide"); authProvide {
-		auth(opts)
+		if os.Getenv(EnvHotSwap) != "1" {
+			auth(opts)
+		}
 		provide(opts)
 	} else if logs, _ := opts.Bool("logs"); logs {
 		providerLogs(opts)
@@ -1216,7 +1286,7 @@ func auth(opts docopt.Opts) {
 		if err := os.MkdirAll(urNetworkDir, 0700); err != nil {
 			shmLogFatal(16, "could not create %s: %v", urNetworkDir, err)
 		}
-		if err := atomicWriteFile(jwtPath, []byte(byJwt), 0700); err != nil {
+		if err := atomicWriteFile(jwtPath, []byte(byJwt), 0600); err != nil {
 			shmLogFatal(17, "could not write jwt to %s: %v", jwtPath, err)
 		}
 		fmt.Printf("Jwt written to %s\n", jwtPath)
@@ -1564,7 +1634,7 @@ func runEarningWindows(ctx context.Context) {
 				c.PQELifetime, c.ClasLifetime,
 				c.PQEHour, c.ClasHour, c.PQEDay, c.ClasDay, c.PQEWeek, c.ClasWeek)
 			allPQE, allClas, _, _, _, _, _ := lifetimeStore.Snapshot()
-			tlog("🔐 [pqe] all-time (persists across restarts): pqe=%d classical=%d\n", allPQE, allClas)
+			tlog("🔐 [pqe] all-time: pqe=%d classical=%d\n", allPQE, allClas)
 		}
 
 		if connect.ProxyHealthCount() == 0 {
@@ -1583,6 +1653,13 @@ func runEarningWindows(ctx context.Context) {
 		// sees the same liveness signal the [earn] log reports in aggregate,
 		// but keyed by proxy address (delta-based, never cumulative).
 		globalPerProxyEarnTracker.Update(bw)
+
+		// Fold the same snapshot into the persistent earnings history.
+		// Unlike the liveness tracker above, this one never prunes an
+		// address that leaves the snapshot: an offline proxy still has an
+		// earnings record, and that record is the whole point of the store.
+		globalProxyEarningsStore.Observe(bw, time.Now())
+		globalProxyEarningsStore.MaybeSave(time.Now())
 
 		var cum uint64
 		for _, p := range bw {
@@ -1870,6 +1947,10 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	// poolHealth carries the idle-floor history across ticks so the pool line
+	// can report a trend rather than an instant.
+	poolHealth := newPoolHealthWindow(interval)
+
 	// deadConfirmDelay gates confirmed-dead event logging until one pulse cycle has
 	// elapsed, so the startup ramp is not recorded as dead.
 	const deadConfirmDelay = 65 * time.Minute
@@ -1904,12 +1985,48 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		sysMiB := metricBytesToMiB("/memory/classes/total:bytes", samples[1].Value)
 		uptime := time.Since(startTime).Truncate(time.Second)
 		dohFailures := connect.GetDohFailureCount()
+
+		// Build identity leads the block: every other line in a tick is only
+		// interpretable once you know which build produced it, and an operator
+		// reading a tail or a pasted log excerpt has no other way to tell.
+		buildVersion := RequireVersion()
+		if buildVersion == "" {
+			buildVersion = "unknown"
+		}
+		buildLine := fmt.Sprintf("🏷️ [health][build] %s profile=%s", buildVersion, profile)
+		if host := heartbeatHostLabel(); host != "" {
+			buildLine += fmt.Sprintf(" host=%s", host)
+		}
+		tlog("%s\n", buildLine)
+
 		healthLine := fmt.Sprintf("❤️ [health] uptime=%s profile=%s heap=%dMiB sys=%dMiB goroutines=%d connections=%d proxies=%d",
 			uptime, profile, heapMiB, sysMiB, runtime.NumGoroutine(), connect.ActiveConnectionCount(), connect.ActiveProxyConnections())
 		if dohFailures > 0 {
 			healthLine += fmt.Sprintf(" dns_failures=%d", dohFailures)
 		}
 		tlog("%s\n", healthLine)
+
+		// Message-pool heartbeat: one aggregated line per tick, written so an
+		// operator who has never read message_pool.go can act on it. See
+		// pool_health.go for why the idle floor is the signal and the return
+		// percentage is only context.
+		if pools := connect.MessagePoolSummary(); pools != nil {
+			var totalTaken, totalReturned, totalCreated uint64
+			for _, b := range pools {
+				totalTaken += b.Taken
+				totalReturned += b.Returned
+				totalCreated += b.Created
+			}
+			if totalTaken > 0 {
+				var inUse uint64
+				if totalTaken >= totalReturned {
+					inUse = totalTaken - totalReturned
+				}
+				reading := poolHealth.observe(inUse, totalCreated, interval)
+				tlog("❤️ [health][pool] %s\n",
+					poolHealthLine(reading, inUse, totalCreated, totalTaken, totalReturned))
+			}
+		}
 
 		if connect.ProxyHealthCount() == 0 {
 			continue // non-proxy mode: no [health][proxies] lines
@@ -2340,6 +2457,9 @@ func runJWTRefresher(ctx context.Context, apiUrl string) {
 	defer ticker.Stop()
 
 	for {
+		if isHotSwapDraining.Load() {
+			return
+		}
 		byJwtBytes, err := os.ReadFile(jwtPath)
 		if err != nil {
 			if !os.IsNotExist(err) {
@@ -2397,7 +2517,7 @@ func runJWTRefresher(ctx context.Context, apiUrl string) {
 				newJwt, err := refreshJWT(ctx, apiUrl, byJwt)
 				if err != nil {
 					tlog("🔑 [jwt] refresh FAILED: %v — keeping existing JWT (will retry in 1h)\n", err)
-				} else if err := atomicWriteFile(jwtPath, []byte(newJwt), 0700); err != nil {
+				} else if err := atomicWriteFile(jwtPath, []byte(newJwt), 0600); err != nil {
 					tlog("🔑 [jwt] refresh FAILED on disk write: %v — keeping existing JWT in memory (will retry in 1h)\n", err)
 				} else {
 					now := time.Now()
@@ -2659,14 +2779,39 @@ func provide(opts docopt.Opts) {
 	provideStartTime = time.Now()
 
 	// Apply a staged session (from `urnet-tools session load`) before
-	// loading any identity or starting transports. The staging dir and
-	// marker file are written by the shell wrapper; the provider's job
-	// is to atomically swap them in on the next startup.
-	applyStagedSession()
+	// loading any identity or starting transports. Skip when running as
+	// a HotSwap candidate so the candidate preserves the parent's active session.
+	if os.Getenv(EnvHotSwap) != "1" {
+		applyStagedSession()
+	}
 
-	tlog("❤️ [startup] provider version=%s\n", RequireVersion())
-	host, _ := os.Hostname()
-	critLog("STARTUP: version=%s pid=%d host=%s", RequireVersion(), os.Getpid(), host)
+	// HotSwap Candidate check: if running as a candidate child, execute pre-flight checks
+	// and announce readiness to parent via IPC before starting transports.
+	var isHotSwapCandidate bool
+	var hotSwapIPC io.ReadWriteCloser
+	var candidateAckOnce sync.Once
+	if ipcFile, isChild := getHotSwapChildIPC(); isChild {
+		isHotSwapCandidate = true
+		metricsHandoffPending.Store(true)
+		hotSwapIPC = ipcFile
+		defer hotSwapIPC.Close()
+		if err := runHotSwapChildHandshake(hotSwapIPC, opts, apiUrl); err != nil {
+			tlog("❌ [hotswap] Candidate pre-flight failed: %v\n", err)
+			os.Exit(2)
+		}
+	}
+
+	if !isHotSwapCandidate {
+		finishIdentity := bannerPhase("Identity")
+		host, _ := os.Hostname()
+		critLog("STARTUP: version=%s pid=%d host=%s", RequireVersion(), os.Getpid(), host)
+		if VersionStamp != "" {
+			tlog("[startup] version stamp: %s", VersionStamp)
+		}
+		finishIdentity(RequireVersion())
+	} else {
+		tlog("⚡ [hotswap] Candidate PID %d promoted to live provider (version=%s)\n", os.Getpid(), RequireVersion())
+	}
 
 	// Log JWT expiry status at startup
 	home, _ := os.UserHomeDir()
@@ -2702,10 +2847,91 @@ func provide(opts docopt.Opts) {
 		rawCancel()
 	}
 	defer cancel()
+
+	// Listen for SIGUSR2 to initiate in-process HotSwap handoff (Unix).
+	// Only arm listener if running as live provider, not while acting as candidate.
+	if !isHotSwapCandidate {
+		startHotSwapSignalListener(ctx, cancel, opts)
+		// Wire the control socket "hotswap" command so urnet-tools can
+		// trigger a handoff on any platform (including Windows, which has
+		// no SIGUSR2).
+		hotSwapTrigger = func() error {
+			return runHotSwapParentHandoff(ctx, cancel, opts)
+		}
+	}
+
 	// Drain buffered retention events before exit so a shutdown racing the
 	// writer goroutine doesn't drop the tail of the log (proxy_health_log.go).
 	defer flushRetentionEvents()
+
+	// Load any settings a previous run of this provider persisted via the
+	// control socket, then open the socket so `urnet-tools` can change them
+	// live without a restart. The provider is the only writer of
+	// provider_state.json; a load failure here just means we start with no
+	// socket-set overrides (every resolve* function falls back to its legacy
+	// file / startup default), not a fatal error.
+	finishControl := bannerPhase("Control state")
+	if loaded, err := loadControlState(); err != nil {
+		tlog("[control] failed to load provider_state.json, starting with no socket-set overrides: %s\n", err)
+		finishControl("loaded (no overrides)", "⚠")
+	} else {
+		globalControlState = loaded
+		finishControl("loaded")
+	}
+	// Apply anything urnet-tools queued while this provider wasn't running
+	// (e.g. `urnet-tools set` on a freshly-installed box) before opening the
+	// socket for new commands. This must run in the normal startup path —
+	// not just the HotSwap candidate path (see merge in hotswap branch).
+	mergePendingOverrides(globalControlState)
+	applyPersistedRuntimeTuning(globalControlState)
 	initPersistentErrors()
+	initAuditRing()
+	// The cancel function is captured by the control socket's "shutdown"
+	// command so a client can request graceful shutdown remotely.
+	globalControlState.shutdownFn = cancel
+	var cleanupControlSocket func()
+	if !isHotSwapCandidate {
+		var err error
+		cleanupControlSocket, err = startControlSocket(ctx, globalControlState)
+		if err != nil {
+			tlog("[control] failed to start control socket, urnet-tools will fall back to file-based overrides: %s\n", err)
+		} else {
+			defer func() {
+				if cleanupControlSocket != nil {
+					cleanupControlSocket()
+				}
+			}()
+			unregSocketCloser := RegisterCoordinatorCloser(func() {
+				if cleanupControlSocket != nil {
+					cleanupControlSocket()
+					cleanupControlSocket = nil
+				}
+			})
+			defer unregSocketCloser()
+		}
+	}
+
+	// Startup barrier. The provider is now self-managing: control state is
+	// loaded, anything urnet-tools queued while it was stopped has been
+	// drained, and the control socket is bound. Everything past this point is
+	// retry loops that supervise themselves, so startup is complete in the
+	// only sense systemd asks about.
+	//
+	// This deliberately does NOT wait for a proxy to authenticate. See
+	// notifySystemdReady for the full reasoning; the short version is that
+	// proxy auth can back off for hours, so gating READY on it would make a
+	// Type=notify start time out and fail during an API outage.
+	// Proxy health is reported continuously via STATUS= instead.
+	//
+	// The HotSwap candidate path sends its own READY after takeover completes
+	// (see candidateAckOnce below). sd_notify READY is idempotent, so a second
+	// send is harmless and the two paths do not need to coordinate.
+	if !isHotSwapCandidate {
+		if err := notifySystemdReady(); err != nil {
+			tlog("[systemd] READY=1 notify failed: %s\n", err)
+		}
+		reportProxyStatusToSystemd()
+	}
 
 	// Exit-visibility: log what triggered the shutdown. The wrapped cancel
 	// function captures a stack trace at the moment it is first invoked. If
@@ -2766,6 +2992,7 @@ func provide(opts docopt.Opts) {
 	}
 
 	go connect.HandleError(func() { runHealthHeartbeat(ctx, provideStartTime, os.Getenv("URNETWORK_PROFILE")) })
+	_ = watcherName // hub reporter display name; hub reporting is stripped on meso-miner
 	go connect.HandleError(func() { runJWTRefresher(ctx, apiUrl) })
 	go connect.HandleError(func() { runEarningWindows(ctx) })
 	go connect.HandleError(func() { runLifetimeCollector(ctx) })
@@ -2825,11 +3052,7 @@ func provide(opts docopt.Opts) {
 
 		profile := os.Getenv("URNETWORK_PROFILE")
 
-		if (profile == "turbo-v4" || profile == "turbo-v8") &&
-			os.Getenv("GOMEMLIMIT") == "" && maxMemory == 0 {
-			ramBytes := detectEffectiveRAMLimitBytes()
-			debug.SetMemoryLimit(ramBytes * 80 / 100)
-		}
+		applyTurboMemoryLimit(profile, maxMemory)
 		applyEcoSettings(maxMemory)
 		ensureMemoryLimit(maxMemory)
 		localUserNatSettings.TcpBufferSettings.ConnectSettings = clientStrategySettings.ConnectSettings
@@ -3200,23 +3423,24 @@ func provide(opts docopt.Opts) {
 		registerEncryptionManager(connectClient.EncryptionSessionManager())
 
 		// Persist the live identity material so the next process
-		// start loads the same values. On a fresh install both
-		// reads above returned empty and the connect.Client just
-		// generated; on subsequent starts we're writing back the
-		// same bytes (cheap no-op-equivalent).
-		if keyManager := connectClient.ClientKeyManager(); keyManager != nil {
-			if seed := keyManager.Seed(); 0 < len(seed) {
-				if err := writeProviderClientKeySeed(seed); err != nil {
-					fmt.Printf("provider client key save failed: %s\n", err)
+		// start loads the same values. Skip when running as a HotSwap
+		// candidate: the parent has already persisted these, and writing
+		// from two live processes risks stale-map overwrites (F-9).
+		if !isHotSwapCandidate {
+			if keyManager := connectClient.ClientKeyManager(); keyManager != nil {
+				if seed := keyManager.Seed(); 0 < len(seed) {
+					if err := writeProviderClientKeySeed(seed); err != nil {
+						fmt.Printf("provider client key save failed: %s\n", err)
+					}
 				}
 			}
-		}
-		if encManager := connectClient.EncryptionSessionManager(); encManager != nil {
-			certPem := encManager.ProvideTlsCertificatePem()
-			keyPem := encManager.ProvideTlsPrivateKeyPem()
-			if 0 < len(certPem) && 0 < len(keyPem) {
-				if err := writeProviderTlsCertAndKey(certPem, keyPem); err != nil {
-					fmt.Printf("provider tls cert/key save failed: %s\n", err)
+			if encManager := connectClient.EncryptionSessionManager(); encManager != nil {
+				certPem := encManager.ProvideTlsCertificatePem()
+				keyPem := encManager.ProvideTlsPrivateKeyPem()
+				if 0 < len(certPem) && 0 < len(keyPem) {
+					if err := writeProviderTlsCertAndKey(certPem, keyPem); err != nil {
+						fmt.Printf("provider tls cert/key save failed: %s\n", err)
+					}
 				}
 			}
 		}
@@ -3235,6 +3459,96 @@ func provide(opts docopt.Opts) {
 			AppVersion: RequireVersion(),
 		}
 		platformTransport := connect.NewPlatformTransportWithDefaults(proxyCtx, clientStrategy, connectClient.RouteManager(), connectUrl, auth)
+		// Register coordinator closer so HotSwap yields the coordinator session cleanly during handoff.
+		// Defer unregister so proxy reloads or shutdowns don't leak stale closers (F-5).
+		unregCloser := RegisterCoordinatorCloser(func() {
+			platformTransport.Close()
+		})
+		defer unregCloser()
+
+		// This proxy now has a live transport; bracket it so systemd STATUS=
+		// reflects the real count. Paired with the defer so every early return
+		// below decrements too.
+		proxyBecameLive()
+		defer proxyWentDown()
+
+		// If candidate child, announce ACK to parent once the first live transport is active
+		var unregSocketCloser func()
+		candidateAckOnce.Do(func() {
+			if isHotSwapCandidate && hotSwapIPC != nil {
+				_ = runHotSwapChildAck(hotSwapIPC)
+				// hotSwapIPC is not reassigned: provide()'s deferred Close() also
+				// runs on this same handle, and Close() on both *os.File (Unix)
+				// and net.Conn (Windows) is safe to call twice (the second call
+				// returns an error that the deferred call discards). Reassigning
+				// to nil here raced with that deferred read since sync.Once only
+				// orders callers of Do, not the unrelated deferred statement in
+				// provide().
+				_ = hotSwapIPC.Close()
+				// Now that takeover is complete and process is live, arm signal listener for future hotswaps
+				startHotSwapSignalListener(ctx, cancel, opts)
+				hotSwapTrigger = func() error {
+					return runHotSwapParentHandoff(ctx, cancel, opts)
+				}
+
+				// Wait for the parent to actually release the control socket before
+				// reloading state and binding our own. The parent only closes it when
+				// it processes our ACK inside yieldCoordinatorSession (hotswap.go), so
+				// reloading/binding immediately after sending ACK races it: a `set`
+				// to the still-open parent socket would persist after our snapshot,
+				// and binding while the parent's listener is still alive makes
+				// removeStaleSocket refuse (correctly) — leaving the promoted
+				// candidate with NO control socket. So wait until the parent's socket
+				// is gone; any set in that window then fails and falls back to
+				// pending_overrides.json, which the merge below consumes.
+				waitForControlSocketRelease(HotSwapAckTimeout + 15*time.Second)
+
+				// Reload persisted control state now, not the snapshot loaded at
+				// candidate spawn time: the parent still owned provider_state.json
+				// and could accept `urnet-tools set` (and its own control socket)
+				// for the whole pre-flight+drain window. A command that landed
+				// there after this candidate started but before it reaches this
+				// point would otherwise be silently dropped — the promoted
+				// candidate would bind its own socket on the stale snapshot.
+				if reloaded, err := loadControlState(); err != nil {
+					tlog("[control] candidate failed to reload provider_state.json on takeover, keeping pre-flight snapshot: %s\n", err)
+				} else {
+					// Adopt the reloaded values in place rather than
+					// reassigning globalControlState itself: other proxy
+					// goroutines call globalControlState.get(...) (e.g.
+					// hotRestartEnabled) concurrently with this takeover, and
+					// swapping the pointer out from under them is an
+					// unsynchronized race distinct from anything s.mu
+					// protects.
+					globalControlState.replaceAllWithMeta(reloaded.values, reloaded.meta)
+				}
+				mergePendingOverrides(globalControlState)
+				applyPersistedRuntimeTuning(globalControlState)
+				startMetricsAfterTakeover(globalControlState)
+
+				// Bind control socket now that the parent yielded its listener
+				if cleanup, err := startControlSocket(ctx, globalControlState); err != nil {
+					tlog("[control] candidate failed to start control socket on takeover: %s\n", err)
+				} else {
+					cleanupControlSocket = cleanup
+					unregSocketCloser = RegisterCoordinatorCloser(func() {
+						if cleanupControlSocket != nil {
+							cleanupControlSocket()
+							cleanupControlSocket = nil
+						}
+					})
+				}
+			}
+			_ = notifySystemdReady()
+		})
+		// unregSocketCloser must stay registered for the provider's lifetime (or
+		// until a later HotSwap explicitly closes it): it guards the promoted
+		// candidate's control socket, and a defer scoped to the candidateAckOnce.Do
+		// closure above would unregister it as soon as that closure returns,
+		// long before the provider actually exits or hands off again.
+		if unregSocketCloser != nil {
+			defer unregSocketCloser()
+		}
 		// go platformTransport.Run(connectClient.RouteManager())
 
 		// The renewal watcher closes revocationDone on a successful renewal:
@@ -3266,10 +3580,15 @@ func provide(opts docopt.Opts) {
 		// the 12h threshold never fires — a no-op.
 		renewNow := make(chan struct{}, 1)
 		go runProxyJWTWatcher(proxyCtx, proxyJWTWatcherConfig{
-			IdentityKey:    identityKey,
-			ClientID:       clientId,
-			CurrentJWT:     byClientJwt,
-			Description:    providerDescription(nodeName),
+			IdentityKey: identityKey,
+			ClientID:    clientId,
+			CurrentJWT:  byClientJwt,
+			Description: providerDescription(nodeName),
+			// Recompute on every renewal instead of reusing the startup value:
+			// providerDescription re-resolves the node-name override and public
+			// IP each call, so a runtime `urnet-tools rename`/show-ip change
+			// reaches the server on the next hourly/401 renewal, not just mint.
+			DescribeFn:     func() string { return providerDescription(nodeName) },
 			ApiURL:         apiUrl,
 			ClientStrategy: clientStrategy,
 			OOB:            clientOob,
@@ -3399,6 +3718,15 @@ func provide(opts docopt.Opts) {
 	for _, s := range proxyDesiredSet {
 		allProxySettings = append(allProxySettings, s)
 	}
+	// Load the per-proxy earnings history. It is loaded here rather than at
+	// package init so a test never picks up the real home directory's
+	// history (the failure mode fixed in #589). The launch scheduler
+	// consumes this history to rank proxies by earnings within each
+	// warmth tier and provenance group.
+	if err := globalProxyEarningsStore.Load(); err != nil {
+		tlog("⚠️ [earn] could not read proxy earnings history: %v\n", err)
+	}
+
 	// Prioritize proxies by warmth (cached client JWTs) and source provenance.
 	// Hot proxies with valid unexpired JWTs dial with a tight 25ms stagger,
 	// renewable proxies at 50ms, and cold proxies at 150ms (or 500ms for URL).
@@ -3406,6 +3734,15 @@ func provide(opts docopt.Opts) {
 	proxySchedules, warmCount, renewableCount, coldCount := prioritizeAndScheduleProxies(allProxySettings, proxySourceOf, currentNetworkId)
 	tlog("🔥 [startup] proxy prioritization: %d total (warm: %d, renewable: %d, cold: %d)\n",
 		len(allProxySettings), warmCount, renewableCount, coldCount)
+
+	// Report the earnings history so an operator can watch it fill in, and
+	// so the ranking that will consume it can be judged against real data.
+	if ranked, promoted, topAddr, topScore := earningsHistorySummary(allProxySettings, proxySourceOf, time.Now()); ranked == 0 {
+		tlog("💰 [startup] earnings ranking: no history yet, launching by warmth and source only\n")
+	} else {
+		tlog("💰 [startup] earnings ranking: %d of %d proxies have earnings history, %d URL-sourced promoted to launch with the file list, top earner %s at %s\n",
+			ranked, len(allProxySettings), promoted, topAddr, formatBytes(uint64(topScore)))
+	}
 
 	// Start the native [direct] connection as proxy[0] unless the operator
 	// has explicitly disabled it. Precedence (highest to lowest):
@@ -3472,8 +3809,13 @@ func provide(opts docopt.Opts) {
 	// the 14-day drop clock for proxies that were already failing.
 	globalProxySlowRetryState = LoadProxySlowRetryState()
 
+	// Publish the denominator for systemd STATUS= now that the proxy list is
+	// final (post prune/rebuild above).
+	setConfiguredProxyCount(len(allProxySettings))
+
+	finishProxy := bannerPhase("Proxy load")
 	if 0 < len(allProxySettings) {
-		fmt.Printf("Using %d proxy servers:\n", len(allProxySettings))
+		finishProxy(fmt.Sprintf("%d servers", len(allProxySettings)))
 
 		for _, proxySettings := range allProxySettings {
 			stableID := resolveProxyID(proxyState, proxySettings.Address)
@@ -3528,7 +3870,23 @@ func provide(opts docopt.Opts) {
 				provideWithProxy(proxyCtx, proxySettings, false, isURLSourced)
 			})
 		}
+	} else {
+		finishProxy("no proxies configured", "⚠")
 	}
+
+	logsHint := ""
+	if os.Getenv("URNETWORK_RAMLOGS") == "1" {
+		logsHint = " | logs: urnet-tools logs"
+	}
+	readyProfile := os.Getenv("URNETWORK_PROFILE")
+	if readyProfile == "" {
+		readyProfile = "default"
+	}
+	readyVersion := RequireVersion()
+	if readyVersion == "" {
+		readyVersion = "unknown"
+	}
+	tlog("✅ Ready — %s | profile=%s | proxies=%d%s\n", readyVersion, readyProfile, len(allProxySettings), logsHint)
 
 	// Start the hot-reload watcher: it polls ~/.urnetwork/proxy.reload and applies
 	// add/remove diffs to the running proxy set without restarting the provider.
@@ -3551,20 +3909,6 @@ func provide(opts docopt.Opts) {
 	// binds.
 	reloader.reload()
 
-	logsHint := ""
-	if os.Getenv("URNETWORK_RAMLOGS") == "1" {
-		logsHint = " | logs: urnet-tools logs"
-	}
-	readyProfile := os.Getenv("URNETWORK_PROFILE")
-	if readyProfile == "" {
-		readyProfile = "default"
-	}
-	readyVersion := RequireVersion()
-	if readyVersion == "" {
-		readyVersion = "unknown"
-	}
-	tlog("✅ Ready — %s | profile=%s | proxies=%d%s\n", readyVersion, readyProfile, len(allProxySettings), logsHint)
-
 	go connect.HandleError(func() {
 		runProxyURLFetcher(ctx, proxyURLs, proxyURLRefresh, proxyURLMax, apiProbeHost, apiProbePort, selfHealEnabled)
 	})
@@ -3584,21 +3928,31 @@ func provide(opts docopt.Opts) {
 	go connect.HandleError(func() { runReloadReconciler(ctx) })
 
 	if profileAddr := os.Getenv("URNETWORK_PPROF"); profileAddr != "" {
-		tlog("[profile] enabling diagnostics on %s (loopback only): /debug/pprof/*, /metrics/pool, /metrics/errors\n", profileAddr)
+		tlog("[profile] enabling diagnostics on %s (loopback only): /debug/pprof/*, /metrics/pool, /metrics/errors, /metrics\n", profileAddr)
 		if err := connect.EnableProfiling(profileAddr); err != nil {
 			tlog("[profile] failed to enable diagnostics: %v\n", err)
 		}
 	}
+	// URNETWORK_METRICS binds a Prometheus /metrics endpoint on the given
+	// address (typically a Tailscale IP like "192.200.0.5:9100") so remote
+	// Prometheus can scrape without an agent on the fleet server.
+	//
+	// A HotSwap candidate skips this: the parent still holds the address
+	// until it yields, and startMetricsAfterTakeover binds it after takeover.
+	if metricsAddr := os.Getenv("URNETWORK_METRICS"); metricsAddr != "" && !isHotSwapCandidate {
+		tlog("[metrics] enabling Prometheus /metrics on %s\n", metricsAddr)
+		if ln, err := net.Listen("tcp", metricsAddr); err != nil {
+			tlog("[metrics] listener failed: %v\n", err)
+		} else {
+			serveMetrics(ln)
+		}
+	}
 	if 0 < port {
-		fmt.Printf(
-			"Provider %s started. Status on *:%d\n",
-			RequireVersion(),
-			port,
-		)
+		tlog("[startup] status server listening on :%d\n", port)
 		statusServer := &http.Server{
 			Addr:    fmt.Sprintf(":%d", port),
 			Handler: &Status{},
-			// Matches hub/main.go: guards against Slowloris-style connection
+			// Guards against Slowloris-style connection
 			// exhaustion (dribbled headers, opened-and-idle connections).
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       120 * time.Second,
@@ -3622,31 +3976,10 @@ func provide(opts docopt.Opts) {
 			}
 		}()
 	} else {
-		fmt.Printf(
-			"Provider %s started\n",
-			RequireVersion(),
-		)
+		tlog("[startup] status server (no port)\n")
 	}
 
-	// URNETWORK_METRICS binds a Prometheus /metrics endpoint on the given
-	// address (typically a Tailscale IP like "192.200.0.5:9100") so remote
-	// Prometheus can scrape without an agent on the fleet server.
-	if metricsAddr := os.Getenv("URNETWORK_METRICS"); metricsAddr != "" {
-		tlog("[metrics] enabling Prometheus /metrics on %s\n", metricsAddr)
-		connect.SetExtraMetricsProvider(providerExtraMetrics)
-		connect.SetPersistentErrorFunc(IncrPersistentError)
-		metricsServer := &http.Server{
-			Addr:              metricsAddr,
-			Handler:           connect.PrometheusHandler(),
-			ReadHeaderTimeout: 10 * time.Second,
-			IdleTimeout:       30 * time.Second,
-		}
-		go func() {
-			if err := metricsServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				tlog("[metrics] error: %v\n", err)
-			}
-		}()
-	}
+	printReadyUnlessCondensed()
 
 	wg.Wait()
 
@@ -3659,12 +3992,27 @@ func provide(opts docopt.Opts) {
 	// retentionEventClosed; closeDohCache is safe to call twice).
 	closeDohCache()
 	flushRetentionEvents()
+	FlushPersistentErrors()
+	forceAuditPersist()
+	if metricsServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		metricsServer.Shutdown(ctx)
+	}
+	markCleanShutdown()
+	// Explicitly clean up the control socket before os.Exit(0) since
+	// Go defers do not run on os.Exit. Without this, provider.sock is
+	// permanently orphaned on disk across every restart.
+	if cleanupControlSocket != nil {
+		cleanupControlSocket()
+	}
 	os.Exit(0)
 }
 
 // containerIDRe matches a default Docker container hostname (12-char hex),
 // so we can omit it from the dashboard label when it carries no useful meaning.
 var containerIDRe = regexp.MustCompile("^[0-9a-f]{12}$")
+var metricsServer *http.Server
 
 // providerStatePath returns the absolute filesystem path of a named
 // provider state file under ~/.urnetwork (alongside `jwt`). Does not
@@ -3875,24 +4223,62 @@ func proxyAuthRetryDelay(err error, attempt int) time.Duration {
 	return delay
 }
 
+// nodeNameOverridePath returns ~/.urnetwork/node_name, a file an operator can
+// write at any time to change the node identity reported to the fleet without
+// restarting. An empty file or missing file falls back to the startup hostname.
+func nodeNameOverridePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".urnetwork", "node_name"), nil
+}
+
+// resolveNodeName checks the control-socket state first, then the legacy
+// override file, then startupName (the hostname captured at process start).
+// Re-resolved on every call so a change takes effect on the reporter's next
+// tick.
+func resolveNodeName(startupName string) string {
+	if v, ok := globalControlState.get("node_name"); ok && v != "" {
+		return v
+	}
+
+	path, err := nodeNameOverridePath()
+	if err == nil {
+		if b, err := os.ReadFile(path); err == nil {
+			if v := strings.TrimSpace(string(b)); v != "" {
+				return v
+			}
+		}
+	}
+	return startupName
+}
+
 // providerDescription builds the display-name string sent as the client
 // description at mint AND renewal time: "Identity [Version]", where Identity
-// is the node name (URNETWORK_NODE_NAME, else HOST_HOSTNAME, else hostname),
-// optionally "Name @ RedactedIP" when URNETWORK_PUBLIC_IP is set, or just the
-// redacted IP for container-id gibberish names. Kept as ONE helper so mint
-// (provideAuth) and in-process renewal (runProxyJWTWatcher) always agree —
-// the server UPDATEs the row's description on renewal, so divergence would
-// silently rename the device in the dashboard.
+// is the node name (URNETWORK_NODE_NAME, else HOST_HOSTNAME, else hostname,
+// then ~/.urnetwork/node_name override), optionally "Name @ RedactedIP" when
+// the public IP is detected. Kept as ONE helper so mint (provideAuth) and
+// in-process renewal (runProxyJWTWatcher) always agree — the server UPDATEs
+// the row's description on renewal, so divergence would silently rename the
+// device in the dashboard.
 func providerDescription(nodeName string) string {
-	displayName := nodeName
-	hostname, _ := os.Hostname()
+	// Check the runtime override file first — this is what
+	// `urnet-tools set node-name` writes, and it can be changed
+	// without restarting the provider.
+	displayName := resolveNodeName(nodeName)
+
+	// If the startup name was empty and no override file exists,
+	// fall back to HOST_HOSTNAME then os.Hostname (same as before).
 	if displayName == "" {
+		hostname, _ := os.Hostname()
 		if hostHostname := strings.TrimSpace(os.Getenv("HOST_HOSTNAME")); hostHostname != "" {
 			displayName = hostHostname
 		} else {
 			displayName = hostname
 		}
 	}
+
 	isContainerID := containerIDRe.MatchString(displayName)
 	publicIP := resolvePublicIP()
 
@@ -3912,7 +4298,37 @@ func providerDescription(nodeName string) string {
 			dashboardLabel = displayName
 		}
 	}
-	return fmt.Sprintf("%s [%s]", dashboardLabel, RequireVersion())
+	description := fmt.Sprintf("%s [%s]", dashboardLabel, RequireVersion())
+	logDashboardLabel(description)
+	return description
+}
+
+var (
+	lastDashboardLabelMu sync.Mutex
+	lastDashboardLabel   string
+)
+
+// logDashboardLabel reports the identity the node presents on the dashboard,
+// the first time it resolves and on every change after that.
+//
+// providerDescription runs once per proxy per renewal, so logging every call
+// would bury the log on a box with hundreds of proxies. Logging only on change
+// is what makes `urnet-tools rename` and `urnet-tools show-ip` verifiable from
+// the node's own log: both take effect at the next renewal rather than
+// immediately, so without this an operator has no way to confirm from the logs
+// that the provider picked the change up.
+func logDashboardLabel(description string) {
+	lastDashboardLabelMu.Lock()
+	defer lastDashboardLabelMu.Unlock()
+	if description == lastDashboardLabel {
+		return
+	}
+	if lastDashboardLabel == "" {
+		tlog("🏷️ [identity] dashboard label: %s\n", description)
+	} else {
+		tlog("🏷️ [identity] dashboard label changed: %s -> %s\n", lastDashboardLabel, description)
+	}
+	lastDashboardLabel = description
 }
 
 // ipDetectionDisabledPath returns ~/.urnetwork/disable_ip_autodetect, a file
@@ -3974,7 +4390,7 @@ var (
 	cachedIP        string
 	cachedIPTime    time.Time
 	cachedIPMu      sync.Mutex
-	cachedIPRefresh bool // true while a background fetchPublicIP() is in-flight
+	cachedIPRefresh bool // true while a background fetchPublicIP() is in flight
 	ipCacheTTL      = 60 * time.Second
 )
 

@@ -437,6 +437,7 @@ func (r *ProxyReloader) reload() {
 	// non-empty desiredSet, and must not be treated as a source-read error.
 	if len(desiredSet) == 0 {
 		tlog("[proxy] reload skipped: 0 proxies found in source\n")
+		setProxyResolutionStatus(proxyResolutionEmpty, "source returned no usable proxies")
 		return
 	}
 
@@ -639,9 +640,12 @@ func (r *ProxyReloader) reload() {
 			tlog("[proxy] skip add %s: still draining\n", settings.Address)
 			continue
 		}
-		// Defer URL-sourced proxy launches until file-proxy warmup
+		// Defer unproven URL-sourced proxy launches until file-proxy warmup
 		// completes, so operator-curated proxies get an uncontested ramp.
-		if sourceOf[settings.Address] == "url" && !proxyWarmupDone.Load() {
+		// Promoted URL proxies (earnings >= 64 MiB) are known earners and
+		// should launch with the file list rather than be deferred.
+		isPromoted := proxyEarningsScore(settings.Address, time.Now()) >= earningsPromotionBytes
+		if sourceOf[settings.Address] == "url" && !isPromoted && !proxyWarmupDone.Load() {
 			warmupDeferred++
 			continue
 		}
@@ -719,6 +723,12 @@ func (r *ProxyReloader) reload() {
 		tlog("[proxy] warning: could not write proxy.state after reload: %v\n", err)
 	}
 	proxyStateMu.Unlock()
+
+	// Update systemd status counters: the configured count reflects
+	// the full desired set (file/internal + URL cache), and resolution
+	// is OK since we found proxies. These are operator-facing only.
+	setConfiguredProxyCount(len(desiredSet))
+	setProxyResolutionOK()
 
 	deferredTotal := deferredBackoff + warmupDeferred
 	reloadDur := time.Since(reloadStart).Round(time.Millisecond)
