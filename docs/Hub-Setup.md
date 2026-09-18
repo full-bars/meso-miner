@@ -181,7 +181,7 @@ Set `URNETWORK_HUB_TRUSTED_PROXIES` to a comma-separated list of IPs or CIDRs (e
 ```sh
 docker run -d --name urnetwork-hub -p 8080:8080 -v hubdata:/data \
   -e URNETWORK_HUB_TRUSTED_PROXIES=127.0.0.1,::1 \
-  ghcr.io/full-bars/urnetwork-3.23-fix-hub:latest
+  ghcr.io/full-bars/meso-miner-hub:latest
 ```
 
 > [!WARNING]
@@ -211,7 +211,7 @@ systemctl --user restart urnetwork-hub.service
 ```sh
 docker run -d --name urnetwork-hub -p 8080:8080 -v hubdata:/data \
   -e URNETWORK_HUB_DASHBOARD_PASS=your-dashboard-password \
-  ghcr.io/full-bars/urnetwork-3.23-fix-hub:latest
+  ghcr.io/full-bars/meso-miner-hub:latest
 ```
 
 > [!NOTE]
@@ -240,7 +240,7 @@ urnet-tools hub install
 urnet-tools hub install --docker
 ```
 
-This pulls the prebuilt multi-arch image (`ghcr.io/full-bars/urnetwork-3.23-fix-hub`), runs it as a container named `urnetwork-hub` with a `-p 8080:8080` port mapping and a named `urnetwork-hubdata` volume for `/data`, and writes the chosen tag/port/token to `~/.urnetwork/hub-docker.conf` so `hub update [--docker]` can recreate it without re-specifying flags:
+This pulls the prebuilt multi-arch image (`ghcr.io/full-bars/meso-miner-hub`), runs it as a container named `urnetwork-hub` with a `-p 8080:8080` port mapping and a named `urnetwork-hubdata` volume for `/data`, and writes the chosen tag/port/token to `~/.urnetwork/hub-docker.conf` so `hub update [--docker]` can recreate it without re-specifying flags:
 
 ```sh
 urnet-tools hub install [--tag <tag>] [--port <port>] [--token <token>]
@@ -290,13 +290,13 @@ Then `urnet-tools hub link https://HUB_IP:8443` on each provider as usual.
 CI publishes multi-arch (amd64/arm64) images on every change under `hub/`, tagged independently from the provider's `v3.23.0-fix.X.Y` scheme — the hub uses its own `vX.Y.Z` versions starting at `v0.1.0`, cut via `hub-vX.Y.Z` git tags:
 
 ```sh
-docker pull ghcr.io/full-bars/urnetwork-3.23-fix-hub:latest
+docker pull ghcr.io/full-bars/meso-miner-hub:latest
 # or
 docker pull 3cape/urnetwork-hub:latest
 
 docker run -d --name urnetwork-hub -p 8080:8080 -v hubdata:/data \
   -e URNETWORK_HUB_TOKEN=YOUR_SHARED_SECRET \
-  ghcr.io/full-bars/urnetwork-3.23-fix-hub:latest
+  ghcr.io/full-bars/meso-miner-hub:latest
 ```
 
 ## Manual / Non-`urnet-tools` Setup
@@ -315,7 +315,7 @@ Point providers using the environment variable instead of `urnet-tools hub set`:
 docker run -d --name=urfix \
   -e URNETWORK_AUTH_CODE=YOUR_CODE \
   -e URNETWORK_REPORT_URL=http://HUB_IP:8080 \
-  ghcr.io/full-bars/urnetwork-3.23-fix:latest
+  ghcr.io/full-bars/meso-miner:latest
 
 # Native binary
 URNETWORK_REPORT_URL=http://HUB_IP:8080 ./ur-provider

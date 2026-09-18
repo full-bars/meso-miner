@@ -18,7 +18,7 @@
 | `status` shows a running PID but no control socket | Startup failure, or a second provider for the same OS user | The socket is the liveness signal, not the PID. Check the log for a startup error and `urnet-tools providers --all` for a collision. |
 
 > [!NOTE]
-> **Discovery dedup fix (v3.23.0-fix.31.2):** Previous versions could list duplicate providers when the same binary was registered under multiple paths or when `urnet-tools providers` scanned overlapping install locations. As of v31.2, provider discovery deduplicates entries by `(binary_path, uid)`, so `urnet-tools providers` and `urnet-tools providers --all` no longer show phantom duplicates. If you still see duplicates after upgrading, re-install the provider with `curl -fSsL https://dl.fullbars.xyz/install.sh | sh` to refresh the registration.
+> **Discovery dedup fix (v3.23.0-fix.31.2):** Previous versions could list duplicate providers when the same binary was registered under multiple paths or when `urnet-tools providers` scanned overlapping install locations. As of v31.2, provider discovery deduplicates entries by `(binary_path, uid)`, so `urnet-tools providers` and `urnet-tools providers --all` no longer show phantom duplicates. If you still see duplicates after upgrading, re-install the provider with `curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh` to refresh the registration.
 
 ---
 

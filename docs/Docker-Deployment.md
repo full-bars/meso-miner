@@ -12,9 +12,8 @@ This page keeps the copy-paste Docker examples from the README in one place. Use
 Install `urnet-docker` once on the host (SHA-256 verified against the release API):
 
 ```sh
-curl -fSsL https://dl.fullbars.xyz/urnet-docker.sh | sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/install-urnet-docker.sh | sh
 # installs /usr/local/bin/urnet-docker (or ~/.local/bin when not root)
-# GitHub fallback: curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh | sh
 ```
 
 The tool is self-updating afterwards:
@@ -50,16 +49,8 @@ urnet-docker logs --unit urfix 100              # stream logs (RAMLOGS-aware)
 Primary image:
 
 ```text
-ghcr.io/full-bars/urnetwork-3.23-fix:latest
+ghcr.io/full-bars/meso-miner:latest
 ```
-
-Docker Hub mirror:
-
-```text
-3cape/urnetwork-3.23-fix:latest
-```
-
-Use the Docker Hub mirror if GHCR returns `denied` errors or rate-limiting.
 
 ## 🔑 Persistent JWT
 
@@ -80,7 +71,7 @@ docker run -d --name urfix \
   -e PROXY_URL='https://example.com/your-proxy-list.txt' \
   -e URNETWORK_PROXY_BENCHMARK=true \
   -e URNETWORK_PROXY_BENCHMARK_ENDPOINT=connect.bringyour.com:443 \
-  ghcr.io/full-bars/urnetwork-3.23-fix:latest
+  ghcr.io/full-bars/meso-miner:latest
 ```
 
 | Env var | Purpose |
@@ -108,7 +99,7 @@ docker run -d \
   -e HOST_HOSTNAME=$(hostname) \
   -v urfix_config:/root/.urnetwork \
   -v /path/to/proxy.txt:/app/proxy.txt \
-  ghcr.io/full-bars/urnetwork-3.23-fix:latest AUTH_CODE_HERE
+  ghcr.io/full-bars/meso-miner:latest AUTH_CODE_HERE
 ```
 
 Replace `AUTH_CODE_HERE` with your token from [ur.io](https://ur.io). Auth codes are single-use; the token is saved to the `urfix_config` volume on first run and reused on later starts.
@@ -144,7 +135,7 @@ docker run -d \
   -e HOST_HOSTNAME=$(hostname) \
   -v urfix_config:/root/.urnetwork \
   -v /path/to/proxy.txt:/app/proxy.txt \
-  ghcr.io/full-bars/urnetwork-3.23-fix:latest
+  ghcr.io/full-bars/meso-miner:latest
 ```
 
 ## 🏃 Docker Run - Docker Hub
@@ -168,7 +159,7 @@ docker run -d \
   -e HOST_HOSTNAME=$(hostname) \
   -v urfix_config:/root/.urnetwork \
   -v /path/to/proxy.txt:/app/proxy.txt \
-  3cape/urnetwork-3.23-fix:latest AUTH_CODE_HERE
+  ghcr.io/full-bars/meso-miner:latest AUTH_CODE_HERE
 ```
 
 Alternative method:
@@ -196,7 +187,7 @@ docker run -d \
   -e HOST_HOSTNAME=$(hostname) \
   -v urfix_config:/root/.urnetwork \
   -v /path/to/proxy.txt:/app/proxy.txt \
-  3cape/urnetwork-3.23-fix:latest
+  ghcr.io/full-bars/meso-miner:latest
 ```
 
 ## 🐙 Docker Compose
@@ -210,7 +201,7 @@ For 3, 5, or 10 nodes in one Compose file, use the [Multi-Container Scaling](Mul
 ```yaml
 services:
   urnetwork:
-    image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
+    image: ghcr.io/full-bars/meso-miner:latest
     container_name: urfix
     restart: unless-stopped
     pull_policy: always
@@ -251,7 +242,7 @@ docker compose up -d
 ```yaml
 services:
   urnetwork:
-    image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
+    image: ghcr.io/full-bars/meso-miner:latest
     container_name: urfix
     restart: unless-stopped
     pull_policy: always
@@ -313,7 +304,7 @@ docker run -d \
   -v urfix_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
-  ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE
+  ghcr.io/full-bars/meso-miner:latest YOUR_AUTH_CODE
 ```
 
 View logs live:
@@ -376,7 +367,7 @@ docker run -d \
   -v urfix_config:/root/.urnetwork \
   -v urfix_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
-  ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE
+  ghcr.io/full-bars/meso-miner:latest YOUR_AUTH_CODE
 ```
 
 **Status check:**
@@ -442,7 +433,7 @@ docker run -d \
   -v urfix_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
-  ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE
+  ghcr.io/full-bars/meso-miner:latest YOUR_AUTH_CODE
 ```
 
 > [!NOTE]
@@ -524,7 +515,7 @@ docker run -d \
   -v urfix_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
   -p 127.0.0.1:9001:8080 \
-  ghcr.io/full-bars/urnetwork-3.23-fix:latest AUTH_CODE_HERE
+  ghcr.io/full-bars/meso-miner:latest AUTH_CODE_HERE
 ```
 
 Access the traffic page locally at `http://localhost:9001` (bind to `127.0.0.1` prevents exposing the unauthenticated vnStat web UI to the public internet; use a reverse proxy or SSH tunnel if accessing remotely).
@@ -547,7 +538,7 @@ When running more than one provider container on the same host with vnStat enabl
 ```yaml
 services:
   node-1:
-    image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
+    image: ghcr.io/full-bars/meso-miner:latest
     container_name: urfix-1
     environment:
       - BUILD=jwt
@@ -560,7 +551,7 @@ services:
       - "127.0.0.1:9001:8080"          # OFFSET host port (localhost bound)
 
   node-2:
-    image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
+    image: ghcr.io/full-bars/meso-miner:latest
     container_name: urfix-2
     environment:
       - BUILD=jwt
@@ -609,7 +600,7 @@ As of `v3.23.0-fix.30.8`, the provider image is importable into the [Pelican gam
 
 1. Download the egg JSON from the repo: `pelican/egg-urnetwork-323fix.json`
 2. In Pelican admin, go to **Nests**, select or create a nest, and use **Import Egg** to upload the JSON.
-3. The egg pulls `ghcr.io/full-bars/urnetwork-3.23-fix:latest` (multi-arch amd64/arm64).
+3. The egg pulls `ghcr.io/full-bars/meso-miner:latest` (multi-arch amd64/arm64).
 
 ### Configuration variables
 

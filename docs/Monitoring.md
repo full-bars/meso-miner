@@ -50,7 +50,7 @@ urnet-tools metrics listen auto   # back to the default
 Publish the port on an address Prometheus can reach, then turn metrics on inside the container:
 
 ```bash
-docker run -d --name urnetwork -p 100.64.0.10:9100:9100 ... ghcr.io/full-bars/urnetwork-3.23-fix:latest
+docker run -d --name urnetwork -p 100.64.0.10:9100:9100 ... ghcr.io/full-bars/meso-miner:latest
 docker exec urnetwork urnet-tools metrics on
 ```
 
@@ -61,7 +61,7 @@ Here `100.64.0.10` is the host's Tailscale address, and the Prometheus target is
 
 ## 2. Run the monitoring stack
 
-You need Docker with Compose v2 on the monitoring machine. Download `urnetwork-monitoring-<version>.tar.gz` from the [latest release](https://github.com/full-bars/urnetwork-3.23-fix/releases/latest), then:
+You need Docker with Compose v2 on the monitoring machine. Download `urnetwork-monitoring-<version>.tar.gz` from the [latest release](https://github.com/full-bars/meso-miner/releases/latest), then:
 
 ```bash
 tar xzf urnetwork-monitoring-*.tar.gz
