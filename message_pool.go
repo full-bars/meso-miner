@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"runtime/metrics"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -417,7 +418,7 @@ func ClearMessagePools() {
 }
 
 var seed = maphash.MakeSeed()
-var debugStateLock sync.Mutex
+var debugStateLock sync.RWMutex
 var tagCallers = map[uint8]map[string]bool{}
 
 func debugTag() uint8 {
@@ -484,6 +485,112 @@ func MessagePoolStats() map[int]map[int]float32 {
 		sizeTagRatios[pool.size] = tagRatios
 	}
 	return sizeTagRatios
+}
+
+// MessagePoolLeakTag is one call site in the leak-hint report.
+type MessagePoolLeakTag struct {
+	Tag         uint8   `json:"tag"`
+	Caller      string  `json:"caller"`
+	Leaked      uint64  `json:"leaked"`
+	ReturnedPct float64 `json:"returned_pct"`
+	ReusedPct   float64 `json:"reused_pct"`
+}
+
+// MessagePoolLeakHint returns the top call sites with outstanding
+// buffers (leaked = taken - returned). Returns an empty list if
+// debugTags is off or limit <= 0.
+func MessagePoolLeakHint(limit int) []MessagePoolLeakTag {
+	if !debugTags || limit <= 0 {
+		return nil
+	}
+	type agg struct {
+		taken    uint64
+		returned uint64
+		created  uint64
+	}
+	byTag := make(map[uint8]*agg, 256)
+	for _, pool := range orderedMessagePools() {
+		for _, shard := range pool.shards {
+			func() {
+				shard.mutex.Lock()
+				defer shard.mutex.Unlock()
+				for tag := range 256 {
+					if shard.takenTags[tag] == 0 {
+						continue
+					}
+					a, ok := byTag[uint8(tag)]
+					if !ok {
+						a = &agg{}
+						byTag[uint8(tag)] = a
+					}
+					a.taken += shard.takenTags[tag]
+					a.returned += shard.returnedTags[tag]
+					a.created += shard.createdTags[tag]
+				}
+			}()
+		}
+	}
+	out := []MessagePoolLeakTag{}
+	for tag, a := range byTag {
+		if a.taken == 0 {
+			continue
+		}
+		callers := func() string {
+			debugStateLock.RLock()
+			defer debugStateLock.RUnlock()
+			return strings.Join(maps.Keys(tagCallers[tag]), "/")
+		}()
+		// Signed math: if a double-return ever makes returned > taken, or a
+		// counter reset races a live goroutine, an unsigned subtraction
+		// would underflow to a huge number and sort this tag to the TOP of
+		// the report with an astronomically-lying leak count. Clamp below
+		// zero and report honestly.
+		leaked := int64(a.taken) - int64(a.returned)
+		if leaked < 0 {
+			leaked = 0
+		}
+		var returnedPct, reusedPct float64
+		if a.taken > 0 {
+			returnedPct = float64(a.returned) * 100 / float64(a.taken)
+			reusedPct = 100 * float64(a.taken-a.created) / float64(a.taken)
+		}
+		out = append(out, MessagePoolLeakTag{
+			Tag:         tag,
+			Caller:      callers,
+			Leaked:      uint64(leaked),
+			ReturnedPct: returnedPct,
+			ReusedPct:   reusedPct,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Leaked > out[j].Leaked })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+// MessagePoolTotals returns the total taken and returned buffer counts
+// for a specific pool size, summed across every shard and every tag.
+// This is the pool-contract view used by leak regression tests: per-tag
+// ratios are a diagnostic, but a buffer that is taken and returned
+// through any tag must balance globally.
+func MessagePoolTotals(size int) (taken uint64, returned uint64) {
+	for _, pool := range orderedMessagePools() {
+		if pool.size != size {
+			continue
+		}
+		for _, shard := range pool.shards {
+			func() {
+				shard.mutex.Lock()
+				defer shard.mutex.Unlock()
+				for tag := range 256 {
+					taken += shard.takenTags[tag]
+					returned += shard.returnedTags[tag]
+				}
+			}()
+		}
+	}
+	return taken, returned
 }
 
 func MessagePoolReadAll(r io.Reader) ([]byte, error) {

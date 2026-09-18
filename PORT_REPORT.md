@@ -181,4 +181,32 @@ All commits signed with GPG key `26E294357EFD5035E1FBC3D162648FBF49471559` (`ful
 4. `19f543a` `fix: address review findings in transfer contract billing, memory pool, and network resolution`
 5. `39d2bdc` `fix(provider): harden proxy-source URL fetches against SSRF`
 6. `46b73a0` `test: add regression tests for contract drops, desync logging, retain cap, and negative DNS cache`
-7. `(current)` `docs: add port report for upstream parity on meso-miner main`
+7. `docs: add port report for upstream parity on meso-miner main`
+
+---
+
+# Complete Upstream Parity Sync (2026-09-17)
+
+## Consolidation Architecture (3 PRs)
+
+Rather than opening 42 individual micro-PRs for each newly introduced file, the entire remaining parity gap from `urnetwork-3.23-fix` (`origin/main` commit `8f2f700c`) was consolidated into 3 cohesive, reviewable PR clusters on `meso-miner`:
+
+### 1. PR #92 — Daemon & CLI Tooling Layer (`feat/provider-cli-runtime-parity-main`)
+- **Provider Runtime:** Zero-downtime HotSwap in-process handoff, UNIX control socket IPC (`provider.sock`), dynamic state overrides (`~/.urnetwork/node_name`), pool health reporting, live Prometheus `/metrics` listener, startup banners, systemd notify integration (`READY=1`), proxy earnings store, and minimal CI `fake-provider`.
+- **CLI Commands:** `urnet-tools` / `urnet-docker` subcommands (`config`, `hotswap`, `lifecycle`, `metrics_status`, `proxy_ids`, `ramlogs_detect`, `usage`), and `internal/promtext/lint`.
+- **Hub Stripping:** Cleanly preserved meso-miner divergence (`bandwidth_reporter.go` omitted, `runBandwidthReporter`/`runHeartbeatReporter` stripped from `provider/main.go`, `report`/`hub` subcommands omitted from `cobra.go`).
+- **Commits:** `95cac1ee`, `f94fc886` (GPG signed).
+
+### 2. PR #93 — Protocol & Transport Engine Layer (`feat/core-engine-parity-main`)
+- **Transfer Flight Management:** `transfer_flight.go` in-flight packet tracker, lease management, and fallback.
+- **Transport Flow Control:** Selective ACK hole wake-up, dropped item contract settlement (`unack()`), WebRTC data channel hardening, and route manager concurrency fixes.
+- **Protocol & Network:** Prometheus gzip compression, stable metric sorting, `MessagePoolSummary`, and CFAA IP security updates.
+- **Commit:** `3aa6fa9f` (GPG signed).
+
+### 3. PR #94 — Test Suites, Infrastructure & Documentation (`chore/parity-completion-main`)
+- **All 71 Test Suites:** Complete unit and regression test parity across `provider/`, `internal/urnettools/`, `transfer`, and root packages.
+- **Infrastructure & Monitoring:** `test_nightly_tarball_extract.sh`, `stage-wdsi.py`, `h3-workspace.sh`, and the full Prometheus/Grafana monitoring bundle.
+- **Meso Preservations:** Retains all 11 meso-only files (`compute-meso-tag.sh`, `urnet-tools.ps1`, `urnetwork-updater.ps1`, `shakedown-sweep.py`, `ship-release.yml`, etc.).
+
+All commits are GPG signed using key `26E294357EFD5035E1FBC3D162648FBF49471559`.
+

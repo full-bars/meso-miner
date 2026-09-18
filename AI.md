@@ -146,7 +146,7 @@ Docker deployments can use email/password instead (see [Docker Deployment](docs/
 ```bash
 urnet-tools proxy add proxies.txt           # one ip:port per line (file path, no "file" keyword)
 urnet-tools proxy add-source https://...    # auto-refreshing URL source (separate subcommand)
-urnet-tools proxy summary                  # fleet-wide proxy overview
+urnet-tools proxy summary                    # fleet-wide proxy overview
 ```
 
 Full proxy docs: [docs/Proxy-Management.md](docs/Proxy-Management.md), [docs/Proxy-URL-Sources.md](docs/Proxy-URL-Sources.md).

@@ -3,18 +3,8 @@ name: Release Binaries
 on:
   push:
     tags:
-      # Scoped to the meso tag scheme (vYYYY.M.D-<code>-meso) so a stray
-      # tag in an unrelated scheme can never fire this workflow — mirrors
-      # build.yml's docker-tag matching, which is already scoped the same
-      # way. Compute a tag with scripts/compute-meso-tag.sh.
-      - 'v*-meso'
+      - 'v*'
   workflow_dispatch:
-  workflow_call:
-    inputs:
-      tag_name:
-        description: 'Release tag (e.g. v2026.8.28-1031295980-meso)'
-        required: true
-        type: string
 
 jobs:
   build:
@@ -50,28 +40,55 @@ jobs:
             ${{ runner.os }}-gobuild-
 
       - name: Build provider
+        env:
+          GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
         run: |
-          VERSION=${{ inputs.tag_name || github.ref_name }}
-          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
-          go build -trimpath \
-          -ldflags "-s -w -X main.Version=${VERSION}" \
-          -o bin/${{ matrix.goos }}/${{ matrix.goarch }}/provider ./provider/
+          VERSION=${GITHUB_REF_NAME:-v3.23.0-fix.1}
+          for attempt in 1 2 3; do
+            echo "Build attempt $attempt..."
+            if GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
+               go build -trimpath \
+               -ldflags "-s -w -X main.Version=${VERSION} -X main.VersionStamp=URNET_VERSION_STAMP=${VERSION}" \
+               -o bin/${{ matrix.goos }}/${{ matrix.goarch }}/provider ./provider/; then
+              echo "Build succeeded"; break
+            fi
+            if [ $attempt -lt 3 ]; then echo "Build failed, retrying in 10s..."; sleep 10
+            else echo "Build failed after 3 attempts"; exit 1; fi
+          done
 
       - name: Build urnet-tools (Go tool)
+        env:
+          GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
         run: |
-          VERSION=${{ inputs.tag_name || github.ref_name }}
-          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
-          go build -trimpath \
-          -ldflags "-s -w -X main.Version=${VERSION}" \
-          -o bin/${{ matrix.goos }}/${{ matrix.goarch }}/urnet-tools ./cmd/urnet-tools/
+          VERSION=${GITHUB_REF_NAME:-v3.23.0-fix.1}
+          for attempt in 1 2 3; do
+            echo "Build attempt $attempt..."
+            if GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
+               go build -trimpath \
+               -ldflags "-s -w -X main.Version=${VERSION} -X main.VersionStamp=URNET_VERSION_STAMP=${VERSION}" \
+               -o bin/${{ matrix.goos }}/${{ matrix.goarch }}/urnet-tools ./cmd/urnet-tools/; then
+              echo "Build succeeded"; break
+            fi
+            if [ $attempt -lt 3 ]; then echo "Build failed, retrying in 10s..."; sleep 10
+            else echo "Build failed after 3 attempts"; exit 1; fi
+          done
 
       - name: Build urnet-docker (Go tool, container variant)
+        env:
+          GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
         run: |
-          VERSION=${{ inputs.tag_name || github.ref_name }}
-          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
-          go build -trimpath \
-          -ldflags "-s -w -X main.Version=${VERSION}" \
-          -o bin/${{ matrix.goos }}/${{ matrix.goarch }}/urnet-docker ./cmd/urnet-docker/
+          VERSION=${GITHUB_REF_NAME:-v3.23.0-fix.1}
+          for attempt in 1 2 3; do
+            echo "Build attempt $attempt..."
+            if GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
+               go build -trimpath \
+               -ldflags "-s -w -X main.Version=${VERSION} -X main.VersionStamp=URNET_VERSION_STAMP=${VERSION}" \
+               -o bin/${{ matrix.goos }}/${{ matrix.goarch }}/urnet-docker ./cmd/urnet-docker/; then
+              echo "Build succeeded"; break
+            fi
+            if [ $attempt -lt 3 ]; then echo "Build failed, retrying in 10s..."; sleep 10
+            else echo "Build failed after 3 attempts"; exit 1; fi
+          done
 
       - name: Upload provider artifact
         uses: actions/upload-artifact@v4
@@ -100,8 +117,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.tag_name || github.ref || '' }}
 
       - name: Download provider linux amd64 artifact
         uses: actions/download-artifact@v4
@@ -213,7 +228,7 @@ jobs:
 
       - name: Prepare binaries
         run: |
-          VERSION=${{ inputs.tag_name || github.ref_name }}
+          VERSION=${GITHUB_REF_NAME:-latest}
           find release_tmp -name "provider*" -type f -exec chmod +x {} \;
           # Linux providers
           mv release_tmp/linux/amd64/provider-linux-amd64 release_tmp/linux/amd64/provider 2>/dev/null || true
@@ -253,7 +268,12 @@ jobs:
 
       - name: Create provider tarballs
         run: |
-          VERSION=${{ inputs.tag_name || github.ref_name }}
+          VERSION=${GITHUB_REF_NAME:-latest}
+
+          # Copy urnet-tools.exe into the universal tarball's windows/ dirs
+          # so the Windows installer can pick it up without a separate download.
+          cp tool_tmp/windows/amd64/urnet-tools release_tmp/windows/amd64/urnet-tools.exe
+          cp tool_tmp/windows/arm64/urnet-tools release_tmp/windows/arm64/urnet-tools.exe
 
           # Universal tarball — scripts match this via ^urnetwork-provider-
           cp scripts/Provider_Install_Linux.sh release_tmp/urnet-tools
@@ -284,18 +304,19 @@ jobs:
             arch="${plat#windows-}"
             mkdir -p "per-platform/${plat}"
             cp "release_tmp/windows/${arch}/provider.exe" "per-platform/${plat}/"
-            cp scripts/urnet-tools.ps1 "per-platform/${plat}/"
-            cp scripts/urnetwork-updater.ps1 "per-platform/${plat}/"
+            cp "tool_tmp/windows/${arch}/urnet-tools" "per-platform/${plat}/urnet-tools.exe"
             cd "per-platform/${plat}" && tar -czf "../../urnetwork-provider-${VERSION}-${plat}.tar.gz" * && cd ../..
           done
 
           rm -rf per-platform
 
+          # Monitoring bundle: Prometheus + Grafana compose stack and dashboard
+          tar -czf urnetwork-monitoring-${VERSION}.tar.gz monitoring
+
       - name: Set release body source
         id: body_src
         run: |
-          TAG="${{ inputs.tag_name || github.ref_name }}"
-          CUSTOM="releases/${TAG}.md"
+          CUSTOM="releases/${GITHUB_REF_NAME}.md"
           # Scans moved to the parallel 'scan' job (posts a release comment).
           # The release body is the custom notes, or auto-generated.
           if [ -f "$CUSTOM" ]; then
@@ -308,11 +329,11 @@ jobs:
 
       - name: Release
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') || inputs.tag_name
+        if: startsWith(github.ref, 'refs/tags/')
         with:
-          tag_name: ${{ inputs.tag_name || github.ref_name }}
           files: |
             urnetwork-provider-*.tar.gz
+            urnetwork-monitoring-*.tar.gz
             urnet-tools-*
             urnet-docker-*
           draft: false
@@ -321,7 +342,7 @@ jobs:
           generate_release_notes: ${{ steps.body_src.outputs.auto }}
 
       - name: Notify Discord on tagged release
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.tag_name }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
         env:
           BUILD_NOTIFY: ${{ secrets.BUILD_NOTIFY }}
         run: |
@@ -329,8 +350,8 @@ jobs:
             echo "BUILD_NOTIFY secret is not set, skipping notification"
             exit 0
           fi
-          VERSION="${{ inputs.tag_name || github.ref_name }}"
-          RELEASE_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ inputs.tag_name || github.ref_name }}"
+          VERSION="${{ github.ref_name }}"
+          RELEASE_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
           curl -sf -H "Content-Type: application/json" -d "$(jq -n \
             --arg version "$VERSION" \
             --arg releaseUrl "$RELEASE_URL" \
@@ -353,8 +374,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.tag_name || github.ref || '' }}
 
       # Download the same 20 binaries the release ships. (Same download
       # steps as create-release; duplicated here so this job is independent.)
@@ -455,6 +474,7 @@ jobs:
           VT_FAIL_THRESHOLD: "10"
           VT_REVIEW_THRESHOLD: "2"
           VT_SUMMARY_FILE: ${{ github.workspace }}/vt-scan-report.md
+          VT_JSON_FILE: ${{ github.workspace }}/vt-scan-results.json
           GITHUB_SERVER_URL: ${{ github.server_url }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_RUN_ID: ${{ github.run_id }}
@@ -462,23 +482,34 @@ jobs:
           set -euo pipefail
           if [ -z "${VT_API_KEY:-}" ]; then
             # A rotated/deleted secret must not silently disable a security
-            # gate. Fail on tag runs so the release comment flags it. A
-            # workflow_call invocation with a tag_name input is a tag run too.
-            if [[ "${GITHUB_REF_TYPE}" == "tag" || -n "${{ inputs.tag_name }}" ]]; then
+            # gate. Fail on tag runs so the release comment flags it.
+            if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
               echo "::error::VIRUS_TOTAL secret not set — scan cannot run"
               exit 1
             fi
             echo "VIRUS_TOTAL secret not set on branch run, skipping VirusTotal scan"
             exit 0
           fi
-          VERSION=${{ inputs.tag_name || github.ref_name }}
+          VERSION=${GITHUB_REF_NAME:-latest}
           python3 .github/scripts/vt-scan.py \
             release_tmp/linux/amd64/provider \
             release_tmp/linux/arm64/provider \
             release_tmp/darwin/amd64/provider \
             release_tmp/darwin/arm64/provider \
             release_tmp/windows/amd64/provider \
-            release_tmp/windows/arm64/provider
+            release_tmp/windows/arm64/provider \
+            release_tmp/linux/amd64/urnet-tools \
+            release_tmp/linux/arm64/urnet-tools \
+            release_tmp/darwin/amd64/urnet-tools \
+            release_tmp/darwin/arm64/urnet-tools \
+            release_tmp/windows/amd64/urnet-tools \
+            release_tmp/windows/arm64/urnet-tools \
+            release_tmp/linux/amd64/urnet-docker \
+            release_tmp/linux/arm64/urnet-docker \
+            release_tmp/darwin/amd64/urnet-docker \
+            release_tmp/darwin/arm64/urnet-docker \
+            release_tmp/windows/amd64/urnet-docker \
+            release_tmp/windows/arm64/urnet-docker
           # Non-blocking: a FAIL here does NOT cancel the release. It exits
           # non-zero so the job is red, and the comment step below still runs
           # (if: always()) to surface the verdict on the release.
@@ -489,7 +520,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          VERSION=${{ inputs.tag_name || github.ref_name }}
+          VERSION=${GITHUB_REF_NAME:-latest}
           if command -v clamscan >/dev/null 2>&1; then
             echo "ClamAV already installed"
           else
@@ -506,37 +537,55 @@ jobs:
           clamscan --no-summary -r release_tmp/ 2>/dev/null | grep "FOUND" && echo "::error::ClamAV found malware in release artifacts" || echo "ClamAV: clean"
 
       - name: Post scan verdict to release
-        if: always() && (startsWith(github.ref, 'refs/tags/') || inputs.tag_name)
+        if: always() && startsWith(github.ref, 'refs/tags/')
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Post the scan result as a release comment. NEVER gates the release.
-          VER="${{ inputs.tag_name || github.ref_name }}"
+          VER=${GITHUB_REF_NAME}
           BODY="## Security Scan (parallel, non-blocking)"
           if [ -f "${GITHUB_WORKSPACE}/vt-scan-report.md" ]; then
             BODY="${BODY}"$'\n'"$(cat "${GITHUB_WORKSPACE}/vt-scan-report.md")"
           else
             BODY="${BODY}"$'\n'"VirusTotal scan did not produce a report (see the scan job log)."
           fi
-          # Retry: the release may still be mid-creation when the scan finishes.
           python3 - "$VER" "$BODY" << 'PY'
-          import json, os, sys, time, urllib.request
+          import json, os, sys, urllib.request
           ver, body = sys.argv[1], sys.argv[2]
           token = os.environ["GITHUB_TOKEN"]
-          api = "https://api.github.com/repos/" + os.environ["GITHUB_REPOSITORY"]
-          for attempt in range(5):
-              try:
-                  req = urllib.request.Request(f"{api}/releases/tags/{ver}", headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
-                  with urllib.request.urlopen(req, timeout=30) as resp:
-                      rel = json.load(resp)
-                  body_new = (rel.get("body") or "") + "\n\n" + body
-                  req2 = urllib.request.Request(f"{api}/releases/{rel['id']}", data=json.dumps({"body": body_new}).encode(), headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "Content-Type": "application/json"}, method="PATCH")
-                  with urllib.request.urlopen(req2, timeout=30) as resp2:
-                      print("scan verdict appended to release body (HTTP", resp2.status, ")")
-                  break
-              except Exception as e:
-                  if attempt == 4:
-                      raise
-                  print(f"release not ready yet, retrying ({e}); attempt {attempt+1}/5")
-                  time.sleep(10)
+          api = "https://api.github.com/repos/full-bars/urnetwork-3.23-fix"
+          # Find the release id for this tag.
+          req = urllib.request.Request(f"{api}/releases/tags/{ver}", headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+          with urllib.request.urlopen(req, timeout=30) as resp:
+              rel = json.load(resp)
+          # Post a comment (github API has no release comments via this shape;
+          # use issue-comments on the release's 'discussion' — fallback: update
+          # the release body instead, preserving the original notes).
+          # Append the scan verdict to the EXISTING release body (which
+          # create-release wrote: notes + binary list). Patching body to only
+          # the verdict would destroy the release notes.
+          body_new = (rel.get("body") or "") + "\n\n" + body
+          req2 = urllib.request.Request(f"{api}/releases/{rel['id']}", data=json.dumps({"body": body_new}).encode(), headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "Content-Type": "application/json"}, method="PATCH")
+          with urllib.request.urlopen(req2, timeout=30) as resp2:
+              print("scan verdict appended to release body (HTTP", resp2.status, ")")
           PY
+
+      - name: Stage WDSI submissions for flagged files
+        if: always() && startsWith(github.ref, 'refs/tags/')
+        env:
+          VIRUS_TOTAL: ${{ secrets.VIRUS_TOTAL }}
+        run: |
+          set -euo pipefail
+          if [ ! -f vt-scan-results.json ]; then
+            echo "No VT scan results — skipping WDSI staging"
+            exit 0
+          fi
+          python3 .github/scripts/stage-wdsi.py "${GITHUB_REF_NAME}" vt-scan-results.json "${GITHUB_WORKSPACE}"
+
+      - name: Upload defender-submissions artifact
+        if: always() && startsWith(github.ref, 'refs/tags/') && hashFiles('defender-submissions-*/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: defender-submissions-${{ github.ref_name }}
+          path: defender-submissions-*
+          if-no-files-found: ignore

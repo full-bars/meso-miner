@@ -9,14 +9,14 @@ name: Docker Shakedown
 # limits, multi-container, and image/tag hygiene. Runs entirely on the GH
 # runner (ubuntu-latest, amd64), no droplet, no extra credentials.
 #
-# Triggers: manual dispatch, or automatically when a v*-meso tag is
+# Triggers: manual dispatch, or automatically when a v3.23.0-fix.* tag is
 # pushed (mirrors shakedown.yml).
 
 on:
   workflow_dispatch:
   push:
     tags:
-      - 'v*-meso'
+      - 'v3.23.0-fix.*'
 
 permissions:
   contents: read
@@ -34,7 +34,7 @@ jobs:
     # headroom the way shakedown.yml sizes 150min for ~110min of work.
     # Sized for: asset wait (~60min) + image wait (~60min) + shakedown
     # (~55-70min) + headroom. Both waits are sequential in the same step.
-    timeout-minutes: 240   # 60 min asset poll + 60 min image poll + 110 min watchdog + headroom
+    timeout-minutes: 210
     # IMPORTANT: shares the concurrency group with shakedown.yml. Both mint
     # a disposable JWT from the SAME gauntlet account server-side, and W1-W2
     # here mint several MORE JWTs for the auth-mode matrix. Running either
@@ -65,21 +65,21 @@ jobs:
             VER="${GITHUB_REF_NAME}"
           else
             VER=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-              "https://api.github.com/repos/full-bars/meso-miner/releases/latest" \
+              "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/latest" \
               2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get('tag_name',''))" 2>/dev/null || echo "")
             if [ -z "$VER" ]; then
-              echo "::error::could not resolve the latest release tag from the GitHub API — refusing to guess a version (fail-closed)"
-              echo "ENV_BLOCKER=1" >> "$GITHUB_OUTPUT"; echo 75 > /tmp/docker-shakedown.exit; exit 75
+              echo "::error::could not determine latest release from GitHub API"
+              echo "ENV_BLOCKER=1" >> "$GITHUB_OUTPUT"; echo 75 > /tmp/shakedown.exit; exit 75
             fi
           fi
           GITHUB_SHA_SHORT="${GITHUB_SHA}"
           ASSETS_OK=0
           REL_RUN_ID=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-            "https://api.github.com/repos/full-bars/meso-miner/actions/runs?event=push&head_sha=${GITHUB_SHA_SHORT}&per_page=20" \
+            "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/actions/runs?event=push&head_sha=${GITHUB_SHA_SHORT}&per_page=20" \
             2>/dev/null | python3 -c "import sys,json;print(next((r.get('id','') for r in json.load(sys.stdin).get('workflow_runs',[]) if r.get('path')=='.github/workflows/release.yml'),''))" 2>/dev/null || echo "")
           if [ -n "$REL_RUN_ID" ]; then
             REL_JOB_CONC=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-              "https://api.github.com/repos/full-bars/meso-miner/actions/runs/${REL_RUN_ID}/jobs?per_page=50" \
+              "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/actions/runs/${REL_RUN_ID}/jobs?per_page=50" \
               2>/dev/null | python3 -c "import sys,json;print(next((j.get('conclusion','') for j in json.load(sys.stdin).get('jobs',[]) if j.get('name')=='Create Release'),''))" 2>/dev/null || echo "")
             if echo "$REL_JOB_CONC" | grep -qE "failure|cancelled|timed_out|action_required"; then
               echo "::error::create-release job FAILED ($REL_JOB_CONC) — ENV_BLOCKER"
@@ -88,13 +88,13 @@ jobs:
           fi
           for i in $(seq 1 120); do
             if curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-              "https://api.github.com/repos/full-bars/meso-miner/releases/tags/${VER}" \
+              "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/tags/${VER}" \
               2>/dev/null | grep -q '"browser_download_url"'; then
               ASSETS_OK=1; echo "release assets for ${VER} appeared"; break
             fi
             echo "waiting for release build of ${VER} (${i}/120)..."; sleep 30
           done
-          if [ "$ASSETS_OK" != "1" ]; then
+          if [ "$ASSETS_OK" != "1" ] && [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             echo "::error::release assets for ${VER} never appeared within 60 min safety cap"
             echo "ENV_BLOCKER=1" >> "$GITHUB_OUTPUT"; echo 75 > /tmp/docker-shakedown.exit; exit 75
           fi
@@ -106,7 +106,7 @@ jobs:
           # when the image does not exist yet.
           IMG_OK=0
           for i in $(seq 1 120); do
-            timeout 30 docker manifest inspect "ghcr.io/full-bars/meso-miner:${VER}" >/dev/null 2>&1 && { IMG_OK=1; echo "docker image ${VER} found"; break; }
+            timeout 30 docker manifest inspect "ghcr.io/full-bars/urnetwork-3.23-fix:${VER}" >/dev/null 2>&1 && { IMG_OK=1; echo "docker image ${VER} found"; break; }
             echo "waiting for docker image ${VER} (${i}/120)..."; sleep 30
           done
           if [ "$IMG_OK" != "1" ] && [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
@@ -151,7 +151,6 @@ jobs:
           EXPECTED_VERSION: ${{ steps.version.outputs.EXPECTED_VERSION }}
           GAUNTLET_USER: ${{ secrets.GAUNTLET_USER }}
           GAUNTLET_PW: ${{ secrets.GAUNTLET_PW }}
-          IS_TAG_TRIGGER: ${{ github.ref_type == 'tag' && '1' || '0' }}
         run: |
           # `timeout` restores the old watchdog semantics: a hang becomes a
           # catchable 124 exit (so the verdict logic below works) instead of

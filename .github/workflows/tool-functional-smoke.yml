@@ -3,12 +3,29 @@ name: tool-functional-smoke
 on:
   workflow_dispatch:
   push:
-    branches: [main, "fix/*"]
+    branches: [main]
   pull_request:
     paths-ignore:
       - '**/*.md'
       - 'docs/**'
       - 'releases/**'
+
+# Every fix/* branch reaches CI through a pull request, so `push: fix/*` only
+# ever duplicated the pull_request run: two runs of the same jobs, on the same
+# commit, started seconds apart. That is wasted CI everywhere, and in
+# tool-functional-smoke it is actively harmful, because both runs authenticate
+# against the live API with the same GAUNTLET_USER credential and one of them
+# loses. The loser reports "Authentication failed (exit code: 0)" with an empty
+# error body, which reads as a code failure but is a self-inflicted collision.
+#
+# push is therefore scoped to main (the one branch with no PR to trigger on),
+# and the concurrency group collapses a branch's runs whichever event started
+# them, so rapid successive pushes to a PR supersede rather than stack.
+# cancel-in-progress stays false for main: a main-branch validation run should
+# finish, not be cancelled by the next merge.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   native-functional-smoke:
@@ -52,10 +69,19 @@ jobs:
       - name: Mint a real JWT (gauntlet account, production-account guard)
         run: |
           mkdir -p /tmp/mint
-          HOME=/tmp/mint /tmp/provider auth \
-            --user_auth="$GAUNTLET_USER" --password="$GAUNTLET_PW" \
-            --api_url=https://api.bringyour.com -f 2>&1 | grep -vE '^I[0-9]{4}'
-          test -s /tmp/mint/.urnetwork/jwt || { echo "JWT mint failed — see auth output above"; exit 1; }
+          for attempt in 1 2 3; do
+            rm -f /tmp/mint/.urnetwork/jwt
+            HOME=/tmp/mint /tmp/provider auth \
+              --user_auth="$GAUNTLET_USER" --password="$GAUNTLET_PW" \
+              --api_url=https://api.bringyour.com -f 2>&1 | grep -vE '^I[0-9]{4}'
+            if [ -s /tmp/mint/.urnetwork/jwt ]; then
+              echo "JWT minted OK on attempt $attempt"
+              break
+            fi
+            echo "JWT mint failed on attempt $attempt, retrying in 5s..."
+            sleep 5
+          done
+          test -s /tmp/mint/.urnetwork/jwt || { echo "JWT mint failed after 3 attempts"; exit 1; }
           if grep -qE '"(network_id|name)"\s*:\s*"(production|full-bars)"' /tmp/mint/.urnetwork/network.json 2>/dev/null; then
             echo "REFUSING: minted account looks like production"; exit 1
           fi

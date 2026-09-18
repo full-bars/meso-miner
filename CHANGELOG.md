@@ -4,52 +4,232 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.31.4]
+
+### Fixed
+- **Flight window no longer grows back on a resend timeout (PR #640)**: a timeout halved the unreliable-flight window, but the old release path handed the timed-out item to the acknowledge path, which grew the window back on the same event. Timeouts now only shrink the window; delivery evidence is the only thing that grows it. On lossy routes the congestion reduction sticks and recovery is consistent.
+- **The receiver no longer acknowledges items it can still evict (PR #641)**: held items were acknowledged on arrival and then quietly evicted when a full hold had to admit an earlier arrival. The sender learned of the withdrawal only after two acknowledgement-tail probes and the full selective-ack lease. The receive hold now commits a prefix that no later arrival can evict; tentative items above the boundary are held unacknowledged and evicted at zero cost, so a removal costs the sender a resend instead of a stalled lease.
+
+### Changed
+- **CFAA blocklist refreshed (PR #637)**: content-filtering ranges synced from upstream.
+- **Hub deprecation notice (PR #635, #636)**: release notes carry a CAUTION callout. The hub is removed in the next release series.
+
+### Other
+- **H3 + miner migration plan (PR #639)**: added `MIGRATION_PLAN.md` and `scripts/h3-workspace.sh`. No behavior changes.
+
+## [v3.23.0-fix.31.3]
+
+### Fixed
+- **Pooled buffers returned on every drop path (PR #633)**: `SendPacketWithTimeout` and the multi-client send paths dropped packets without returning the pooled byte buffer on channel-full, timeout, and cancellation paths. A busy relay leaked buffers into the message pool until it pinned hundreds of megabytes. All drop and backpressure paths now return the buffer exactly once, with regression tests covering the ownership contracts.
+
+### Changed
+- **CFAA blocklist refreshed**: content-filtering ranges synced from upstream.
+- **Hub deprecation notice (PR #635)**: release notes now carry the initial deprecation callout.
+
+## [v3.23.0-fix.31.2]
+
+### Added
+- **Zero-Downtime HotSwap on Windows (PR #613, #614)**: the in-place binary handover now works on Windows with SIGUSR2-equivalent process signaling and `execve` replacement; Docker containers can hot-swap the provider binary without restarting the container, with `/metrics` state carried across the handover.
+- **Windows lifecycle management (PR #616)**: `urnet-tools` now supports `start`, `stop`, `restart`, and control-socket shutdown on Windows via Task Scheduler and named-pipe control, bringing feature parity with the Linux systemd lifecycle.
+- **Go `urnet-tools` in Windows release tarball (PR #617)**: the Windows tarball now ships the compiled Go `urnet-tools` binary alongside the provider; legacy `urnet-tools.ps1` updater removed in favor of the Go-based self-update path.
+- **Automated WDSI submission bundle (PR #618)**: every release now produces a ready-to-submit WDSI (Windows Driver Signing Infrastructure) bundle automatically, removing manual preparation steps.
+- **Metrics reachable out of the box (PR #620)**: `/metrics` endpoint is now enabled by default and reachable without requiring manual `URNETWORK_PPROF` opt-in, so Prometheus scraping works immediately after install.
+- **Prometheus and Grafana monitoring bundle (PR #621)**: a ready-to-deploy monitoring stack ships with the release, including a Prometheus configuration that scrapes the provider's `/metrics` endpoint and a Grafana dashboard with pre-built panels for provider health, transfer throughput, proxy tiers, and contract metrics.
+
+### Fixed
+- **`/metrics` Prometheus parse errors (PR #619)**: fixed metric name and label formatting so the `/metrics` endpoint parses cleanly under Prometheus's text exposition format without scrape errors.
+- **Root allowed through control-socket peer check (PR #622)**: root callers are no longer rejected by the Unix socket peer credential check; non-root rejections now send a structured JSON error response instead of a bare message.
+- **`config` command discovery path (PR #623)**: `urnet-tools config` now resolves providers using the same discovery logic as `status`, eliminating mismatches where `status` found a provider but `config` could not.
+- **Docker nightly staging path and update settle delay (PR #624)**: corrected the tarball extraction path in the nightly Docker build and increased the post-update verification settle delay so slow-starting providers are not falsely flagged as failed.
+- **Throttled errors counted in Prometheus counter (PR #626)**: errors suppressed by the rate limiter were not incrementing the Prometheus error counter, so dashboards under-reported error rates during sustained failure storms.
+- **Three shakedown root-cause fixes (PR #627)**: addressed three distinct failure modes discovered during automated shakedown runs — incorrect script exit handling, missing prerequisite checks, and stale state between shakedown sections.
+- **`urnet-tools` provider deduplication by state dir (PR #628)**: when multiple unit files pointed at the same provider state directory, `urnet-tools` listed the same provider multiple times; units are now deduped by canonical state directory path.
+- **Docker nightly tarball extraction regression (PR #629)**: added a regression test and fixed the extraction path handling for nightly tarballs inside Docker containers.
+- **Smarter update verification loop with PID tracking (PR #630)**: the post-update verification now tracks the new process by PID instead of relying on a fixed settle delay, so it detects both success and failure faster and avoids false negatives on slow starts.
+- **HotSwap Docker execve arg sanitization (PR #614)**: Docker `execve` arguments for in-container HotSwap are now sanitized, preventing injection of untrusted values during the binary handover.
+- **`gofmt` compliance for `connect.go` (PR #612)**: formatted `connect.go` to pass the `gofmt` CI gate.
+
+### Changed
+- **Release engineering hardening (PR #617, #618, #629)**: Windows packaging cleaned of legacy updater remnants; WDSI bundle automated; Docker nightly extraction regression-tested to prevent silent packaging regressions.
+
+---
+
+## [v3.23.0-fix.31.1]
+
+### Added
+- **`urnet-tools history` command**: exposes the provider's 1000-entry command audit ring via the control socket. Supports `--limit` and `--cursor` for pagination. Fixed wire-format mismatch (`int64` vs `time.Time` serialization) that broke every invocation.
+- **HotSwap unit migration (PR #611)**: `urnet-tools update` rewrites a `Type=simple` unit to `Type=notify` when the binary it installs sends `READY=1` at startup (v31.0+), so the following update can hot swap; the migrating update itself uses a normal restart. The unit follows the installed binary: installing anything older, or a binary whose version cannot be read, demotes it back to `Type=simple`, as does a HotSwap rollback to such a binary. A `Type=notify` unit is therefore never left paired with a binary that cannot signal readiness, the skew #546 kept the installer on `Type=simple` to avoid. Unit, temp and backup files are written with `O_NOFOLLOW`. Non-fatal: a failed migration logs a note and falls back to restart.
+- **HotSwap operator-facing decline messages (PR #611)**: every HotSwap decline point now tells the operator what went wrong in plain language and what to do about it, instead of technical jargon. Covers version too old, Type=simple, Windows, and missing NOTIFY_SOCKET.
+- **HotSwap decline metrics (PR #611)**: new `urnet_hotswap_outcomes_total{reason="..."}` Prometheus counter tracking HotSwap success and decline outcomes by reason (version_old, unit_not_notify, windows, takeover_failed, etc.). Written atomically by `urnet-tools` and scraped by the provider's `/metrics` endpoint.
+- **`ParseByteCount` human suffixes (PR #610)**: `urnet-tools set gomemlimit` now accepts common formats (`1536M`, `2G`, `512MB`, `1g`, `2tib`) in addition to the original lowercase iB variants. Spaces stripped, longest-suffix-first matching.
+- **`urnet-tools set metrics on|off` (PR #611)**: when `URNETWORK_METRICS` is unset, the listener starts on the first free loopback port in `127.0.0.1:9100-9103`. Set `URNETWORK_METRICS` to serve it on another interface. A persisted `on` is applied at boot.
+- **Proxy earnings priority ranking (PR #611, from #601)**: proxy launch order now considers earnings history — high-earning URL proxies are promoted into the trusted launch group alongside file proxies. Sort order: warmth first, then provenance, then earnings. Exploration quota interleaves 1 unproven proxy per 5 trusted cold proxies to prevent starvation.
+
+### Fixed
+- **`urnet-tools history` wire-format mismatch**: `AuditEntry.Timestamp` was `int64` on the client but the provider sends `time.Time` (RFC3339 string), causing JSON unmarshal failure on every invocation.
+- **`urnet-tools set metrics on` no-op**: `applyMetricsLive` required `URNETWORK_METRICS` env var at boot — if unset, the server never started and `set metrics on` silently did nothing. Now auto-starts the metrics server on a free loopback port.
+- **HotSwap declined on every systemd node**: installs run `Type=simple`, so HotSwap always declined. The unit is now migrated during update when the installed binary supports it. The migration runs in the `urnet-tools` performing the update, so on a 31.0 node run `urnet-tools self-update` before `urnet-tools update` to migrate on the upgrade to 31.1.
+- **Proxy earnings priority inversion**: cold promoted URL proxies could jump ahead of warm unpromoted URL proxies because provenance was checked before warmth. Sort order corrected to warmth-first.
+- **Proxy earnings starvation**: unproven URL proxies could be permanently starved behind cumulative cold-proxy ramp delays. Added exploration quota.
+- **Contract retry wait**: the wait is recomputed from its baseline before every retry, so it follows denials that async `CreateContract` callbacks record between retries and drops back once a contract succeeds or the denial state expires.
+- **Adaptive proxy `ParallelBlockSize`**: `getAdaptiveBlockSize()` now guards against zero/negative values.
+- **`consecutiveErrors` overflow**: capped at 20 to prevent unbounded growth.
+- **`writeStateFile` double close**: the fd was closed directly and again by the `*os.File` wrapping it, whose finalizer later closed whatever descriptor had reused the number. Surfaced as intermittent "bad file descriptor" test failures.
+- **HotSwap counter file symlink write**: `urnet-tools` (root) wrote `.hotswap_declines.json.tmp` into the provider-owned state dir with `os.WriteFile`, which follows symlinks. Now written with `O_NOFOLLOW`.
+- **Contract denial backoff cycled instead of climbing**: denial state expired 2 minutes after the last denial, shorter than the 120s+ tiers, so the count reset before reaching the cap. State now survives backoff + 2 minutes. A frame carrying several errors counts as one denial.
+- **Adaptive probe batch shared across proxies**: the success window was process-wide, so one proxy's failing path resized every proxy's batch. Now one window per client strategy; the batch halves when healthy and never exceeds the configured `ParallelBlockSize`.
+- **`gogc` "off" could disable GC**: a set carrying `OFF` (any casing the CLI did not rewrite to a clear) called `SetGCPercent(-1)`. Only `disabled` turns collection off; the CLI clear match is case-insensitive.
+- **Persisted `metrics on` ignored at boot**: without `URNETWORK_METRICS`, a saved `on` was never re-applied at startup, so `set metrics on` did not survive a restart. The auto-selected listener is now held open from probe to serve.
+- **Denial backoff overflow**: a very large denial count overflowed the shift and returned no backoff.
+- **Serial dialer ordering race**: dialer health is snapshotted before sorting, with one comparator shared by both evaluation paths.
+- **Unit migration hardening**: a symlinked unit file is refused, and files root writes into a user's unit directory are handed to that directory's owner.
+- **Test harness global mutation**: `withGlobalEarningsStore` now uses `t.Cleanup` to restore state.
+
+### Changed
+- **CFAA blocklist sync (PR #609)**: refreshed Computer Fraud and Abuse Act IP blocklists from upstream definitions.
+- **HotSwap decline messages**: all 5 decline points now include operator-facing guidance with actionable next steps instead of technical error strings.
+- **Proxy warmth test expectations**: updated to reflect warmth-first sort order.
+
+### Test Coverage
+- 62 new test functions covering denial backoff, proxy selection and ordering, adaptive probe batching, HotSwap unit migration, counters and declines, the control socket (`gogc`, metrics at boot), earnings launch ranking, `ParseByteCount`, the audit wire format, and the `writeStateFile` descriptor fix.
+
+---
+
+## [v3.23.0-fix.31.0]
+
+### Added
+- **Provider Control Plane & Daemonization (Flagship)**: Decoupled provider service execution from interactive CLI sessions; added a background supervisor, a local Unix domain socket control plane (`~/.urnetwork/provider.sock`, `provider/control_socket.go`) and client protocol in `urnet-tools` for live runtime configuration management without restarts or brittle shared-file locks. Atomic set/clear, single-owner `provider_state.json`, and cross-process flocking.
+- **Offline Pending Configuration Queue**: Seamless fallback queue (`~/.urnetwork/pending_overrides.json`) for `urnet-tools set` invocations when the provider is offline, atomically merged and applied one-shot on startup.
+- **Zero-Downtime HotSwap (Docker only in practice)**: In-place binary handover with control-socket/listener transfer, mandatory TAKEOVER-ACK-then-yield, graceful drain, SIGUSR2/`urnet-tools hotswap` + Docker PID-1 in-place `execve` and systemd `Type=notify` handoff, and automatic rollback if the candidate fails to take over.
+- **Public IP Autodetection & Dashboard Rename (PR #534)**: Automatic detection of public IPv4 address with caching, 60s TTL, concurrent request deduplication, and opt-out (`~/.urnetwork/disable_ip_autodetect` / `urnet-tools ip-detect off`); added `urnet-tools rename` to set custom dashboard display labels dynamically.
+- **Systemd Environment Key Migration**: Unified `URNETWORK_PROFILE`, `URNETWORK_RAMLOGS`, `GOMEMLIMIT`, and `GOGC` under control-socket configuration, eliminating manual `override.conf` requirements.
+- **urnet-tools Multi-Provider UX (one provider per OS user)**: implicit current-user scope on ordinary commands; `providers` / `providers --all` inventory; cross-user `--user`/`--unit` commands self-elevate under `sudo <full binary path>`; `-y`/`--yes` aliases `--force`; `optimize` self-elevates and applies atomically with rollback; actionable manage-time refusals; control-socket liveness in `status`.
+- **JWT Refresh Transfer Stats Logging**: Step 3/3 of JWT auto-refresh parses `paid_bytes_provided` and `unpaid_bytes_provided` from `GET /transfer/stats` and logs account balances in human-readable units inline (`unpaid: X, paid: Y`).
+- **CFAA Blocklist Synchronizations (PR #540, #542)**: Automated synchronization of Computer Fraud and Abuse Act IP blocklists with upstream definitions.
+- **Unified configuration, v2 schema (PR #575)**: the provider becomes the single source of truth for every setting. A v2 envelope, backward compatible with v1, records where each setting came from (socket, env, pending, legacy, default); a `status` socket command returns all of it with that metadata, and `urnet-tools config` renders it as a table or JSON. Mutation goes through one API so values and their metadata cannot drift, and persistence syncs the file and its parent directory.
+- **Prometheus `/metrics` endpoint (PR #565)**: eleven `urnet_*` metrics covering uptime, connections, proxy pool by status, per-proxy bytes and clients, errors by category, contracts by result, and Go runtime memory and goroutines. No new dependencies; the text format is generated directly. Mounts on the loopback diagnostics server, with `URNETWORK_METRICS` binding it on the Tailscale address for remote scraping.
+- **`urnet-tools config`, `history`, `profile`, `metrics`, `dashboard` (PR #568)**: settings with their sources, the provider's 1000-entry command audit ring, the tuning profile, a live toggle for the metrics endpoint without a restart, and a terminal status panel. `set` now warns when a key needs a restart to take effect.
+- **Control socket hardening (PR #573)**: `SO_PEERCRED` checks the connecting UID against the provider's on Linux, a five-second per-line read deadline closes the slowloris shape, requests are capped at 64 KiB and values at 4 KiB, and protocol version negotiation rejects anything newer than it understands rather than parsing it hopefully.
+- **Server-side control validation and restart flagging (PR #566, #572)**: all fourteen keys are validated at the server, so a raw socket client cannot persist a value that breaks the next start. Each response carries a `needs_restart` flag computed from whether the key has a live side effect, so it cannot go stale. `v4` and `v8` are accepted as turbo aliases.
+- **Phased startup banner and Ready summary (PR #571, #577)**: boot messages are collected into phases with per-phase results and timings over 100 ms, closed by a single `✅ Ready` line carrying version, profile and proxy count. Suppressed under systemd and by `URNETWORK_STARTUP_BANNER=0`.
+- **Version stamp for `-trimpath` builds (PR #579)**: `-trimpath` strips `-ldflags` out of Go build info, so `main.Version` cannot be read back out of a release binary. The release workflow now embeds `URNET_VERSION_STAMP=<version>` as program data, which survives, and the tool scans for it without executing the file. Works on a stopped provider, a cross-architecture binary, and any release build, and is what lets a v30.9 tool verify an upgrade to v31.
+- **Provider version over the control socket (PR #578, #580)**: a running provider answers a `version` request with its own build string, the only source reporting what the process is rather than inferring it from the filesystem. Falls back to `/proc/<pid>/exe` and then on-disk build info, which matters because `update` swaps the binary before the HotSwap preflight runs and a rename over a running binary leaves that path naming a deleted file.
+- **Conntrack tuning in `optimize` (PR #569)**: both settings are host-wide and persist via /etc/sysctl.d. The one-hour established timeout is deliberate: a proxy node churns connections, and at the kernel default of five days the table fills with entries for peers that are long gone. Idle connections elsewhere on the box that do not send keepalives can be reaped after an hour. `nf_conntrack_max` was never set, leaving the 65,536-entry kernel default, which is far too low for a proxy box. It is now scaled to host RAM across six brackets, from 131,072 under 1 GB to 4,194,304 above 32 GB, with `nf_conntrack_tcp_timeout_established` cut to an hour. Skipped cleanly when the module is not loaded, persisted to `/etc/sysctl.d/99-urnetwork.conf` with rollback.
+- **Heartbeat build line (PR #595)**: `[health][build]` leads every five-minute heartbeat tick with version, profile and node name, so a log tail can be tied to a build after the startup banner has scrolled out of the RAM log window.
+- **Message-pool health verdict (PR #592, #595)**: an aggregated pool line in the heartbeat reporting `ok`, `warming`, `watch` or `leak` in plain language, keyed on the outstanding low-water mark and all-time allocation count rather than a return percentage, which cannot detect a leak proportional to throughput. Needs an hour of uptime before the floor tracking is meaningful, which `warming` states with a countdown. Documented with worked examples in `LOG_REFERENCE.md`.
+- **`urnet-tools proxy ids` (PR #593)**: shows the `client_id` the platform assigned to each proxy, including the `direct` transport. Bearer tokens in the client-JWT store are never printed.
+- **Proxy resolution state in systemd `STATUS=` (PR #591)**: reloads publish the configured proxy count and a resolution state; a failed or empty fetch publishes the failure with its reason and emits a rate-limited operator warning. Operator-facing only, and `READY` stays decoupled from health.
+
+### Fixed
+- **ICE IPv6 Host Candidate Guard**: Gated synthetic IPv6 host candidates behind `egressIPv6Usable()` send probes to prevent blackholed cellular routes on Android from stalling ICE connection negotiation.
+- **Memory Target & GC Tuning at Startup**: Persisted `gomemlimit` and `gogc` applied at bootstrap and runtime via debug APIs.
+- **systemd `Type=notify` start/restart wedge (PR #543, #546)**: the provider signalled `READY=1` only once a proxy had authenticated, so a `Type=notify` unit waited on a readiness signal that arrived late or never and `systemctl start`/`restart` hung. READY is now sent when the provider is self-managing.
+- **Provider version on `-trimpath` release builds (PR #547)**: `urnet-tools` could not resolve the version from a stripped release binary, so `update --tag` reported the wrong version and refused to align an install to a requested release.
+- **HotSwap drain misreporting a successful handoff (PR #552)**: the liveness monitor armed even when no child process backed the session, where `Wait` returns immediately; that case and `ctx.Done()` were both ready and Go chose at random, so a successful handoff could exit non-zero as a dead candidate.
+- **Profile defaults clobbering persisted `gomemlimit`/`gogc`**: applying a profile overwrote values an operator had set explicitly.
+- **Installer `json_escape` emitting unquoted JSON**: corrupted `pending_overrides.json`; queueing an override under `sudo` also left the file owned by root.
+- **The weekly auto-update timer had never completed an update (PR #581, #583)**: `ExecStart` was a bare `urnet-tools update`, systemd hands a oneshot unit `/dev/null` on stdin, and the version prompt was gated only on `!force`, so every run exited 1 on the refused read. The two confirmation gates ignored the interactive decision the target pickers already used, so one run could skip the picker as non-interactive and then demand a prompt. A single `unattendedUpdate()` decision now drives all of them: force, a systemd `INVOCATION_ID`, or stdin on `/dev/null` skip prompts, while other non-interactive stdin still refuses, so a pipe or a pty-less SSH session cannot silently auto-confirm. Concurrent updates of one binary are serialised by an flock. Not a v31 regression; the install script has written that `ExecStart` since before v3.23.0-fix.30.9.
+- **HotSwap had never engaged on a release build (PR #578)**: `update` swaps the binary before the preflight runs, and a rename over a running binary leaves `/proc/<pid>/exe` naming a deleted file, so the preflight read an empty version and declined with a reason naming a version that was never the problem, returning before the unit-type check ran.
+- **A sentinel-update unit appeared as a provider (PR #576)** and **discovery now corroborates units against `ExecStart` (PR #562)**.
+- **The HotSwap decline reason was lost on the update path (PR #560)**, so a fallback to restart reported the fallback without saying why.
+- **Profile commands with no arguments print current status (PR #564)** rather than erroring on the empty argument.
+- **HotSwap handed off to the binary it replaced (PR #588, #594)**: the handoff resolved its image with `os.Executable()`, which follows the inode rather than the path, so once the updater moved the running binary to a backup it spawned the backup. The old build came up, announced READY, the parent drained, and the operator saw a clean zero-downtime swap that changed nothing. `updateProvider` skips the unit restart when the trigger succeeds, so the fallback that would have worked was bypassed precisely because the handoff "worked". Not a regression. The install path is now captured at init and the candidate is validated with `syscall.Access(X_OK)` as a regular executable file. A provider on an earlier build cannot be HotSwap-upgraded onto this one; restart the unit once.
+- **Version resolution defeated by `+dirty` pseudo-versions (PR #587)**: Go 1.27 with `-trimpath` emits `v0.0.0-<ts>-<hash>+dirty` in build info. The filter rejected `+incompatible` but not `+dirty`, so the pseudo-version passed as real, short-circuited the version-stamp scan, and `hotSwapVersionOK` declined a valid candidate.
+- **Empty version in the batch confirmation gate (PR #584, #585)**: `confirmGateMulti` now records the version running before an unattended swap, and falls back to reading the binary when the in-memory provider struct carries no version.
+- **RAM log trim replaced kept history with NUL padding (PR #596)**: the five-second trimmer read with `ReadAt` on a write-only descriptor, so the read always failed with `EBADF`; the error was discarded and the zero-filled buffer was written back as the preserved history. Both the main and the important buffer were affected, the latter 97% padding. Measured on a live node, 3.5 MB of NUL bytes preceded the first real line. Not a regression, and never covered by a test.
+- **`urnet-tools logs` followed stored state, not the provider (PR #597)**: the RAM-log decision came from the control-state chain alone, while the provider decides from `URNETWORK_RAMLOGS` in its environment. The two disagreed whenever the variable arrived via a unit body, a drop-in, an `EnvironmentFile=`, or `docker -e`, streaming an almost-empty journal while the provider wrote to `/dev/shm` twice a second.
+- **Two unthrottled error lines (PR #598)**: `completeHandshake failed` (487 lines in 6m25s on a node with 1160 proxies) is now throttled per reason class rather than per client, since a per-client throttle on a busy box is no throttle at all; `[c]audit send error` is throttled globally. Both carry an `(N suppressed)` count.
+- **Lossy carriers stalling the reliable lane (PR #586)**: ports upstream's WebRTC lane-gating fix. A full unreliable resend queue stalled the whole send sequence while a reliable relay lane sat idle. Unreliable flight limits are decoupled from the global resend-queue gate, acknowledgement RTT samples from unreliable transports are excluded from the RTT window, and ICE UDP connections get a 4 MB socket buffer. Running the port live surfaced three further defects fixed here: a flight reserve stranded on zero-byte acknowledgements, a message-pool double return in the multi-route write helpers, and a nil-map panic from a shadowed declaration in route selection that this change made reachable.
+- **Phantom providers from non-provider siblings (PR #599)**: discovery fell back to matching any `urnetwork-*` unit name when `ExecStart` could not be read, so an unrelated unit appeared as a second provider and made every command on a single-provider box ambiguous. A name-only match now also requires a `.urnetwork` state directory.
+
+### Changed
+- **`urnet-tools ip-detect` is now `urnet-tools show-ip`**: the old name described the mechanism rather than the effect and read as a diagnostic that would report the IP, and sat awkwardly beside `direct`, which is about the address the provider serves on. `ip-detect` and `ipdetect` remain as aliases.
+- **Settings changes are logged at the provider**: `set`, `clear`, the startup merge of queued overrides, and dashboard-label changes now emit log lines, so an operator can confirm from the node's own log that a change registered with the daemon. `get` stays silent because `status` polls it on every invocation.
+- **`urnet-tools help` lists `hotswap`**: registered since PR #533 but never shown in the usage text.
+- **Tuning help text corrected**: `turbo`, `auto`, `eco` and `lowmode` described writing a systemd drop-in; they have written the control-socket key since the v31 migration.
+
+### Release Engineering
+- **Pre-release shakedown sections Q-Z (PR #544)** and a **Docker Shakedown workflow (PR #545)** covering the v31 daemon and container surfaces.
+- **Shakedown runs to completion (PR #550)**: section L read an unassigned variable, which under `set -u` aborted the suite silently, so every section after it had never executed. Both shakedown workflows now surface the script's raw output on failure and warn on a report with no SUMMARY.
+- **CI wall clock roughly halved (PR #551)**: race suite sharded across three runners, lint parallel to the tests, retry no longer masking genuine failures, and concurrency groups on the three workflows that lacked them.
+- **Manual shakedown dispatch can target a release (PR #548)**.
+- **Shakedown failures across four surfaces (PR #558)**: Docker architecture selection, `--tag`, restart verification and hotswap. Plus a Docker shakedown that raced image publication (PR #555) and review findings on both workflows (PR #557).
+- **Two tests fixed (PR #559, #563)**: an exec race in the discovery fallback test, and an auto-update test that mutated the host it ran on.
+- **A test that passed only in CI (PR #589)**: `TestCurrentProviderNetworkID` redirected `HOME` but not the package-level client-JWT store, which is initialised at load time from the real home directory, so it failed on any machine that had ever run a provider.
+- **`sn-status` error contract and flake (PR #590)**: `FetchSnStatus` always returned a nil error, so a total API outage surfaced as zero-value assertion mismatches. It now errors when both independent calls fail while preserving partial results, and each call gets its own timeout budget instead of sharing one across three.
+- **Update timer unit passes `-y` (PR #583)**: makes the non-interactive intent explicit in the file an operator reads.
+
+---
+
 ## [v3.23.0-fix.30.9]
 
 ### Added
-- **Persistent DoH cache**: cached DNS resolutions and per-server scores persist across restarts, so a reboot no longer cold-starts the resolver.
-- **Upstream production DoH optimizations P1-P3**: server scoring, serve-stale (RFC 8767), staggered launch, single-flight coalescing, memory budget, TLS resumption, and warm-up on resolver failure.
-- **Client JWT hot-restart v2 (PR #35)**: expired client JWTs are renewed on startup and identities are snapshotted before restart, gated on network compatibility. A provider restarts with a working identity instead of re-authenticating from scratch.
-- **Provider version in `urnet-tools status` (PR #40)**: each provider's actual running version is shown.
-- **Subprocess timeouts (PR #40)**: every discovery and systemctl call is bounded (5s/10s) so a hung process cannot wedge the tool.
+- **TCP-return retention across ack timeouts (PR #506, #521)**: in-flight packets on TCP return paths are retained past ack deadlines instead of being prematurely dropped, protecting relay session continuity and operator billing credit during transient network stalls. Retained items are bounded by `MaxRetainedBytes` and cleanly drained on flow resets (`rstFlow`).
+- **Retention health telemetry (PR #506, #521)**: structured `retained_ack` and `retained_drop` events written to the persistent health log (`proxy_health_log.go`) via a buffered, thread-safe writer.
+- **Bulk proxy ingestion via `proxy paste` (PR #502, #520)**: operator command accepting raw proxy lines from stdin, files, or HTTP(S) URLs. Auto-detects and normalizes `host:port`, `socks5://`, `user:pass@host:port`, and CSV formats.
+- **Signal-safe proxy-paste temp cleanup (PR #520)**: unlinks plaintext temporary proxy-paste files on `SIGINT`/`SIGTERM` with cross-platform process signaling (`os.Process.Signal`) and restores default signal disposition.
+- **SSRF guard on proxy sources (PR #522)**: dial-time and redirect-time verification blocking all operator-supplied URLs from reaching loopback, link-local metadata (`169.254.169.254`), private RFC1918, IPv6 ULA, and multicast addresses.
+- **Dynamic direct transport toggle (`provider direct`) (PR #510, #514, #516, #517)**: CLI command (`provider direct on|off`) to enable or disable native direct IP transport on demand without restarting SOCKS5 proxies. State is persisted atomically to `~/.urnetwork/direct_override`.
+- **Usage & traffic accounting (`urnet-tools usage`) (PR #507, #521)**: aggregate traffic accounting distinguishing billable relay bytes from control-plane protocol overhead, with rolling time-series summaries (`24h`, `7d`, `30d`, `lifetime`).
+- **`choose_network` presets (PR #504)**: fast target switching using `main` and `beta` network presets.
+- **Persistent DoH cache (PR #496)**: cached DNS resolutions and per-server scores persist across restarts, so a reboot no longer cold-starts the resolver.
+- **Upstream production DoH optimizations P1-P3 (PR #495)**: server scoring, serve-stale (RFC 8767), staggered launch, single-flight coalescing, memory budget, TLS resumption, and warm-up on resolver failure.
+- **Client JWT hot-restart v2 (PR #494)**: expired client JWTs are renewed on startup and identities are snapshotted before restart, gated on network compatibility. A provider restarts with a working identity instead of re-authenticating from scratch.
+- **Warm proxy priority on startup (PR #526)**: evaluates local client JWT store on boot and prioritizes warm, previously-authenticated proxies during startup selection to minimize validator probe latency.
+- **Accelerated startup stagger for warm proxies (PR #526)**: reduces connection launch stagger from 2s to 100ms for known-warm proxies, slashing cold-start ramp times by up to 95%.
+- **Network ID conflict guard (PR #526)**: hardens `AnyNetworkID` against mismatched network identity state, ensuring strict network identity consistency.
+- **Subnet 25 telemetry & status dashboard (`sn-status`) (PR #528)**: live Bittensor Subnet 25 miner and node telemetry displaying global ranking, top-200 tier eligibility, net bandwidth provided (MiB/GiB), registered coldkey (SS58 & Hex), subnet epoch lifecycle, and finalized epoch merkle pool payout share (basis points & percentage). Available across `urnet-tools sn-status`, `urnet-docker sn-status`, and `provider sn-status`.
+- **JSON machine telemetry output (`--json`) (PR #528)**: machine-readable JSON output for `sn-status` across all CLI tools for automated monitoring, scraping, and alerting fleets.
+- **Subnet 25 ranking API client bindings (PR #528)**: Go SDK methods `NetworkGetRankingSync` (`GET /network/ranking`) and `StatsLeaderboardSync` (`POST /stats/leaderboard`) on `BringYourApi`.
+- **Bittensor operations guide (`docs/Bittensor-Operations.md`) (PR #528)**: operator guide covering Subnet 25 mining mechanics, coldkey registration, epoch lifecycle, top 200 cutoff requirements, reward claims, and CLI monitoring workflows.
+- **Go-native `idle-update` (PR #525)**: polls billable throughput rate before updating in place, ensuring active client sessions aren't severed, with configurable `--timeout` ceiling and `--threshold`.
+- **Docker CLI parity (PR #525)**: `urnet-docker direct`, `urnet-docker usage`, and `urnet-docker proxy paste` delegating to in-container commands.
+- **Tilde home path expansion (PR #525)**: expands `~` in `--file` and positional arguments across CLI tools and shells.
+- **CFAA blocklist sync (PR #527, #530, #532)**: refreshed Computer Fraud and Abuse Act IP blocklists from upstream definitions (IPv4: 48,427 entries, IPv6: 453 entries).
+- **Automated CFAA blocklist sync CI/CD (PR #529, #531)**: daily automated GitHub Actions cron workflow and repository dispatch trigger that monitors upstream `urnetwork/connect` for blocklist updates, verifies lookup table integrity, and opens automated pull requests with Discord webhook notifications.
+- **Provider version in `urnet-tools status` (PR #497)**: each provider's actual running version is shown.
+- **Subprocess timeouts (PR #499)**: every discovery and systemctl call is bounded (5s/10s) so a hung process cannot wedge the tool.
 
 ### Changed
-- **urnet-tools security audit remediation (PR #40)**: version strings are read from Go build info / ELF header instead of executing discovered binaries (removes a privilege-escalation vector); `set`/`fast-auth`/`self-heal` chown created state files to the provider user instead of leaving them root-owned; `runtime.GOARCH` arch detection; atomic drop-in writes with `%%` escaping.
-- **Reliable provider updates (PR #40)**: post-restart verification instead of assumed success; redundant reinstall for stale on-disk binaries.
-- **restart safety (PR #40)**: a bare process is no longer SIGINT'd (which killed it permanently); the tool asks the operator to restart the unit instead. Restart scope (user vs system) resolved via systemctl rather than filesystem guesswork.
-- **Bounded DNS resolution**: DNS lookups capped at 3s and abort on the winning server.
+- **`pathTable` LRU eviction & bounds (PR #513)**: multi-hop route table in `ip.go` guarded with mutex locking, bounded size cap, and LRU pruning to eliminate unbounded memory growth under peer churn.
+- **DNS negative-cache bounded pruning (PR #513)**: replaced unbounded negative DNS caching with periodic sort-based eviction.
+- **Message pool metrics & refcount safety (PR #505, #521)**: converted pool size distribution mutex (`sizeDistMu`) to `sync.RWMutex` and added bounds checking against buffer counter underflows/overflows.
+- **urnet-tools security audit remediation (PR #499, #505, #509)**: version strings are read from Go build info when recorded; discovered binaries are still executed as a 3s-timeout `--version` fallback when build info lacks a version (e.g. `-trimpath` builds); `set`/`fast-auth`/`self-heal` chown created state files to the provider user instead of leaving them root-owned; secure hub install verification via release digest and exclusive temp download; `runtime.GOARCH` arch detection; atomic drop-in writes with `%%` escaping.
+- **Reliable provider updates (PR #497, #503)**: post-restart verification reads running process image via `/proc/<pid>/exe`; redundant reinstall for stale on-disk binaries.
+- **Direct reloader lifecycle (PR #514, #517, #521)**: compare-and-delete CAS tracking and clean `cancelMap` cleanup prevent orphaned cancellation tokens or race conditions during rapid reload cycles.
+- **Bounded DNS resolution (upstream)**: DNS lookups capped at 3s and abort on the winning server.
+- **Source comments cleanup (PR #518, #519)**: removed stale review-process references and AI attributions for clean codebase hygiene.
 
 ### Fixed
-- **Uninstall path guard (PR #40)**: `uninstall` refuses to delete well-known system directories; no longer removes arbitrary absolute paths.
-- **update confirm no longer hangs (PR #40)**: the non-TTY confirm path returns an error instead of blocking on stdin forever (cron/CI-safe).
-- **Chown of state dir (PR #40)**: `chownLikeStateOwner` no longer a self-referential no-op; the provider's state dir is correctly owned.
-- **DoH concurrent-map race (PR #36)**: `stateLock` restored around the stale-cache read.
-- **Outage watcher removed (PR #36)**: the unreliable alert-webhook outage watcher and its stale references are gone.
+- **Contract billing debit rounding (PR #521)**: fixed `unack()` debit rounding to ensure packets discarded at the retention backstop ceiling are never erroneously credited as acknowledged billable transfer.
+- **Cross-platform build compatibility (PR #520)**: replaced POSIX-only `syscall.Kill` with standard `os.Process.Signal` for clean Windows (`GOOS=windows`), macOS (`GOOS=darwin`), and Linux compilation.
+- **SSRF test fixture loopback isolation (PR #522)**: added unexported `ssrfAllowLoopback` toggle to allow local `httptest.NewServer` mock fixtures during test runs without relaxing strict production guards.
+- **Direct toggle `<state>` argument parsing (PR #517)**: fixed docopt command parsing to properly recognize positional state arguments.
+- **Root PATH sanitization (PR #517)**: preserved accessible executable directories in system search paths while preventing ancestor directory traversal.
+- **Uninstall path guard (PR #499)**: `uninstall` refuses to delete well-known system directories; no longer removes arbitrary absolute paths.
+- **Update confirm no longer hangs (PR #499)**: the non-TTY confirm path returns an error instead of blocking on stdin forever (cron/CI-safe).
+- **Chown of state dir (PR #499)**: `chownLikeStateOwner` no longer a self-referential no-op; the provider's state dir is correctly owned.
+- **DoH concurrent-map race (PR #499 / upstream)**: `stateLock` restored around the stale-cache read.
+- **14 parity findings resolved (PR #523)**: fixed CodeRabbit-confirmed findings from meso-miner parity port audit across provider core, memory allocation, and connection management.
 
 ### Removed
-- **Unreliable outage watcher**: the alert-webhook-based outage signaling feature was removed. It produced false outage signals.
+- **Unreliable outage watcher**: the alert-webhook-based outage signaling feature was removed (parity with meso-miner). It produced false outage signals.
 
 ---
 
 ## [v3.23.0-fix.30.8]
 
 ### Added
-- **Pelican panel egg support (PR #21)**: the hardened provider image is now importable into the Pelican game-server panel as a one-click egg (`pelican/egg-urnetwork-323fix.json`, PLCN_v3). `BUILD` (stable/nightly/jwt) is user-editable; `PASSWORD` and `AUTHCODE` are admin-only. `PELICAN=yes` pins security defaults (vnStat off, IP checker off) and disables runtime self-update under a panel. `urnet-tools.sh` symlink fallback to `/app` for Pelican egg compatibility.
-- **urnet-tools update verification hardening (PR #23)**: PID tracking captures old PIDs before SIGTERM and waits for those specific PIDs (prevents accidental SIGKILL of a new process); fixed-string grep (`grep -aF`) for the ramlog version check; `-v` instead of `--version` for consistency; trap cleanup on all exit paths.
+- **Pelican panel egg support (PR #480)**: the hardened provider image is now importable into the Pelican game-server panel as a one-click egg (`pelican/egg-urnetwork-323fix.json`, PLCN_v3). `BUILD` (stable/nightly/jwt) and `USER_AUTH` are user-editable; `PASSWORD` and `AUTHCODE` are admin-only. `PELICAN=yes`, `ENABLE_VNSTAT=false`, and `ENABLE_IP_CHECKER=false` are hidden and non-editable in the egg, pinning the audit-preferred defaults.
+- **Pelican boot smoke (PR #480)**: `docker/scripts/test_pelican_smoke.sh` drives `pelican_panel.sh` against a fake provider binary. Empty credentials fail fast, jwt mode routes to `auth-provide` with the code, stable mode routes through the auth loop to `provide`. Runs in `test-and-lint`.
+- **Pelican behavioral gate tests (PR #480)**: `docker/scripts/test_pelican_gates.sh` adds 15 mutation-checked tests covering the PELICAN update gate in `start_nightly.sh`, the `urnet-tools update` refusal, the `$HOME`-based state-dir resolution in `proxy-health.sh` / `proxy-traffic.sh`, and the egg-JSON invariants (non-empty rules arrays, known validator tokens, unique env_variable and sort values). Wired into CI as its own step.
 
 ### Changed
-- **Proxy slow-retry cap (PR #24)**: operator-curated proxies that exhaust `maxAuthFailures` enter a ramp of 5m/10m/15m then a flat 24h daily retry instead of retrying every 15 minutes forever; dead proxies are dropped after 14 days of continuous failure; state persists to `~/.urnetwork/proxy-slow-retry.json`; restart storm guard consults `LastAttemptAt`; max 4 concurrent slow-retry auth attempts; dropped proxies cleaned from `proxyCancelMap` so `proxy refresh` can relaunch them.
-- **Corrupt-state recovery (PR #26, meso-only)**: `proxy_slow_retry.go` returns fresh state on JSON unmarshal failure instead of partially-parsed state that could cause undefined behavior.
+- **Pelican-gated runtime update policy (PR #480)**: under `PELICAN=yes`, `start_nightly.sh` short-circuits the update check (bootstrap and daily watcher) and `urnet-tools update` exits 1 with a refusal message. The published image is the single source of truth under a panel; a runtime fetch would silently swap the audited fork binary for whatever the release API serves mid-flight. Non-Pelican Docker deployments keep the v3.23.0-fix.30.6 behavior unchanged.
 
 ### Fixed
-- **Docker self-update fetches fork releases (PR #28)**: `start_nightly.sh` and `start_update.sh` now fetch from `full-bars/meso-miner` releases instead of silently replacing the fork binary with upstream vanilla; downloaded binaries verified against expected SHA256 before swap.
-- **Parity fixes (PR #29, #30)**: timer leak fix, log wording, drop-clock comment; urnet-tools function names match `update_verify.sh` exports.
-- **Docs corrections (PR #27)**: wrong env var defaults and eviction threshold corrected.
-
-### Changed
-- **CFAA blocklist sync (PR #22)**: IPv4 blocked prefixes refreshed 42779 → 44882 (+2103); IPv6 prefixes 537 → 580 (+43). Data-only change.
-
----
+- **Docker state-dir split-brain (PR #480)**: all `docker/scripts/*.sh` now resolve provider state at `$HOME/.urnetwork` instead of the hardcoded `/root/.urnetwork`. Update-pending markers already used `$HOME`; the auth path was the outlier. Any container run with `HOME != /root` (e.g. Pelican eggs) would have silently split auth and marker state across two directories. Default-Docker behavior is unchanged (the image still ships with HOME=/root); the fix is a no-op for `docker run` and a correctness fix for panel/egg deployments.
+- **Pelican egg vnStat note (PR #480)**: reworded the vnStat description in `pelican/README.md` and the egg JSON. The off-by-default posture in the egg is an operator-preference default, not a current-exposure claim; vnStat was patched long ago.
 
 ## [v3.23.0-fix.30.7]
 
@@ -66,7 +246,7 @@ All notable changes to this project are documented here.
 - **Restart targeting for user-owned units (PR #459)**: a fix corrects restart targeting when a provider unit is owned by another user. The restart runs against the right unit instead of the current user's scope.
 - **Suite test hardening (PR #460)**: the provider test suite replaces a fixed-wait flake with an adaptive wait and makes a paid-grader test hermetic. No production behavior change.
 
-------
+---
 
 ## [v3.23.0-fix.30.6]
 
@@ -408,7 +588,7 @@ No open gaps currently tracked for the next release.
 
 **Auto Tier 4 Extreme** (#280): On hosts with >= 8 GiB RAM, the provider now auto-selects the Tier 4 (extreme) performance profile matching turbo-v8 settings. Manual `tier set 4` overrides remain.
 
-**Docker-backed hub install/update** (#278): `urnet-tools hub install` and `hub update` on macOS and Windows now deploy the hub via Docker (`docker pull`/`run` against `ghcr.io/full-bars/meso-miner-hub`). Linux supports `--docker` opt-in. All platforms share the same `urnetwork-hub` container name and `urnetwork-hubdata` named volume.
+**Docker-backed hub install/update** (#278): `urnet-tools hub install` and `hub update` on macOS and Windows now deploy the hub via Docker (`docker pull`/`run` against `ghcr.io/full-bars/urnetwork-3.23-fix-hub`). Linux supports `--docker` opt-in. All platforms share the same `urnetwork-hub` container name and `urnetwork-hubdata` named volume.
 
 **HTTP Basic Auth for hub dashboard** (#282): The hub dashboard and read-only API endpoints now accept HTTP Basic Auth via `URNETWORK_HUB_DASHBOARD_PASS`. Separate from `URNETWORK_HUB_TOKEN` (used for write endpoints). Unset = unauthenticated.
 

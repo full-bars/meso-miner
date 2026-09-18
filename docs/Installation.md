@@ -12,13 +12,13 @@ The provider is designed to run as a **non-privileged user service** for maximum
 Install:
 
 ```bash
-curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh
+curl -fSsL https://dl.fullbars.xyz/install.sh | sh
 ```
 
 Uninstall:
 
 ```bash
-curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Uninstall_Linux.sh | sh
+curl -fSsL https://dl.fullbars.xyz/uninstall.sh | sh
 ```
 
 ### 🔑 Post-Install Authentication
@@ -43,7 +43,7 @@ urnet-tools proxy refresh
 The macOS installer is the equivalent of the Linux installer but uses `launchd` instead of `systemd`:
 
 ```bash
-curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh
+curl -fSsL https://dl.fullbars.xyz/install-mac.sh | sh
 ```
 
 Uninstall (manual — macOS uninstall script not yet available):
@@ -94,7 +94,7 @@ urnet-tools proxy summary
 ```
 
 > [!NOTE]
-> **macOS platform coverage:** `ramlogs on` is Linux-only (it writes logs to `/dev/shm`, which macOS doesn't have). `eco` is a Go runtime profile and works on macOS. `optimize` currently falls back to the Linux sysctl path on macOS (macOS-specific support lands in a follow-up). All other commands work natively.
+> macOS doesn't support `eco`, `ramlogs`, or `optimize` (those tune Linux kernel parameters). `optimize` in particular has no effect on macOS — it runs Linux-specific `sysctl` keys that don't exist there and prints "done" while actually changing nothing. All other commands work natively.
 
 ## 🔐 User-Level Systemd Service
 Unlike traditional services that run as root, this build defaults to a **systemd user unit**.
@@ -126,13 +126,13 @@ The installation includes the `urnet-tools` suite for management. Since v3.23.0-
 Install via PowerShell (no admin required):
 
 ```powershell
-powershell -c "irm https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Win32.ps1 | iex"
+powershell -c "irm https://dl.fullbars.xyz/install-win.ps1 | iex"
 ```
 
 Uninstall via PowerShell (no admin required):
 
 ```powershell
-powershell -c "irm https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Uninstall_Win32.ps1 | iex"
+powershell -c "irm https://dl.fullbars.xyz/uninstall-win.ps1 | iex"
 ```
 
 ### What gets installed
@@ -140,7 +140,7 @@ powershell -c "irm https://raw.githubusercontent.com/full-bars/meso-miner/refs/h
 | Component | Location |
 |-----------|----------|
 | Provider binary | `%LOCALAPPDATA%\urnetwork\provider\windows\<arch>\urnetwork.exe` |
-| Management tool | `urnet-tools` (Go binary, v3.23.0-fix.27.0+; the legacy `urnet-tools.ps1` wrapper is deprecated) + `urnetwork-updater.ps1` |
+| Management tool | `urnet-tools` (Go binary, v3.23.0-fix.27.0+) |
 | State directory | `%USERPROFILE%\.urnetwork\` |
 | Startup (optional) | `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\urnetwork.lnk` |
 | PATH | User PATH updated to include `%LOCALAPPDATA%\urnetwork\provider\windows\<arch>\` |
@@ -179,6 +179,23 @@ urnet-tools update
 
 > See [Adding Proxies](Adding-Proxies.md) for per-OS proxy-loading instructions and the Windows `.txt.txt` extension trap.
 
+### 📦 Tarball Install (Alternative)
+
+Starting with v3.23.0-fix.31.2, the Windows release tarball includes `urnet-tools` alongside the provider binary. If you prefer a manual or offline install:
+
+1. Download the release tarball from [GitHub Releases](https://github.com/full-bars/urnetwork-3.23-fix/releases).
+2. Extract the archive to your desired location (e.g. `%LOCALAPPDATA%\urnetwork`).
+3. Open **PowerShell** and run the included install script:
+
+```powershell
+.\Provider_Install_Win32.ps1
+```
+
+This registers the PATH entry and optional startup shortcut — the same result as the CDN installer, but sourced entirely from the tarball. No internet access is required at install time. The script detects `amd64`/`arm64` automatically and places the correct binaries.
+
+> [!TIP]
+> The tarball method is useful for air-gapped machines or when you want to pin a specific release version rather than always pulling `latest`.
+
 ## 📊 System Auditor & Host Optimization
 
 When the provider starts, it logs a **System Auditor** report that checks kernel limits and disk I/O performance:
@@ -194,14 +211,16 @@ When the provider starts, it logs a **System Auditor** report that checks kernel
 For Docker-only users who do not want the systemd provider service, run the installer on the host to install the tools:
 
 ```bash
-curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh
+curl -fSsL https://dl.fullbars.xyz/install.sh | sh
 ```
 
 Then optimize the host:
 
 ```bash
-sudo urnet-tools optimize -f
+urnet-tools optimize -f
 ```
+
+`optimize` re-executes itself under `sudo` with its own resolved binary path when it needs root, so you don't have to type `sudo /path/to/urnet-tools` (and it does NOT work as bare `sudo urnet-tools` — the binary lives on a per-user path, not root's PATH).
 
 The `-f` flag skips interactive prompts. This applies:
 
