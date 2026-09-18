@@ -82,10 +82,9 @@ jobs:
           GPG_RELEASE_KEY: ${{ secrets.GPG_RELEASE_KEY }}
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
-          # Tag the EXACT commit that carries the notes file. `git reset --hard
-          # origin/main` is racy (local origin/main may lag the push), so instead
-          # capture the notes-commit SHA before pushing and tag that. This
-          # guarantees release.yml finds releases/\${TAG}.md at checkout.
+          # Tag the main commit that carries the notes file (verified above).
+          # Pushing the tag is what ships the release: release.yml triggers on
+          # v* tag pushes and builds/publishes from releases/${TAG}.md.
           NOTES_SHA="$(git rev-parse HEAD)"
           git push origin "${NOTES_SHA}:main"
 
@@ -102,20 +101,4 @@ jobs:
           git tag -s -a "${TAG}" "${NOTES_SHA}" -m "${TAG}"
           git push origin "${TAG}"
           echo "### Tag pushed: ${TAG} @ ${NOTES_SHA} (GPG signed)" >> "$GITHUB_STEP_SUMMARY"
-
-  release:
-    name: Build & Release Binaries
-    needs: ship
-    if: needs.ship.outputs.dry_run == 'false'
-    uses: ./.github/workflows/release.yml
-    with:
-      tag_name: ${{ needs.ship.outputs.tag_name }}
-    # CRITICAL: pass all caller secrets to the called workflow. Without
-    # this, the reusable workflow (release.yml) sees secrets.* as empty —
-    # which is why every ship-release run has failed the VirusTotal step
-    # with "VIRUS_TOTAL secret not set" and the verdict-post 404'd
-    # (no report file to attach). `inherit` passes every secret the
-    # caller has: VIRUS_TOTAL, GITHUB_TOKEN, BUILD_NOTIFY, etc.
-    secrets: inherit
-    permissions:
-      contents: write
+          echo "### Release Binaries now runs on the tag push." >> "$GITHUB_STEP_SUMMARY"
