@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.31.2
+**Current Version**: v3.23.0-fix.32.0
 
 ---
 
@@ -3431,17 +3431,29 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 
 ---
 
-## 165. Hub Removal (v31.4+)
+## 165. Hub Removal (v32.0)
 
 **Purpose**: The standalone bandwidth hub dashboard (`hub/` package) has been deprecated and removed from the codebase. The hub was an optional fleet-aggregation dashboard for multi-node environments, but maintenance burden and limited adoption no longer justify its inclusion.
 
 **What was removed**:
 - The `hub/` package (standalone dashboard server)
-- Hub-specific reporting endpoints (`urnet-tools hub set`, `hub link`, `hub unlink`, `hub off`). The generic `report` command (`urnet-tools report set/off/status`) and HTTP POST reporting to any configured `report_url` or `URNETWORK_REPORT_URL` target **are preserved** — `bandwidth_reporter.go` still exists and posts to any configured fleet endpoint.
+- Hub-specific reporting endpoints (`urnet-tools hub set`, `hub link`, `hub unlink`, `hub off`). The generic `report` command (`urnet-tools report <url>`, `report off`) and HTTP POST reporting to any configured `report_url` or `URNETWORK_REPORT_URL` target **are preserved** — `bandwidth_reporter.go` still exists and posts to any configured endpoint.
 - Hub-related CLI commands: `hub init`, `hub link`, `hub unlink`, `hub test`, `hub install`, `hub update`, `hub onboard-cmd`, `hub show-password`, `hub open-port`, `hub set`, `hub off`
 
 **Affects fork sections**: Sections 23 (Bandwidth Hub Dashboard), 29 (Hub Report Visibility & Reporter Startup Jitter), 52 (Hub Dashboard Per-Proxy Earning Column), and 64 (Hub TLS, Live Heartbeat, SSE Dashboard Push) are **archived** — retained for historical accuracy but no longer applicable.
 
 **Alternative for fleet visibility**: Use Prometheus metrics (`urnet-tools metrics on`) and the built-in Grafana monitoring bundle for fleet-wide observability. See [Monitoring](docs/Monitoring.md).
 
-**Status**: ✅ Ships with this merge (v31.4+).
+**Status**: ✅ Ships in v3.23.0-fix.32.0.
+
+---
+
+## 166. v32.0: Selective-Ack Ordering, JWT Build Autodetect, Docker Shakedown Alignment (PR #643, #644)
+
+- **Selective-ack ordering + provable-hole ack wake (v32.0, PR #643)**: selective acks were emitted in map iteration order, so a partial batch could prove the neighbours of one real hole lost and trigger needless resends. Selective acks now leave in ascending sequence order, and the ack compression wait ends early when a hole becomes provable to the sender (later selective acks pending above the head) or when the head ack advances past selectively acked items (a hole filled). Each reason wakes at most once per compression interval, so the in-order ack rate is unchanged. With `AckCompressTimeout=0` (the default) acks remain per-packet. Port of upstream urnetwork/connect PR #213 fix 2 (measured on their rig: 8 flows 600 -> 709 Mb/s, head-blocked 20% -> 5%, duplicates ~0).
+
+- **Docker entrypoint jwt autodetect (v32.0)**: the entrypoint defaulted to `BUILD=stable` and asked for `USER_AUTH`/`PASSWORD` even when the caller passed a JWT auth code as the positional argument (or set `URNETWORK_AUTH_CODE`). That case now selects jwt mode automatically; an explicit `BUILD=` still overrides.
+
+- **Docker shakedown checks aligned with the current release state (v32.0, PR #644)**: W5 reads proxy state from `proxy.state` (with `proxy_url.json` fallback) and parses the proxies dictionary; W6 eco/lowmem checks read `/dev/shm` ramlogs since those profiles redirect stdout to memory; Y5 (compose down/up on a named volume) handles ramlog client_id capture with adaptive deadline polling and one retry on initial timeout.
+
+**Status**: ✅ Ships in v3.23.0-fix.32.0.

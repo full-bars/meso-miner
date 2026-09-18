@@ -113,7 +113,7 @@ The emergency goroutine pin at >= 25000 goroutines provides an extra safety net.
 ## 📊 Hub Dashboard (Deprecated)
 
 > [!WARNING]
-> **Deprecated (v31.3+):** The hub dashboard has been removed. For fleet-wide visibility, use Prometheus metrics (`urnet-tools metrics on`) and the Grafana monitoring bundle. Historical hub documentation: [Hub Setup](../Hub-Setup.md), [Hub Dashboard](../Hub-Dashboard.md).
+> **Removed (v32.0):** The hub dashboard has been removed. For fleet-wide visibility, use Prometheus metrics (`urnet-tools metrics on`) and the Grafana monitoring bundle.
 
 > [!CAUTION]
 > **The hub commands and setup instructions below are historical and non-actionable.** The `hub/` package has been removed from this codebase. The commands shown here (`hub install`, `hub init`, `hub link`, etc.) no longer exist. They are retained only as a reference for operators who previously ran the hub and may need to understand the old setup.

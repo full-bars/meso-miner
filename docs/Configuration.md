@@ -81,9 +81,9 @@ Quick jump:
 | `URNETWORK_PPROF` | - | Set to a `host:port` to enable the loopback-only diagnostics server (e.g. `127.0.0.1:6060`). Off by default. Serves `/debug/pprof/*`, `/metrics/pool`, and `/metrics/errors`; only literal loopback IPs are accepted (hostnames are rejected). Pull profiles via an SSH tunnel, e.g. `ssh -L 6060:127.0.0.1:6060 host` then `go tool pprof http://127.0.0.1:6060/debug/pprof/profile`. |
 | `URNETWORK_PROXY_BENCHMARK` | - | Set to `true` to enable per-proxy latency monitoring. Off by default. Probes: TCP connect every 5 min (raw RTT to proxy port), SOCKS5 CONNECT every 15 min (end-to-end through proxy). Staggered startup jitter prevents thundering herd. ~104 GB/month at 10k proxies. |
 | `URNETWORK_PROXY_BENCHMARK_ENDPOINT` | `connect.bringyour.com:443` | Target for the SOCKS5 CONNECT latency probe. Measured end-to-end through each proxy. |
-| `URNETWORK_REPORT_URL` | - | *(Deprecated v31.3+)* HTTP URL of a bandwidth hub server. Was used to POST JSON reports with per-proxy metrics. See `docs/Hub-Dashboard.md` for historical reference. |
-| `URNETWORK_REPORT_INTERVAL` | `5m` | *(Deprecated v31.3+)* How often bandwidth reports were posted to `URNETWORK_REPORT_URL`. No longer functional. |
-| `URNETWORK_HEARTBEAT_INTERVAL` | `15s` | *(Deprecated v31.3+)* Provider heartbeat cadence to the hub. No longer functional. |
+| `URNETWORK_REPORT_URL` | - | Startup fallback for the report URL. Precedence: control-socket state, then `~/.urnetwork/report_url`, then this env var (read once at process start). Set per provider with `urnet-tools report <url>`; `report off` disables. |
+| `URNETWORK_REPORT_INTERVAL` | `5m` | Report cadence, minimum `10s`. Re-resolved on every reporting tick, so runtime control-socket overrides apply without a restart. |
+| `URNETWORK_HEARTBEAT_INTERVAL` | `15s` | Heartbeat cadence (minimum `5s`) for the lightweight heartbeat reporter that posts to the report target alongside the 5m full report. |
 | `URNETWORK_AUTH_UNLIMITED` | `false` | Bypass the auth rate limiter; every auth attempt fires immediately. Equivalent to creating `~/.urnetwork/fast_auth`. Only for trusted or benchmark environments. |
 | `URNETWORK_PUBLIC_IP` | `<detected>` | Override the public IP shown in the dashboard identity label. Display only; does not change the actual egress IP. Auto-set by Docker startup scripts. |
 | `URNETWORK_SHM_LOG` | `/dev/shm/urnetwork.log` | Path for the RAM log. |

@@ -4,6 +4,18 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.32.0]
+
+### Removed
+- **Hub subsystem (PR #634)**: the entire hub fleet-dashboard subsystem is removed — the `hub/` package (24 files, ~9,700 lines), all `urnet-tools hub *` CLI commands, hub CI build/packaging/scan steps, the hub CA bootstrap and TLS fingerprint pinning from `bandwidth_reporter.go`, hub test scripts and shakedown sections, and the hub documentation. Prometheus `/metrics`, `urnet-tools metrics on|off`, the generic `report` command, and the Grafana monitoring bundle are preserved and remain the supported path for fleet visibility.
+
+### Fixed
+- **Selective-ack ordering and provable-hole ack wake (PR #643)**: selective acks were written in map iteration order, so a partial batch could prove the neighbours of one real hole lost and trigger needless resends; selective acks now leave in ascending sequence order. The ack compression wait also ends early when a hole becomes provable to the sender or when the head ack advances past selectively acked items. With `AckCompressTimeout=0` (the default) acks remain per-packet and the in-order rate is unchanged.
+- **Docker shakedown checks aligned with current release state (PR #644)**: the proxy-cap check reads proxy state from `proxy.state` (with a `proxy_url.json` fallback), the eco/lowmem profile checks read `/dev/shm` ramlogs, and the compose down/up check handles ramlog client_id capture with adaptive deadline polling and one retry on initial timeout.
+- **Docker entrypoint jwt mode autodetect**: passing a JWT auth code as the positional argument (or setting `URNETWORK_AUTH_CODE`) now selects `BUILD=jwt` automatically instead of demanding `USER_AUTH`/`PASSWORD`; an explicit `BUILD=` still overrides.
+
+---
+
 ## [v3.23.0-fix.31.4]
 
 ### Fixed
