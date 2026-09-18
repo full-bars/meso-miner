@@ -1,8 +1,27 @@
-# Changelog
+# Changelog — meso-miner
 
-All notable changes to this project are documented here.
+All notable changes to this project are documented here. Entries below the
+marked line are inherited historical records from the `urnetwork-3.23-fix`
+fork that meso-miner's parity port now carries; entries above are
+meso-miner's own releases.
 
 ---
+
+## [v2026.9.18-1049118720-meso] — 2026-09-18
+
+### Added
+- **Full parity port (PR #92, #93, #94)**: provider runtime (zero-downtime HotSwap, UNIX control socket with live overrides, Prometheus `/metrics` endpoint, dynamic state overrides, earnings-aware proxy prioritization, audit ring buffer, systemd `Type=notify`), the complete urnet-tools CLI (`config`, `hotswap`, `history`, `lifecycle`, `metrics`, `profile`, `proxy_ids`, `ramlogs`, `dashboard`), all fork test suites, and the Prometheus/Grafana monitoring bundle.
+- **Transfer engine parity (PR #93)**: transfer flight tracking with forget-on-RTO congestion semantics, selective-ack ordering and provable-hole wake, WebRTC data channel hardening, route-manager concurrency fixes.
+- **Shakedown parity (PR #96)**: `shakedown.sh`/`docker-shakedown.sh` aligned with the release state and extended with the fork's full Q-Z coverage (drop-in merge-order matrix, settings-survive-update, hotswap decline/engage, failure injection, MemoryMax sweep, 5000-proxy stress, multi-provider).
+- **`VT_JSON_FILE` machine-readable export in `vt-scan.py` (PR #95)**: JSON write failures now fail the scan instead of silently skipping WDSI staging.
+
+### Fixed
+- **Docker publish GHCR-only (PR #97)**: the Docker Hub login leg had no credentials on this repo and failed every main push; the GHCR image (`ghcr.io/full-bars/meso-miner`) is the registry the fleet and installers pull from.
+- JWT build mode autodetect: passing an auth code positionally (or `URNETWORK_AUTH_CODE`) selects jwt mode automatically; explicit `BUILD=` still overrides.
+
+---
+
+## Inherited from urnetwork-3.23-fix (carried by the parity port)
 
 ## [v3.23.0-fix.31.4]
 
