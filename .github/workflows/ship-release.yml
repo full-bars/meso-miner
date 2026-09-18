@@ -101,4 +101,10 @@ jobs:
           git tag -s -a "${TAG}" "${NOTES_SHA}" -m "${TAG}"
           git push origin "${TAG}"
           echo "### Tag pushed: ${TAG} @ ${NOTES_SHA} (GPG signed)" >> "$GITHUB_STEP_SUMMARY"
-          echo "### Release Binaries now runs on the tag push." >> "$GITHUB_STEP_SUMMARY"
+
+          # A GITHUB_TOKEN push does not trigger other workflows, so the tag
+          # push alone would leave the release unpublished. Dispatch
+          # release.yml on the tag ref explicitly; it resolves the tag via
+          # GITHUB_REF_NAME.
+          gh workflow run release.yml --repo "${{ github.repository }}" --ref "${TAG}"
+          echo "### Release Binaries dispatched on ${TAG}" >> "$GITHUB_STEP_SUMMARY"
