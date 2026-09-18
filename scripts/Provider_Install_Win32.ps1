@@ -7,8 +7,7 @@
 param(
     [String]$Version = "latest",
     [String]$Destination = "",
-    [String]$ToolsScriptPath = "",
-    [String]$UpdaterScriptPath = "",
+
     [Switch]$NoRestartDownload = $false,
     [Switch]$NoCleanup = $false,
     [Switch]$NonInteractive = $false,
@@ -252,18 +251,12 @@ if (Test-Path $InstalledBinaryPath) {
 Write-Host "Installing $BinaryPath => $InstalledBinaryPath"
 Move-Item -Path $BinaryPath $InstalledBinaryPath
 
-$InstalledToolsPath = Join-Path $Destination -ChildPath "urnet-tools.ps1"
 $InstalledToolsBinaryPath = Join-Path $Destination -ChildPath "urnet-tools.exe"
 
-# The tool is now a Go binary shipped as a standalone release asset
-# (urnet-tools-windows-<arch>, v3.23.0-fix.28+). Prefer it — digest-verified
-# against the release API — and fall back to the legacy PS1 scripts only for
-# releases that predate the Go asset. The Go tool is self-updating
-# (`urnet-tools update` refreshes its own binary), so this PS1 path is a
-# one-time handoff, mirroring Provider_Install_Linux.sh.
-# NOTE: the fork does NOT publish a separate urnetwork-updater binary;
-# auto-update is a systemd timer on Linux. On Windows, auto-update-enable is
-# a no-op/error until a Windows scheduling mechanism lands in the Go tool.
+# The tool is a Go binary shipped as a standalone release asset
+# (urnet-tools-windows-<arch>, v3.23.0-fix.28+). Digest-verified
+# against the release API. The Go tool is self-updating
+# (`urnet-tools update` refreshes its own binary).
 $ToolGoInstalled = $false
 $ToolAssetName = "urnet-tools-windows-$Arch"
 $ToolAsset = $null
@@ -275,76 +268,111 @@ if ($ReleaseInfo) {
     }
 }
 
-if ($ToolAsset -and $ToolDigest) {
-    # Go tool path: download, verify, swap with .old (Windows cannot delete a
-    # running mapped image, but can rename it).
+# Helper: tear down legacy PS1 updater and clean up Startup .lnk.
+# Called after urnet-tools.exe is installed from any source.
+$CleanupStaleUpdater = {
+    # Remove any stale PS1 scripts from previous installs.
+    $StalePs1 = Join-Path $Destination -ChildPath "urnet-tools.ps1"
+    if (Test-Path $StalePs1) { Remove-Item -Path $StalePs1 -Force }
+    $StaleUpdaterPs1 = Join-Path $Destination -ChildPath "urnetwork-updater.ps1"
+    if (Test-Path $StaleUpdaterPs1) { Remove-Item -Path $StaleUpdaterPs1 -Force }
+
+    # Read PID file and terminate legacy background updater.
+    $StalePid = Join-Path $Destination -ChildPath "urnetwork-updater.pid"
+    if (Test-Path $StalePid) {
+        try {
+            $OldPid = ([string](Get-Content -Path $StalePid -Raw)).Trim()
+            if ($OldPid -match '^\d+$' -and [int]$OldPid -ne $PID) {
+                $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $OldPid" -ErrorAction SilentlyContinue
+                if ($proc -and $proc.CommandLine -match 'urnetwork-updater') {
+                    Write-Host "Terminating stale updater process (PID $OldPid, Name: $($proc.Name))"
+                    Stop-Process -Id ([int]$OldPid) -Force -ErrorAction SilentlyContinue
+                }
+            }
+        } catch {}
+        Remove-Item -Path $StalePid -Force -ErrorAction SilentlyContinue
+    }
+
+    # Remove the legacy Startup .lnk files — the Go tool uses Task
+    # Scheduler (schtasks /on logon) instead.
+    $StartupPath = Join-Path -Path $env:APPDATA -ChildPath "Microsoft\Windows\Start Menu\Programs\Startup"
+    $OldLnk = Join-Path -Path $StartupPath -ChildPath "urnetwork.lnk"
+    if (Test-Path $OldLnk) { Remove-Item -Path $OldLnk -Force -ErrorAction SilentlyContinue }
+    $UpdateLnk = Join-Path -Path $StartupPath -ChildPath "urnetwork-update.lnk"
+    if (Test-Path $UpdateLnk) { Remove-Item -Path $UpdateLnk -Force -ErrorAction SilentlyContinue }
+}
+
+# STEP 1: Check if urnet-tools.exe was already bundled inside the
+# extracted provider tarball (v3.23.0-fix.30+). This is the
+# preferred path — no extra download required.
+$ExtractedTool = Join-Path $ExtractPath -ChildPath "urnet-tools.exe"
+if (-not (Test-Path $ExtractedTool)) {
+    # Some tarballs nest binaries under <os>/<arch>/.
+    $NestedTool = Join-Path $ExtractPath -ChildPath "$OS/$Arch/urnet-tools.exe"
+    if (Test-Path $NestedTool) {
+        $ExtractedTool = $NestedTool
+    }
+}
+
+if (Test-Path $ExtractedTool) {
+    Write-Host "Found urnet-tools.exe in extracted tarball ($ExtractedTool)"
+    if (Test-Path $InstalledToolsBinaryPath) {
+        $OldBinary = "$InstalledToolsBinaryPath.old"
+        if (Test-Path $OldBinary) {
+            Remove-Item -Path $OldBinary -Force -ErrorAction SilentlyContinue
+        }
+        Move-Item -Path $InstalledToolsBinaryPath -Destination $OldBinary -Force
+    }
+    Move-Item -Path $ExtractedTool -Destination $InstalledToolsBinaryPath -Force
+    $ToolGoInstalled = $true
+    & $CleanupStaleUpdater
+}
+
+# STEP 2: Fallback — download standalone urnet-tools asset from
+# dl.fullbars.xyz with GitHub releases mirror.
+if (-not $ToolGoInstalled -and $ToolAsset -and $ToolDigest) {
     $ToolDownloadURL = "https://dl.fullbars.xyz/releases/download/$ReleaseVersion/$ToolAssetName"
+    $ToolMirrorURL = "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$ReleaseVersion/$ToolAssetName"
     $ToolTemp = Join-Path $env:TEMP $ToolAssetName
-    Write-Host "Installing Go urnet-tools binary ($ToolAssetName)..."
+    Write-Host "Installing Go urnet-tools binary ($ToolAssetName) via download..."
     try {
-        Download-File -URL $ToolDownloadURL -Destination $ToolTemp
+        try {
+            Download-File -URL $ToolDownloadURL -Destination $ToolTemp
+        } catch {
+            Write-Warning "Primary tool download failed, trying GitHub mirror..."
+            Download-File -URL $ToolMirrorURL -Destination $ToolTemp
+        }
         $ActualHash = (Get-FileHash -Path $ToolTemp -Algorithm SHA256).Hash.ToLower()
-        # The release API digest is "sha256:<hex>"; strip the prefix.
         $ExpectedHash = $ToolDigest.ToLower()
         if ($ExpectedHash -like "sha256:*") {
             $ExpectedHash = $ExpectedHash.Substring(7)
         }
         if ($ActualHash -eq $ExpectedHash) {
             if (Test-Path $InstalledToolsBinaryPath) {
-                Move-Item -Path $InstalledToolsBinaryPath -Destination "$InstalledToolsBinaryPath.old" -Force
+                $OldBinary = "$InstalledToolsBinaryPath.old"
+                if (Test-Path $OldBinary) {
+                    Remove-Item -Path $OldBinary -Force -ErrorAction SilentlyContinue
+                }
+                Move-Item -Path $InstalledToolsBinaryPath -Destination $OldBinary -Force
             }
             Move-Item -Path $ToolTemp -Destination $InstalledToolsBinaryPath
-            # Remove the legacy PS1 pair so the Go tool is the only manager.
-            if (Test-Path $InstalledToolsPath) {
-                Remove-Item -Path $InstalledToolsPath -Force
-            }
-            $StaleUpdaterPs1 = Join-Path $Destination -ChildPath "urnetwork-updater.ps1"
-            if (Test-Path $StaleUpdaterPs1) {
-                Remove-Item -Path $StaleUpdaterPs1 -Force
-            }
-            # Point auto-update-enable at the Go binary.
-            $InstalledToolsPath = $InstalledToolsBinaryPath
             $ToolGoInstalled = $true
+            & $CleanupStaleUpdater
         }
         else {
-            Write-Warning "Go urnet-tools digest mismatch (got $ActualHash); falling back to PS1"
+            Write-Error "Go urnet-tools digest mismatch (got $ActualHash); cannot install"
             Remove-Item -Path $ToolTemp -Force -ErrorAction SilentlyContinue
         }
     }
     catch {
-        Write-Warning "Failed to install Go urnet-tools; falling back to PS1: $($_.Exception.Message)"
+        Write-Error "Failed to install Go urnet-tools: $($_.Exception.Message)"
         Remove-Item -Path $ToolTemp -Force -ErrorAction SilentlyContinue
     }
 }
 
 if (-not $ToolGoInstalled) {
-    if (Test-Path $InstalledToolsPath) {
-        Remove-Item -Path $InstalledToolsPath -Force
-    }
-
-    Write-Host "Installing urnet-tools => $InstalledToolsPath"
-
-    if ($ToolsScriptPath) {
-        Copy-Item $ToolsScriptPath $InstalledToolsPath
-    }
-    else {
-        Invoke-RestMethod "https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/urnet-tools.ps1" -OutFile $InstalledToolsPath
-    }
-
-    $InstalledUpdaterPath = Join-Path $Destination -ChildPath "urnetwork-updater.ps1"
-
-    if (Test-Path $InstalledUpdaterPath) {
-        Remove-Item -Path $InstalledUpdaterPath -Force
-    }
-
-    Write-Host "Installing urnetwork-updater => $InstalledUpdaterPath"
-
-    if ($UpdaterScriptPath) {
-        Copy-Item $UpdaterScriptPath $InstalledUpdaterPath
-    }
-    else {
-        Invoke-RestMethod "https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/urnetwork-updater.ps1" -OutFile $InstalledUpdaterPath
-    }
+    Write-Error "Failed to install Go urnet-tools binary. The provider requires urnet-tools.exe (Go binary) to manage lifecycle on Windows. Please download it manually from the release page."
+    exit 1
 }
 
 Set-Content $VersionFile $ReleaseVersion
@@ -352,7 +380,7 @@ Set-Content $InstallDateFile $ReleaseDate
 
 if ($Version -eq "latest") {
     Write-Host "Running: urnet-tools auto-update weekly"
-    & $InstalledToolsPath auto-update weekly
+    & $InstalledToolsBinaryPath auto-update weekly
     if (-not $?) {
         Write-Warning "auto-update enable failed (exit $LASTEXITCODE); continuing install"
     }
@@ -370,7 +398,7 @@ if ($OS -eq "windows") {
     
 	$Colon = ";";
 
-	if ($EnvPath -match ";$") {
+	if ($CurrentPath -match ";$") {
             $Colon = "";
 	}
 
@@ -445,38 +473,13 @@ if ($OS -eq "windows") {
     }
     
     if ($Answer.ToLower() -eq "y") {
-	# Prefer the Go tool's schtasks onlogon task; fall back to the legacy
-	# Startup-folder .lnk only when the Go tool is not installed (old
-	# PS1-managed installs).
+	# Use the Go tool's schtasks onlogon task for auto-start.
 	if ($ToolGoInstalled -and (Test-Path $InstalledToolsBinaryPath)) {
 	    Write-Host "Enabling auto-start via Task Scheduler (urnet-tools auto-start on)"
 	    & $InstalledToolsBinaryPath auto-start on
 	    if (-not $?) {
 		Write-Warning "auto-start enable failed (exit $LASTEXITCODE)"
 	    }
-	}
-	else {
-	    $StartupPath = Join-Path -Path $env:APPDATA -ChildPath "Microsoft\Windows\Start Menu\Programs\Startup"
-	    $ShortcutPath = Join-Path -Path $StartupPath -ChildPath "urnetwork.lnk"
-
-	    if (Test-Path $ShortcutPath) {
-		Remove-Item -Path $ShortcutPath -Force
-	    }
-
-	    $StartCommand = "Start-Process -FilePath '$InstalledBinaryPath' -ArgumentList 'provide' -WindowStyle Hidden"
-	    $Arguments = '-NoProfile -WindowStyle Hidden -Command "' + $StartCommand + '"'
-
-	    Write-Host "Startup command: powershell.exe $Arguments"
-
-	    $WshShell = New-Object -ComObject WScript.Shell
-	    $Shortcut = $WshShell.CreateShortcut($ShortcutPath)
-	    $Shortcut.TargetPath = "powershell.exe"
-	    $Shortcut.Arguments = $Arguments
-	    $Shortcut.WorkingDirectory = $Destination
-	    $Shortcut.WindowStyle = 7
-	    $Shortcut.Save()
-
-	    Write-Host "Added URnetwork provider to startup"
 	}
     }
 }

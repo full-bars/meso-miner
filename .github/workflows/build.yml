@@ -26,6 +26,7 @@ concurrency:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  DOCKER_IMAGE_NAME: 3cape/urnetwork-3.23-fix
 
 jobs:
   test:
@@ -115,6 +116,10 @@ jobs:
           fetch-tags: true
 
       - name: Set up Go (native cache)
+        # cache: true uses setup-go's built-in Go-aware cache (build + module
+        # caches via the actions/cache backend with atomic restore). Replaces
+        # the two manual cache steps, which flaked with tar extraction races
+        # ("Cannot open: File exists") on cache restore.
         uses: actions/setup-go@v5
         with:
           go-version: '1.27'
@@ -205,9 +210,6 @@ jobs:
           violations=0
           for f in docker/scripts/*.sh; do
             while read -r url; do
-              # Skip URLs with shell variable expansion (\${...}) — these
-              # resolve at runtime, not in the source text.
-              printf '%s\n' "$url" | grep -q '\${' && continue
               org_repo="$(printf '%s' "$url" | sed -E 's#.*/repos/([^/"]+/[^/"]+).*#\1#')"
               case "$org_repo" in
                 full-bars/*) ;;
@@ -217,7 +219,7 @@ jobs:
                   violations=$((violations+1))
                   ;;
               esac
-            done < <(grep -oE 'https://api\.github\.com/repos/[^"]+' "$f" | grep -v '\${' || true)
+            done < <(grep -oE 'https://api\.github\.com/repos/[^"]+' "$f" || true)
           done
           if [ "$violations" -gt 0 ]; then
             echo "$violations upstream-fetch violation(s) found"
@@ -235,7 +237,7 @@ jobs:
 
           jq -e '.meta.version == "PLCN_v3"
                  and (.docker_images | length == 1)
-                 and ([.docker_images[]][0] | test("^ghcr\\.io/full-bars/meso-miner:latest$"))
+                 and ([.docker_images[]][0] | test("^ghcr\\.io/full-bars/urnetwork-3.23-fix:latest$"))
                  and .startup_commands.Default == "sh /app/entrypoint.sh"
                  and (.config.startup | fromjson | .done == "Provider")' "$egg" >/dev/null \
             || { echo "FAIL: egg JSON structure invalid"; exit 1; }
@@ -326,19 +328,47 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Log in to Docker Hub
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v6
         with:
+          # latest=false is LOAD-BEARING, not cosmetic. metadata-action defaults
+          # to flavor: latest=auto, which adds :latest on ANY git tag event, in
+          # addition to and independent of the explicit type=raw rule below.
+          # On 2026-09-08 that default published :latest for
+          # v3.23.0-fix.31.0-rc1 even though the type=raw rule below correctly
+          # evaluated to false for an -rc tag: the gate was closed and the
+          # implicit door was open. With latest=false the type=raw rule is the
+          # ONLY thing that can produce :latest, which is what makes that gate
+          # mean anything. Do not remove.
+          flavor: |
+            latest=false
           images: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+            ${{ env.DOCKER_IMAGE_NAME }}
           tags: |
-            # :latest is the STABLE release — only on v*-meso release tags.
-            # group=0 keeps the FULL tag (e.g. v2026.8.24-102938475-meso) so
-            # docker pull with the exact release tag works. A group=1
-            # variant would strip parts of the tag and break those pulls.
-            type=match,pattern=v[0-9]{4}\.[0-9]+\.[0-9]+-[0-9]+-meso,group=0
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && endsWith(github.ref, '-meso') }}
+            # :latest is the STABLE release — only on v3.23.0-fix.* tags.
+            # group=0 keeps the FULL semver tag (v3.23.0-fix.30.2) so
+            # docker pull with the exact release tag works (matches
+            # release notes, the shakedown, and docker.go). group=1
+            # stripped the v3.23.0-fix. prefix and broke those pulls.
+            type=match,pattern=v3\.23\.0-fix\..*,group=0
+            # A pre-release must NOT become :latest. release.yml already marks
+            # the GitHub Release itself pre-release on -rc/-alpha/-beta, but
+            # that gate keys off the SUFFIX while this one keyed off the
+            # PREFIX, so the two disagreed: v3.23.0-fix.31.0-rc1 was hidden
+            # from /releases/latest (protecting native auto-update) yet still
+            # published :latest, silently exposing every Docker node that
+            # pulls it. The suffix checks below make both gates agree, so an
+            # -rc tag is safe to push under the normal naming convention.
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v3.23.0-fix.') && !contains(github.ref, '-rc') && !contains(github.ref, '-alpha') && !contains(github.ref, '-beta') }}
             # :main (and :sha-<short>) track current main continuously.
             type=ref,event=branch
             type=sha,format=short
@@ -349,10 +379,9 @@ jobs:
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             VERSION="${{ github.ref_name }}"
           else
-            # For main branch, get the most recent meso release tag. Scoped to
-            # *-meso so unrelated tag schemes in this repo can never get
-            # picked up here.
-            VERSION=$(git describe --tags --abbrev=0 --match 'v*-meso' 2>/dev/null || echo "v2026.1.1-0-meso")
+            # For main branch, get the most recent provider tag. Scoped to
+            # v3.23.0-fix.* so unrelated tag schemes in this repo (e.g. the
+            VERSION=$(git describe --tags --abbrev=0 --match 'v3.23.0-fix.*' 2>/dev/null || echo "v3.23.0-fix.1")
           fi
           echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
 
@@ -367,6 +396,41 @@ jobs:
           build-args: VERSION=${{ steps.version.outputs.VERSION }}
           cache-from: type=gha
           cache-to: type=gha,mode=min
+
+      # Post-push assertion, NOT a pre-push expectation. The 2026-09-08 incident
+      # happened because the gating logic was reasoned about rather than
+      # observed: the explicit rule evaluated correctly while an implicit
+      # metadata-action default published :latest anyway, and a digest check run
+      # DURING the build (before the push landed) reported a false all-clear.
+      # This step runs after the push has actually happened and asks the
+      # registry what is true, which is the only check that could have caught it.
+      - name: Assert a pre-release did not become :latest
+        if: ${{ github.event_name != 'pull_request' && startsWith(github.ref, 'refs/tags/') && (contains(github.ref, '-rc') || contains(github.ref, '-alpha') || contains(github.ref, '-beta')) }}
+        run: |
+          set -euo pipefail
+          REPO="full-bars/urnetwork-3.23-fix"
+          TAG="${GITHUB_REF_NAME}"
+          TOK=$(curl -sf "https://ghcr.io/token?scope=repository:${REPO}:pull&service=ghcr.io" \
+                | grep -o '"token":"[^"]*' | cut -d'"' -f4)
+          ACCEPT='application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json'
+          digest_of() {
+            curl -sfI -H "Authorization: Bearer $TOK" -H "Accept: ${ACCEPT}" \
+              "https://ghcr.io/v2/${REPO}/manifests/$1" 2>/dev/null \
+              | grep -i '^docker-content-digest' | tr -d '\r' | awk '{print $2}'
+          }
+          RC_DIGEST=$(digest_of "$TAG")
+          LATEST_DIGEST=$(digest_of latest)
+          echo "pre-release tag $TAG = ${RC_DIGEST:-<none>}"
+          echo ":latest             = ${LATEST_DIGEST:-<none>}"
+          if [ -z "$RC_DIGEST" ]; then
+            echo "::error::could not resolve the digest for $TAG; refusing to pass this check blind"
+            exit 1
+          fi
+          if [ "$LATEST_DIGEST" = "$RC_DIGEST" ]; then
+            echo "::error:::latest now points at pre-release $TAG. Every Docker node pulling :latest is exposed. Restore :latest to the current stable tag before proceeding."
+            exit 1
+          fi
+          echo ":latest does not point at the pre-release - OK"
 
       - name: Notify Discord on tagged release
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
@@ -385,7 +449,7 @@ jobs:
           '{
             "embeds": [{
               "title": ("🐳 Docker Image Published — " + $version),
-              "description": ("**Platforms:** linux/amd64, linux/arm64\n\n**Pull:**\n```\ndocker pull ghcr.io/full-bars/meso-miner:" + $version + "\n```\n\n[View build run](" + $runUrl + ")"),
+              "description": ("**Platforms:** linux/amd64, linux/arm64\n\n**Pull:**\n```\ndocker pull ghcr.io/full-bars/urnetwork-3.23-fix:" + $version + "\n```\n```\ndocker pull 3cape/urnetwork-3.23-fix:" + $version + "\n```\n\n[View build run](" + $runUrl + ")"),
               "color": 2406797,
               "footer": { "text": "URNetwork Release Monitor • Docker" }
             }]

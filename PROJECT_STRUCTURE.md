@@ -1,11 +1,11 @@
 # Project Structure
 
-This document outlines the high-level architecture and directory structure of the **meso-miner** fork. It highlights the major subsystems and the custom components introduced in this fork (the Go-based urnet-tools management utility, proxy health tracking, tuning, and the DNS-over-HTTPS resolver). The Hub (`hub/`) is stripped on this lane.
+This document outlines the high-level architecture and directory structure of the **URNetwork 3.23-fix** fork. It highlights the major subsystems and the custom components introduced in this fork (the Hub hub, the Go-based urnet-tools management utility, proxy health tracking, tuning, and the DNS-over-HTTPS resolver).
 
 ## Directory Layout
 
 ```
-meso-miner/
+urnetwork-3.23-fix/
 ├── provider/                         # Provider binary (the relay node)
 │   ├── main.go                       # Provider entrypoint, settings parsing, graceful shutdown
 │   ├── auth_rate_limiter.go          # Global adaptive auth rate limiter (AIMD: 20-200 req/s)
@@ -26,10 +26,11 @@ meso-miner/
 │   ├── client_jwt_hotrestart.go      # Client JWT renew + identity snapshot across hot restarts
 │   ├── doh_cache.go                  # Persistent DNS-over-HTTPS cache with server-score persistence
 │   ├── net_http_doh.go               # DNS-over-HTTPS resolver (server scoring, serve-stale)
+│   ├── bandwidth_reporter.go         # Pushes periodic JSON telemetry to the Hub
 │   ├── important_log.go              # Important-event log (/dev/shm/urnetwork-important.log)
 │   ├── tlog.go                       # Thread-safe timestamped logging helpers
 │   ├── shmlog.go                     # Rolling ring-buffer RAM log (/dev/shm/urnetwork.log)
-│   └── ...                           # (network stack, transport, IP layer, see root)
+│   └── ...                           # (network stack, transport, IP layer — see root)
 │
 ├── cmd/                              # Go command entrypoints
 │   ├── urnet-tools/                  # Manager/CLI binary (main.go)
@@ -44,10 +45,11 @@ meso-miner/
 │       ├── update.go                 # Provider + tool update, digest verify, backup/prune
 │       ├── lifecycle_cmds.go         # start/stop/restart/uninstall/reinstall, safe deletes
 │       ├── lifecycle_unix.go         # systemd unit + timer management, linger check
-│       ├── legacy_cmds.go            # logs, optimize, set, fast-auth, report
+│       ├── legacy_cmds.go            # logs, optimize, set, fast-auth, hub install, report
 │       ├── proxy.go                  # proxy add/clear/summary, provider-user read checks
 │       ├── session_cmds.go           # encrypted identity session save/load (AES-256-GCM)
 │       ├── self_heal.go              # self-heal marker toggle (provider-scoped)
+│       ├── hub_cmds.go               # Hub install/link/init/onboard (hub lane only)
 │       ├── provider.go               # Provider struct, version-from-buildinfo
 │       ├── target.go                 # Target resolution / selection
 │       ├── select_multi.go           # Batch selection (--all/--include/--exclude)
@@ -59,6 +61,13 @@ meso-miner/
 │       ├── provider_recover_*.go     # per-platform user/UID recovery
 │       ├── docker.go                 # container discovery + docker CLI seam
 │       └── ...                       # platform-specific lifecycle + test files
+│
+├── hub/                              # Bandwidth Hub server (hub lane only)
+│   ├── main.go                       # Standalone server; :8080 JSON API + HTML dashboard
+│   ├── broadcaster.go                # SSE event broadcaster for live dashboard updates
+│   ├── proxy_api.go                  # /api/proxies/* leaderboard and history endpoints
+│   ├── proxy_delta.go                # Delta-based proxy bandwidth ingestion and rollups
+│   └── store_db.go                   # SQLite persistence for node/proxy history and snapshots
 │
 ├── docker/
 │   └── scripts/                      # Docker helper scripts (entrypoint, start_*, urnet-tools, proxy-*)
@@ -91,8 +100,8 @@ meso-miner/
 ### The Provider Node (`provider/`)
 The main worker. Binds to `api.bringyour.com` to authenticate and fetch a list of proxies. The fork extends it with client-JWT hot-restart identity reuse, a production-grade DoH resolver with a persistent scored cache, proxy health tracking, auto-tuning, and hot-reload of proxies without a full restart.
 
-### The Hub (`hub/`) (stripped on this lane)
-This lane is hub-stripped. The `hub/` directory and `internal/urnettools/hub_cmds.go` (hub install/link/init/onboard) are not present on meso-miner main.
+### The Hub (`hub/`) — hub lane only
+A custom, zero-dependency Go binary for fleet observability without a full Prometheus/Grafana stack. Providers push their `[earn]` and bandwidth telemetry to the Hub, which aggregates and serves an HTML dashboard to operators. The hub-stripped lane (`meso-miner` main) omits `hub/` and `internal/urnettools/hub_cmds.go`.
 
 ### urnet-tools (`cmd/urnet-tools` + `internal/urnettools/`)
-The operator's management utility, rewritten from a shell script into a Go binary. It discovers providers across systemd units, user sessions, and containers; manages their lifecycle and drop-ins; updates provider and tool binaries with digest verification; and exposes proxy, session, and self-heal management commands. It is the fork's control plane and the primary subject of the 30.9 security audit remediation.
+The operator's management utility, rewritten from a shell script into a Go binary. It discovers providers across systemd units, user sessions, and containers; manages their lifecycle and drop-ins; updates provider and tool binaries with digest verification; and exposes proxy, session, self-heal, and hub management commands. It is the fork's control plane and the primary subject of the 30.9 security audit remediation.

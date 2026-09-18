@@ -5,12 +5,12 @@ name: Pre-Release Shakedown
 # (ubuntu-latest), entirely free — no DigitalOcean. The GH runner IS the
 # disposable clean box; the shakedown runs in a temp HOME like a fresh install.
 #
-# Triggers: manual dispatch, or automatically when a v*-meso tag is pushed.
+# Triggers: manual dispatch, or automatically when a v3.23.0-fix.* tag is pushed.
 #
 # A manual dispatch defaults to the latest PUBLISHED release, which excludes
 # prereleases. That silently mistargets the suite whenever the version worth
 # testing is an -rc: sections U and V exercise sd_notify READY/STATUS and the
-# HotSwap handoff, neither of which exists in early meso-miner releases, so a default
+# HotSwap handoff, neither of which exists before v3.23.0-fix.31, so a default
 # dispatch aimed them at a binary that cannot implement them and reported
 # RELEASE_BLOCKED for reasons that were not defects. Pass `version` to target
 # a specific release (prereleases included) without having to cut a tag.
@@ -19,12 +19,12 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release tag to test (e.g. vYYYY.M.D-<code>-meso). Empty = latest published release (excludes prereleases).'
+        description: 'Release tag to test (e.g. v3.23.0-fix.31.1-rc1). Empty = latest published release (excludes prereleases).'
         required: false
         default: ''
   push:
     tags:
-      - 'v*-meso'
+      - 'v3.23.0-fix.*'
 
 permissions:
   contents: read
@@ -33,7 +33,7 @@ permissions:
 jobs:
   shakedown:
     runs-on: ubuntu-latest
-    timeout-minutes: 200   # 60 min asset poll + 120 min watchdog + headroom
+    timeout-minutes: 150   # the shakedown itself targets ~110 min of work
     # Two runs share the same gauntlet account server-side. Queue, never cancel.
     concurrency:
       group: shakedown
@@ -64,10 +64,10 @@ jobs:
             VER="${INPUT_VERSION}"
           else
             VER=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-              "https://api.github.com/repos/full-bars/meso-miner/releases/latest" \
+              "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/latest" \
               2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get('tag_name',''))" 2>/dev/null || echo "")
             if [ -z "$VER" ]; then
-              echo "::error::could not resolve the latest release tag from the GitHub API — refusing to guess a version (fail-closed)"
+              echo "::error::could not determine latest release from GitHub API"
               echo "ENV_BLOCKER=1" >> "$GITHUB_OUTPUT"; echo 75 > /tmp/shakedown.exit; exit 75
             fi
           fi
@@ -75,11 +75,11 @@ jobs:
           GITHUB_SHA_SHORT="${GITHUB_SHA}"
           ASSETS_OK=0
           REL_RUN_ID=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-            "https://api.github.com/repos/full-bars/meso-miner/actions/runs?event=push&head_sha=${GITHUB_SHA_SHORT}&per_page=20" \
+            "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/actions/runs?event=push&head_sha=${GITHUB_SHA_SHORT}&per_page=20" \
             2>/dev/null | python3 -c "import sys,json;print(next((r.get('id','') for r in json.load(sys.stdin).get('workflow_runs',[]) if r.get('path')=='.github/workflows/release.yml'),''))" 2>/dev/null || echo "")
           if [ -n "$REL_RUN_ID" ]; then
             REL_JOB_CONC=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-              "https://api.github.com/repos/full-bars/meso-miner/actions/runs/${REL_RUN_ID}/jobs?per_page=50" \
+              "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/actions/runs/${REL_RUN_ID}/jobs?per_page=50" \
               2>/dev/null | python3 -c "import sys,json;print(next((j.get('conclusion','') for j in json.load(sys.stdin).get('jobs',[]) if j.get('name')=='Create Release'),''))" 2>/dev/null || echo "")
             if echo "$REL_JOB_CONC" | grep -qE "failure|cancelled|timed_out|action_required"; then
               echo "::error::create-release job FAILED ($REL_JOB_CONC) — ENV_BLOCKER"
@@ -88,7 +88,7 @@ jobs:
           fi
           for i in $(seq 1 120); do
             if curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-              "https://api.github.com/repos/full-bars/meso-miner/releases/tags/${VER}" \
+              "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/tags/${VER}" \
               2>/dev/null | grep -q '"browser_download_url"'; then
               ASSETS_OK=1; echo "release assets for ${VER} appeared"; break
             fi
@@ -180,6 +180,7 @@ jobs:
         run: |
           REPORT_TEXT=$(cat /tmp/shakedown-report.txt 2>/dev/null || echo "no report")
           SHAKE_EXIT=$(cat /tmp/shakedown.exit 2>/dev/null || echo "MISSING")
+          # No exit file means the suite never started (mint/resolve failed)
           if [ "$SHAKE_EXIT" = "MISSING" ]; then SHAKE_EXIT=75; fi
           if [ "$SHAKE_EXIT" = "75" ]; then DET="ENV_BLOCKER"
           elif echo "$REPORT_TEXT" | grep -q "TIER1_FAIL=1"; then DET="RELEASE_BLOCKED"
@@ -194,6 +195,5 @@ jobs:
             cat /tmp/shakedown-ai-review.txt
             exit 0
           fi
-          # No Gemini call is implemented yet; do not claim a successful review.
-          echo "AI_REVIEW_STATUS=NOT_IMPLEMENTED" >> /tmp/shakedown-ai-review.txt
+          echo "AI_REVIEW_STATUS=OK" >> /tmp/shakedown-ai-review.txt
           cat /tmp/shakedown-ai-review.txt

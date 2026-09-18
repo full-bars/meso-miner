@@ -12,8 +12,9 @@ This page keeps the copy-paste Docker examples from the README in one place. Use
 Install `urnet-docker` once on the host (SHA-256 verified against the release API):
 
 ```sh
-curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/install-urnet-docker.sh | sh
+curl -fSsL https://dl.fullbars.xyz/urnet-docker.sh | sh
 # installs /usr/local/bin/urnet-docker (or ~/.local/bin when not root)
+# GitHub fallback: curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh | sh
 ```
 
 The tool is self-updating afterwards:
@@ -49,7 +50,7 @@ urnet-docker logs --unit urfix 100              # stream logs (RAMLOGS-aware)
 Primary image:
 
 ```text
-ghcr.io/full-bars/meso-miner:latest
+ghcr.io/full-bars/urnetwork-3.23-fix:latest
 ```
 
 Docker Hub mirror:
@@ -79,7 +80,7 @@ docker run -d --name urfix \
   -e PROXY_URL='https://example.com/your-proxy-list.txt' \
   -e URNETWORK_PROXY_BENCHMARK=true \
   -e URNETWORK_PROXY_BENCHMARK_ENDPOINT=connect.bringyour.com:443 \
-  ghcr.io/full-bars/meso-miner:latest
+  ghcr.io/full-bars/urnetwork-3.23-fix:latest
 ```
 
 | Env var | Purpose |
@@ -107,7 +108,7 @@ docker run -d \
   -e HOST_HOSTNAME=$(hostname) \
   -v urfix_config:/root/.urnetwork \
   -v /path/to/proxy.txt:/app/proxy.txt \
-  ghcr.io/full-bars/meso-miner:latest AUTH_CODE_HERE
+  ghcr.io/full-bars/urnetwork-3.23-fix:latest AUTH_CODE_HERE
 ```
 
 Replace `AUTH_CODE_HERE` with your token from [ur.io](https://ur.io). Auth codes are single-use; the token is saved to the `urfix_config` volume on first run and reused on later starts.
@@ -143,7 +144,7 @@ docker run -d \
   -e HOST_HOSTNAME=$(hostname) \
   -v urfix_config:/root/.urnetwork \
   -v /path/to/proxy.txt:/app/proxy.txt \
-  ghcr.io/full-bars/meso-miner:latest
+  ghcr.io/full-bars/urnetwork-3.23-fix:latest
 ```
 
 ## 🏃 Docker Run - Docker Hub
@@ -209,7 +210,7 @@ For 3, 5, or 10 nodes in one Compose file, use the [Multi-Container Scaling](Mul
 ```yaml
 services:
   urnetwork:
-    image: ghcr.io/full-bars/meso-miner:latest
+    image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
     container_name: urfix
     restart: unless-stopped
     pull_policy: always
@@ -250,7 +251,7 @@ docker compose up -d
 ```yaml
 services:
   urnetwork:
-    image: ghcr.io/full-bars/meso-miner:latest
+    image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
     container_name: urfix
     restart: unless-stopped
     pull_policy: always
@@ -276,6 +277,7 @@ services:
 volumes:
   urfix_config:
 ```
+
 
 ## 💾 RAM Logging
 
@@ -311,7 +313,7 @@ docker run -d \
   -v urfix_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
-  ghcr.io/full-bars/meso-miner:latest YOUR_AUTH_CODE
+  ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE
 ```
 
 View logs live:
@@ -329,6 +331,32 @@ View a single-pane fleet overview showing proxy counts by source (file vs URL), 
 ```sh
 docker exec -it <container> provider proxy summary
 ```
+
+## 📡 Report URL (Deprecated)
+
+> [!WARNING]
+> **Deprecated (v31.3+):** Bandwidth hub reporting has been removed. The `report_url` file and `urnet-tools report` command are no longer functional. This section is retained for historical reference.
+
+Set or check the hub report URL at runtime without restarting. Uses `~/.urnetwork/report_url` inside the container:
+
+```sh
+# Set report URL
+docker exec -it <container> sh -c 'echo "http://HUB_IP:8080" > "$HOME/.urnetwork/report_url"'
+
+# Check current URL
+docker exec -it <container> sh -c 'cat "$HOME/.urnetwork/report_url" 2>/dev/null || echo "not set"'
+
+# Disable
+docker exec -it <container> sh -c 'rm -f "$HOME/.urnetwork/report_url"'
+```
+
+Or use the Go `urnet-docker` binary (v3.23.0-fix.27.0+) which handles `docker exec` transparently — it discovers provider containers and delegates commands into them:
+```sh
+urnet-docker report http://HUB_IP:8080
+urnet-docker report
+urnet-docker report off
+```
+(The legacy PowerShell wrapper `urnet-tools.ps1` has been retired; the Go binary replaces it on every platform.)
 
 ## ♻️ Hot-Restart
 
@@ -348,7 +376,7 @@ docker run -d \
   -v urfix_config:/root/.urnetwork \
   -v urfix_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
-  ghcr.io/full-bars/meso-miner:latest YOUR_AUTH_CODE
+  ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE
 ```
 
 **Status check:**
@@ -414,7 +442,7 @@ docker run -d \
   -v urfix_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
   -p 9001:8080 \
-  ghcr.io/full-bars/meso-miner:latest YOUR_AUTH_CODE
+  ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE
 ```
 
 > [!NOTE]
@@ -438,6 +466,9 @@ docker run -d \
 > The `urfix_config` volume is required when using Watchtower. Without it, Watchtower will pull a new image, recreate the container, and the auth code will be consumed again, which fails because auth codes are single-use. With the volume mounted, the existing JWT is reused.
 > 
 > **JWT Smart Refresh**: As of `v3.23.0-fix.17`, the container includes "smart refresh" logic. If the JWT stored in your volume expires, the provider will automatically detect this, delete the stale file, and attempt to re-authenticate using the `USER_AUTH` and `PASSWORD` environment variables if provided. This ensures your nodes stay online even if a JWT is revoked or corrupted during an update.
+
+> [!NOTE]
+> **Pelican Panel deployments**: When the image runs under a [Pelican panel](#-pelican-panel) with `PELICAN=yes`, the self-update scripts are disabled. The panel manages updates by re-pulling the published image. Runtime fetches are blocked to prevent silently replacing the audited fork binary mid-flight.
 
 ## ⏳ Idle Update
 
@@ -493,7 +524,7 @@ docker run -d \
   -v urfix_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
   -p 127.0.0.1:9001:8080 \
-  ghcr.io/full-bars/meso-miner:latest AUTH_CODE_HERE
+  ghcr.io/full-bars/urnetwork-3.23-fix:latest AUTH_CODE_HERE
 ```
 
 Access the traffic page locally at `http://localhost:9001` (bind to `127.0.0.1` prevents exposing the unauthenticated vnStat web UI to the public internet; use a reverse proxy or SSH tunnel if accessing remotely).
@@ -516,7 +547,7 @@ When running more than one provider container on the same host with vnStat enabl
 ```yaml
 services:
   node-1:
-    image: ghcr.io/full-bars/meso-miner:latest
+    image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
     container_name: urfix-1
     environment:
       - BUILD=jwt
@@ -529,7 +560,7 @@ services:
       - "127.0.0.1:9001:8080"          # OFFSET host port (localhost bound)
 
   node-2:
-    image: ghcr.io/full-bars/meso-miner:latest
+    image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
     container_name: urfix-2
     environment:
       - BUILD=jwt
@@ -550,6 +581,26 @@ volumes:
 
 ---
 
+### 📊 Prometheus + Grafana Monitoring Bundle (v3.23.0-fix.31.2)
+
+As of v31.2, a `docker-compose.monitoring.yml` file is included in the repository for a ready-made Prometheus + Grafana stack that scrapes the provider's built-in `/metrics` endpoint on port `9091`:
+
+```bash
+# Start the provider + monitoring stack together
+docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+```
+
+This brings up:
+- **Prometheus** — configured to scrape `http://urnetwork:9091/metrics` at a 15s interval
+- **Grafana** — pre-loaded with a provider dashboard (default login `admin` / `admin`)
+
+> [!TIP]
+> If you run multiple provider containers, update the Prometheus scrape targets in `docker-compose.monitoring.yml` to point at each container's metrics port. Each container needs a unique host-side port mapping (e.g. `-p 9091:9091` on the first, `-p 9092:9091` on the second).
+
+The metrics endpoint is enabled by default — no environment variables are needed. To disable it on a specific container, add `-e URNETWORK_METRICS=0`.
+
+See also the [Configuration](Configuration.md#-monitoring--telemetry) reference for the full list of telemetry variables.
+
 ## 🐦 Pelican Panel
 
 As of `v3.23.0-fix.30.8`, the provider image is importable into the [Pelican game-server panel](https://github.com/pelican-dev/panel) as a one-click egg. The egg ships with the audit-preferred defaults pinned — vnStat off, IP checker off, and runtime self-update disabled.
@@ -558,7 +609,7 @@ As of `v3.23.0-fix.30.8`, the provider image is importable into the [Pelican gam
 
 1. Download the egg JSON from the repo: `pelican/egg-urnetwork-323fix.json`
 2. In Pelican admin, go to **Nests**, select or create a nest, and use **Import Egg** to upload the JSON.
-3. The egg pulls `ghcr.io/full-bars/meso-miner:latest` (multi-arch amd64/arm64).
+3. The egg pulls `ghcr.io/full-bars/urnetwork-3.23-fix:latest` (multi-arch amd64/arm64).
 
 ### Configuration variables
 

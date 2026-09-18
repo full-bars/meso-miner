@@ -43,6 +43,90 @@ Emitted exactly **once per provider process**, early in the startup sequence bef
 
 The existing `client_id` and `instance_id` lines are printed separately, once per proxy, and are unchanged by this log line.
 
+### Launch ranking
+
+```
+💰 [startup] earnings ranking: 588 of 812 proxies have earnings history, 34 URL-sourced promoted to launch with the file list, top earner 203.0.113.9:1080 at 4.1 GB
+💰 [startup] earnings ranking: no history yet, launching by warmth and source only
+```
+
+Emitted once per process, after the proxy list is resolved. The provider now
+keeps a per-proxy record of billable traffic that survives restarts, and this
+line reports what that record currently holds.
+
+| Field | Meaning |
+|---|---|
+| `N of M proxies have earnings history` | How many of this launch set the node has ever observed earning. |
+| `top earner` | The highest-scoring proxy and its score. |
+
+The score is billable bytes with a one-week half-life, persisted to
+`~/.urnetwork/proxy_earnings.json` and written at most every 15 minutes. A
+proxy that stops earning decays out of the record on its own, so it reflects
+what earns now rather than what earned once. The file is capped at 20,000
+entries, with the lowest scorers evicted first.
+
+Launches are ordered by three rules, in this order:
+
+1. **Warmth.** A proxy holding a valid client JWT dials before one that must
+   mint a fresh identity. Warmth comes first deliberately: minting is
+   rate-limited, so a rich but cold proxy jumping the queue would spend a
+   scarce mint slot and stall warm identities that could have dialled
+   straight through. A warm URL-sourced proxy therefore launches before a
+   cold file proxy.
+2. **Trusted provenance.** Within a warmth tier, file-sourced and internal
+   proxies launch first. A URL-sourced proxy joins them once its earnings
+   score passes 64 MiB, at which point it is a known earner rather than an
+   unproven address off a public list. That is the `promoted` count.
+3. **Earnings.** Within one tier and group, the bigger earner dials first.
+
+Among cold proxies, one unproven URL-sourced proxy is interleaved after
+every five trusted cold proxies, so unproven addresses still get tried and
+can build a history instead of waiting behind the whole cold list.
+
+> [!NOTE]
+> A node needs roughly a week of uptime before the record means much. A
+> fresh node orders launches by warmth and source only and reports
+> `no history yet`. That is expected on a first run and until the provider
+> has observed billable traffic. It is not an error.
+
+---
+
+## ⚙️ Settings Changes (v31+)
+
+Every change that reaches the provider is logged at the provider, so an
+operator can confirm from the node's own log that a setting registered with
+the daemon rather than trusting the CLI's exit code.
+
+```
+⚙️ [control] set profile=v8 (was unset)
+⚙️ [control] cleared profile (was v4)
+[metrics] started Prometheus /metrics on 192.200.0.5:9100
+[metrics] stopped Prometheus /metrics
+```
+
+The failure paths log too, because a refused change is exactly when an
+operator most needs the log to explain why their setting did not take:
+
+```
+❌ [control] set profile=nope rejected: unknown profile
+❌ [control] set gogc=50 failed to persist, rolled back: no space left on device
+⚠️ [control] set gomemlimit=2GiB (was 1GiB) persisted but live apply failed, takes effect on restart: ...
+🔒 [control] rejected connection: peer uid does not own this provider
+```
+
+| Line | Meaning |
+|---|---|
+| `set <key>=<value> (was <old>)` | Applied and persisted. `unset` as the old value means the key had no prior setting. |
+| `cleared <key> (was <old>)` | Key removed, default restored. |
+| `rejected` | Validation refused the value. Nothing changed. |
+| `failed to persist, rolled back` | The write failed and the in-memory value was reverted, so the log and the daemon agree. |
+| `persisted but live apply failed` | Stored, but the running process could not adopt it. It takes effect on the next restart. |
+| `🔒 rejected connection` | A peer that does not own this provider tried to use the control socket. |
+
+> [!NOTE]
+> Reads are deliberately silent. `urnet-tools status` polls `get` on every
+> invocation, so logging reads would bury the writes that matter.
+
 ---
 
 ## 🧠 Adaptive GC Governor (pressure monitor)
@@ -200,8 +284,16 @@ The `[r]drop` message indicates the provider dropped a packet because it couldn'
 ## 💓 Health Heartbeat
 
 ```
+[health][build] v3.23.0-fix.31.8 profile=auto host=node-a
 [health] uptime=15m0s profile=auto heap=80MiB sys=255MiB goroutines=2156 connections=998 proxies=1150
 ```
+
+The `[health][build]` line leads every heartbeat tick. It exists so a log tail
+or a pasted excerpt identifies the build that produced it: the startup banner
+scrolls out of a RAM log window, and every other line in the block is only
+interpretable once you know the version. `host` is the node name
+(`URNETWORK_NODE_NAME`, the `~/.urnetwork/node_name` override, `HOST_HOSTNAME`,
+then the kernel hostname).
 
 Fires every 5 minutes (default). Provides passive liveness confirmation and resource utilization trends.
 
@@ -221,6 +313,45 @@ Fires every 5 minutes (default). Provides passive liveness confirmation and reso
 - `heap` growing continuously over hours/days — potential memory leak.
 - `heap` vs `connections` — if heap grows while connections stay flat, memory is being consumed by something other than traffic (e.g. large proxy list storage).
 - `goroutines` climbing steadily while load is flat — likely a goroutine leak (watch for repeated logs that should fire once per process, such as `[tune] auto-profile`).
+
+### 🧠 Message-Pool Health
+
+One line per heartbeat tick, written to be actionable without knowing what a
+message pool is. It leads with a verdict so nothing has to be compared by eye:
+
+```
+[health][pool] ok — 117 buffers in use, none stuck, 2048 allocated since start (99.65% returned)
+[health][pool] warming — 117 buffers in use, 2048 allocated since start (99.65% returned). Stuck-buffer check needs 1h of uptime (41m to go).
+[health][pool] watch — 96 buffers were taken and never given back, up from 38 an hour ago. If this keeps climbing, memory use grows until the provider restarts. 1204 in use now, 4096 allocated since start (99.71% returned).
+[health][pool] leak — 512 buffers taken and never given back, climbing for 35+ minutes. Memory will keep growing until restart. This is a bug worth reporting with this line. 4291 in use now, 8192 allocated since start (99.71% returned).
+```
+
+| Verdict | Meaning |
+|---|---|
+| `warming` | Less than an hour of uptime, so there is no trustworthy baseline yet. No judgement is made. |
+| `ok` | The pool drains to the same baseline every hour. Buffers are being recycled. |
+| `watch` | The baseline has climbed for 15 minutes without interruption, or the pool is still allocating new buffers an hour after startup. |
+| `leak` | The baseline has climbed for 30 minutes without interruption. Memory grows until restart. Report it with the line. |
+
+**Why the percentage is context and not the signal.** `returned` is
+self-normalizing: a leak proportional to throughput keeps it pinned near 100%
+forever, because the denominator grows exactly as fast as the leak. Losing one
+buffer per 10,000 taken reads 99.99% while shedding roughly 1,440 buffers a
+day. The number the verdict actually watches is the *stuck* count, the lowest
+in-use count over the trailing hour. Buffers legitimately in flight come and
+go, so a healthy pool touches a low number at least once an hour; a buffer
+taken and never given back raises that minimum permanently.
+
+The cost is latency. Pre-leak samples must age out of the hour-long window
+before the minimum can move, so a leak present from boot is called about 90
+minutes in. That is deliberate, because a faster signal fires on ordinary load
+steps.
+
+> [!NOTE]
+> This line is independent of `debugTags` in `message_pool.go`, which is a
+> compile-time `false` and gates per-allocation tagging. The heartbeat reads
+> `MessagePoolSummary()`, which works in production builds and does no
+> hot-path work.
 
 ### 💀 Dead-Proxy Health Report
 
