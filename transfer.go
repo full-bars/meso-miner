@@ -1,12 +1,14 @@
 package connect
 
 import (
+	"cmp"
 	"context"
 	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	// "runtime/debug"
@@ -24,9 +26,10 @@ import (
 )
 
 var (
-	dropErrLogThrottle = newLogThrottle(time.Minute)
-	pingLogThrottle    = newLogThrottle(5 * time.Minute)
-	pingErrLogThrottle = newLogThrottle(5 * time.Minute)
+	dropErrLogThrottle   = newLogThrottle(time.Minute)
+	pingLogThrottle      = newLogThrottle(5 * time.Minute)
+	pingErrLogThrottle   = newLogThrottle(5 * time.Minute)
+	auditSendErrThrottle = newLogThrottle(time.Minute)
 )
 
 /*
@@ -158,19 +161,35 @@ func DefaultSendBufferSettings() *SendBufferSettings {
 		CreateContractTimeout:       60 * time.Second,
 		CreateContractRetryInterval: 5 * time.Second,
 		MinResendInterval:           2 * time.Second,
+		RttMinResendInterval:        300 * time.Millisecond,
 		MaxResendInterval:           8 * time.Second,
+		UnreliableMaxResendInterval: 2 * time.Second,
 		// no backoff
 		// ResendBackoffScale: 0,
-		RttScale:         1.2,
-		RttWindowSize:    128,
-		RttWindowTimeout: 60 * time.Second,
-		AckTimeout:       60 * time.Second,
-		IdleTimeout:      300 * time.Second,
+		RttScale:             1.2,
+		RttWindowSize:        128,
+		RttWindowTimeout:     60 * time.Second,
+		AckTimeout:           60 * time.Second,
+		UnreliableAckTimeout: 90 * time.Second,
+		IdleTimeout:          300 * time.Second,
 		// pause on resend for selectively acked messaged
-		SelectiveAckTimeout: 60 * time.Second,
-		SequenceBufferSize:  DefaultTransferBufferSize,
-		AckBufferSize:       DefaultTransferBufferSize,
-		MinMessageByteCount: ByteCount(1),
+		SelectiveAckTimeout:                  60 * time.Second,
+		SelectiveAckGapThreshold:             3,
+		SelectiveAckGapBurstSize:             4,
+		AckTailProbeLimit:                    2,
+		UnreliableInitialFlightByteCount:     8 * 1024,
+		UnreliableMinimumFlightByteCount:     8 * 1024,
+		UnreliableMaximumFlightByteCount:     256 * 1024,
+		UnreliableInitialFlightMessageCount:  8,
+		UnreliableMinimumFlightMessageCount:  4,
+		UnreliableMaximumFlightMessageCount:  256,
+		UnreliableSlowStartGrowthDivisor:     4,
+		UnreliableFlightIncreaseByteCount:    1150,
+		UnreliableFlightIncreaseMessageCount: 1,
+		UnreliableFloorSingleFlight:          false,
+		SequenceBufferSize:                   DefaultTransferBufferSize,
+		AckBufferSize:                        DefaultTransferBufferSize,
+		MinMessageByteCount:                  ByteCount(1),
 		// this includes transport reconnections
 		WriteTimeout:            15 * time.Second,
 		ResendQueueMaxByteCount: MemoryScaledByteCount(mib(4), kib(256)),
@@ -188,8 +207,19 @@ func DefaultReceiveBufferSettings() *ReceiveBufferSettings {
 		IdleTimeout:        120 * time.Second,
 		SequenceBufferSize: DefaultTransferBufferSize,
 		// AckBufferSize: DefaultTransferBufferSize,
-		AckCompressTimeout:  time.Duration(0),
-		MinMessageByteCount: ByteCount(1),
+		AckCompressTimeout: time.Duration(0),
+		// End one compression wait early when a hole becomes provable to the
+		// sender (this many selective acks pending above the head, its
+		// SelectiveAckGapThreshold) or when a head ack advances past
+		// selectively acked items (a hole filled, including the first head of
+		// a sequence whose opening item was missing). Written in sequence
+		// order, a partial batch can no longer prove the neighbours of one
+		// hole lost. Each reason wakes at most once per snapshot and at most
+		// once per AckCompressTimeout measured from its previous early write,
+		// so a sustained hole costs at most one extra write per interval per
+		// reason and the in-order ack rate is unchanged.
+		AckGapWakeSelectiveCount: 3,
+		MinMessageByteCount:      ByteCount(1),
 		// ResendAbuseThreshold: 4,
 		// ResendAbuseMultiple:  0.5,
 		MaxPeerAuditDuration: 60 * time.Second,
@@ -197,6 +227,7 @@ func DefaultReceiveBufferSettings() *ReceiveBufferSettings {
 		WriteTimeout:             15 * time.Second,
 		ReceiveQueueMaxByteCount: MemoryScaledByteCount(mib(2)+kib(512), kib(320)),
 		ReceiveQueueMinByteCount: kib(320),
+		ReceiveHoldPolicy:        ReceiveHoldCommittedPrefix,
 		AllowLegacyNack:          true,
 		MaxOpenReceiveContract:   4,
 		ProtocolVersion:          DefaultProtocolVersion,
@@ -473,6 +504,152 @@ type Client struct {
 	// contractManagerUnsub func()
 	webRtcManagerUnsub func()
 	streamManagerUnsub func()
+
+	unreliableFlightWaitCount           atomic.Uint64
+	unreliableFlightWaitNanoseconds     atomic.Uint64
+	unreliableFlightMaximumWaitNanos    atomic.Uint64
+	unreliableFlightGapCount            atomic.Uint64
+	unreliableFlightTimeoutCount        atomic.Uint64
+	unreliableFlightReductionCount      atomic.Uint64
+	unreliableFlightMaximumBytes        atomic.Uint64
+	unreliableFlightMaximumLimit        atomic.Uint64
+	unreliableFlightMaximumMessages     atomic.Uint64
+	unreliableFlightMaximumMessageLimit atomic.Uint64
+
+	// receive-hold counters for the committed-prefix policy (THROUGHPUTFIX
+	// §37.20, ported from upstream 609cb1b6). receiveQueueEvictionCount and
+	// receiveQueueEvictionByteCount must stay at zero under
+	// ReceiveHoldCommittedPrefix: an acknowledged item is never discarded,
+	// which is what the policy buys over ReceiveHoldEvict. Under
+	// ReceiveHoldEvict they count a held item removed after it was already
+	// acknowledged, i.e. the withdrawal the committed-prefix policy exists to
+	// remove.
+	receiveQueueEvictionCount     atomic.Uint64
+	receiveQueueEvictionByteCount atomic.Uint64
+	// items evicted while still held tentatively (never acknowledged), so
+	// their removal costs the sender a resend rather than a withdrawal
+	receiveQueueTentativeEvictionCount     atomic.Uint64
+	receiveQueueTentativeEvictionByteCount atomic.Uint64
+	// held items that crossed the commit boundary and were acknowledged
+	receiveQueueCommitCount atomic.Uint64
+}
+
+// ReceiveQueueEvictionCount returns the number of held items that were
+// removed after already being acknowledged. Under ReceiveHoldCommittedPrefix
+// this stays zero; a nonzero value under that policy means the commit
+// boundary's gap estimate under-counted.
+func (self *Client) ReceiveQueueEvictionCount() uint64 {
+	return self.receiveQueueEvictionCount.Load()
+}
+
+// ReceiveQueueEvictionByteCount is the byte-count counterpart of
+// ReceiveQueueEvictionCount.
+func (self *Client) ReceiveQueueEvictionByteCount() uint64 {
+	return self.receiveQueueEvictionByteCount.Load()
+}
+
+// ReceiveQueueTentativeEvictionCount returns the number of held items that
+// were removed while still tentative (unacknowledged, below no withdrawal
+// cost) to admit an earlier arrival.
+func (self *Client) ReceiveQueueTentativeEvictionCount() uint64 {
+	return self.receiveQueueTentativeEvictionCount.Load()
+}
+
+// ReceiveQueueTentativeEvictionByteCount is the byte-count counterpart of
+// ReceiveQueueTentativeEvictionCount.
+func (self *Client) ReceiveQueueTentativeEvictionByteCount() uint64 {
+	return self.receiveQueueTentativeEvictionByteCount.Load()
+}
+
+// ReceiveQueueCommitCount returns the number of held items that crossed the
+// commit boundary and were acknowledged.
+func (self *Client) ReceiveQueueCommitCount() uint64 {
+	return self.receiveQueueCommitCount.Load()
+}
+
+var errTransferRouteWriteTimeout = errors.New("Timeout.")
+
+type ClientSendRecoveryStatsSnapshot struct {
+	InitialWriteCount                     uint64
+	InitialFrameCount                     uint64
+	InitialMessageByteCount               uint64
+	TimeoutResendWriteCount               uint64
+	AckPendingResendPreemptCount          uint64
+	CarrierChangeWriteCount               uint64
+	SelectiveGapWriteCount                uint64
+	AckTailProbeWriteCount                uint64
+	CumulativeProbeWriteCount             uint64
+	RecoveryWriteErrorCount               uint64
+	MissingContractWriteCount             uint64
+	MissingContractRequestCount           uint64
+	CompactRecoveryAckCount               uint64
+	CompactRecoveryContractCount          uint64
+	UnreliableFlowIsolationBypassCount    uint64
+	UnreliableNoAckAdmissionBypassCount   uint64
+	UnreliableFlowReserveSelectionCount   uint64
+	UnreliableFlowReserveUseCount         uint64
+	UnreliableFlightWaitCount             uint64
+	UnreliableFlightWaitDuration          time.Duration
+	UnreliableFlightMaximumWaitDuration   time.Duration
+	UnreliableFlightGapCount              uint64
+	UnreliableFlightTimeoutCount          uint64
+	UnreliableFlightReductionCount        uint64
+	UnreliableFlightMaximumByteCount      uint64
+	UnreliableFlightMaximumLimitByteCount uint64
+	UnreliableFlightMaximumMessageCount   uint64
+	UnreliableFlightMaximumMessageLimit   uint64
+}
+
+func (self *Client) SendRecoveryStats() ClientSendRecoveryStatsSnapshot {
+	return ClientSendRecoveryStatsSnapshot{
+		UnreliableFlightWaitCount: self.unreliableFlightWaitCount.Load(),
+		UnreliableFlightWaitDuration: time.Duration(
+			self.unreliableFlightWaitNanoseconds.Load(),
+		),
+		UnreliableFlightMaximumWaitDuration: time.Duration(
+			self.unreliableFlightMaximumWaitNanos.Load(),
+		),
+		UnreliableFlightGapCount:              self.unreliableFlightGapCount.Load(),
+		UnreliableFlightTimeoutCount:          self.unreliableFlightTimeoutCount.Load(),
+		UnreliableFlightReductionCount:        self.unreliableFlightReductionCount.Load(),
+		UnreliableFlightMaximumByteCount:      self.unreliableFlightMaximumBytes.Load(),
+		UnreliableFlightMaximumLimitByteCount: self.unreliableFlightMaximumLimit.Load(),
+		UnreliableFlightMaximumMessageCount:   self.unreliableFlightMaximumMessages.Load(),
+		UnreliableFlightMaximumMessageLimit:   self.unreliableFlightMaximumMessageLimit.Load(),
+	}
+}
+
+func (self *Client) observeUnreliableFlightWait(waitDuration time.Duration) {
+	if waitDuration <= 0 {
+		return
+	}
+	waitNanoseconds := uint64(waitDuration)
+	self.unreliableFlightWaitNanoseconds.Add(waitNanoseconds)
+	for maximumWait := self.unreliableFlightMaximumWaitNanos.Load(); maximumWait < waitNanoseconds &&
+		!self.unreliableFlightMaximumWaitNanos.CompareAndSwap(maximumWait, waitNanoseconds); maximumWait = self.unreliableFlightMaximumWaitNanos.Load() {
+	}
+}
+
+func (self *Client) observeUnreliableFlight(controller *sendFlightController) {
+	if controller == nil || !controller.limited {
+		return
+	}
+	byteCount := uint64(max(controller.byteCount, 0))
+	for maximumByteCount := self.unreliableFlightMaximumBytes.Load(); maximumByteCount < byteCount &&
+		!self.unreliableFlightMaximumBytes.CompareAndSwap(maximumByteCount, byteCount); maximumByteCount = self.unreliableFlightMaximumBytes.Load() {
+	}
+	byteLimit := uint64(max(controller.byteLimit, 0))
+	for maximumByteLimit := self.unreliableFlightMaximumLimit.Load(); maximumByteLimit < byteLimit &&
+		!self.unreliableFlightMaximumLimit.CompareAndSwap(maximumByteLimit, byteLimit); maximumByteLimit = self.unreliableFlightMaximumLimit.Load() {
+	}
+	messageCount := uint64(max(controller.messageCount, 0))
+	for maximumMessageCount := self.unreliableFlightMaximumMessages.Load(); maximumMessageCount < messageCount &&
+		!self.unreliableFlightMaximumMessages.CompareAndSwap(maximumMessageCount, messageCount); maximumMessageCount = self.unreliableFlightMaximumMessages.Load() {
+	}
+	messageLimit := uint64(max(controller.messageLimit, 0))
+	for maximumMessageLimit := self.unreliableFlightMaximumMessageLimit.Load(); maximumMessageLimit < messageLimit &&
+		!self.unreliableFlightMaximumMessageLimit.CompareAndSwap(maximumMessageLimit, messageLimit); maximumMessageLimit = self.unreliableFlightMaximumMessageLimit.Load() {
+	}
 }
 
 func NewClientWithDefaults(
@@ -1510,8 +1687,10 @@ type SendBufferSettings struct {
 	CreateContractRetryInterval time.Duration
 
 	// resend timeout is the initial time between successive send attempts. Does linear backoff
-	MinResendInterval time.Duration
-	MaxResendInterval time.Duration
+	MinResendInterval           time.Duration
+	RttMinResendInterval        time.Duration
+	MaxResendInterval           time.Duration
+	UnreliableMaxResendInterval time.Duration
 	// ResendBackoffScale float32
 
 	RttScale         float32
@@ -1519,10 +1698,27 @@ type SendBufferSettings struct {
 	RttWindowTimeout time.Duration
 
 	// on ack timeout, no longer attempt to retransmit and notify of ack failure
-	AckTimeout  time.Duration
-	IdleTimeout time.Duration
+	AckTimeout           time.Duration
+	UnreliableAckTimeout time.Duration
+	IdleTimeout          time.Duration
 
-	SelectiveAckTimeout time.Duration
+	SelectiveAckTimeout      time.Duration
+	SelectiveAckGapThreshold int
+	SelectiveAckGapBurstSize int
+	AckTailProbeLimit        int
+
+	UnreliableInitialFlightByteCount     ByteCount
+	UnreliableMinimumFlightByteCount     ByteCount
+	UnreliableMaximumFlightByteCount     ByteCount
+	UnreliableInitialFlightMessageCount  int
+	UnreliableMinimumFlightMessageCount  int
+	UnreliableMaximumFlightMessageCount  int
+	UnreliableSlowStartGrowthDivisor     int
+	UnreliableFlightIncreaseByteCount    ByteCount
+	UnreliableFlightIncreaseMessageCount int
+	UnreliableFloorSingleFlight          bool
+
+	beforeResendCapacityWaitForTest func(sendSequenceId)
 
 	SequenceBufferSize int
 	AckBufferSize      int
@@ -1574,6 +1770,8 @@ type SendBuffer struct {
 
 	sendBufferSettings *SendBufferSettings
 
+	beforeResendCapacityWaitForTest func(sendSequenceId)
+
 	mutex                      sync.Mutex
 	sendSequences              map[sendSequenceId]*SendSequence
 	sendSequencesByDestination map[TransferPath]map[*SendSequence]bool
@@ -1584,13 +1782,14 @@ func NewSendBuffer(ctx context.Context,
 	client *Client,
 	sendBufferSettings *SendBufferSettings) *SendBuffer {
 	return &SendBuffer{
-		ctx:                        ctx,
-		client:                     client,
-		log:                        client.log,
-		sendBufferSettings:         sendBufferSettings,
-		sendSequences:              map[sendSequenceId]*SendSequence{},
-		sendSequencesByDestination: map[TransferPath]map[*SendSequence]bool{},
-		sendSequenceDestinations:   map[*SendSequence]map[TransferPath]bool{},
+		ctx:                             ctx,
+		client:                          client,
+		log:                             client.log,
+		sendBufferSettings:              sendBufferSettings,
+		beforeResendCapacityWaitForTest: sendBufferSettings.beforeResendCapacityWaitForTest,
+		sendSequences:                   map[sendSequenceId]*SendSequence{},
+		sendSequencesByDestination:      map[TransferPath]map[*SendSequence]bool{},
+		sendSequenceDestinations:        map[*SendSequence]map[TransferPath]bool{},
 	}
 }
 
@@ -1936,6 +2135,263 @@ type SendSequence struct {
 	// `EncryptionSessionManager` at construction; released when the sequence
 	// terminates. Nil when encryption is disabled on this client.
 	session *peerEncryptionSession
+
+	flightController           *sendFlightController
+	selectiveGapRecoveryActive bool
+}
+
+func (self *SendSequence) id() sendSequenceId {
+	return sendSequenceId{
+		Destination:         self.destination,
+		IntermediaryIds:     self.intermediaryIds,
+		CompanionContract:   self.companionContract,
+		ForceStream:         self.forceStream,
+		EncryptionRole:      self.encryptionRole,
+		EncryptionCompanion: self.encryptionCompanion,
+	}
+}
+
+func (self *SendSequence) transferFlightPolicy() transferFlightPolicySnapshot {
+	if self.contractMultiRouteWriter != nil {
+		if provider, ok := self.contractMultiRouteWriter.(transferFlightPolicyProvider); ok {
+			return provider.transferFlightPolicy()
+		}
+	}
+	if self.client != nil && self.client.RouteManager() != nil {
+		writer := self.openContractMultiRouteWriter()
+		if provider, ok := writer.(transferFlightPolicyProvider); ok {
+			return provider.transferFlightPolicy()
+		}
+	}
+	return transferFlightPolicySnapshot{}
+}
+
+func (self *SendSequence) unreliableFlightGates(policies ...transferFlightPolicySnapshot) bool {
+	if self.flightController == nil || !self.flightController.limited {
+		return false
+	}
+	var policy transferFlightPolicySnapshot
+	if len(policies) > 0 {
+		policy = policies[0]
+	} else {
+		policy = self.transferFlightPolicy()
+	}
+	return self.flightController.limited && !policy.reliableRouteAvailable
+}
+
+func (self *SendSequence) reliableOnlyWrite(policies ...transferFlightPolicySnapshot) bool {
+	if self.flightController == nil || !self.flightController.limited {
+		return false
+	}
+	var policy transferFlightPolicySnapshot
+	if len(policies) > 0 {
+		policy = policies[0]
+	} else {
+		policy = self.transferFlightPolicy()
+	}
+	if !policy.reliableRouteAvailable {
+		return false
+	}
+	if !self.flightController.canSend() {
+		return true
+	}
+	return self.sendBufferSettings.UnreliableFloorSingleFlight &&
+		self.flightController.atFloor() &&
+		0 < self.flightController.messageCount
+}
+
+func (self *SendSequence) observeCarrierWrite(
+	item *sendItem,
+	disposition transferWriteDisposition,
+) {
+	if item == nil {
+		return
+	}
+	if !disposition.unreliable {
+		if disposition.reliable && !item.unreliableCarrierObserved {
+			item.reliableCarrierObserved = true
+			item.reliableRoute = disposition.route
+			item.hybridReliableCarrierObserved = disposition.hybridReliable
+		} else {
+			item.reliableCarrierObserved = false
+			item.reliableRoute = nil
+			item.hybridReliableCarrierObserved = false
+		}
+		return
+	}
+	item.reliableCarrierObserved = false
+	item.reliableRoute = nil
+	item.hybridReliableCarrierObserved = false
+	item.unreliableCarrierObserved = true
+	if self.sendBufferSettings != nil && 0 < self.sendBufferSettings.UnreliableAckTimeout {
+		item.ackTimeout = max(item.ackTimeout, self.sendBufferSettings.UnreliableAckTimeout)
+	}
+	self.trackUnreliableFlight(item)
+}
+
+func (self *SendSequence) trackUnreliableFlight(item *sendItem) {
+	if item == nil || item.unreliableFlightTracked || self.flightController == nil {
+		return
+	}
+	item.unreliableFlightTracked = true
+	item.unreliableFlowReserve = self.flightController.sendForKey(
+		item.MessageByteCount(),
+		item.schedulingKey,
+	)
+	if self.client != nil {
+		self.client.observeUnreliableFlight(self.flightController)
+	}
+}
+
+func (self *SendSequence) releaseUnreliableFlight(item *sendItem) {
+	if item == nil || !item.unreliableFlightTracked || self.flightController == nil {
+		return
+	}
+	item.unreliableFlightTracked = false
+	self.flightController.acknowledgeForKey(
+		item.MessageByteCount(),
+		item.schedulingKey,
+		item.unreliableFlowReserve,
+	)
+	item.unreliableFlowReserve = false
+	if self.client != nil {
+		self.client.observeUnreliableFlight(self.flightController)
+	}
+}
+
+func (self *SendSequence) observeAckRtt(item *sendItem, tag any) {
+	if item == nil || item.unreliableCarrierObserved {
+		return
+	}
+	switch t := tag.(type) {
+	case sequenceTag:
+		if t.set {
+			self.rttWindow.CloseSendTime(t.sendTime)
+		}
+	case *protocol.Tag:
+		if t != nil {
+			self.rttWindow.CloseSendTime(t.SendTime)
+		}
+	}
+}
+
+func (self *SendSequence) observeUnreliableResendTimeout(
+	item *sendItem,
+	policy transferFlightPolicySnapshot,
+) bool {
+	if self.client != nil {
+		self.client.unreliableFlightTimeoutCount.Add(1)
+	}
+	if self.flightController.reduceForLoss() && self.client != nil {
+		self.client.unreliableFlightReductionCount.Add(1)
+	}
+	if !policy.reliableRouteAvailable {
+		if self.client != nil {
+			self.client.observeUnreliableFlight(self.flightController)
+		}
+		return false
+	}
+	self.forgetUnreliableFlight(item)
+	return true
+}
+
+// forgetUnreliableFlight drops a timed-out item from the unreliable flight
+// so the reliable lane can carry its resend; unlike releaseUnreliableFlight
+// it credits no delivery, so the window that reduceForLoss just halved
+// does not grow back on the same timeout.
+func (self *SendSequence) forgetUnreliableFlight(item *sendItem) {
+	if item == nil || !item.unreliableFlightTracked || self.flightController == nil {
+		return
+	}
+	item.unreliableFlightTracked = false
+	self.flightController.forget(
+		item.MessageByteCount(),
+		item.schedulingKey,
+		item.unreliableFlowReserve,
+	)
+	item.unreliableFlowReserve = false
+	if self.client != nil {
+		self.client.observeUnreliableFlight(self.flightController)
+	}
+}
+
+func (self *SendSequence) scheduleSelectiveAckRecovery(currentTime time.Time) bool {
+	reschedule := func(item *sendItem, resendTime time.Time, recoveryKind sendRecoveryKind) {
+		removed := self.resendQueue.RemoveByMessageId(item.messageId)
+		if removed != item {
+			panic(errors.New("Missing selective recovery item"))
+		}
+		item.resendTime = resendTime
+		item.recoveryKind = recoveryKind
+		self.resendQueue.Add(item)
+	}
+
+	selectiveAckCount := 0
+	for _, item := range self.sendItems {
+		if item != nil && item.selectiveAcked {
+			selectiveAckCount += 1
+		}
+	}
+
+	var firstItem *sendItem
+	var gapItem *sendItem
+	threshold := self.sendBufferSettings.SelectiveAckGapThreshold
+	burstSize := self.sendBufferSettings.SelectiveAckGapBurstSize
+	gapRecoveryCount := 0
+	unreliableGapRecovery := false
+	remainingSelectiveAckCount := selectiveAckCount
+	for _, item := range self.sendItems {
+		if item == nil {
+			continue
+		}
+		if firstItem == nil {
+			firstItem = item
+		}
+		if item.selectiveAcked {
+			remainingSelectiveAckCount -= 1
+			continue
+		}
+		if gapItem == nil {
+			gapItem = item
+		}
+		lateNotLost := self.flightController != nil && self.flightController.limited &&
+			item.reliableCarrierObserved && !item.unreliableFlightTracked &&
+			currentTime.Before(item.sendTime.Add(self.rttWindow.ScaledRtt()))
+		if 0 < threshold && gapRecoveryCount < burstSize && !lateNotLost &&
+			!item.selectiveGapRecovered &&
+			(item.ackTailProbeCount == 0 || item.recoveryKind != sendRecoveryNone) &&
+			threshold <= remainingSelectiveAckCount {
+			item.selectiveGapRecovered = true
+			self.selectiveGapRecoveryActive = true
+			reschedule(item, currentTime, sendRecoverySelectiveGap)
+			gapRecoveryCount += 1
+			unreliableGapRecovery = unreliableGapRecovery || item.unreliableFlightTracked
+		}
+	}
+	if 0 < gapRecoveryCount {
+		return unreliableGapRecovery
+	}
+
+	if firstItem == nil || !firstItem.selectiveAcked {
+		if !self.selectiveGapRecoveryActive || gapItem == nil ||
+			self.sendBufferSettings.AckTailProbeLimit <= gapItem.ackTailProbeCount {
+			return false
+		}
+		probeTime := currentTime.Add(self.rttWindow.probeRtt(currentTime))
+		if probeTime.Before(gapItem.resendTime) {
+			gapItem.ackTailProbeCount += 1
+			reschedule(gapItem, probeTime, sendRecoveryAckTailProbe)
+		}
+		return false
+	}
+	probeTime := firstItem.sendTime.Add(self.rttWindow.probeRtt(currentTime))
+	if probeTime.Before(currentTime) {
+		probeTime = currentTime
+	}
+	if probeTime.Before(firstItem.resendTime) {
+		reschedule(firstItem, probeTime, sendRecoveryCumulativeProbe)
+	}
+	return false
 }
 
 func NewSendSequence(
@@ -1957,6 +2413,7 @@ func NewSendSequence(
 		sendBufferSettings.RttWindowTimeout,
 		sendBufferSettings.RttScale,
 		sendBufferSettings.MinResendInterval,
+		sendBufferSettings.RttMinResendInterval,
 		sendBufferSettings.MaxResendInterval,
 	)
 
@@ -1984,6 +2441,7 @@ func NewSendSequence(
 		nextSequenceNumber:  0,
 		idleCondition:       NewIdleCondition(),
 		rttWindow:           rttWindow,
+		flightController:    newSendFlightController(sendBufferSettings),
 		contractSeqIndex:    0,
 	}
 	// Never encrypt control-plane traffic. A SendSequence's data source is
@@ -2421,8 +2879,6 @@ func (self *SendSequence) Run() {
 					break
 				}
 
-				self.resendQueue.RemoveByMessageId(item.messageId)
-
 				// resend
 				var transferFrameBytes []byte
 				if self.sendItems[0].sequenceNumber == item.sequenceNumber && !item.head {
@@ -2431,8 +2887,15 @@ func (self *SendSequence) Run() {
 					transferFrameBytes, err = self.setHead(item)
 					if err != nil {
 						self.log.Errorf("[s]%s->%s...%s s(%s) exit could not set head = %s\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId, err)
+						// Item is still in both resendQueue and sendItems.
+						// dropItem handles: queue removal, sendItems removal,
+						// retained-byte budget, contract unack, error callback,
+						// and pool-return — all in one idempotent call.
+						self.dropItem(item, err)
 						return
 					}
+					// setHead succeeded — now safe to remove from resendQueue.
+					self.resendQueue.RemoveByMessageId(item.messageId)
 					MessagePoolReturn(item.transferFrameBytes)
 					item.head = true
 					item.transferFrameBytes = transferFrameBytes
@@ -2444,14 +2907,31 @@ func (self *SendSequence) Run() {
 					// 	return
 					// }
 					transferFrameBytes = item.transferFrameBytes
+					// Remove from resendQueue before re-add at the bottom
+					// of this loop with updated resendTime.
+					self.resendQueue.RemoveByMessageId(item.messageId)
+				}
+
+				reliableOnlyResend := false
+				flightPolicy := self.transferFlightPolicy()
+				if self.flightController != nil {
+					if self.flightController.applyPolicy(flightPolicy) && self.client != nil {
+						self.client.observeUnreliableFlight(self.flightController)
+					}
+				}
+				if item.unreliableFlightTracked {
+					reliableOnlyResend = self.observeUnreliableResendTimeout(item, flightPolicy)
 				}
 
 				// resend uses the same path the item was originally sent on
 				resendPath := self.destination.AddSource(self.client.ClientId())
 				resendBytes := transferFrameBytes
 				resendForceUnwrapped := item.forceUnwrapped
+				var disposition transferWriteDisposition
 				c := func() error {
-					return self.writeMaybeWrappedBytes(resendBytes, resendPath, resendForceUnwrapped)
+					var writeErr error
+					disposition, writeErr = self.writeMaybeWrappedBytes(resendBytes, resendPath, resendForceUnwrapped, reliableOnlyResend)
+					return writeErr
 				}
 				if self.log.V(2).Enabled() {
 					TraceWithReturn(
@@ -2470,6 +2950,9 @@ func (self *SendSequence) Run() {
 					if err != nil {
 						self.log.V(1).Infof("[s]resend drop = %s", err)
 					}
+				}
+				if disposition.transportType != "" || disposition.unreliable || disposition.reliable {
+					self.observeCarrierWrite(item, disposition)
 				}
 
 				item.sendCount += 1
@@ -2530,9 +3013,36 @@ func (self *SendSequence) Run() {
 
 		checkpointId := self.idleCondition.Checkpoint()
 
+		flightPolicy := self.transferFlightPolicy()
+		if self.flightController != nil {
+			if self.flightController.applyPolicy(flightPolicy) && self.client != nil {
+				self.client.observeUnreliableFlight(self.flightController)
+			}
+		}
+		reliableRouteAvailable := flightPolicy.reliableRouteAvailable
+		unreliableFlightGates := self.unreliableFlightGates(flightPolicy)
+
 		// approximate since this cannot consider the next message byte size
 		canQueue := func() bool {
-			return self.resendQueue.CanAdd(0, self.sendBufferSettings.ResendQueueMaxByteCount)
+			resendCapacity := self.resendQueue.CanAdd(0, self.sendBufferSettings.ResendQueueMaxByteCount)
+			if !unreliableFlightGates {
+				return resendCapacity
+			}
+			if self.flightController != nil && !self.flightController.canSend() {
+				if reliableRouteAvailable && self.flightController.atFloor() {
+					return resendCapacity
+				}
+				return false
+			}
+			return resendCapacity
+		}
+
+		flightBlocked := unreliableFlightGates && self.flightController != nil && !self.flightController.canSend()
+		if flightBlocked && self.client != nil {
+			self.client.unreliableFlightWaitCount.Add(1)
+		}
+		if (!canQueue() || flightBlocked) && self.sendBuffer != nil && self.sendBuffer.beforeResendCapacityWaitForTest != nil {
+			self.sendBuffer.beforeResendCapacityWaitForTest(self.id())
 		}
 		if !canQueue() {
 			// wait for acks
@@ -2751,15 +3261,26 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 
 		endTime := time.Now().Add(self.sendBufferSettings.CreateContractTimeout)
 
-		// back off contract retries when the backend is unreachable to reduce API storm
-		contractRetryInterval := self.sendBufferSettings.CreateContractRetryInterval
-		if isBackendDegraded() {
-			contractRetryInterval = 30 * time.Second
+		// retryInterval is recomputed before every wait, from the baseline:
+		// back off when the backend is unreachable to reduce API storm, and
+		// honor the per-destination denial backoff, which async
+		// CreateContract callbacks can raise, clear or let expire between
+		// retries. Keeping a running maximum instead held a 15-60s wait
+		// after the denial had already cleared.
+		retryInterval := func() time.Duration {
+			interval := self.sendBufferSettings.CreateContractRetryInterval
+			if isBackendDegraded() {
+				interval = 30 * time.Second
+			}
+			if denialBackoff := self.client.ContractManager().getDenialBackoff(self.destination.DestinationId); denialBackoff > interval {
+				interval = denialBackoff
+			}
+			return interval
 		}
 
 		if self.sendContract != nil {
 			// there should be a queued up contract
-			if traceNextContract(min(self.sendBufferSettings.CreateContractTimeout, contractRetryInterval)) {
+			if traceNextContract(min(self.sendBufferSettings.CreateContractTimeout, retryInterval())) {
 				return true
 			}
 		}
@@ -2794,7 +3315,7 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 				)
 			}
 
-			if traceNextContract(min(timeout, contractRetryInterval)) {
+			if traceNextContract(min(timeout, retryInterval())) {
 				return true
 			}
 		}
@@ -3055,8 +3576,12 @@ func (self *SendSequence) sendWithSetContract(
 		item.backstopDeadline = sendTime.Add(self.sendBufferSettings.AckTimeout * 10)
 	}
 
+	reliableOnly := self.reliableOnlyWrite()
+	var disposition transferWriteDisposition
 	c := func() error {
-		return self.writeMaybeWrappedBytes(item.transferFrameBytes, path, item.forceUnwrapped)
+		var writeErr error
+		disposition, writeErr = self.writeMaybeWrappedBytes(item.transferFrameBytes, path, item.forceUnwrapped, reliableOnly)
+		return writeErr
 	}
 	var err error
 	if self.log.V(2).Enabled() {
@@ -3071,6 +3596,9 @@ func (self *SendSequence) sendWithSetContract(
 				v.Infof("[s]drop = %s", err)
 			}
 		}
+	}
+	if err == nil {
+		self.observeCarrierWrite(item, disposition)
 	}
 
 	if ack {
@@ -3232,9 +3760,11 @@ func (self *SendSequence) receiveAck(messageId Id, selective bool, tag *protocol
 		return
 	}
 
+	var sTag sequenceTag
 	if tag != nil {
-		self.rttWindow.CloseTag(tag)
+		sTag = sequenceTag{sendTime: tag.SendTime, set: true}
 	}
+	self.observeAckRtt(item, sTag)
 
 	if selective {
 		if v := self.log.V(1); v.Enabled() {
@@ -3248,8 +3778,12 @@ func (self *SendSequence) receiveAck(messageId Id, selective bool, tag *protocol
 			}
 			return
 		}
+		if !item.selectiveAcked {
+			self.releaseUnreliableFlight(item)
+		}
 		item.resendTime = time.Now().Add(self.sendBufferSettings.SelectiveAckTimeout)
 		item.sendTime = time.Now()
+		item.selectiveAcked = true
 		self.resendQueue.Add(item)
 		return
 	}
@@ -3304,6 +3838,9 @@ func (self *SendSequence) receiveAck(messageId Id, selective bool, tag *protocol
 			self.sendItems[i] = nil
 			continue
 		}
+		if !implicitItem.selectiveAcked {
+			self.releaseUnreliableFlight(implicitItem)
+		}
 		// A retained item acknowledged here leaves the queue permanently —
 		// release its share of the R-5 retained-byte budget.
 		if removed.retainAfterAckTimeout {
@@ -3338,6 +3875,7 @@ func (self *SendSequence) receiveAck(messageId Id, selective bool, tag *protocol
 }
 
 func (self *SendSequence) ackItem(item *sendItem) {
+	self.releaseUnreliableFlight(item)
 	if item.contractId != nil {
 		if itemSendContract, ok := self.openSendContracts[*item.contractId]; ok {
 			itemSendContract.ack(item.messageByteCount)
@@ -3407,6 +3945,7 @@ func (self *SendSequence) dropItem(item *sendItem, err error) {
 // credit) so a delivery failure is not laundered into acked/billed bytes,
 // then fires the error callback and returns the frame to the pool.
 func (self *SendSequence) ackItemWithErrDropped(item *sendItem, err error) {
+	self.releaseUnreliableFlight(item)
 	if item.contractId != nil {
 		if itemSendContract, ok := self.openSendContracts[*item.contractId]; ok {
 			itemSendContract.unack(item.messageByteCount)
@@ -3444,8 +3983,9 @@ func (self *SendSequence) ackItemWithErrDropped(item *sendItem, err error) {
 // loud error: the frame is dropped (the SendSequence will retry, and
 // eventually time out, rather than transmit application data sealed under
 // the wrong identity).
-func (self *SendSequence) writeMaybeWrappedBytes(transferFrameBytes []byte, path TransferPath, forceUnwrapped bool) error {
+func (self *SendSequence) writeMaybeWrappedBytes(transferFrameBytes []byte, path TransferPath, forceUnwrapped bool, reliableOnly bool) (transferWriteDisposition, error) {
 	writer := self.openContractMultiRouteWriter()
+	reliableOnly = reliableOnly || self.reliableOnlyWrite(self.transferFlightPolicy())
 	var cipher *sequenceCipher
 	if self.session != nil && !forceUnwrapped {
 		cipher = self.session.Cipher()
@@ -3459,14 +3999,14 @@ func (self *SendSequence) writeMaybeWrappedBytes(transferFrameBytes []byte, path
 		// (e.g. the session torn down between enqueue and write). Refuse the
 		// write — the item stays queued for resend and the sequence winds down
 		// via its own timeouts — rather than ever emitting plaintext.
-		return fmt.Errorf(
+		return transferWriteDisposition{}, fmt.Errorf(
 			"encryption required but no cipher for peer %s (fail-closed; not sent)",
 			self.destination.DestinationId,
 		)
 	}
 	if cipher == nil {
 		if v := self.log.V(2); v.Enabled() {
-			v.Infof(
+			self.log.Infof(
 				"[s]%s->%s s(%s) write plaintext %d bytes (forceUnwrapped=%t, session=%t, cipher=nil)\n",
 				self.client.ClientTag(),
 				self.destination.DestinationId,
@@ -3479,15 +4019,22 @@ func (self *SendSequence) writeMaybeWrappedBytes(transferFrameBytes []byte, path
 		bytes := transferFrameBytes
 		if DebugTransferCopyOnWrite {
 			bytes = MessagePoolCopy(transferFrameBytes)
+			defer MessagePoolReturn(bytes)
 		}
-		return writer.Write(self.ctx, MessagePoolShareReadOnly(bytes), self.sendBufferSettings.WriteTimeout)
+		return writeMultiRouteWithCarrier(
+			writer,
+			self.ctx,
+			MessagePoolShareReadOnly(bytes),
+			self.sendBufferSettings.WriteTimeout,
+			reliableOnly,
+		)
 	}
 	if err := self.verifyPeerCertAgainstContract(); err != nil {
-		return err
+		return transferWriteDisposition{}, err
 	}
 	ciphertext, err := cipher.Seal(transferFrameBytes)
 	if err != nil {
-		return fmt.Errorf("outer wrap seal: %w", err)
+		return transferWriteDisposition{}, fmt.Errorf("outer wrap seal: %w", err)
 	}
 	if cipher.ShouldRekey() {
 		// bound the number of messages sealed under one AEAD key (see
@@ -3500,10 +4047,10 @@ func (self *SendSequence) writeMaybeWrappedBytes(transferFrameBytes []byte, path
 	// companion session.
 	wrapped, err := buildEncryptedOuterFrameBytes(path, ciphertext, self.session.role.toProtobuf(), self.session.companion)
 	if err != nil {
-		return fmt.Errorf("outer wrap marshal: %w", err)
+		return transferWriteDisposition{}, fmt.Errorf("outer wrap marshal: %w", err)
 	}
 	if v := self.log.V(2); v.Enabled() {
-		v.Infof(
+		self.log.Infof(
 			"[s]%s->%s s(%s) write wrapped %d -> %d bytes\n",
 			self.client.ClientTag(),
 			self.destination.DestinationId,
@@ -3512,7 +4059,107 @@ func (self *SendSequence) writeMaybeWrappedBytes(transferFrameBytes []byte, path
 		)
 	}
 	defer MessagePoolReturn(wrapped)
-	return writer.Write(self.ctx, MessagePoolShareReadOnly(wrapped), self.sendBufferSettings.WriteTimeout)
+	return writeMultiRouteWithCarrier(
+		writer,
+		self.ctx,
+		MessagePoolShareReadOnly(wrapped),
+		self.sendBufferSettings.WriteTimeout,
+		reliableOnly,
+	)
+}
+
+// writeMultiRouteWithCarrier consumes transferFrameBytes on every path, which
+// is the same contract MultiRouteSelector.Write documents: on failure the
+// frame has already gone back to the message pool. Callers must never return
+// it themselves, or the buffer is freed twice and the pool hands live bytes to
+// a second flow.
+func writeMultiRouteWithCarrier(
+	writer MultiRouteWriter,
+	ctx context.Context,
+	transferFrameBytes []byte,
+	timeout time.Duration,
+	reliableOnly bool,
+) (transferWriteDisposition, error) {
+	if reliableOnly {
+		reliableWriter, ok := writer.(transferReliableOnlyMultiRouteWriter)
+		if !ok {
+			// The only failure that happens before a writer takes the frame,
+			// so this is the only place the frame is ours to return.
+			MessagePoolReturn(transferFrameBytes)
+			return transferWriteDisposition{}, fmt.Errorf("reliableOnly requested but writer %T does not support it", writer)
+		}
+		success, disposition, err := reliableWriter.writeDetailedReliableOnly(
+			ctx,
+			transferFrameBytes,
+			timeout,
+		)
+		if err != nil {
+			return transferWriteDisposition{}, err
+		}
+		if !success {
+			return transferWriteDisposition{}, errTransferRouteWriteTimeout
+		}
+		if disposition.transportType == "" {
+			disposition.transportType = TransportTypeUnknown
+		}
+		return disposition, nil
+	}
+	if carrierWriter, ok := writer.(transferCarrierMultiRouteWriter); ok {
+		success, disposition, err := carrierWriter.writeDetailedWithCarrier(
+			ctx,
+			transferFrameBytes,
+			timeout,
+		)
+		if err != nil {
+			return transferWriteDisposition{}, err
+		}
+		if !success {
+			return transferWriteDisposition{}, errTransferRouteWriteTimeout
+		}
+		if disposition.transportType == "" {
+			disposition.transportType = TransportTypeUnknown
+		}
+		return disposition, nil
+	}
+	if transportWriter, ok := writer.(TransportMultiRouteWriter); ok {
+		success, transportType, err := transportWriter.WriteDetailedWithTransport(
+			ctx,
+			transferFrameBytes,
+			timeout,
+		)
+		if err != nil {
+			return transferWriteDisposition{}, err
+		}
+		if !success {
+			return transferWriteDisposition{}, errTransferRouteWriteTimeout
+		}
+		if transportType == "" {
+			transportType = TransportTypeUnknown
+		}
+		return transferWriteDisposition{transportType: transportType}, nil
+	}
+	return transferWriteDisposition{transportType: TransportTypeUnknown}, writer.Write(ctx, transferFrameBytes, timeout)
+}
+
+func writeAckMultiRoute(
+	writer MultiRouteWriter,
+	ctx context.Context,
+	transferFrameBytes []byte,
+	timeout time.Duration,
+) error {
+	if reliableWriter, ok := writer.(transferReliableOnlyMultiRouteWriter); ok {
+		// writeDetailedReliableOnly returns the frame to the pool on every
+		// failure, so returning it here too would free it twice.
+		success, _, err := reliableWriter.writeDetailedReliableOnly(ctx, transferFrameBytes, timeout)
+		if err != nil {
+			return err
+		}
+		if !success {
+			return errTransferRouteWriteTimeout
+		}
+		return nil
+	}
+	return writer.Write(ctx, transferFrameBytes, timeout)
 }
 
 // verifyPeerCertAgainstContract checks (and caches) that the peer's TLS cert
@@ -3651,6 +4298,17 @@ func (self *SendSequence) Cancel() {
 	self.cancel()
 }
 
+type sendRecoveryKind uint8
+
+const (
+	sendRecoveryNone sendRecoveryKind = iota
+	sendRecoveryCarrierChange
+	sendRecoverySelectiveGap
+	sendRecoveryAckTailProbe
+	sendRecoveryCumulativeProbe
+	sendRecoveryContractMissing
+)
+
 type sendItem struct {
 	transferItem
 
@@ -3677,7 +4335,31 @@ type sendItem struct {
 	// flows where the teardown signal never arrives.
 	backstopDeadline time.Time
 
-	// messageType protocol.MessageType
+	unreliableCarrierObserved     bool
+	reliableCarrierObserved       bool
+	reliableRoute                 Route
+	hybridReliableCarrierObserved bool
+	unreliableFlightTracked       bool
+	unreliableFlowReserve         bool
+	schedulingKey                 sendSchedulingKey
+	ackTimeout                    time.Duration
+	selectiveAcked                bool
+	recoveryKind                  sendRecoveryKind
+	selectiveGapRecovered         bool
+	gapFollowupScheduled          bool
+	ackTailProbeCount             int
+	promotedHead                  bool
+}
+
+func (self *sendItem) MessageByteCount() ByteCount {
+	if len(self.transferFrameBytes) > 0 {
+		return ByteCount(len(self.transferFrameBytes))
+	}
+	return self.messageByteCount
+}
+
+func (self *sendItem) QueueByteCount() ByteCount {
+	return self.MessageByteCount()
 }
 
 func (self *sendItem) messagePoolReturn() {
@@ -3703,6 +4385,31 @@ func newResendQueue(budget *TransferMemoryBudget, minByteCount ByteCount) *resen
 	return q
 }
 
+// ReceiveHoldPolicyKind decides what a full receive hold does with an
+// arrival that is earlier than what it holds (ported from upstream
+// 609cb1b6, THROUGHPUTFIX §37.20).
+type ReceiveHoldPolicyKind int
+
+const (
+	// Keep the hold sequence-earliest by evicting the latest held item, and
+	// acknowledge a held item only once it can no longer be evicted. The
+	// default: an evicted item below the commit boundary is never
+	// acknowledged, so its removal costs the sender a resend rather than a
+	// withdrawal of a selective acknowledgement it is already leasing for
+	// SelectiveAckTimeout.
+	ReceiveHoldCommittedPrefix ReceiveHoldPolicyKind = iota
+	// Evict the latest held item and acknowledge on admission. Kept as an
+	// arm for comparison: an evicted item was already acknowledged, so its
+	// removal is a withdrawal the sender learns of only from an
+	// acknowledgement-tail probe or the SelectiveAckTimeout lease.
+	ReceiveHoldEvict
+	// Refuse the arrival and never evict. Truthful, and it starves at high
+	// overrun because the only way a full hold empties is the head draining
+	// its contiguous prefix, and a middle gap that would extend that prefix
+	// is refused.
+	ReceiveHoldRefuse
+)
+
 type ReceiveBufferSettings struct {
 	GapTimeout  time.Duration
 	IdleTimeout time.Duration
@@ -3711,6 +4418,18 @@ type ReceiveBufferSettings struct {
 	// AckBufferSize int
 
 	AckCompressTimeout time.Duration
+	// Selective acks pending above the head in one compression interval that
+	// end the wait early (a hole the sender can prove), and enable the early
+	// wake on a head ack that advances past selectively acked items (a hole
+	// filled, including the first head after a missing opening item). Should
+	// match the sender's SelectiveAckGapThreshold. Each of the two reasons
+	// ends at most one wait per AckCompressTimeout, measured from the early
+	// write it caused. A wake inside that interval leaves its acks to the
+	// timer. Zero keeps the fixed compression interval.
+	AckGapWakeSelectiveCount int
+
+	beforeAckCompressWaitForTest func(receiveSequenceId)
+	afterAckWriteForTest         func(receiveSequenceId)
 
 	MinMessageByteCount ByteCount
 
@@ -3726,6 +4445,12 @@ type ReceiveBufferSettings struct {
 	ReceiveQueueMaxByteCount ByteCount
 	ReceiveQueueMinByteCount ByteCount
 	ReceiveQueueBudget       *TransferMemoryBudget
+
+	// ReceiveHoldPolicy decides what a full hold does with an arrival that
+	// is earlier than what it holds (THROUGHPUTFIX §37.20, ported from
+	// upstream 609cb1b6). Defaults to ReceiveHoldCommittedPrefix (the zero
+	// value).
+	ReceiveHoldPolicy ReceiveHoldPolicyKind
 
 	// whether to allow nacks without a contract_id
 	AllowLegacyNack bool
@@ -3993,6 +4718,14 @@ type ReceiveSequence struct {
 	receiveQueue       *receiveQueue
 	nextSequenceNumber uint64
 
+	// the largest message the hold has taken, the conservative estimate of
+	// what a missing item below the commit boundary would cost
+	// (committed-prefix hold policy, ported from upstream 609cb1b6).
+	maxHeldByteCount ByteCount
+	// reused by commitHeldPrefix so walking the hold in order allocates
+	// nothing per arrival.
+	heldScratch []*receiveItem
+
 	idleCondition *IdleCondition
 
 	peerAudit *SequencePeerAudit
@@ -4010,6 +4743,14 @@ type ReceiveSequence struct {
 	// Nil when encryption is disabled or this is control-plane traffic.
 
 	session *peerEncryptionSession
+}
+
+func (self *ReceiveSequence) id() receiveSequenceId {
+	return receiveSequenceId{
+		Source:         self.source,
+		SequenceId:     self.sequenceId,
+		EncryptionRole: self.encryptionRole,
+	}
 }
 
 func NewReceiveSequence(
@@ -4037,7 +4778,7 @@ func NewReceiveSequence(
 		receiveQueue:          newReceiveQueue(receiveBufferSettings.ReceiveQueueBudget, receiveBufferSettings.ReceiveQueueMinByteCount),
 		nextSequenceNumber:    0,
 		idleCondition:         NewIdleCondition(),
-		ackWindow:             newSequenceAckWindow(),
+		ackWindow:             newSequenceAckWindowWithGapWake(receiveBufferSettings.AckGapWakeSelectiveCount),
 		exit:                  make(chan struct{}),
 	}
 	// Never encrypt control-plane traffic. A ReceiveSequence's data source is
@@ -4233,7 +4974,8 @@ func (self *ReceiveSequence) Run() {
 					cipher = self.session.Cipher()
 				}
 				if cipher == nil {
-					return multiRouteWriter.Write(
+					return writeAckMultiRoute(
+						multiRouteWriter,
 						self.ctx,
 						MessagePoolShareReadOnly(transferFrameBytes),
 						self.receiveBufferSettings.WriteTimeout,
@@ -4256,7 +4998,8 @@ func (self *ReceiveSequence) Run() {
 					return fmt.Errorf("ack outer wrap marshal: %w", marshalErr)
 				}
 				defer MessagePoolReturn(wrapped)
-				return multiRouteWriter.Write(
+				return writeAckMultiRoute(
+					multiRouteWriter,
 					self.ctx,
 					MessagePoolShareReadOnly(wrapped),
 					self.receiveBufferSettings.WriteTimeout,
@@ -4293,6 +5036,64 @@ func (self *ReceiveSequence) Run() {
 		ackCompressTimer := time.NewTimer(0)
 		defer ackCompressTimer.Stop()
 
+		// Selective acks leave in ascending sequence order. The sender
+		// declares a hole lost once SelectiveAckGapThreshold later selective
+		// acks are visible and snapshots its acks between pack writes. A
+		// partial batch in map order would prove the neighbours of one real
+		// hole lost and resend them needlessly. The scratch slice is owned by
+		// this worker and reused across snapshots.
+		var selectiveAckScratch []*sequenceAck
+		writeSnapshot := func(ackSnapshot sequenceAckWindowSnapshot) bool {
+			wrote := false
+			if 0 < ackSnapshot.ackUpdateCount && ackSnapshot.headAck != nil {
+				writeAck(ackSnapshot.headAck)
+				wrote = true
+			}
+			if 0 < len(ackSnapshot.selectiveAcks) {
+				selectiveAckScratch = selectiveAckScratch[:0]
+				for messageId, ack := range ackSnapshot.selectiveAcks {
+					ack.messageId = messageId
+					ack.selective = true
+					selectiveAckScratch = append(selectiveAckScratch, ack)
+				}
+				if 1 < len(selectiveAckScratch) {
+					slices.SortFunc(selectiveAckScratch, func(a *sequenceAck, b *sequenceAck) int {
+						return cmp.Compare(a.sequenceNumber, b.sequenceNumber)
+					})
+				}
+				for _, ack := range selectiveAckScratch {
+					writeAck(ack)
+				}
+				wrote = true
+			}
+			return wrote
+		}
+
+		lastAckWriteTime := time.Time{}
+		// The gap wake's budget: each reason ends at most one compression
+		// wait per AckCompressTimeout, measured from the early write it
+		// caused. A wake inside that interval is declined and its acks ride
+		// the timer. A sustained hole under a continuous stream costs at
+		// most one extra write per interval per reason rather than one write
+		// per threshold of later acks.
+		ackCompressTimeout := self.receiveBufferSettings.AckCompressTimeout
+		var lastGapWakeWriteTime [len(gapWakeReasons)]time.Time
+		gapWakeGranted := gapWakeReason(0)
+		writePending := func() {
+			if writeSnapshot(self.ackWindow.Snapshot(true)) {
+				lastAckWriteTime = time.Now()
+				for i, reason := range gapWakeReasons {
+					if gapWakeGranted&reason != 0 {
+						lastGapWakeWriteTime[i] = lastAckWriteTime
+					}
+				}
+				if self.receiveBufferSettings.afterAckWriteForTest != nil {
+					self.receiveBufferSettings.afterAckWriteForTest(self.id())
+				}
+			}
+			gapWakeGranted = 0
+		}
+
 		for {
 			select {
 			case <-self.ctx.Done():
@@ -4310,28 +5111,48 @@ func (self *ReceiveSequence) Run() {
 				}
 			}
 
-			if 0 < self.receiveBufferSettings.AckCompressTimeout {
-				ackCompressTimer.Reset(self.receiveBufferSettings.AckCompressTimeout)
-				select {
-				case <-self.ctx.Done():
-					return
-				case <-ackCompressTimer.C:
+			// Sparse turns: do not delay the first ACK of an idle burst. If we
+			// have not written an ACK recently, write immediately. If we have,
+			// only wait the remainder of the interval so we never send ACKs older
+			// than AckCompressTimeout.
+			ackCompressWait := time.Duration(0)
+			if 0 < ackCompressTimeout && !lastAckWriteTime.IsZero() {
+				ackCompressWait = time.Until(lastAckWriteTime.Add(ackCompressTimeout))
+			}
+			if 0 < ackCompressWait {
+				ackCompressTimer.Reset(ackCompressWait)
+				if self.receiveBufferSettings.beforeAckCompressWaitForTest != nil {
+					self.receiveBufferSettings.beforeAckCompressWaitForTest(self.id())
+				}
+				for waiting := true; waiting; {
+					select {
+					case <-self.ctx.Done():
+						return
+					case <-ackCompressTimer.C:
+						waiting = false
+					case <-self.ackWindow.GapNotify():
+						// A hole became provable or filled: the sender is
+						// waiting on exactly these acks. Do not hold them
+						// for the rest of the interval, unless this reason
+						// already ended a wait within the last interval. A
+						// declined reason stays pending in the window and
+						// cannot signal again before the timer's write.
+						now := time.Now()
+						pending := self.ackWindow.GapWakeReasons()
+						for i, reason := range gapWakeReasons {
+							if pending&reason != 0 &&
+								!now.Before(lastGapWakeWriteTime[i].Add(ackCompressTimeout)) {
+								gapWakeGranted |= reason
+							}
+						}
+						if gapWakeGranted != 0 {
+							waiting = false
+						}
+					}
 				}
 			}
 
-			ackSnapshot = self.ackWindow.Snapshot(true)
-			if 0 < ackSnapshot.ackUpdateCount {
-				writeAck(ackSnapshot.headAck)
-			}
-			for messageId, ack := range ackSnapshot.selectiveAcks {
-				writeAck(&sequenceAck{
-					messageId:      messageId,
-					sequenceNumber: ack.sequenceNumber,
-					selective:      true,
-					tag:            ack.tag,
-					unwrapped:      ack.unwrapped,
-				})
-			}
+			writePending()
 		}
 	}, self.cancel)
 
@@ -4393,6 +5214,13 @@ func (self *ReceiveSequence) Run() {
 						self.sendAck(item.sequenceNumber, item.messageId, false, nil, item.unwrapped)
 					}
 				}
+			}
+			// The delivery point has moved, so items that were held
+			// tentatively may now be safe: fewer items can be missing below
+			// them (committed-prefix hold policy, ported from upstream
+			// 609cb1b6/38d637c5).
+			if self.receiveBufferSettings.ReceiveHoldPolicy == ReceiveHoldCommittedPrefix {
+				self.commitHeldPrefix()
 			}
 		}
 
@@ -4575,26 +5403,137 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 			return self.receiveQueue.CanAdd(byteCount, self.receiveBufferSettings.ReceiveQueueMaxByteCount)
 		}
 
-		// remove later items to fit
-		for !canQueue(receivePack.MessageByteCount) {
-			lastItem := self.receiveQueue.PeekLast()
-			if receivePack.Pack.SequenceNumber < lastItem.sequenceNumber {
+		// What a full hold does with an arrival earlier than what it holds
+		// (ported from upstream 609cb1b6/38d637c5, THROUGHPUTFIX §37.20).
+		// Refuse never removes anything; evict and committed-prefix both
+		// remove later held items to fit, in sequence order (newest first),
+		// but committed-prefix never removes an item once it has been
+		// acknowledged — that would be a withdrawal the sender is never told
+		// about.
+		if policy := self.receiveBufferSettings.ReceiveHoldPolicy; policy != ReceiveHoldRefuse {
+			for !canQueue(receivePack.MessageByteCount) {
+				lastItem := self.receiveQueue.PeekLast()
+				if lastItem == nil || lastItem.sequenceNumber <= receivePack.Pack.SequenceNumber {
+					break
+				}
+				if policy == ReceiveHoldCommittedPrefix && lastItem.committed {
+					// an acknowledged item is never discarded; the commit
+					// boundary is supposed to make this unreachable, and if
+					// it is reached the gap estimate under-counted
+					break
+				}
 				self.receiveQueue.RemoveByMessageId(lastItem.messageId)
+				if lastItem.committed {
+					self.client.receiveQueueEvictionCount.Add(1)
+					self.client.receiveQueueEvictionByteCount.Add(
+						uint64(max(lastItem.MessageByteCount(), 0)))
+				} else {
+					self.client.receiveQueueTentativeEvictionCount.Add(1)
+					self.client.receiveQueueTentativeEvictionByteCount.Add(
+						uint64(max(lastItem.MessageByteCount(), 0)))
+				}
 				lastItem.messagePoolReturn()
-			} else {
-				break
 			}
 		}
 
 		if canQueue(receivePack.MessageByteCount) {
+			// the largest frame seen is the conservative gap estimate used by
+			// commitHeldPrefix: over-counting commits fewer items and costs
+			// churn at the boundary, under-counting commits an item that is
+			// later evicted, which is the lie the policy exists to remove
+			self.maxHeldByteCount = max(self.maxHeldByteCount, item.MessageByteCount())
 			self.receiveQueue.Add(item)
-			self.sendAck(sequenceNumber, messageId, true, item.tag, item.unwrapped)
+			if self.receiveBufferSettings.ReceiveHoldPolicy == ReceiveHoldCommittedPrefix {
+				self.commitHeldPrefix()
+			} else {
+				item.committed = true
+				self.sendAck(sequenceNumber, messageId, true, item.tag, item.unwrapped)
+			}
 			return true, nil
 		} else {
 			self.log.V(1).Infof("[r]drop ack cannot queue %s<-%s s(%s)\n", self.client.ClientTag(), self.source.SourceId, self.source.StreamId)
 			return false, nil
 		}
 	}
+}
+
+// commitHeldPrefix acknowledges every held item that can no longer be
+// evicted, and only those (THROUGHPUTFIX §37.20, ported from upstream
+// 609cb1b6/38d637c5).
+//
+// An item is evicted only by an earlier arrival at a full hold, so it is safe
+// once every item missing below it could arrive and it would still fit.
+// Sequence numbers are dense, one per Pack, so with the delivery point D and
+// the held items in ascending order the number missing below the i-th is
+// (seq_i - D) - i, and the item is committed when
+//
+//	missing_below(i) x maxFrameBytes + sum of held sizes through i <= capacity
+//
+// The boundary only rises as the head drains, and an item's acknowledgement
+// is sent as it crosses. One second-order cost: a tentative item gives the
+// sender no proving acknowledgement, so a gap just below the boundary
+// recovers on the paced resend rather than on gap recovery.
+func (self *ReceiveSequence) commitHeldPrefix() {
+	capacity := self.receiveBufferSettings.ReceiveQueueMaxByteCount
+	frameByteCount := max(self.maxHeldByteCount, 1)
+
+	// The whole hold commits together whenever the newest held item would
+	// survive every gap below it filling, which is the ordinary case: a
+	// sender honouring the advertisement never gives the hold more than it
+	// can take, and a hold well under capacity has room for its gaps
+	// whatever the sender does. Deciding that needs only the newest held
+	// item, the count and the byte total, all of which the queue answers
+	// without a walk, and it skips the sort the general case pays on every
+	// out-of-order arrival (THROUGHPUTFIX §37.20, ported from upstream
+	// 38d637c5).
+	heldCount, heldTotal := self.receiveQueue.QueueSize()
+	if heldCount == 0 {
+		return
+	}
+	if newest := self.receiveQueue.PeekLast(); newest != nil {
+		missing := int64(newest.sequenceNumber) -
+			int64(self.nextSequenceNumber) - int64(heldCount-1)
+		if missing < 0 {
+			missing = 0
+		}
+		if ByteCount(missing)*frameByteCount+heldTotal <= capacity {
+			self.heldScratch = self.receiveQueue.UnorderedItems(self.heldScratch)
+			for _, held := range self.heldScratch {
+				if held.committed {
+					continue
+				}
+				self.commitHeldItem(held)
+			}
+			return
+		}
+	}
+
+	// the general path: a hold genuinely under pressure, where the ordering
+	// matters and a sort is unavoidable
+	self.heldScratch = self.receiveQueue.AscendingItems(self.heldScratch)
+	heldByteCount := ByteCount(0)
+	for i, held := range self.heldScratch {
+		heldByteCount += held.MessageByteCount()
+		missing := int64(held.sequenceNumber) - int64(self.nextSequenceNumber) - int64(i)
+		if missing < 0 {
+			missing = 0
+		}
+		if capacity < ByteCount(missing)*frameByteCount+heldByteCount {
+			break
+		}
+		if held.committed {
+			continue
+		}
+		self.commitHeldItem(held)
+	}
+}
+
+// commitHeldItem acknowledges one held item as it crosses the commit
+// boundary.
+func (self *ReceiveSequence) commitHeldItem(held *receiveItem) {
+	held.committed = true
+	self.client.receiveQueueCommitCount.Add(1)
+	self.sendAck(held.sequenceNumber, held.messageId, true, held.tag, held.unwrapped)
 }
 
 func (self *ReceiveSequence) receiveNack(receivePack *ReceivePack) (bool, error) {
@@ -4962,6 +5901,11 @@ type receiveItem struct {
 	// the wire as plaintext (no outer encrypted wrap). Propagated into
 	// the sequenceAck so the ack format mirrors the incoming pack.
 	unwrapped bool
+	// committed is set once this held item has been selectively
+	// acknowledged, which under the committed-prefix hold policy happens
+	// only when it can no longer be evicted (THROUGHPUTFIX §37.20). A
+	// committed item is never discarded.
+	committed bool
 }
 
 func (self *receiveItem) messagePoolReturn() {
@@ -5019,21 +5963,77 @@ type sequenceAckWindowSnapshot struct {
 	selectiveAcks  map[Id]*sequenceAck
 }
 
+// gapWakeReason names why the gap wake fired. It is a bit set so the two
+// reasons coalesce in one token and are budgeted separately by the consumer.
+type gapWakeReason uint8
+
+const (
+	// enough selective acks above the head are pending to prove a hole to
+	// the sender (its SelectiveAckGapThreshold)
+	gapWakeHoleProvable gapWakeReason = 1 << iota
+	// a head ack advanced past selectively acked items: the hole they were
+	// held behind filled, and the sender's flight is blocked on this ack
+	gapWakeHoleFilled
+)
+
+// gapWakeReasons lists the reasons in a fixed order for per-reason bookkeeping.
+var gapWakeReasons = [...]gapWakeReason{gapWakeHoleProvable, gapWakeHoleFilled}
+
 type sequenceAckWindow struct {
-	ackMonitor     *Monitor
-	ackLock        sync.Mutex
-	headAck        *sequenceAck
-	ackUpdateCount int
-	selectiveAcks  map[Id]*sequenceAck
+	ackMonitor            *Monitor
+	ackLock               sync.Mutex
+	headAck               *sequenceAck
+	ackUpdateCount        int
+	selectiveAcks         map[Id]*sequenceAck
+	gapNotify             chan struct{}
+	gapWakeSelectiveCount int
+	gapWakeSignaled       gapWakeReason
+	gapSelectiveAboveHead int
+	gapSelectiveMax       uint64
+	gapSelectiveSeen      bool
 }
 
 func newSequenceAckWindow() *sequenceAckWindow {
+	return newSequenceAckWindowWithGapWake(0)
+}
+
+func newSequenceAckWindowWithGapWake(gapWakeSelectiveCount int) *sequenceAckWindow {
 	return &sequenceAckWindow{
-		ackMonitor:     NewMonitor(),
-		headAck:        nil,
-		ackUpdateCount: 0,
-		selectiveAcks:  map[Id]*sequenceAck{},
+		ackMonitor:            NewMonitor(),
+		headAck:               nil,
+		ackUpdateCount:        0,
+		selectiveAcks:         map[Id]*sequenceAck{},
+		gapNotify:             make(chan struct{}, 1),
+		gapWakeSelectiveCount: gapWakeSelectiveCount,
 	}
+}
+
+// GapNotify is the early-wake edge for the consumer's compression wait. Like
+// Notify it never changes, so it is safe to fetch without a lock.
+func (self *sequenceAckWindow) GapNotify() <-chan struct{} {
+	return self.gapNotify
+}
+
+// signalGapWakeWithLock fires the gap wake once per reason per reset snapshot.
+func (self *sequenceAckWindow) signalGapWakeWithLock(reason gapWakeReason) {
+	if self.gapWakeSignaled&reason != 0 {
+		return
+	}
+	self.gapWakeSignaled |= reason
+	select {
+	case self.gapNotify <- struct{}{}:
+	default:
+	}
+}
+
+// GapWakeReasons reports the reasons signaled since the last reset snapshot.
+// The consumer reads it after taking a gap wake token. A reason it declines
+// stays pending here, so it cannot signal again before the snapshot that
+// writes its state.
+func (self *sequenceAckWindow) GapWakeReasons() gapWakeReason {
+	self.ackLock.Lock()
+	defer self.ackLock.Unlock()
+	return self.gapWakeSignaled
 }
 
 // Update records an ack in the window. An ack at or below the head — a late
@@ -5046,14 +6046,53 @@ func (self *sequenceAckWindow) Update(ack *sequenceAck) {
 
 	if self.headAck == nil || self.headAck.sequenceNumber < ack.sequenceNumber {
 		if ack.selective {
-			if prior, ok := self.selectiveAcks[ack.messageId]; ok && prior.unwrapped {
+			prior, hasPrior := self.selectiveAcks[ack.messageId]
+			if hasPrior && prior.unwrapped {
 				// coalesced selective ack for the same message: preserve
 				// any prior plaintext bit so a single late wrapped resend
 				// doesn't upgrade the ack format past the sender's reach.
 				ack.unwrapped = true
 			}
 			self.selectiveAcks[ack.messageId] = ack
+			if !hasPrior {
+				// inserted above the head (the enclosing condition). It is
+				// evidence of a hole until a head absorbs it.
+				self.gapSelectiveAboveHead += 1
+			}
+			if !self.gapSelectiveSeen || self.gapSelectiveMax < ack.sequenceNumber {
+				self.gapSelectiveMax = ack.sequenceNumber
+				self.gapSelectiveSeen = true
+			}
+			// enough selective acks above the head now prove a hole to the
+			// sender
+			if 0 < self.gapWakeSelectiveCount &&
+				self.gapWakeSelectiveCount <= self.gapSelectiveAboveHead {
+				self.signalGapWakeWithLock(gapWakeHoleProvable)
+			}
 		} else {
+			// a head advancing under outstanding selective acks is a hole
+			// filling. The sender's flight is head-blocked on this ack. The
+			// first head of a sequence whose opening item was missing is one
+			// too: the selective acks above it were written with no head at
+			// all.
+			if 0 < self.gapWakeSelectiveCount && self.gapSelectiveSeen &&
+				(self.headAck == nil || self.headAck.sequenceNumber < self.gapSelectiveMax) {
+				self.signalGapWakeWithLock(gapWakeHoleFilled)
+			}
+			// The head absorbs the pending selective acks at or below it.
+			// They stay in the map for the snapshot filter but are no longer
+			// evidence of a hole above the head. This is O(1) on the receive
+			// hot path: the head ack for a delivered item carries that item's
+			// message id. An item selectively acked in this snapshot is
+			// found by its key, and a head at or above the highest selective
+			// ack has absorbed everything. Never a scan of the map.
+			if 0 < self.gapSelectiveAboveHead {
+				if self.gapSelectiveMax <= ack.sequenceNumber {
+					self.gapSelectiveAboveHead = 0
+				} else if _, pending := self.selectiveAcks[ack.messageId]; pending {
+					self.gapSelectiveAboveHead -= 1
+				}
+			}
 			// cumulative head ack: or-in the prior head's plaintext bit
 			// (and any absorbed selective acks below the new head) so a
 			// single plaintext pack anywhere under the head keeps the
@@ -5131,6 +6170,15 @@ func (self *sequenceAckWindow) Snapshot(reset bool) sequenceAckWindowSnapshot {
 		// instead of allocating a fresh map; the caller holds only a copy.
 		self.ackUpdateCount = 0
 		clear(self.selectiveAcks)
+		self.gapSelectiveAboveHead = 0
+		// The signals correspond to state included in this snapshot. Drain
+		// them while ackLock excludes Update so the next empty snapshot cannot
+		// wake on a stale token, and re-arm the once-per-snapshot gap wake.
+		self.gapWakeSignaled = 0
+		select {
+		case <-self.gapNotify:
+		default:
+		}
 	}
 
 	return snapshot
@@ -5724,7 +6772,13 @@ func (self *SequencePeerAudit) Complete() {
 		[]*protocol.Frame{frame},
 		func(resultFrames []*protocol.Frame, err error) {
 			if err != nil {
-				self.log.Errorf("[c]audit send error = %s", err)
+				if ok, suppressed := auditSendErrThrottle.Allow(time.Now()); ok {
+					if suppressed > 0 {
+						self.log.Errorf("[c]audit send error = %s (%d suppressed)", err, suppressed)
+					} else {
+						self.log.Errorf("[c]audit send error = %s", err)
+					}
+				}
 			}
 		},
 	)

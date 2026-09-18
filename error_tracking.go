@@ -64,20 +64,19 @@ func SetPersistentErrorFunc(fn func(category string)) {
 }
 
 // RecordError records a rate-limited categorized error with a truncated stack
-// trace. Errors that exceed the category's rate limit are suppressed (counted
-// by logThrottle) and not buffered. Recording never panics for an unknown
-// category: an unknown category gets its own limiter and buffer slot.
+// trace. Every error increments the Prometheus cumulative counter and the
+// persistent count, regardless of rate limiting — the counter is a count of
+// events, not of log lines. Rate limiting only suppresses the recent-error
+// buffer (the /metrics/errors view): once a category exceeds one error per
+// minute, subsequent errors in that window are counted but not buffered.
+// Recording never panics for an unknown category: an unknown category gets
+// its own limiter and buffer slot.
 func RecordError(cat ErrorCategory, msg string) {
-	// capture the stack before the rate-limit check so suppressed errors do
-	// not pay the stack-walk cost.
-	stack := captureStack(3, 8)
-	allowed, _ := globalErrorTracker.throttleFor(cat).Allow(time.Now())
-	if !allowed {
-		return
-	}
-	// Prometheus cumulative counter — always increments regardless of
-	// rate-limiting (rate-limit only suppresses log/buffer, not counts).
+	// Count every error BEFORE the throttle check: the Prometheus counter is
+	// cumulative and rate-limiting must suppress only the log/buffer, not the
+	// count. See the comment on IncrError's placement below.
 	IncrError(cat)
+
 	// Persistent error count (survives restarts, written by provider on shutdown).
 	persistentErrorMu.RLock()
 	fn := persistentErrorFunc
@@ -85,6 +84,15 @@ func RecordError(cat ErrorCategory, msg string) {
 	if fn != nil {
 		fn(string(cat))
 	}
+
+	// Rate-limit the log/buffer path only: one error per category per minute
+	// lands in the recent-error ring. Bursts beyond that are counted (above)
+	// but do not flood the buffer.
+	allowed, _ := globalErrorTracker.throttleFor(cat).Allow(time.Now())
+	if !allowed {
+		return
+	}
+	stack := captureStack(3, 8)
 	entry := fmt.Sprintf("%s (%s)", msg, stack)
 	globalErrorTracker.mu.Lock()
 	list := globalErrorTracker.recent[cat]

@@ -75,4 +75,50 @@ func TestRecordErrorTrim(t *testing.T) {
 	}
 }
 
+// TestErrorCounterBurstThrottled verifies that the Prometheus cumulative
+// counter increments for EVERY error, even when the rate limiter suppresses
+// the log/buffer. The counter is a count of events, not log lines.
+func TestErrorCounterBurstThrottled(t *testing.T) {
+	resetErrorTracker()
+
+	// Reset the Prometheus counter so we isolate this test's increments.
+	globalProm.initErrors()
+	globalProm.errorsTotal[ErrorTransport].Store(0)
+
+	burst := 10
+	for i := 0; i < burst; i++ {
+		RecordError(ErrorTransport, "burst error")
+	}
+	after := globalProm.errorsTotal[ErrorTransport].Load()
+	if after != int64(burst) {
+		t.Fatalf("expected %d error counter increments, got %d", burst, after)
+	}
+
+	// The buffer should contain exactly 1 (the first, allowed by the throttle).
+	m := ErrorMetrics()
+	tm := m[string(ErrorTransport)].(map[string]any)
+	if tm["count"].(int) != 1 {
+		t.Fatalf("expected 1 buffered error (rate-limited), got %v", tm["count"])
+	}
+}
+
+// TestErrorCounterAllCategoriesBurst verifies the counter increments
+// independently per category even when each is rate-limited.
+func TestErrorCounterAllCategoriesBurst(t *testing.T) {
+	resetErrorTracker()
+	globalProm.initErrors()
+	for _, cat := range []ErrorCategory{ErrorTransport, ErrorIP, ErrorProxy, ErrorWebRTC} {
+		globalProm.errorsTotal[cat].Store(0)
+	}
+
+	for _, cat := range []ErrorCategory{ErrorTransport, ErrorIP, ErrorProxy, ErrorWebRTC} {
+		for i := 0; i < 5; i++ {
+			RecordError(cat, "burst")
+		}
+		if got := globalProm.errorsTotal[cat].Load(); got != 5 {
+			t.Errorf("category %s: expected 5 counter increments, got %d", cat, got)
+		}
+	}
+}
+
 var _ = time.Now

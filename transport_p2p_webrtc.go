@@ -283,6 +283,8 @@ func (self *receivedSignalFrame) appendCandidateBatch(received *receivedSignalFr
 	return nil
 }
 
+const maxCoalescedCandidates = 256
+
 func (self *clientSignalReceiver) enqueue(received *receivedSignalFrame) bool {
 	for {
 		var spaceNotify chan struct{}
@@ -293,14 +295,23 @@ func (self *clientSignalReceiver) enqueue(received *receivedSignalFrame) bool {
 		}
 		if received.candidateBatch {
 			if batch := self.tailLocked(); batch != nil && batch.candidateBatch && batch.key == received.key {
-				err := batch.appendCandidateBatch(received)
-				self.queueLock.Unlock()
-				if err != nil {
-					self.client.log.Infof("[signal]coalesce candidate err=%s\n", err)
-					return false
+				// G-H6 fix: bound the coalesced batch size. Without this,
+				// a peer can flood ExchangeSignals frames sharing one key,
+				// all merging into the same tail frame, bypassing queueLimit
+				// and causing unbounded memory growth.
+				newLen := len(batch.exchangeSignals.Signals) + len(received.exchangeSignals.Signals)
+				if newLen <= maxCoalescedCandidates {
+					err := batch.appendCandidateBatch(received)
+					self.queueLock.Unlock()
+					if err != nil {
+						self.client.log.Infof("[signal]coalesce candidate err=%s\n", err)
+						return false
+					}
+					received.Close()
+					return true
 				}
-				received.Close()
-				return true
+				// Batch would exceed limit — fall through to normal queue
+				// path (backpressure or drop).
 			}
 		}
 		if self.queueLenLocked() < self.queueLimit {
@@ -413,6 +424,8 @@ func DefaultWebRtcSettings() *WebRtcSettings {
 		// The worker is lazy and has no idle timer/radio wakeups.
 		SctpNoProgressTimeout: 10 * time.Second,
 
+		UdpSocketBufferByteCount: mib(4),
+
 		DataChannelLabel: "data",
 		IceServerUrls: []string{
 			"stun:openrelay.metered.ca:80",
@@ -448,6 +461,10 @@ type WebRtcSettings struct {
 	// packets, not application callbacks, so transfer send/receive/forward
 	// callbacks retain their synchronous backpressure semantics.
 	SctpNoProgressTimeout time.Duration
+
+	// UdpSocketBufferByteCount, when positive, is requested as the kernel send and
+	// receive buffer of every ICE UDP socket (clamped to rmem_max/wmem_max).
+	UdpSocketBufferByteCount ByteCount
 
 	DataChannelLabel string
 

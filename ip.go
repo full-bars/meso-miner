@@ -523,6 +523,10 @@ func flowHash(packet []byte) uint32 {
 
 // TODO provide mode of the destination determines filtering rules - e.g. local networks
 // TODO currently filter all local networks and non-encrypted traffic
+//
+// SendPacketWithTimeout takes ownership of `packet` on every path: success
+// enqueues it for processing by the shard goroutine; failure returns it to
+// the pool.  Callers must NOT return the packet themselves.
 func (self *LocalUserNat) SendPacketWithTimeout(source TransferPath, provideMode protocol.ProvideMode,
 	packet []byte, timeout time.Duration) bool {
 	sendPacket := &SendPacket{
@@ -534,6 +538,7 @@ func (self *LocalUserNat) SendPacketWithTimeout(source TransferPath, provideMode
 	if timeout < 0 {
 		select {
 		case <-self.ctx.Done():
+			MessagePoolReturn(packet)
 			return false
 		case self.sendShards[shard] <- sendPacket:
 			return true
@@ -541,21 +546,25 @@ func (self *LocalUserNat) SendPacketWithTimeout(source TransferPath, provideMode
 	} else if 0 == timeout {
 		select {
 		case <-self.ctx.Done():
+			MessagePoolReturn(packet)
 			return false
 		case self.sendShards[shard] <- sendPacket:
 			return true
 		default:
-			// full
+			// full — backpressure: return the buffer to the pool
+			MessagePoolReturn(packet)
 			return false
 		}
 	} else {
 		select {
 		case <-self.ctx.Done():
+			MessagePoolReturn(packet)
 			return false
 		case self.sendShards[shard] <- sendPacket:
 			return true
 		case <-time.After(timeout):
-			// full
+			// full — timeout: return the buffer to the pool
+			MessagePoolReturn(packet)
 			return false
 		}
 	}
@@ -3162,9 +3171,8 @@ func (self *RemoteUserNatProvider) ClientReceive(source TransferPath, frames []*
 								packet,
 								self.settings.WriteTimeout,
 							)
-							if !success {
-								MessagePoolReturn(packet)
-							}
+							// SendPacketWithTimeout takes ownership on all paths;
+							// no caller-side return needed.
 							return success
 						}
 						if self.client.log.V(2).Enabled() {
@@ -3334,6 +3342,7 @@ func (self *RemoteUserNatClient) SendPacket(source TransferPath, provideMode pro
 
 	ipPath, payload, err := ParseIpPathWithPayload(packet)
 	if err != nil {
+		MessagePoolReturn(packet)
 		return false
 	}
 	// TCP/25 is a deliberate kill-switch exception: it is routed directly
@@ -3345,21 +3354,23 @@ func (self *RemoteUserNatClient) SendPacket(source TransferPath, provideMode pro
 		// (minimal relay / headless config, direct RemoteUserNatClient
 		// construction) must drop the packet, not panic (gemini 3.7).
 		if self.localUserNat == nil {
+			MessagePoolReturn(packet)
 			return false
 		}
 		return self.localUserNat.SendPacket(source, provideMode, packet, 0)
 	}
 	if smtpVerdict := self.smtpEgressGuard.inspect(ipPath, payload); smtpVerdict != smtpEgressAllow {
 		// smtpEgressReject: send the reset once. smtpEgressRejectLatched:
-		// already reset, drop silently (no amplification for a client that
-		// ignores the RST and keeps transmitting).
+		// already rejected and reset: drop silently (no amplification).
 		if smtpVerdict == smtpEgressReject {
 			deliverTcpPolicyReset(self.receivePacketCallback, source, provideMode, ipPath, packet)
 		}
+		MessagePoolReturn(packet)
 		return false
 	}
 	r, err := self.securityPolicy.Inspect(minRelationship, ipPath, payload)
 	if err != nil {
+		MessagePoolReturn(packet)
 		return false
 	}
 
@@ -3368,6 +3379,7 @@ func (self *RemoteUserNatClient) SendPacket(source TransferPath, provideMode pro
 		destination, err := self.pathTable.SelectDestination(packet)
 		if err != nil {
 			// drop
+			MessagePoolReturn(packet)
 			return false
 		}
 
@@ -3394,13 +3406,16 @@ func (self *RemoteUserNatClient) SendPacket(source TransferPath, provideMode pro
 			// G-M7 fix: nil guard — localUserNat can be nil in
 			// headless/minimal-relay configs.
 			if self.localUserNat == nil {
+				MessagePoolReturn(packet)
 				return false
 			}
 			return self.localUserNat.SendPacket(source, provideMode, packet, timeout)
 		} else {
+			MessagePoolReturn(packet)
 			return false
 		}
 	default:
+		MessagePoolReturn(packet)
 		return false
 	}
 }
