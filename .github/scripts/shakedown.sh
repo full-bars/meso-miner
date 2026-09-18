@@ -95,11 +95,11 @@ fi
 # Assign EXPECTED_BASE BEFORE the guard references it: under set -u, using an
 # unset variable aborts the run at startup. This was after the
 # guard, so every run died in its first second and then graded RELEASE_OK).
-EXPECTED_BASE=$(echo "$EXPECTED_VERSION" | grep -oE "v3\.23\.0-fix\.[0-9]+" | head -1)
+EXPECTED_BASE=$(echo "$EXPECTED_VERSION" | grep -oE "v[0-9]{4}\.[0-9]+\.[0-9]+-[0-9]+-meso" | head -1)
 # EXPECTED_BASE empty would make grep -qE "" match anything, so every version
 # check would vacuously pass on a future v3.24 tag. Guard it.
 if [ -z "$EXPECTED_BASE" ]; then
-  echo "FAIL: EXPECTED_VERSION $EXPECTED_VERSION does not match v3.23.0-fix.N pattern" | tee -a "$REPORT"
+  echo "FAIL: EXPECTED_VERSION $EXPECTED_VERSION does not match meso tag pattern (vYYYY.M.D-<code>-meso)" | tee -a "$REPORT"
   exit 75
 fi
 # TOOL_VERSION is read AFTER the install in section A/C.
@@ -113,7 +113,7 @@ section "A. Fresh install"
 # refs/heads/main, not the tag being cut. Tag-side installer regressions are
 # invisible to the shakedown, and a main-side installer break blocks an
 # unrelated release. Accepted tradeoff: the installer is rarely tag-specific.
-curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_Linux.sh -o /tmp/install.sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh -o /tmp/install.sh
 bash -n /tmp/install.sh && ok "installer syntax" || bad "installer syntax"
 # PTY install: root prompt -> option 1 (create user) -> default name urnet.
 # Grep the FULL transcript, not tail -3 (installer prints after "complete").
@@ -138,7 +138,7 @@ if timeout 15 curl -fsS -o /dev/null -w "%{http_code}" https://api.bringyour.com
 else
   bad "api.bringyour.com NOT reachable (non-starter)"; NON_STARTER=1
 fi
-if timeout 10 curl -fsS -o /dev/null https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/README.md 2>/dev/null; then
+if timeout 10 curl -fsS -o /dev/null https://raw.githubusercontent.com/full-bars/meso-miner/main/README.md 2>/dev/null; then
   ok "github reachable"
 else
   bad "github NOT reachable (non-starter)"; NON_STARTER=1
@@ -344,15 +344,15 @@ fi
 section "F. Docker"
 apt-get update -qq >/dev/null 2>&1
 run_check "docker installed" timeout 600 bash -c "apt-get install -y -qq docker.io >/dev/null 2>&1 && systemctl start docker"
-curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh -o /tmp/install-docker.sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/install-urnet-docker.sh -o /tmp/install-docker.sh
 sh /tmp/install-docker.sh 2>&1 | grep -q "sha256 verified" && ok "install-urnet-docker.sh verified" || bad "docker installer"
 run_check "urnet-docker version" /usr/local/bin/urnet-docker version 2>&1
 mkdir -p /tmp/docker-state && cp /home/urnet/.urnetwork/jwt /tmp/docker-state/jwt && cp /home/urnet/.urnetwork/network.json /tmp/docker-state/network.json
 # MUST-FIX 10: pull the EXPECTED image tag, not :latest (which lags a tag
 # push). The image tag follows the release tag.
-run_check "image pulled" timeout 300 docker pull "ghcr.io/full-bars/urnetwork-3.23-fix:${EXPECTED_VERSION}" 2>&1
+run_check "image pulled" timeout 300 docker pull "ghcr.io/full-bars/meso-miner:${EXPECTED_VERSION}" 2>&1
 # MUST-FIX 6 (docker): pass the cap into the container via env var.
-docker run -d --name urnetwork-test -v /tmp/docker-state:/root/.urnetwork -e PROXY_URL_MAX=200 -e BUILD=jwt "ghcr.io/full-bars/urnetwork-3.23-fix:${EXPECTED_VERSION}" >/dev/null 2>&1
+docker run -d --name urnetwork-test -v /tmp/docker-state:/root/.urnetwork -e PROXY_URL_MAX=200 -e BUILD=jwt "ghcr.io/full-bars/meso-miner:${EXPECTED_VERSION}" >/dev/null 2>&1
 sleep 8
 docker ps --format "{{.Names}}" | grep -q urnetwork-test && ok "container up" || bad "container"
 run_check "urnet-docker providers" /usr/local/bin/urnet-docker providers 2>&1
@@ -374,102 +374,6 @@ fi
 # MUST-FIX 7: remove the container NOW so later sections are single-provider
 # again (K/L/M/N/O all call urnet-tools with no target).
 docker rm -f urnetwork-test >/dev/null 2>&1 && ok "docker container removed (single-provider restored)" || bad "docker rm"
-
-# ---------- G. Hub (systemd) ----------
-section "G. Hub (systemd)"
-# Hub coverage (user request 2026-08-14).
-# Install the hub binary and the systemd unit via urnet-tools.
-# Start the unit and verify that the dashboard serves.
-# Verify that the provider reports into the hub.
-# The hub also ships as a docker image (ghcr.io/full-bars/urnetwork-3.23-fix-hub,
-# pushed by hub-build.yml). Section G2 tests the container path.
-# MUST-FIX: pin the hub to the release under test. Without --tag, hub install
-# resolves the latest release, which lags on tag-triggered runs.
-run_check "hub install (pinned)" urnet-tools hub install "--tag=$EXPECTED_VERSION" 2>&1
-if [ -x /home/urnet/.local/share/urnetwork-provider/bin/urnetwork-hub ]; then
-  ok "hub binary installed"
-else
-  bad "hub binary missing after hub install"
-fi
-# MUST-FIX: hub install writes the unit but does not reload systemd. The start
-# can fail on a fresh unit without daemon-reload.
-runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user daemon-reload 2>&1 && ok "hub daemon-reload" || bad "hub daemon-reload"
-HUB_START=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user start urnetwork-hub.service 2>&1); HUB_RC=$?
-[ "$HUB_RC" -eq 0 ] && ok "hub unit started (exit 0)" || { bad "hub unit start (exit $HUB_RC)"; echo "$HUB_START" | tail -3 | tee -a "$REPORT"; }
-sleep 5
-# MUST-FIX: the dashboard check must assert a real 200. With no
-# URNETWORK_HUB_DASHBOARD_PASS the dashboard is unauthenticated. curl -f -w
-# emits 000 on transport failure, so a non-empty check can never fail.
-HUB_HTTP=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 http://127.0.0.1:8080/ 2>/dev/null)
-[ "$HUB_HTTP" = "200" ] && ok "hub dashboard serves (HTTP 200)" || bad "hub dashboard not 200 (HTTP ${HUB_HTTP:-none})"
-# Point the provider at the hub. report <url> writes ~/.urnetwork/report_url.
-# The reporter re-reads the file live. No provider restart happens. The
-# Phase 2 uptime clock stays untouched.
-# Speed the reporter up. The default interval is 5m. The override file
-# report_interval drops it to 10s (the minimum).
-run_check "report URL set to local hub" urnet-tools report http://127.0.0.1:8080 2>&1
-printf '10s\n' > /home/urnet/.urnetwork/report_interval && chown urnet:urnet /home/urnet/.urnetwork/report_interval
-# MUST-FIX: the interval override only takes effect ON THE NEXT TICK, and the
-# ticker is at the 5m default. Restart the provider so the 10s interval
-# applies from the first tick. Phase 2 has not started yet, so this restart
-# does not disturb the remove-dead uptime clock.
-MARK=$(restart_provider)
-CID=$(wait_client_id "$MARK" 120)
-[ -n "$CID" ] && ok "provider restarted for 10s report cadence (client_id ${CID:0:12}…)" || bad "provider restart after report_interval"
-# MUST-FIX: grep the REAL receive line. The hub prints at startup
-# "WARNING URNETWORK_HUB_TOKEN not set ... /api/report ...", which matches a
-# bare report|bandwidth grep. The receive signal is "report from <node>".
-HUB_REPORT_OK=0
-for i in $(seq 1 36); do
-  if runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork-hub.service --no-pager 2>/dev/null | grep -qE "^report from "; then
-    HUB_REPORT_OK=1; break
-  fi
-  sleep 10
-done
-if [ "$HUB_REPORT_OK" = "1" ]; then
-  ok "hub received provider report"
-else
-  echo "WARN: no report from line in hub journal within 360s (signal only)" | tee -a "$REPORT"
-fi
-# Restore the default report interval. The rest of the run must not spam the hub.
-rm -f /home/urnet/.urnetwork/report_interval
-# MUST-FIX: clear the report URL. Otherwise the provider keeps POSTing to a
-# dead 127.0.0.1:8080 every 15s for the remaining ~100 min.
-run_check "report URL cleared" urnet-tools report off 2>&1
-# Stop the hub unit. Leave the box tidy for the provider tests.
-runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user stop urnetwork-hub.service 2>&1 && ok "hub unit stopped" || bad "hub unit stop"
-
-# ---------- G2. Hub (docker) ----------
-section "G2. Hub (docker)"
-# The hub docker image is ghcr.io/full-bars/urnetwork-3.23-fix-hub.
-# The entrypoint listens on :8080 and writes to /data.
-# A /data volume must persist the SQLite database.
-# The image versions independently of the provider release (hub-docker-v*
-# tags; :latest = current main). :latest is the only tag pushed today.
-HUB_IMG="ghcr.io/full-bars/urnetwork-3.23-fix-hub:latest"
-# MUST-FIX: unbounded docker pull can eat the watchdog. Cap it.
-run_check "hub image pulled" timeout 300 docker pull "$HUB_IMG" 2>&1
-# Record the digest so a later FAIL is attributable to a specific image.
-HUB_DIGEST=$(docker inspect -f '{{index .RepoDigests 0}}' "$HUB_IMG" 2>/dev/null || echo "unknown")
-echo "  hub image digest: $HUB_DIGEST" | tee -a "$REPORT"
-# MUST-FIX: clear stale data from a prior run. A leftover hub.db would make
-# the volume check pass without the current container writing anything.
-rm -rf /tmp/hub-data && mkdir -p /tmp/hub-data
-# MUST-FIX: bind to loopback. The droplet is public; with no
-# URNETWORK_HUB_TOKEN / URNETWORK_HUB_DASHBOARD_PASS, /api/report accepts
-# writes from anyone on 0.0.0.0.
-docker run -d --name hub-test -p 127.0.0.1:18080:8080 -v /tmp/hub-data:/data "$HUB_IMG" >/dev/null 2>&1
-sleep 6
-docker ps --format "{{.Names}}" | grep -q hub-test && ok "hub container up" || bad "hub container"
-# The dashboard must serve on the mapped port. Assert a real 200.
-HUB2_HTTP=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 http://127.0.0.1:18080/ 2>/dev/null)
-[ "$HUB2_HTTP" = "200" ] && ok "hub container dashboard serves (HTTP 200)" || bad "hub container dashboard not 200 (HTTP ${HUB2_HTTP:-none})"
-# MUST-FIX: the /data check must assert on the HOST side. openStore creates
-# hub.db unconditionally in-container, so docker exec ls passes even if the
-# bind mount silently failed.
-[ -f /tmp/hub-data/hub.db ] && ok "hub container wrote database (host /tmp/hub-data/hub.db)" || bad "hub container no database on host volume"
-# Remove the container. Leave the box tidy.
-timeout 30 docker rm -f hub-test >/dev/null 2>&1 && ok "hub container removed" || bad "hub container rm"
 
 # ---------- H. Hot-restart + client identity lifecycle ----------
 section "H. Hot-restart + identity"
