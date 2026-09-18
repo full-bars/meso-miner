@@ -1191,6 +1191,7 @@ func (self *RemoteUserNatMultiClient) SendPacket(
 	ipPath, payload, err := ParseIpPathWithPayload(packet)
 	if err != nil {
 		self.log.Infof("[multi]send bad packet = %s\n", err)
+		MessagePoolReturn(packet)
 		return false
 	}
 	// Port 25 is a deliberate local-only route and must be selected before
@@ -1198,6 +1199,7 @@ func (self *RemoteUserNatMultiClient) SendPacket(
 	// 465/587 remain provider-routed only while their SMTP/TLS stream validates.
 	if smtpRoutesLocally(ipPath) {
 		if self.localUserNat == nil {
+			MessagePoolReturn(packet)
 			return false
 		}
 		return self.localUserNat.SendPacket(source, provideMode, packet, 0)
@@ -1206,11 +1208,13 @@ func (self *RemoteUserNatMultiClient) SendPacket(
 		if smtpVerdict == smtpEgressReject {
 			deliverTcpPolicyReset(self.receivePacketCallback, source, provideMode, ipPath, packet)
 		}
+		MessagePoolReturn(packet)
 		return false
 	}
 	r, err := self.securityPolicy.Inspect(minRelationship, ipPath, payload)
 	if err != nil {
 		self.log.Infof("[multi]send bad packet = %s\n", err)
+		MessagePoolReturn(packet)
 		return false
 	}
 	switch r {
@@ -1225,12 +1229,14 @@ func (self *RemoteUserNatMultiClient) SendPacket(
 		if self.LocalSecurityBypass() {
 			return self.localUserNat.SendPacket(source, provideMode, packet, timeout)
 		} else {
+			MessagePoolReturn(packet)
 			return false
 		}
 	default:
 		if v := self.log.V(1); v.Enabled() {
 			v.Infof("[multi]drop packet ipv%d p%v -> %s:%d\n", ipPath.Version, ipPath.Protocol, ipPath.DestinationIp, ipPath.DestinationPort)
 		}
+		MessagePoolReturn(packet)
 		return false
 	}
 }
@@ -1369,9 +1375,16 @@ func (self *RemoteUserNatMultiClient) sendPacket(
 			case 0:
 				return
 			case 1:
-				// send to one client, no race
+				// send to one client, no race — use a shared copy so
+				// SendDetailedWithAck can take ownership on all paths
+				// without consuming the original (the outer !success
+				// fallback returns it).
 				client := orderedClients[0]
-				if client.Send(sendPacket, sendTimeout) {
+				p := &parsedPacket{
+					packet: MessagePoolShareReadOnly(sendPacket.packet),
+					ipPath: sendPacket.ipPath,
+				}
+				if client.Send(p, sendTimeout) {
 					success = true
 
 					func() {
@@ -1386,6 +1399,11 @@ func (self *RemoteUserNatMultiClient) sendPacket(
 			default:
 
 				defer func() {
+					// Return the original buffer exactly once: on the single
+					// racing call that succeeds and transfers ownership to the
+					// transfer layer.  On failure the outer post-closure check
+					// (if !success { MessagePoolReturn(...) }) handles the
+					// terminal case after retries are exhausted.
 					if success {
 						MessagePoolReturn(sendPacket.packet)
 					}
@@ -1487,7 +1505,8 @@ func (self *RemoteUserNatMultiClient) sendPacket(
 							}
 						}
 					} else {
-						MessagePoolReturn(p.packet)
+						// SendDetailedWithAck takes ownership on all paths;
+						// no caller-side return needed.
 					}
 				}
 
@@ -1573,6 +1592,11 @@ func (self *RemoteUserNatMultiClient) sendPacket(
 			}
 		}
 	})
+	// If the update closure never succeeded, the packet was not consumed
+	// by any client — return it to the pool to prevent a leak.
+	if !success {
+		MessagePoolReturn(sendPacket.packet)
+	}
 	return
 }
 
@@ -3175,9 +3199,21 @@ func ipPacketToProviderFrame(packet []byte, protocolVersion int) (*protocol.Fram
 	}, protocolVersion)
 }
 
+// SendDetailedWithAck sends a parsed IP packet through the transfer layer.
+//
+// Ownership contract: this function takes ownership of parsedPacket.packet on
+// EVERY path — success, error, and failure.  Callers must NOT return the
+// buffer themselves.
+//
+// On the legacy (non-raw) path, frame.MessageBytes is a distinct pooled
+// wrapper allocated by ipPacketToProviderFrame; on the v2+ raw path,
+// frame.MessageBytes IS parsedPacket.packet (same slice, no copy).
 func (self *multiClientChannel) SendDetailedWithAck(parsedPacket *parsedPacket, timeout time.Duration, ack bool) (bool, error) {
 	if frame, err := ipPacketToProviderFrame(parsedPacket.packet, self.settings.ProtocolVersion); err != nil {
 		self.addError(err)
+		// frame.MessageBytes is the raw packet on the v2+ path or a
+		// legacy wrapper — return it either way.
+		MessagePoolReturn(parsedPacket.packet)
 		return false, err
 	} else {
 		packetByteCount := ByteCount(len(parsedPacket.packet))
@@ -3209,25 +3245,31 @@ func (self *multiClientChannel) SendDetailedWithAck(parsedPacket *parsedPacket, 
 			opts...,
 		)
 		if err != nil {
-			// Treat like a failed send for pool-ownership purposes: on the
-			// legacy (non-raw) path, frame.MessageBytes is a distinct pooled
-			// wrapper allocated by ipPacketToProviderFrame above, not an
-			// alias of parsedPacket.packet — an error here would otherwise
-			// leak it on every send failure (e.g. continuous errors during
-			// a client outage drain the pool).
+			// Error: transfer layer did not take ownership.  Return the
+			// buffer.  On the raw path frame.MessageBytes IS
+			// parsedPacket.packet (same slice), so one return covers both.
+			// On the legacy path, also return the wrapper.
 			if !frame.Raw {
 				MessagePoolReturn(frame.MessageBytes)
 			}
+			MessagePoolReturn(parsedPacket.packet)
 			return success, err
 		}
 		if success {
+			// Success: transfer layer took ownership of frame.MessageBytes.
+			// On the raw path that IS parsedPacket.packet — already consumed.
+			// On the legacy path, return the original (wrapper is owned by
+			// the transfer layer, original is ours).
 			if !frame.Raw {
 				MessagePoolReturn(parsedPacket.packet)
 			}
 		} else {
+			// Failure (no error): transfer layer rejected the frame.
+			// Return the buffer.
 			if !frame.Raw {
 				MessagePoolReturn(frame.MessageBytes)
 			}
+			MessagePoolReturn(parsedPacket.packet)
 		}
 		return success, err
 	}
