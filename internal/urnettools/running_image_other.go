@@ -15,9 +15,7 @@ func runningImagePath(pid int) (string, error) {
 	return "", fmt.Errorf("runningImagePath: unsupported platform (pid %d)", pid)
 }
 
-// runningImageHandle returns a usable file handle path for the running
-// process's image. On unsupported platforms this falls back to
-// runningImagePath which returns an error.
+// runningImageHandle is unsupported wherever runningImagePath is.
 func runningImageHandle(pid int) (string, error) {
-	return runningImagePath(pid)
+	return "", fmt.Errorf("runningImageHandle: unsupported platform (pid %d)", pid)
 }

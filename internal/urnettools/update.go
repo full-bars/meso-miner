@@ -19,6 +19,20 @@ import (
 	"time"
 )
 
+// Test seams for the verification loop — package-level vars so tests can
+// override without touching production call sites.
+var (
+	verifyDiscoverFn           = Discover
+	verifyRunningImageHandleFn = runningImageHandle
+	verifyRunningImagePathFn   = runningImagePath
+	verifyProviderVersionFn    = providerVersion
+	verifyPidIsAliveFn         = pidIsAlive
+	verifyPruneBackupsFn       = pruneBackups
+	verifySleepFn              = time.Sleep
+	verifyRecordSuccessFn      = recordHotswapSuccess
+	verifyRecordDeclineFn      = recordHotswapDecline
+)
+
 // updateConfig holds the release metadata for the update command.
 type updateConfig struct {
 	// Tag is the release tag to install, e.g. "v3.23.0-fix.26.8".
@@ -80,7 +94,7 @@ func newStageDir() (string, error) {
 // explicit target or --include is given — scripts must be explicit.
 func cmdUpdate(args []string, force, dryRun bool) error {
 	// LENIENT target parse: update defines its own flags (--tag, --digest,
-	// --url, --include, --exclude, --all, --select) which the loop below
+	// --url, --include, --exclude, --all) which the loop below
 	// consumes. Strict parsing here would reject them as unknown before
 	// the loop ever runs. Leftover
 	// unknown --flags are rejected AFTER the loop instead.
@@ -93,6 +107,11 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 	var include, exclude []string
 	all := false
 	interactive := forceInteractive(force) // -f implies non-interactive: no pickers
+	// Deliberately a separate question from `interactive`: whether anything
+	// is authorized to skip the confirmation prompts. Tying the two together
+	// would enable the numbered picker for a piped run, which cannot answer
+	// it; the picker must stay gated on a real terminal.
+	unattended := unattendedUpdate(force)
 	for i := 0; i < len(rest); i++ {
 		switch rest[i] {
 		case "--tag":
@@ -106,6 +125,7 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 				return fmt.Errorf("--digest requires a value")
 			}
 			cfg.Digest = rest[i+1]
+			cfg.DigestExplicit = true
 			i++
 		case "--url":
 			if i+1 >= len(rest) {
@@ -127,8 +147,6 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 			i++
 		case "--all", "-all":
 			all = true
-		case "--select":
-			interactive = !force // --select forces the picker unless -f
 		default:
 			// Accept the = form (--include=a,b) as well as the space form.
 			if strings.HasPrefix(rest[i], "--include=") {
@@ -138,7 +156,7 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 			} else if strings.HasPrefix(rest[i], "-") {
 				// Unknown --flag (typo like --netwrok): reject AFTER the
 				// command's own flags were consumed.
-				return fmt.Errorf("unknown flag %q for update (--tag/--digest/--url/--include/--exclude/--all/--select; targeting via --unit/--user/--network/--network-id/--state-dir)", rest[i])
+				return fmt.Errorf("unknown flag %q for update (--tag/--digest/--url/--include/--exclude/--all; targeting via --unit/--user/--network/--network-id/--state-dir)", rest[i])
 			} else {
 				return fmt.Errorf("unexpected argument %q for update", rest[i])
 			}
@@ -227,9 +245,10 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 		}
 	}
 
-	// Confirm version choice interactively unless -f or dry-run already
-	// covers it (dry-run prints without acting).
-	if !force && !dryRun {
+	// Confirm the version choice only when a human can answer. -f, a
+	// dry-run (which prints without acting) and an unattended run each
+	// cover it already.
+	if !unattended && !dryRun {
 		yes, cerr := confirmVersion(cfg.Tag, chosen)
 		if cerr != nil {
 			return cerr
@@ -240,7 +259,7 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 	}
 
 	// Confirm once for the whole set, listing every provider.
-	ok, err := confirmGateMulti(fmt.Sprintf("update %d provider(s) to %s", len(chosen), cfg.Tag), chosen, force, dryRun)
+	ok, err := confirmGateMulti(fmt.Sprintf("update %d provider(s) to %s", len(chosen), cfg.Tag), chosen, unattended, dryRun)
 	if err != nil {
 		return err
 	}
@@ -304,6 +323,20 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 				}
 			} else {
 				skip = true
+			}
+		}
+		if skip {
+			// When the operator supplied --digest explicitly, the on-disk
+			// binary must match it even if the version string is the
+			// same — a tag could be swapped for a malicious binary with
+			// matching version metadata.
+			if cfg.DigestExplicit && p.Binary != "" && !p.BinaryDeleted {
+				if actual, err := fileSHA256(p.Binary); err != nil {
+					fmt.Fprintf(os.Stderr, "update %s: cannot verify digest on skipped binary: %v\n", providerLabel(p), err)
+				} else if !strings.EqualFold(actual, cfg.Digest) {
+					fmt.Printf("provider %s already on %s BUT on-disk sha256 (%s) does not match --digest (%s); updating\n", providerLabel(p), cfg.Tag, actual, cfg.Digest)
+					skip = false
+				}
 			}
 		}
 		if skip {
@@ -422,7 +455,8 @@ func cmdSelfUpdate(args []string, force, dryRun bool) error {
 		fmt.Printf("would update %s -> %s (sha256 verified)\n", cfg.ToolAsset, cfg.Tag)
 		return nil
 	}
-	if !force {
+	unattended := unattendedUpdate(force)
+	if !unattended {
 		line, err := confirmStdinRead(fmt.Sprintf("Update tool %s to %s? [Y/n]: ", cfg.ToolAsset, cfg.Tag))
 		if err != nil {
 			return fmt.Errorf("read confirmation: %w", err)
@@ -481,6 +515,83 @@ func forceInteractive(force bool) bool {
 	return !force && stdinIsInteractive()
 }
 
+// unattendedUpdate reports whether an update run is authorized to skip the
+// confirmation prompts. Three cases:
+//
+//  1. -f/--force was given: always unattended.
+//  2. stdin is /dev/null, or INVOCATION_ID is set (systemd sets it on every
+//     service invocation and nothing else does): no human is reachable, so
+//     skip the prompt.
+//  3. anything else non-interactive, such as a pipe or a redirected file:
+//     NOT unattended. The prompt is attempted and refuses loudly.
+//
+// The weekly urnetwork-update.timer is why this exists. Its ExecStart is a
+// bare `urnet-tools update` with no -y, and systemd hands a oneshot
+// /dev/null on stdin, so gating the prompt on !force alone made
+// confirmStdinRead refuse the read and the unit exit 1 on every single run.
+// The failure is invisible: it lands weekly on an OnCalendar nobody reads,
+// so nodes quietly stop updating while operators assume they self-update.
+//
+// A merely missing terminal is deliberately NOT sufficient. Treating any
+// non-interactive stdin as consent would also cover `ssh node 'urnet-tools
+// update'`, an Ansible task without a pty, nohup and at. On a
+// single-provider box those resolve a target without an explicit flag, so
+// an accidental invocation would update and restart production with no
+// confirmation and no -f. Case 3 keeps those failing loudly.
+//
+// Note what case 3 does NOT do: it does not read the pipe for an answer.
+// `echo y | urnet-tools update` fails with "stdin is not a terminal" rather
+// than proceeding, because confirmStdinRead refuses before reading whenever
+// stdin is not a terminal, and that function is shared with the
+// session and legacy destructive commands which must keep refusing. Scripts
+// pass -y; that is the supported path.
+//
+// Suppressing the prompt costs no audit trail. confirmGateMulti prints the
+// full "about to touch: X, Y" listing to stderr unconditionally, including
+// under -f, precisely so unattended runs leave a record. Only the
+// interactive question is skipped, and the per-provider "already on <tag>"
+// check still short-circuits a run that has nothing to do.
+func unattendedUpdate(force bool) bool {
+	if force {
+		return true
+	}
+	if stdinIsInteractive() {
+		return false
+	}
+	if os.Getenv("INVOCATION_ID") != "" {
+		return true
+	}
+	return stdinIsDevNull()
+}
+
+// stdinIsDevNull reports whether stdin is the null device, which is what a
+// systemd oneshot and a cron job hand a process. A pipe or a redirected
+// regular file is not.
+//
+// Compared against os.DevNull via os.SameFile rather than a hardcoded
+// character-device number: the device-number form needs syscall.Stat_t,
+// which does not exist on Windows, so it breaks the cross-platform build
+// that the Windows and macOS lifecycle jobs cover.
+// stdinIsDevNullOverride, when non-nil, replaces the null-device check.
+// Tests need it because `go test` binds the test binary's own stdin to
+// /dev/null, so a test cannot otherwise simulate the pipe case at all.
+var stdinIsDevNullOverride func() bool
+
+func stdinIsDevNull() bool {
+	if stdinIsDevNullOverride != nil {
+		return stdinIsDevNullOverride()
+	}
+	self, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	null, err := os.Stat(os.DevNull)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(self, null)
+}
+
 // splitLabels splits a comma-separated label list.
 func splitLabels(s string) []string {
 	var out []string
@@ -520,6 +631,48 @@ func updateProviderWithRestart(p Provider, cfg updateConfig, stagedTool string) 
 //
 // This is the exact recipe proven on 2026-08-09 for taco's fleet.
 func updateProvider(p Provider, cfg updateConfig) error {
+	// Guard before the lock: an empty binary path would put the lock file at
+	// a relative ".update.lock" in the caller's working directory. runUpdate
+	// validates this for every provider in the batch, but updateProvider is
+	// also called directly, so re-check rather than trust the caller.
+	if p.Binary == "" {
+		return fmt.Errorf("update %s: no resolvable binary path", providerLabel(p))
+	}
+
+	// Serialize concurrent updates of the same binary before doing anything
+	// with side effects.
+	//
+	// This became reachable when the weekly urnetwork-update.timer started
+	// working: while the timer always failed on its stdin prompt it could
+	// never overlap with an operator, so the race was latent. Now the timer
+	// can fire mid-afternoon into the middle of a hand-run `urnet-tools
+	// update` on the same node.
+	//
+	// Unserialized, two runs each back up the binary, each rename over it,
+	// and each restart the unit. The backup names are timestamped so they do
+	// not collide, but the pair can interleave so that the surviving backup
+	// is a copy of the OTHER run's new binary rather than the original, and
+	// that is the copy the rollback path restores. The two restarts also
+	// race the HotSwap takeover handshake, whose failure mode is the one
+	// state this code cannot recover (see the ownership-already-transferred
+	// error below).
+	//
+	// The lock is on the binary rather than the state directory because the
+	// binary is the contended resource: two providers configured to share
+	// one install path must serialize, and two providers with their own
+	// paths need not. p.Binary is guaranteed non-empty here, validated for
+	// every provider in the batch before any of them is touched.
+	//
+	// Blocking, not try-lock: the loser should wait and then find the
+	// release already installed, which the caller's "already on <tag>" check
+	// reports on the next run. Failing instead would make a timer report a
+	// failure for a node that is perfectly up to date.
+	release, lerr := acquireExclusiveLock(p.Binary + ".update.lock")
+	if lerr != nil {
+		return fmt.Errorf("update %s: %w", providerLabel(p), lerr)
+	}
+	defer release()
+
 	// A digest is MANDATORY: without it the downloaded binary is executed
 	// (version check + install, often as the provider user) with no
 	// integrity verification. Check BEFORE any staging side effects — the
@@ -563,7 +716,7 @@ func updateProvider(p Provider, cfg updateConfig) error {
 
 	// Structural sanity-check the staged binary WITHOUT executing it.
 	// Running a freshly downloaded artifact (e.g. `staged --version`) is
-	// code execution of a remote file — the same class of defect the hub
+	// code execution of a remote file — the same class of defect the
 	// path guards with isRecognizedExecutable. sha256
 	// already guarantees the artifact matches the requested tag, so an
 	// ELF/Mach-O/PE magic check is the right ceiling here: it confirms we
@@ -586,10 +739,11 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	// Prune old backups before creating a new one so disk pressure cannot
 	// cause the update to fail.
 	pruneBackups(p.Binary, 2)
+	var backup string
 	if _, err := os.Stat(p.Binary); os.IsNotExist(err) {
 		fmt.Printf("note: current binary %s no longer exists on disk (deleted by a prior update); skipping backup\n", p.Binary)
 	} else {
-		backup := backupName(p.Binary, time.Now())
+		backup = backupName(p.Binary, time.Now())
 		if _, err := os.Stat(backup); err == nil {
 			// Same-instant collision: fail loudly rather than silently reusing
 			// the older backup and losing the immediate previous binary.
@@ -620,10 +774,17 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	// (provider/hotswap.go checks NOTIFY_SOCKET which is only set for
 	// Type=notify units). Without this migration the entire pre-existing
 	// fleet has zero-downtime updates unavailable without a full
-	// reinstall. The provider already sends sd_notify on v30+, so
-	// Type=notify is backward-compatible; if the provider doesn't
-	// actually send sd_notify, systemd treats it as started immediately
-	// (same as Type=simple).
+	// reinstall.
+	//
+	// Type=notify is only safe with a binary that sends READY=1 at its
+	// startup barrier (v3.23.0-fix.31.0+, #543). Under Type=notify an
+	// older binary never signals readiness and systemd fails the start,
+	// which is why the installer keeps Type=simple (#546). So the unit
+	// follows the binary being installed: reconcileUnitTypeForBinary
+	// migrates to notify only for a binary that sends READY early and
+	// demotes back to simple for one that does not (an `update --tag`
+	// downgrade), and the rollback path below demotes again before it
+	// restarts an older binary under a unit this run migrated.
 	//
 	// CRITICAL: When migration succeeds (migratedUnit == true), we MUST
 	// skip the HotSwap path and use a standard restart instead. The
@@ -637,7 +798,7 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	// unit, which DOES set NOTIFY_SOCKET, so the new process starts
 	// correctly.
 	migratedUnit := false
-	if migrated, err := migrateUnitToNotify(p); err != nil {
+	if migrated, err := reconcileUnitTypeForBinary(p, providerVersion(p.Binary)); err != nil {
 		// Migration failure is non-fatal: log and continue with the
 		// normal restart path. HotSwap will still decline on
 		// Type=simple, but the binary was already swapped so a
@@ -694,28 +855,63 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	// Verify the restart took effect: wait for the process to be on the
 	// new version. We must check the RUNNING process's image, not the
 	// on-disk binary.
+	return verifyRestartLoop(p, cfg, hotSwapTriggered, backup)
+}
+
+// verifyRestartLoop waits for a restarted provider to appear on the
+// expected version. It polls Discover() every few seconds, tracking PID
+// changes and version matches. Uses package-level verify*Fn vars so
+// tests can stub I/O and sleeps.
+func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, backup string) error {
 	oldPID := p.PID
 	// Give the old process time to exit before the first check: during CI
 	// or slow systemd restarts the old process is often still alive when
 	// the loop fires, which previously read as "restart did not take
 	// effect" on the very first iteration.
-	time.Sleep(3 * time.Second)
-	maxIterations := 30 // ~60s for standard restart (plus 3s settle delay)
+	verifySleepFn(3 * time.Second)
+	maxIterations := 30 // ~90s for standard restart (adaptive 2-3s sleep + 3s settle)
 	if hotSwapTriggered {
-		maxIterations = 40 // ~80s to cover pre-flight + auth bring-up + takeover
+		maxIterations = 40 // ~120s to cover pre-flight + auth bring-up + takeover
 	}
 
+	pidChanged := false
 	for i := 0; i < maxIterations; i++ {
-		time.Sleep(2 * time.Second)
-		providers := Discover()
+		// Adaptive sleep: poll every 2s while waiting for the restart to
+		// land (old PID still alive), then every 3s once a new PID appears
+		// (waiting for version to match — auth bring-up can take time).
+		sleepSec := 2
+		if pidChanged {
+			sleepSec = 3
+		}
+		verifySleepFn(time.Duration(sleepSec) * time.Second)
+
+		providers := verifyDiscoverFn()
 		for _, rp := range providers {
 			// Check matching state directory and verify running image
 			if rp.StateDir == p.StateDir && rp.StateDir != "" && rp.PID != 0 && !rp.BinaryDeleted {
-				procExe, perr := runningImagePath(rp.PID)
+				// Track whether the PID changed — a new PID means the
+				// restart landed — just waiting for version match.
+				if rp.PID != oldPID && !pidChanged {
+					pidChanged = true
+					fmt.Printf("provider %s restarted (pid %d -> %d), waiting for version %s...\n", providerLabel(p), oldPID, rp.PID, cfg.Tag)
+				}
+
+				procExe, perr := verifyRunningImageHandleFn(rp.PID)
 				if perr == nil {
-					if procVersion := providerVersion(procExe); procVersion == cfg.Tag {
+					// providerVersion, not the buildinfo-only variant: every
+					// release binary is built with -trimpath, which strips
+					// -ldflags (and therefore main.Version) from buildinfo, so
+					// the buildinfo-only read can never return cfg.Tag and this
+					// verification failed on every successful update. procExe is
+					// the running image of the unit we just restarted, and
+					// providerVersion's --version fallback is gated behind
+					// isRecognizedExecutable.
+					procVersion := verifyProviderVersionFn(procExe)
+					if procVersion == cfg.Tag {
+						// Report the image's real path, not the /proc
+						// handle the version was read through.
 						shown := procExe
-						if real, rerr := runningImagePath(rp.PID); rerr == nil {
+						if real, rerr := verifyRunningImagePathFn(rp.PID); rerr == nil {
 							shown = real
 						}
 						fmt.Printf("verified %s running %s (pid %d; running image %s matches)\n", providerLabel(p), cfg.Tag, rp.PID, shown)
@@ -723,13 +919,35 @@ func updateProvider(p Provider, cfg updateConfig) error {
 						// version is actually running — signal delivery alone
 						// is not proof that the handoff completed.
 						if hotSwapTriggered {
-							recordHotswapSuccess(p.StateDir)
+							verifyRecordSuccessFn(p.StateDir)
 						}
-						pruneBackups(p.Binary, 2)
+						verifyPruneBackupsFn(p.Binary, 2)
 						return nil
+					}
+					// Version doesn't match yet — log what IS running so
+					// operators can see progress instead of a black box.
+					if i > 0 && i%5 == 0 {
+						fmt.Printf("still waiting for %s (pid %d running %q, iteration %d/%d)...\n", cfg.Tag, rp.PID, procVersion, i+1, maxIterations)
 					}
 				}
 			}
+		}
+
+		// Early exit: if the old PID is dead and no new provider appeared,
+		// the restart failed outright — don't waste the full timeout.
+		//
+		// Guards (all three fix real bugs found in review):
+		//  1. i > 10: systemd RestartSec=5s + process init routinely
+		//     takes 10–15s under load; 4 iterations (~13s) is too aggressive.
+		//  2. oldPID > 0: when updating a stopped provider or one whose PID
+		//     was not resolved, oldPID is 0 and pidIsAlive(0) always returns
+		//     false, causing a false-positive early exit.
+		//  3. !hotSwapTriggered: during HotSwap the candidate needs the full
+		//     80s window; early-exiting at ~25s would report a failed handoff
+		//     for a healthy in-progress takeover.
+		if !hotSwapTriggered && i > 10 && oldPID > 0 && !pidChanged && !verifyPidIsAliveFn(oldPID) {
+			fmt.Printf("provider %s (pid %d) exited but no new provider found after ~%ds — restart may have failed\n", providerLabel(p), oldPID, 3+i*2)
+			break
 		}
 	}
 
@@ -737,8 +955,8 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	if hotSwapTriggered {
 		// Verification timed out — record the decline with reason
 		// "takeover_failed" so operators can see it in Prometheus.
-		recordHotswapDecline(p.StateDir, "takeover_failed")
-		fmt.Printf("❌ HotSwap candidate failed to take over within %ds.\n", maxIterations*2)
+		verifyRecordDeclineFn(p.StateDir, "takeover_failed")
+		fmt.Printf("❌ HotSwap candidate failed to take over within %ds.\n", maxIterations*3)
 		// oldPID's process exits (via its drain-timeout goroutine) only after
 		// the candidate confirmed active takeover — the same handoff gate
 		// hotswap.go's ACK-then-yield ordering guarantees. So oldPID being
@@ -749,12 +967,29 @@ func updateProvider(p Provider, cfg updateConfig) error {
 		// process, but it does silently revert the image a future restart
 		// would use, and "live provider was never killed" would be false —
 		// so skip the rollback and report the real (unknown) state instead.
-		if !pidIsAlive(oldPID) {
-			return fmt.Errorf("update %s: HotSwap candidate ACKed takeover and PID %d exited its drain, but verification could not confirm the new process is running %s within %ds; binary NOT rolled back (ownership already transferred) — check the provider's logs/dashboard to confirm which version is actually live", providerLabel(p), oldPID, cfg.Tag, maxIterations*2)
+		if !verifyPidIsAliveFn(oldPID) {
+			return fmt.Errorf("update %s: HotSwap candidate ACKed takeover and PID %d exited its drain, but verification could not confirm the new process is running %s within %ds; binary NOT rolled back (ownership already transferred) — check the provider's logs/dashboard to confirm which version is actually live", providerLabel(p), oldPID, cfg.Tag, maxIterations*3)
 		}
-		// Live provider was never killed — HotSwap candidate failed
-		// to take over. Fall through to restore backup below.
+		if backup != "" {
+			fmt.Printf("🔄 Restoring previous binary from backup %s...\n", backup)
+			// Route rollback through installBinary for atomic temp+rename, never in-place truncate (F-4)
+			if rerr := installBinary(backup, p.Binary, p.User); rerr != nil {
+				fmt.Printf("warning: atomic rollback failed: %v\n", rerr)
+			} else {
+				fmt.Printf("✅ Previous binary restored. Live provider (PID %d) was never killed and remains active.\n", oldPID)
+				// The unit must not outlive the binary it was migrated for:
+				// if the restored binary cannot send READY=1 at startup, its
+				// next start under Type=notify would fail.
+				if !isHotSwapSupportedVersion(verifyProviderVersionFn(p.Binary)) {
+					if _, derr := demoteUnitToSimple(p); derr != nil {
+						fmt.Printf("warning: could not restore Type=simple for the rolled-back binary: %v\n", derr)
+					}
+				}
+			}
+		}
+		return fmt.Errorf("update %s: HotSwap candidate failed to take over; binary rolled back; live provider PID %d was never killed and remains active", providerLabel(p), oldPID)
 	}
+
 	return fmt.Errorf("update %s: binary swapped to %s but restart did not take effect — the running process is still the old version or the unit failed to start; check the provider's logs", providerLabel(p), cfg.Tag)
 }
 
@@ -1258,9 +1493,9 @@ func fileSHA256(path string) (string, error) {
 // the automatic fix for pre-v31.0 fleet nodes that were installed before
 // Type=notify became the default in Provider_Install_Linux.sh.
 //
-// The provider already sends sd_notify on v30+, so Type=notify is
-// backward-compatible. If the provider doesn't actually send sd_notify,
-// systemd treats it as started immediately (same as Type=simple).
+// Only call this for a binary that sends READY=1 at startup
+// (v3.23.0-fix.31.0+): under Type=notify a binary that never signals
+// readiness fails to start. reconcileUnitTypeForBinary enforces that.
 //
 // Returns (migrated, err): migrated is true when the unit file was rewritten
 // (meaning the caller must use a standard restart instead of HotSwap, because
@@ -1285,7 +1520,7 @@ func migrateUnitToNotify(p Provider) (bool, error) {
 	}
 
 	// Resolve the unit file's on-disk path via FragmentPath.
-	unitPath, err := resolveUnitFilePath(p)
+	unitPath, err := unitFilePathFunc(p)
 	if err != nil {
 		return false, fmt.Errorf("resolve unit file path for %s: %w", p.Unit, err)
 	}
@@ -1294,7 +1529,7 @@ func migrateUnitToNotify(p Provider) (bool, error) {
 	}
 
 	// Read the current unit file.
-	content, err := os.ReadFile(unitPath)
+	content, err := readUnitFile(unitPath)
 	if err != nil {
 		return false, fmt.Errorf("read unit file %s: %w", unitPath, err)
 	}
@@ -1305,31 +1540,25 @@ func migrateUnitToNotify(p Provider) (bool, error) {
 		return false, nil // nothing to do (Type=notify already)
 	}
 
-	// Back up the original unit file before overwriting.
+	// Back up the original unit file before overwriting. writeStateFile
+	// (O_NOFOLLOW), not copyFile: a user unit lives in a directory the
+	// provider user controls, and this runs as root.
 	backupPath := unitPath + ".bak"
-	if err := copyFile(unitPath, backupPath); err != nil {
+	if err := writeStateFile(filepath.Dir(unitPath), filepath.Base(backupPath), content, 0o644); err != nil {
 		return false, fmt.Errorf("backup unit file %s: %w", unitPath, err)
 	}
+	_ = chownLikeStateOwner(filepath.Dir(unitPath), backupPath)
 	fmt.Printf("backed up unit file %s -> %s\n", unitPath, backupPath)
 
-	// Write the updated unit file. Atomic: write then rename to avoid
-	// a partial file on crash.
-	tmpPath := unitPath + ".tmp"
-	if err := os.WriteFile(tmpPath, []byte(newContent), 0o644); err != nil {
-		os.Remove(tmpPath)
+	if err := replaceUnitFile(unitPath, []byte(newContent)); err != nil {
 		return false, fmt.Errorf("write updated unit file: %w", err)
-	}
-	if err := os.Rename(tmpPath, unitPath); err != nil {
-		os.Remove(tmpPath)
-		os.Rename(backupPath, unitPath) // best-effort restore
-		return false, fmt.Errorf("rename updated unit file: %w", err)
 	}
 	fmt.Printf("migrated %s from Type=simple to Type=notify\n", unitPath)
 
 	// Daemon-reload so systemd picks up the rewritten unit. Best-effort:
 	// failure here means the running unit still has the old Type= but the
 	// file on disk is correct — the next restart or reboot will pick it up.
-	if err := daemonReloadForUnit(p); err != nil {
+	if err := daemonReloadFunc(p); err != nil {
 		fmt.Printf("warning: daemon-reload after unit migration failed: %v\n", err)
 	} else {
 		fmt.Println("daemon-reload completed after unit migration")
@@ -1431,4 +1660,130 @@ func daemonReloadForUnit(p Provider) error {
 		return fmt.Errorf("daemon-reload: %v (%s)", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// unitFilePathFunc and daemonReloadFunc are overridable so tests can drive
+// the unit rewrite against a temp file without a real systemd.
+var (
+	unitFilePathFunc = resolveUnitFilePath
+	daemonReloadFunc = daemonReloadForUnit
+)
+
+// reconcileUnitTypeForBinary makes the unit's Type= safe for the binary
+// about to run under it. A binary that sends READY=1 at its startup barrier
+// (v3.23.0-fix.31.0+) gets Type=notify so HotSwap can transfer MainPID.
+// Anything else, including a version that cannot be read, gets Type=simple:
+// a wrong demotion only costs zero-downtime on the next update, while a
+// wrong promotion fails every start. Returns true only when this call
+// migrated the unit to notify.
+func reconcileUnitTypeForBinary(p Provider, binaryVersion string) (bool, error) {
+	if isHotSwapSupportedVersion(binaryVersion) {
+		return migrateUnitToNotify(p)
+	}
+	if _, err := demoteUnitToSimple(p); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+// demoteUnitToSimple rewrites a Type=notify unit back to Type=simple and
+// reloads systemd. It undoes migrateUnitToNotify before a binary that does
+// not send READY=1 at startup runs under the unit: a rollback restoring the
+// previous binary, or an `update --tag` downgrade below v3.23.0-fix.31.0.
+// Returns true when the unit file was rewritten.
+func demoteUnitToSimple(p Provider) (bool, error) {
+	if p.Unit == "" {
+		return false, nil
+	}
+	typ, err := unitTypeFunc(p)
+	if err != nil {
+		return false, fmt.Errorf("query unit type for %s: %w", p.Unit, err)
+	}
+	if typ != "notify" {
+		return false, nil
+	}
+	unitPath, err := unitFilePathFunc(p)
+	if err != nil {
+		return false, fmt.Errorf("resolve unit file path for %s: %w", p.Unit, err)
+	}
+	if unitPath == "" {
+		return false, fmt.Errorf("unit %s has no FragmentPath, cannot restore Type=simple", p.Unit)
+	}
+	content, err := readUnitFile(unitPath)
+	if err != nil {
+		return false, fmt.Errorf("read unit file %s: %w", unitPath, err)
+	}
+	newContent, changed := rewriteUnitContentToSimple(string(content))
+	if !changed {
+		return false, nil
+	}
+	if err := replaceUnitFile(unitPath, []byte(newContent)); err != nil {
+		return false, fmt.Errorf("write unit file %s: %w", unitPath, err)
+	}
+	fmt.Printf("restored %s to Type=simple\n", unitPath)
+	if err := daemonReloadFunc(p); err != nil {
+		return true, fmt.Errorf("daemon-reload after restoring Type=simple: %w", err)
+	}
+	return true, nil
+}
+
+// replaceUnitFile atomically replaces a unit file. A user unit lives in a
+// directory the provider user controls while this runs as root, so the temp
+// file goes through writeStateFile (O_NOFOLLOW): os.WriteFile would follow
+// a symlink planted at the temp path. rename(2) replaces a symlink at the
+// final path rather than writing through it.
+func replaceUnitFile(unitPath string, content []byte) error {
+	dir, tmpName := filepath.Dir(unitPath), filepath.Base(unitPath)+".tmp"
+	if err := writeStateFile(dir, tmpName, content, 0o644); err != nil {
+		return err
+	}
+	// A new file created by root would leave the provider user's own unit
+	// owned by root; hand it to the directory's owner before it goes live.
+	if err := chownLikeStateOwner(dir, filepath.Join(dir, tmpName)); err != nil {
+		os.Remove(filepath.Join(dir, tmpName))
+		return err
+	}
+	if err := os.Rename(filepath.Join(dir, tmpName), unitPath); err != nil {
+		os.Remove(filepath.Join(dir, tmpName))
+		return err
+	}
+	return nil
+}
+
+// readUnitFile reads a unit file, refusing a symlink. This runs as root
+// against a path in a directory the provider user may control: following a
+// link there would read an arbitrary root-only file, and migration copies
+// what it read into a world-readable .bak.
+func readUnitFile(unitPath string) ([]byte, error) {
+	fi, err := os.Lstat(unitPath)
+	if err != nil {
+		return nil, err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("refusing to read %s: path is a symlink", unitPath)
+	}
+	return os.ReadFile(unitPath)
+}
+
+// rewriteUnitContentToSimple is the inverse of rewriteUnitContent: it turns
+// Type=notify back into Type=simple. NotifyAccess= stays; it is harmless
+// under Type=simple, and removing it could drop a directive an operator set.
+func rewriteUnitContentToSimple(content string) (string, bool) {
+	lines := strings.Split(content, "\n")
+	changed := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if idx := strings.IndexAny(trimmed, "#;"); idx >= 0 {
+			trimmed = strings.TrimSpace(trimmed[:idx])
+		}
+		key, val, ok := strings.Cut(trimmed, "=")
+		if !ok {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(key), "Type") && strings.EqualFold(strings.TrimSpace(val), "notify") {
+			lines[i] = "Type=simple"
+			changed = true
+		}
+	}
+	return strings.Join(lines, "\n"), changed
 }

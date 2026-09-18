@@ -21,7 +21,26 @@ import (
 	"testing"
 )
 
+// fakeProviderVersionEnv turns this test binary into a stand-in for a
+// provider binary. running_image_linux_test.go needs a REAL process whose
+// on-disk image can be renamed out from under it, which no fake or seam can
+// simulate: the behaviour under test is the kernel's, not ours. Re-execing
+// the test binary is the standard way to get one without building a fixture.
+const fakeProviderVersionEnv = "URNET_TEST_FAKE_PROVIDER_VERSION"
+
 func TestMain(m *testing.M) {
+	// Helper-subprocess mode: answer --version like a provider binary would,
+	// otherwise block so the caller has a live pid to inspect.
+	if v := os.Getenv(fakeProviderVersionEnv); v != "" {
+		for _, a := range os.Args[1:] {
+			if a == "--version" {
+				os.Stdout.WriteString(v + "\n")
+				os.Exit(0)
+			}
+		}
+		select {}
+	}
+
 	// Isolate every platform-specific config location this package reads,
 	// so no developer/runner state leaks into selection behavior:
 	//   unix:  $HOME + $XDG_CONFIG_HOME (UserHomeDir/UserConfigDir)
@@ -50,11 +69,19 @@ func stubDiscovery(t *testing.T, systemd, docker []Provider) {
 	origP, origT := discoverProcessesFn, discoverStoppedFn
 	discoverProcessesFn = func() []Provider { return systemd }
 	discoverStoppedFn = func(running []Provider) []Provider { return docker }
+	// Fixture providers use users like "user"/"otheruser" that differ from the
+	// real test-runner's user, so a cross-user command would genuinely try to
+	// elevation-exec under sudo. Never spawn a real sudo in unit tests: stub
+	// the elevation seam to a no-op so the command proceeds (or the caller's
+	// own elevated argv assertion can replace it).
+	origE := elevateSelfFunc
+	elevateSelfFunc = func([]string) error { return nil }
 	t.Cleanup(func() {
 		discoverSystemdFn = origS
 		discoverDockerFn = origD
 		discoverProcessesFn = origP
 		discoverStoppedFn = origT
+		elevateSelfFunc = origE
 	})
 }
 
@@ -242,7 +269,7 @@ func TestLifecycleCmds_SystemdTargetUnaffectedByDockerPresence(t *testing.T) {
 
 // --- commit 2: the other unit-driving commands get the same guard ---
 
-// TestOtherSystemdCmds_ExplicitContainerTargetRefused pins that hot-restart,
+// TestOtherSystemdCmds_ExplicitContainerTargetRefused pins that
 // session save/load, auto-start, auto-update, uninstall and reinstall all
 // refuse an explicit docker target via guardSystemdProvider (previously they
 // returned a plain not-found — same latent class as the lifecycle HIGH).
@@ -254,7 +281,6 @@ func TestOtherSystemdCmds_ExplicitContainerTargetRefused(t *testing.T) {
 		name string
 		run  func() error
 	}{
-		{"hot-restart", func() error { return cmdHotRestart([]string{"--unit", "ps"}, true, true) }},
 		{"session", func() error { return cmdSession([]string{"save", "/tmp/x.tgz", "--unit", "ps"}) }},
 		{"auto-start", func() error { return cmdAutoStart([]string{"on", "--unit", "ps"}, false, true) }},
 		{"auto-update", func() error { return cmdAutoUpdate([]string{"daily", "--unit", "ps"}, false, true) }},

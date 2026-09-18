@@ -147,62 +147,24 @@ func TestCmdAutoUpdateInvalidInterval(t *testing.T) {
 	if !contains(err.Error(), "invalid interval") {
 		t.Errorf("unexpected error: %v", err)
 	}
-	// A valid interval must get past validation (it will then fail
-	// targeting on a box with no providers — that's fine, the point is the
-	// interval check itself passes).
-	err = cmdAutoUpdate([]string{"daily"}, false, false)
-	if err == nil {
-		t.Fatal("expected targeting error for daily (no provider on test box)")
-	}
-	if contains(err.Error(), "invalid interval") {
+	// A valid interval must get past validation. Assert ONLY that, never
+	// what happens after it.
+	//
+	// This previously called cmdAutoUpdate with dryRun=false and required a
+	// non-nil error, on the stated assumption that the test box has no
+	// providers. Both halves were wrong. On a developer machine that does
+	// run a provider, targeting succeeds, so the call fell through to
+	// setAutoUpdateSchedule and REWROTE THAT MACHINE'S systemd timer, and
+	// the required error never came, failing the test. The suite passed in
+	// CI only because runners have no provider, which is what hid the
+	// mutation.
+	//
+	// dryRun=true returns before setAutoUpdateSchedule, so the call is
+	// read-only wherever it runs, and the assertion holds whether or not a
+	// provider is present.
+	err = cmdAutoUpdate([]string{"daily"}, false, true)
+	if err != nil && contains(err.Error(), "invalid interval") {
 		t.Errorf("daily must pass interval validation, got: %v", err)
-	}
-}
-
-// TestUnitDropinDirNoUnit: a provider with no owning unit cannot resolve a
-// drop-in directory — writeDropinEnv/removeDropinEnv must fail fast rather
-// than writing to a guessed path.
-func TestUnitDropinDirNoUnit(t *testing.T) {
-	_, err := unitDropinDir(Provider{})
-	if err == nil {
-		t.Fatal("expected error for provider with no unit")
-	}
-	if !contains(err.Error(), "no owning unit") {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-// TestUnitDropinDirUnresolvableUser: a user-level unit whose home can't be
-// resolved via getent must error rather than falling back to a relative or
-// guessed path.
-func TestUnitDropinDirUnresolvableUser(t *testing.T) {
-	bogus := "urnet-tools-test-nonexistent-user-9f3a"
-	p := Provider{Unit: "urnet-tools-test-fake-unit-9f3a.service", User: bogus}
-	_, err := unitDropinDir(p)
-	if err == nil {
-		t.Fatal("expected error for unresolvable user home")
-	}
-	if !contains(err.Error(), "cannot resolve home") {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-// TestRemoveDropinEnvMissingFile: removing a drop-in that was never written
-// must be a clean no-op, not an error — a provider that never had the
-// setting toggled should be able to run `off` safely.
-func TestRemoveDropinEnvMissingFile(t *testing.T) {
-	// unitDropinDir for a system unit resolves under /etc/systemd/system,
-	// which is not writable in a test sandbox — instead exercise the
-	// documented "file does not exist" branch directly against a synthetic
-	// path via a provider whose unit resolves to a system dir we don't own.
-	// Since we cannot safely write there, assert the specific no-file
-	// message is produced without attempting a restart.
-	p := Provider{Unit: "urnet-tools-test-fake-unit-9f3a.service"}
-	err := removeDropinEnv(p, "hub.conf", "URNETWORK_REPORT_URL")
-	// System-unit branch: file under /etc/systemd/system/<unit>.d/hub.conf
-	// will not exist, so this must return nil (informational message only).
-	if err != nil {
-		t.Fatalf("removing a nonexistent drop-in should be a clean no-op, got %v", err)
 	}
 }
 

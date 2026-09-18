@@ -35,28 +35,7 @@ func Run(args []string) error {
 			fmt.Println(ToolVersion)
 			return nil
 		case "version":
-			fmt.Printf("urnet-tools %s\n", ToolVersion)
-			providers := Discover()
-			if len(providers) == 0 {
-				fmt.Println("  no providers discovered")
-				return nil
-			}
-			for _, p := range providers {
-				status := "running"
-				if !p.Running {
-					status = "stopped"
-				}
-				stale := ""
-				if p.BinaryDeleted {
-					stale = " (disk binary stale — restart needed)"
-				}
-				version := p.Version
-				if version == "" && !p.Running {
-					version = "(no binary)"
-				}
-				fmt.Printf("  %s: %s (%s, pid %d)%s\n",
-					providerLabel(p), version, status, p.PID, stale)
-			}
+			printToolVersionAndProviders()
 			return nil
 		}
 	}
@@ -71,7 +50,7 @@ func Run(args []string) error {
 func parseGlobalFlags(args []string) (force, dryRun bool, rest []string, err error) {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "-f", "--force":
+		case "-f", "--force", "-y", "--yes":
 			force = true
 		case "-n", "--dry-run":
 			dryRun = true
@@ -87,10 +66,9 @@ func parseGlobalFlags(args []string) (force, dryRun bool, rest []string, err err
 
 // cmdSimpleDelegation handles the pass-through commands (summary):
 // resolve the targeted provider, then delegate the exact subcommand to that
-// provider's binary. report and hot-restart have real implementations (see
-// cmdReport / cmdHotRestart) because the provider binary has no report or
-// hot-restart subcommands — delegating to it printed the provider's auth
-// usage and did nothing (gauntlet findings BUG-4).
+// provider's binary. report has a real implementation (see cmdReport)
+// because the provider binary has no report subcommand — delegating to it
+// printed the provider's auth usage and did nothing (gauntlet finding BUG-4).
 func cmdSimpleDelegation(sub string, args []string) error {
 	t, rest, err := parseTargetFlagsLenient(args)
 	if err != nil {
@@ -99,6 +77,11 @@ func cmdSimpleDelegation(sub string, args []string) error {
 	providers := Discover()
 	p, narrowed, err := selectTargetOrSoleAccessible(providers, t, false)
 	if err != nil {
+		return err
+	}
+	// Managing another user's provider requires root; re-exec under sudo.
+	// summary is read-only (no confirm gate), so force/dryRun are irrelevant.
+	if elevated, err := maybeElevateForCrossUser(sub, p, args, false, false); elevated {
 		return err
 	}
 	if narrowed {
@@ -112,7 +95,7 @@ func cmdSimpleDelegation(sub string, args []string) error {
 }
 
 // cmdReport implements `urnet-tools report <url> [target]`: it writes the
-// hub-report URL override file (~/.urnetwork/report_url) in the provider's
+// report URL override file (~/.urnetwork/report_url) in the provider's
 // state dir. The provider's bandwidth reporter re-reads that file every
 // tick, so the change takes effect without a restart. The provider binary
 // has NO report subcommand — delegating to it printed auth usage and did
@@ -123,9 +106,19 @@ func cmdReport(args []string) error {
 		return err
 	}
 	providers := Discover()
-	p, err := selectTarget(providers, t)
+	p, narrowed, err := selectTargetOrSoleAccessible(providers, t, false)
 	if err != nil {
 		return err
+	}
+	// Managing another user's provider requires root; re-exec under sudo.
+	// report is a mutating control-socket command, so it needs the same
+	// elevation as status/summary — without it, verifyPeerCredentials
+	// rejects the root-connected socket (BUG: "connection reset by peer").
+	if elevated, err := maybeElevateForCrossUser("report", p, args, false, false); elevated {
+		return err
+	}
+	if narrowed {
+		printNarrowedNote(len(providers), p, "report URL")
 	}
 	if len(rest) < 1 {
 		return fmt.Errorf("report requires a URL (use 'report off' to disable)")
@@ -141,56 +134,30 @@ func cmdReport(args []string) error {
 	return nil
 }
 
-// writeReportURL writes the hub-report override file for a provider.
-// Extracted from cmdReport so the write itself is directly testable with a
-// Provider struct (no live process needed). The provider's bandwidth
-// reporter re-reads this file every tick.
+// writeReportURL writes the report override via the provider's control
+// socket, falling back to pending_overrides.json when the provider is stopped.
+// For "off", clears the control-state so the provider stops reporting.
 func writeReportURL(p Provider, url string) error {
 	if p.StateDir == "" {
 		return fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
 	}
-	// Uses writeStateFile (O_NOFOLLOW) to prevent symlink-following attacks (C2).
-	if err := writeStateFile(p.StateDir, "report_url", []byte(url+"\n"), 0o644); err != nil {
-		return fmt.Errorf("write report_url: %v", err)
+	op := "set"
+	value := url
+	if url == "off" {
+		op = "clear"
+		value = ""
+	}
+	// applyControlOverride handles both the live socket path and the
+	// pending_overrides.json fallback when the provider is stopped — no
+	// need for a legacy file path.
+	if _, _, err := applyControlOverride(p, op, "report_url", value, false); err != nil {
+		return fmt.Errorf("set report_url: %v", err)
 	}
 	return nil
 }
 
-// cmdHotRestart implements `urnet-tools hot-restart [target]`: it restarts
-// the provider's systemd unit. The provider binary has NO hot-restart
-// subcommand — its hot-restart behavior is a config/env toggle
-// (URNETWORK_HOT_RESTART), not a CLI op. Delegating to the provider printed
-// auth usage and did nothing (gauntlet finding BUG-4). A confirmation gate
-// mirrors cmdRestart: restarting a provider is a production action and must
-// not happen without --force or an explicit "yes".
-func cmdHotRestart(args []string, force, dryRun bool) error {
-	t, rest, err := parseTargetFlagsLenient(args)
-	if err != nil {
-		return err
-	}
-	providers := lifecycleCandidates(t)
-	p, err := selectTarget(providers, t)
-	if err != nil {
-		return err
-	}
-	if err := guardSystemdProvider(p); err != nil {
-		return err
-	}
-	if len(rest) > 0 {
-		return fmt.Errorf("hot-restart takes no arguments (got %v)", rest)
-	}
-	ok, err := confirmGate("restart "+p.Unit, p, force, dryRun)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return nil // dry-run
-	}
-	return unitCommand(p, "restart")
-}
-
 // parseDelegationArgs guards -h/--help for the pass-through commands
-// (summary, report, hot-restart) BEFORE any targeting runs: those commands
+// (summary, report) BEFORE any targeting runs: those commands
 // delegate to the provider binary, so without this guard `--help` would be
 // forwarded and the operation would actually run (the help-never-executes
 // Returns errHelpShown when help was
@@ -238,7 +205,6 @@ Performance & Tuning (single target):
   lowmode <on|off> [target]       🧊  LOW-MEMORY reduced buffers for max RAM savings
   ramlogs <on|off> [target]       📝  RAM LOGS zero disk I/O logging
   optimize [target]               ⚡   apply golden-fleet OS/kernel limits
-  hot-restart [target]            ♻   reuse client_ids across restarts
   fast-auth <on|off|status>       ⚡   manage the auth rate limiter (marker file)
   set <key> [<value>|off]         🔧  runtime tuning override, read live (no restart)
 
@@ -254,20 +220,7 @@ Proxy Management [target]:
   proxy traffic                   📈  real-time bandwidth + client session load
   proxy remove-dead               💀  interactively prune dead/degraded/failing
   proxy trim <N>                  ✂   hold running proxies at N, shed worst first (F -> A)
-  report [<url>|off]              📡  set hub report URL at runtime (no restart)
-
-Hub Management [target]:
-  hub set <host:port>             📡  configure hub report URL
-  hub off                         📴  stop reporting to hub (no restart)
-  hub install [--tag=TAG]         📦  install hub as a systemd service
-  hub init [--password PW]        🔐  provision the hub (TLS :8443 + CA cert)
-  hub link <url> [--token]        🔗  fetch hub CA + enable TLS trust
-  hub unlink                      🔓  remove hub trust + stop reporting
-  hub test <url>                  🔍  verify TLS to the hub against saved pin
-  hub onboard-cmd                 📋  mint a fleet onboard-token one-liner
-  hub show-password               👁   print the hub CA password
-  hub update [--tag=TAG]          ⬆   update the hub binary
-  hub open-port <port>            🚪  open a TCP port in firewall (Linux)
+  report [<url>|off]              📡  set report URL at runtime (no restart)
 
 Maintenance [target]:
   reinstall                       🔧  reinstall provider
@@ -288,11 +241,11 @@ Targeting rules:
   - multiple providers: MUST pick one (--unit/--user/--network), else REFUSED
   - same network name on two providers: add --network-id or --unit to break the tie
   - batch: --include a,b / --exclude a,b / --all (everything)
-  - --select  interactive picker (choose A B C, skip D)
   - see 'providers' first to learn each provider's unit/user/network
 
 Force (machines/scripts):
   -f, --force            skip confirm prompts ONLY - never picks providers
+  -y, --yes              alias for --force
   -n, --dry-run          print the plan, change nothing (safe anywhere)
   -h, --help             show help (never executes anything)
 `)
@@ -301,7 +254,7 @@ Force (machines/scripts):
 // parseTargetFlagsLenient is like parseTargetFlags but does NOT reject
 // unknown --flags: it only extracts the known targeting flags and leaves
 // everything else (including provider-binary flags like --force) in rest
-// for pass-through. Used by delegation commands (summary/report/hot-restart,
+// for pass-through. Used by delegation commands (summary/report),
 // proxy refresh/remove-dead) where trailing args belong to the provider
 // binary, not this tool.
 func parseTargetFlagsLenient(args []string) (Target, []string, error) {
@@ -427,18 +380,58 @@ func parseTargetFlagsInner(args []string, strict bool) (Target, []string, error)
 // providers exist but docker provider containers do, it says so and points
 // at urnet-docker (which has its own providers listing).
 func cmdProviders(args []string) error {
+	// Scope: by default an unprivileged caller sees only the providers owned
+	// by the current OS user (the one-provider-per-user contract — other
+	// users' providers exist but are not this operator's business). --all shows
+	// every provider on the box, marking identities the caller can't read.
+	all := false
+	rest := args[:0:0]
+	for _, a := range args {
+		switch a {
+		case "--all":
+			all = true
+		default:
+			rest = append(rest, a)
+		}
+	}
+	if len(rest) > 0 {
+		return fmt.Errorf("providers: unexpected arguments: %v", rest)
+	}
 	providers := Discover()
+	if !all && !isPrivileged() {
+		cur := currentUserName()
+		var mine []Provider
+		for _, p := range providers {
+			if p.User == cur {
+				mine = append(mine, p)
+			}
+		}
+		providers = mine
+	}
 	if len(providers) == 0 {
-		docker := DiscoverDocker()
-		if len(docker) == 0 {
-			fmt.Println("no providers found on this box")
+		if all || isPrivileged() {
+			docker := DiscoverDocker()
+			if len(docker) == 0 {
+				if all {
+					fmt.Println("no providers found on this box")
+				} else {
+					// Unprivileged user with no provider: don't imply the box is
+					// empty — other users may have providers we scoped out.
+					fmt.Printf("no providers found for user %s (run 'providers --all' as root to see every user's)\n", currentUserName())
+				}
+				return nil
+			}
+			fmt.Println("no systemd providers found on this box; running in docker (use urnet-docker):")
+			for _, p := range docker {
+				fmt.Printf("  %s  net=%s\n", p.Unit, p.netLabel())
+			}
 			return nil
 		}
-		fmt.Println("no systemd providers found on this box; running in docker (use urnet-docker):")
-		for _, p := range docker {
-			fmt.Printf("  %s  net=%s\n", p.Unit, p.netLabel())
-		}
+		fmt.Printf("no providers found for user %s (run 'urnet-tools providers --all' as root to see every user's)\n", currentUserName())
 		return nil
+	}
+	if !all && !isPrivileged() {
+		fmt.Printf("providers for user %s (%d):\n", currentUserName(), len(providers))
 	}
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "PID	USER	UNIT	NETWORK	NET-ID	STATE-DIR	BIN	VER")
@@ -484,6 +477,11 @@ func cmdStatus(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Managing another user's provider requires root; re-exec under sudo.
+	// status is read-only (no confirm gate), so force/dryRun are irrelevant.
+	if elevated, err := maybeElevateForCrossUser("status", p, args, false, false); elevated {
+		return err
+	}
 	if narrowed {
 		printNarrowedNote(len(providers), p, "status")
 	}
@@ -515,7 +513,11 @@ func cmdStatus(args []string) error {
 	if !p.JWTExpires.IsZero() {
 		exp = p.JWTExpires.Format(time.RFC3339)
 	}
-	fmt.Fprintf(w, "jwt-expires:\t%s\n", exp)
+	fmt.Fprintf(w, "jwt-expires:	%s\n", exp)
+	// The control socket is this feature's live control plane; report whether
+	// the provider's is actually bound (a stopped/startup-failed provider has a
+	// pid but no reachable socket).
+	fmt.Fprintf(w, "control-socket:	%v\n", controlSocketReachable(p))
 	return w.Flush()
 }
 
@@ -757,7 +759,7 @@ func stdinIsInteractive() bool {
 func confirmStdinRead(prompt string) (string, error) {
 	fmt.Fprint(os.Stderr, prompt)
 	if !stdinIsInteractive() {
-		return "", fmt.Errorf("stdin is not a terminal; use -f/--force to skip the prompt (or --yes where supported)")
+		return "", fmt.Errorf("stdin is not a terminal; use -f/--force (or -y/--yes) to skip the prompt")
 	}
 	line, err := stdinReader.ReadString('\n')
 	if err != nil {
@@ -777,7 +779,14 @@ func confirmStdinRead(prompt string) (string, error) {
 func confirmGateMulti(op string, targets []Provider, force, dryRun bool) (bool, error) {
 	fmt.Fprintf(os.Stderr, "[urnet-tools] %s:\n", op)
 	for _, p := range targets {
-		fmt.Fprintf(os.Stderr, "  %s (user=%s, network=%s, state=%s)\n", providerLabel(p), p.User, p.netLabel(), p.StateDir)
+		ver := p.Version
+		if ver == "" && p.Binary != "" {
+			ver = providerVersionFromBuildinfo(p.Binary)
+			if ver == "" {
+				ver = providerVersionFromStamp(p.Binary)
+			}
+		}
+		fmt.Fprintf(os.Stderr, "  %s (user=%s, network=%s, state=%s, current=%s)\n", providerLabel(p), p.User, p.netLabel(), p.StateDir, orDash(ver))
 	}
 	if dryRun {
 		fmt.Fprintf(os.Stderr, "[dry-run] no changes made\n")
@@ -829,4 +838,40 @@ func confirmGate(op string, target Provider, force, dryRun bool) (bool, error) {
 // apply) it returns an error so cmdStatus falls through to the table/panel.
 var renderSystemctlStatus = func(p Provider) error {
 	return fmt.Errorf("systemctl status not available on %s", runtime.GOOS)
+}
+
+// printToolVersionAndProviders implements `urnet-tools version`: the tool's own
+// build, then every discovered provider and the version it is actually running.
+//
+// It is the command the upgrade instructions tell operators to verify with,
+// because it answers "what is running on this box" rather than "what is this
+// binary". `-v` answers the latter and stays a single bare line.
+//
+// It lives in one function because there are two entry points, the dispatcher
+// above and the Cobra command, and they used to disagree: the Cobra one printed
+// the bare version with no inventory. It was unreachable, since the dispatcher
+// returns first, so the divergence was invisible until the intercept moved.
+func printToolVersionAndProviders() {
+	fmt.Printf("urnet-tools %s\n", ToolVersion)
+	providers := Discover()
+	if len(providers) == 0 {
+		fmt.Println("  no providers discovered")
+		return
+	}
+	for _, p := range providers {
+		status := "running"
+		if !p.Running {
+			status = "stopped"
+		}
+		stale := ""
+		if p.BinaryDeleted {
+			stale = " (disk binary stale — restart needed)"
+		}
+		version := p.Version
+		if version == "" && !p.Running {
+			version = "(no binary)"
+		}
+		fmt.Printf("  %s: %s (%s, pid %d)%s\n",
+			providerLabel(p), version, status, p.PID, stale)
+	}
 }
