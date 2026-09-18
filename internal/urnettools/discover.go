@@ -159,13 +159,6 @@ var (
 // Discover returns every provider on the box: running processes across all
 // users plus stopped systemd units. Sorted by user then unit for stable
 // output.
-// discoverProcessesFn and discoverStoppedFn are stub seams so tests can
-// isolate Discover() from the host's /proc scan and systemd enumeration.
-var (
-	discoverProcessesFn = discoverProcesses
-	discoverStoppedFn   = discoverStopped
-)
-
 func Discover() []Provider {
 	all := discoverProcessesFn()
 	// Platform hook for stopped-unit / lifecycle-based discovery. On Linux
