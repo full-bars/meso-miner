@@ -365,7 +365,9 @@ func TestHotSwapParentPID1ExecveSuccess(t *testing.T) {
 	})
 
 	// Simulate candidate announcing READY on childFile
+	childDone := make(chan struct{})
 	go func() {
+		defer close(childDone)
 		childReader := bufio.NewReader(childFile)
 		_ = writeHotswapMessage(childFile, HotswapMessage{
 			Type:    HotswapMsgReady,
@@ -389,6 +391,12 @@ func TestHotSwapParentPID1ExecveSuccess(t *testing.T) {
 		// success
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for in-place execve call")
+	}
+
+	select {
+	case <-childDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for candidate goroutine to finish")
 	}
 
 	if !coordinatorYielded {
