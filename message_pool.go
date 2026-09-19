@@ -540,9 +540,12 @@ var pcToTag atomic.Pointer[map[[2]uintptr]uint8]
 // where the old implementation's per-Put lock hurt most.
 func debugTag() uint8 {
 	var pcs [2]uintptr
-	// Frames: 0=this func, 1=MessagePoolGetDetailed, 2=the Get call site —
-	// matching the old runtime.Caller(2) semantics for attribution.
-	n := runtime.Callers(2, pcs[:])
+	// Frames: 0=runtime.Callers, 1=debugTag, 2=the public pool function that
+	// called debugTag (MessagePoolGet, MessagePoolCopy, ProtoMarshal, ...),
+	// 3=the external call site we want to attribute. Every debugTag caller
+	// must therefore be a public pool function invoked directly by client
+	// code, never a wrapper around another public pool function.
+	n := runtime.Callers(3, pcs[:])
 	if n < 1 {
 		return 0
 	}
@@ -562,8 +565,7 @@ func debugTag() uint8 {
 		}
 	}
 
-	// Cold path: first sighting of this call site (or tag collision).
-	// Register PC pair → tag with Copy-On-Write.
+	// Cold path: first sighting of this call site.
 	debugStateLock.Lock()
 	defer debugStateLock.Unlock()
 	if m := pcToTag.Load(); m != nil {
@@ -571,7 +573,31 @@ func debugTag() uint8 {
 			return t
 		}
 	}
-	// Create new map with this key added.
+	return registerDebugTagLocked(key, pcs, tag)
+}
+
+// registerDebugTagLocked assigns a tag to a newly seen call site and records
+// its caller string. Tags are 8-bit, so two call sites can hash to the same
+// tag; because the leak report aggregates counters per tag, a shared tag would
+// make it impossible to tell which site leaked. A hash collision therefore
+// probes for the next unused tag (0 is reserved for "untagged"). Only when
+// all 255 tags are taken do call sites share one. Caller holds debugStateLock.
+func registerDebugTagLocked(key [2]uintptr, pcs [2]uintptr, hashed uint8) uint8 {
+	tag := hashed
+	for i := 0; i < 256; i++ {
+		candidate := hashed + uint8(i)
+		if candidate == 0 {
+			continue
+		}
+		if _, used := tagCallers[candidate]; !used {
+			tag = candidate
+			break
+		}
+	}
+	if tag == 0 {
+		tag = 1
+	}
+
 	newM := make(map[[2]uintptr]uint8)
 	if m := pcToTag.Load(); m != nil {
 		for k, v := range *m {
@@ -581,8 +607,6 @@ func debugTag() uint8 {
 	newM[key] = tag
 	pcToTag.Store(&newM)
 
-	// Also register the caller string for the leak report (for this tag).
-	// Multiple PC pairs can map to the same tag — merge their callers.
 	callers, ok := tagCallers[tag]
 	if !ok {
 		callers = map[string]bool{}
@@ -725,7 +749,14 @@ func MessagePoolReadAllWithTag(r io.Reader, tag uint8) ([]byte, error) {
 }
 
 func MessagePoolCopy(message []byte) []byte {
-	b, _ := MessagePoolCopyDetailed(message)
+	// Stamp the tag here, not via MessagePoolCopyDetailed: debugTag attributes
+	// the frame that called the public pool function, so an extra wrapper
+	// frame would make every MessagePoolCopy caller share one tag.
+	var tag uint8
+	if debugTags {
+		tag = debugTag()
+	}
+	b, _ := MessagePoolCopyDetailedWithTag(message, tag)
 	return b
 }
 
@@ -744,7 +775,12 @@ func MessagePoolCopyDetailedWithTag(message []byte, tag uint8) ([]byte, bool) {
 }
 
 func MessagePoolGet(n int) []byte {
-	b, _ := MessagePoolGetDetailed(n)
+	// See MessagePoolCopy: stamp the tag at the public-function depth.
+	var tag uint8
+	if debugTags {
+		tag = debugTag()
+	}
+	b, _ := MessagePoolGetDetailedWithTag(n, tag)
 	return b
 }
 

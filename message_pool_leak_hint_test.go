@@ -1,6 +1,7 @@
 package connect
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -36,6 +37,9 @@ func TestMessagePoolLeakHintAttribution(t *testing.T) {
 	if leaked == nil {
 		t.Fatal("MessagePoolGet(2048) returned nil")
 	}
+	// Cleanup runs after the assertions, so the leak stays visible to
+	// MessagePoolLeakHint while the pool and its counters end up balanced.
+	t.Cleanup(func() { MessagePoolReturn(leaked) })
 	hints = MessagePoolLeakHint(10)
 	found := false
 	for _, h := range hints {
@@ -58,8 +62,60 @@ func TestMessagePoolLeakHintRequiresDebugTags(t *testing.T) {
 	debugTags = false
 	t.Cleanup(func() { debugTags = true })
 	ResetMessagePoolStats()
-	_ = MessagePoolGet(64)
+	off := MessagePoolGet(64)
+	t.Cleanup(func() { MessagePoolReturn(off) })
 	if hints := MessagePoolLeakHint(5); len(hints) != 0 {
 		t.Fatalf("MessagePoolLeakHint must be empty when debugTags is off, got %v", hints)
+	}
+}
+
+// The leak report is only useful if the caller it names is the code that
+// acquired the buffer, not a pool wrapper frame. Two distinct call sites of
+// the same public getter must also get distinct tags.
+func TestMessagePoolLeakHintNamesExternalCaller(t *testing.T) {
+	ResetMessagePoolStats()
+	first := MessagePoolGet(2048)
+	t.Cleanup(func() { MessagePoolReturn(first) })
+	second := MessagePoolGet(2048)
+	t.Cleanup(func() { MessagePoolReturn(second) })
+
+	hints := MessagePoolLeakHint(10)
+	tags := map[uint8]bool{}
+	for _, h := range hints {
+		if h.Leaked == 0 {
+			continue
+		}
+		tags[h.Tag] = true
+		if !strings.Contains(h.Caller, "message_pool_leak_hint_test.go") {
+			t.Errorf("tag %d caller %q does not name the acquiring test file", h.Tag, h.Caller)
+		}
+		if strings.Contains(h.Caller, "message_pool.go") {
+			t.Errorf("tag %d caller %q names a pool wrapper frame", h.Tag, h.Caller)
+		}
+	}
+	if len(tags) != 2 {
+		t.Fatalf("two distinct MessagePoolGet call sites must get two tags, got %d: %v", len(tags), hints)
+	}
+}
+
+// A hash collision between two call sites must yield distinct tags so the
+// per-tag leak counters stay attributable.
+func TestRegisterDebugTagLockedAvoidsCollisions(t *testing.T) {
+	debugStateLock.Lock()
+	defer debugStateLock.Unlock()
+
+	// Register two fake sites that hash to the same tag.
+	const hashed = uint8(200)
+	a := registerDebugTagLocked([2]uintptr{0xA1, 0xA2}, [2]uintptr{}, hashed)
+	b := registerDebugTagLocked([2]uintptr{0xB1, 0xB2}, [2]uintptr{}, hashed)
+	t.Cleanup(func() {
+		delete(tagCallers, a)
+		delete(tagCallers, b)
+	})
+	if a == 0 || b == 0 {
+		t.Fatalf("tag 0 is reserved for untagged buffers, got %d and %d", a, b)
+	}
+	if a == b {
+		t.Fatalf("colliding call sites must get distinct tags, both got %d", a)
 	}
 }
