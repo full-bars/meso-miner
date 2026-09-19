@@ -1,11 +1,11 @@
 # ⛓ UrNetwork v3.23 Fix
 
-[![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/full-bars/urnetwork-3.23-fix?utm_source=oss&utm_medium=github&utm_campaign=full-bars%2Furnetwork-3.23-fix&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)](https://coderabbit.ai)
-[![CI](https://github.com/full-bars/urnetwork-3.23-fix/actions/workflows/build.yml/badge.svg)](https://github.com/full-bars/urnetwork-3.23-fix/actions)
-![Go Version](https://img.shields.io/github/go-mod/go-version/full-bars/urnetwork-3.23-fix?labelColor=171717&color=FF570A)
-![Release](https://img.shields.io/github/v/release/full-bars/urnetwork-3.23-fix?labelColor=171717&color=FF570A)
-![Language](https://img.shields.io/github/languages/top/full-bars/urnetwork-3.23-fix?labelColor=171717&color=FF570A)
-![Activity](https://img.shields.io/github/commit-activity/m/full-bars/urnetwork-3.23-fix?labelColor=171717&color=FF570A)
+[![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/full-bars/meso-miner?utm_source=oss&utm_medium=github&utm_campaign=full-bars%2Fmeso-miner&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)](https://coderabbit.ai)
+[![CI](https://github.com/full-bars/meso-miner/actions/workflows/build.yml/badge.svg)](https://github.com/full-bars/meso-miner/actions)
+![Go Version](https://img.shields.io/github/go-mod/go-version/full-bars/meso-miner?labelColor=171717&color=FF570A)
+![Release](https://img.shields.io/github/v/release/full-bars/meso-miner?labelColor=171717&color=FF570A)
+![Language](https://img.shields.io/github/languages/top/full-bars/meso-miner?labelColor=171717&color=FF570A)
+![Activity](https://img.shields.io/github/commit-activity/m/full-bars/meso-miner?labelColor=171717&color=FF570A)
 
 A high-performance, high-visibility fork of the **UrNetwork Connect** provider, based on the stable **v3.23** engine. Tuned for professional providers managing large proxy lists, high throughput, and production-grade operations.
 
@@ -59,31 +59,31 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 **🐧 Linux (systemd)**
 
 ```sh
-curl -fSsL https://dl.fullbars.xyz/install.sh | sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh
 ```
 
 **🍎 macOS (launchd)**
 
 ```sh
-curl -fSsL https://dl.fullbars.xyz/install-mac.sh | sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh
 ```
 
 **🪟 Windows (PowerShell)**
 
 ```powershell
-irm https://dl.fullbars.xyz/install-win.ps1 | iex
+irm https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Win32.ps1 | iex
 ```
 
 **🐋 Docker**
 
 ```sh
-docker pull ghcr.io/full-bars/urnetwork-3.23-fix:latest
+docker pull ghcr.io/full-bars/meso-miner:latest
 ```
 
 **🐋 Docker (management wrapper)**
 
 ```sh
-curl -fSsL https://dl.fullbars.xyz/urnet-docker.sh | sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/install-urnet-docker.sh | sh
 ```
 
 ### Uninstall
@@ -91,7 +91,7 @@ curl -fSsL https://dl.fullbars.xyz/urnet-docker.sh | sh
 **🐧 Linux**
 
 ```sh
-curl -fSsL https://dl.fullbars.xyz/uninstall.sh | sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Uninstall_Linux.sh | sh
 ```
 
 **🍎 macOS**
@@ -101,13 +101,13 @@ Manual — see [docs/Installation.md](docs/Installation.md).
 **🪟 Windows (PowerShell)**
 
 ```powershell
-irm https://dl.fullbars.xyz/uninstall-win.ps1 | iex
+irm https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Uninstall_Win32.ps1 | iex
 ```
 
 **🐋 Docker**
 
 ```sh
-docker rm -f <container> && docker rmi ghcr.io/full-bars/urnetwork-3.23-fix:latest
+docker rm -f <container> && docker rmi ghcr.io/full-bars/meso-miner:latest
 ```
 
 **🐋 Docker (management wrapper)**
@@ -133,7 +133,7 @@ walkthrough, including the `.txt.txt` extension trap: [Adding Proxies](docs/Addi
 > [!NOTE]
 > Since v3.23.0-fix.27.0, `urnet-tools` is a provider-aware Go binary (the legacy POSIX shell + PowerShell variants are retired). It discovers every provider on the box and **refuses to act on an ambiguous target** — on multi-provider machines, pass `--unit` / `--user` / `--network` / `--network-id` / `--state-dir`. See [docs/urnet-tools-go.md](docs/urnet-tools-go.md).
 >
-> Docker-only deployments: the provider runs in a container, but the management tool (`urnet-docker`) runs **on the docker host, outside the container**. Install it with the one-liner above (use `curl -fSsL https://dl.fullbars.xyz/urnet-docker.sh | sh -s -- urnet-tools` for the systemd variant; GitHub fallback: `curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh | sh` (use `| sh -s -- urnet-tools` for the systemd variant)). The tool self-updates afterward (`urnet-docker update`).
+> Docker-only deployments: the provider runs in a container, but the management tool (`urnet-docker`) runs **on the docker host, outside the container**. Install it with the one-liner above (use `curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/install-urnet-docker.sh | sh -s -- urnet-tools` for the systemd variant). The tool self-updates afterward (`urnet-docker update`).
 
 ### 🐋 Docker (Production-Ready)
 
@@ -155,7 +155,7 @@ docker run -d \
   -v urnetwork_config:/root/.urnetwork \
   -v /path/to/proxy.txt:/app/proxy.txt \
   -e URNETWORK_AUTH_CODE='YOUR_AUTH_CODE_HERE' \
-  ghcr.io/full-bars/urnetwork-3.23-fix:latest
+  ghcr.io/full-bars/meso-miner:latest
 ```
 
 **Key env vars:**
@@ -265,8 +265,8 @@ dashboard. See [Monitoring](docs/Monitoring.md).
 
 **Wiki:**
 
-- [Online GitHub Wiki](https://github.com/full-bars/urnetwork-3.23-fix/wiki)
-- [CI and Release Process](https://github.com/full-bars/urnetwork-3.23-fix/wiki/CI-and-Release-Process)
+- [Online GitHub Wiki](https://github.com/full-bars/meso-miner/wiki)
+- [CI and Release Process](https://github.com/full-bars/meso-miner/wiki/CI-and-Release-Process)
 
 ---
 

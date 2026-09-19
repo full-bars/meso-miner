@@ -124,7 +124,7 @@ See [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) for the full directory layout. 
 ## Quick Start: Install the Provider
 
 ```bash
-curl -fsSL https://dl.fullbars.xyz/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh
 ```
 
 The same script becomes the `urnet-tools` CLI after installation. Full install docs: [docs/Installation.md](docs/Installation.md).
@@ -156,12 +156,12 @@ Full proxy docs: [docs/Proxy-Management.md](docs/Proxy-Management.md), [docs/Pro
 Full guide: [docs/Docker-Deployment.md](docs/Docker-Deployment.md).
 
 ```bash
-docker pull ghcr.io/full-bars/urnetwork-3.23-fix:latest
+docker pull ghcr.io/full-bars/meso-miner:latest
 docker run -d \
   -e USER_AUTH=email@example.com \
   -e PASSWORD=secret \
   -v /path/to/proxies.txt:/app/proxies.txt:ro \
-  ghcr.io/full-bars/urnetwork-3.23-fix:latest
+  ghcr.io/full-bars/meso-miner:latest
 ```
 
 ## Performance Tuning

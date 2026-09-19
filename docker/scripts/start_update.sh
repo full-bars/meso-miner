@@ -19,7 +19,7 @@ log "[INFO] Starting provider update process"
 # Upstream repo constant: only OUR fork is a valid update source. The
 # upstream urnetwork/* repos ship the vanilla provider — installing from them
 # would silently replace this fork's hardened binary, so they are never named.
-readonly UPSTREAM_REPO="full-bars/urnetwork-3.23-fix"
+readonly UPSTREAM_REPO="full-bars/meso-miner"
 
 # === Function to download release tar.gz from GitHub API ===
 Download_API() {
@@ -27,7 +27,7 @@ Download_API() {
 
     log "[INFO] Download_API → Repo: $UPSTREAM_REPO | Suffix: $suffix"
 
-    local API="https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/latest"
+    local API="https://api.github.com/repos/full-bars/meso-miner/releases/latest"
     local release_url
     release_url=$(curl -s "$API" | jq -r '.url')
     [ -n "$release_url" ] && [ "$release_url" != "null" ] || {

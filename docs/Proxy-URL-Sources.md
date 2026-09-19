@@ -126,7 +126,7 @@ docker run -d \
   -e BUILD=jwt \
   -e PROXY_URL='https://example.com/your-proxy-list.txt' \
   -v /path/to/your/proxy.txt:/app/proxy.txt \
-  ghcr.io/full-bars/urnetwork-3.23-fix:latest YOUR_AUTH_CODE_HERE
+  ghcr.io/full-bars/meso-miner:latest YOUR_AUTH_CODE_HERE
 ```
 
 `PROXY_URL` and `-v .../proxy.txt` can be used together — the URL source adds on top of whatever's in the mounted file.

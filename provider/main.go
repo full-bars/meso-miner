@@ -3007,7 +3007,12 @@ func provide(opts docopt.Opts) {
 	}
 
 	go connect.HandleError(func() { runHealthHeartbeat(ctx, provideStartTime, os.Getenv("URNETWORK_PROFILE")) })
-	_ = watcherName // hub reporter display name; hub reporting is stripped on meso-miner
+	go connect.HandleError(func() {
+		runBandwidthReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
+	})
+	go connect.HandleError(func() {
+		runHeartbeatReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
+	})
 	go connect.HandleError(func() { runJWTRefresher(ctx, apiUrl) })
 	go connect.HandleError(func() { runEarningWindows(ctx) })
 	go connect.HandleError(func() { runLifetimeCollector(ctx) })
@@ -4247,37 +4252,6 @@ func proxyAuthRetryDelay(err error, attempt int) time.Duration {
 		delay = 15 * time.Second
 	}
 	return delay
-}
-
-// nodeNameOverridePath returns ~/.urnetwork/node_name, a file an operator can
-// write at any time to change the node identity reported to the fleet without
-// restarting. An empty file or missing file falls back to the startup hostname.
-func nodeNameOverridePath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".urnetwork", "node_name"), nil
-}
-
-// resolveNodeName checks the control-socket state first, then the legacy
-// override file, then startupName (the hostname captured at process start).
-// Re-resolved on every call so a change takes effect on the reporter's next
-// tick.
-func resolveNodeName(startupName string) string {
-	if v, ok := globalControlState.get("node_name"); ok && v != "" {
-		return v
-	}
-
-	path, err := nodeNameOverridePath()
-	if err == nil {
-		if b, err := os.ReadFile(path); err == nil {
-			if v := strings.TrimSpace(string(b)); v != "" {
-				return v
-			}
-		}
-	}
-	return startupName
 }
 
 // providerDescription builds the display-name string sent as the client

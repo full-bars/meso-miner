@@ -1,7 +1,7 @@
 # Project Structure
 
 ```
-urnetwork-3.23-fix/
+meso-miner/
 ├── *.go                          # Core network stack (root package)
 ├── go.mod / go.sum               # Module: github.com/urnetwork/connect (Go 1.27)
 ├── Dockerfile                    # Alpine multi-arch provider image

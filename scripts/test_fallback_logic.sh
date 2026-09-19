@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Mock environment
-api_base="https://api.github.com/repos/full-bars/urnetwork-3.23-fix"
+api_base="https://api.github.com/repos/full-bars/meso-miner"
 
 get_version_from_api_response () 
 {    
@@ -37,9 +37,9 @@ if [ -z "$latest_version" ]; then
     echo "--> [Fallback triggered] API failed, using web scraping trick..."
     if command -v curl > /dev/null; then
         # Hit github.com directly (no unauthenticated rate limits)
-        tag_url=$(curl -Ls -o /dev/null -w %{url_effective} "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest")
+        tag_url=$(curl -Ls -o /dev/null -w %{url_effective} "https://github.com/full-bars/meso-miner/releases/latest")
         echo "--> tag_url resolved to: $tag_url"
-        if [ -n "$tag_url" ] && [ "$tag_url" != "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest" ]; then
+        if [ -n "$tag_url" ] && [ "$tag_url" != "https://github.com/full-bars/meso-miner/releases/latest" ]; then
             latest_version="${tag_url##*/}"
         fi
     fi

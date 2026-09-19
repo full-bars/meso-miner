@@ -32,7 +32,7 @@ You need:
 ### 1. Install
 
 ```sh
-curl -fSsL https://dl.fullbars.xyz/install.sh | sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh
 ```
 
 This creates:
@@ -87,7 +87,7 @@ The summary displays proxy source breakdown (file/URL/internal), health state co
 ### 1. Install
 
 ```sh
-curl -fSsL https://dl.fullbars.xyz/install-mac.sh | sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh
 ```
 
 This is the same installer as Linux but uses `launchd` instead of `systemd`. It creates:
@@ -133,7 +133,7 @@ Logs live at `~/Library/Logs/com.urnetwork.provider/stdout.log` and `stderr.log`
 ### 1. Install
 
 ```powershell
-powershell -c "irm https://dl.fullbars.xyz/install-win.ps1 | iex"
+powershell -c "irm https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Win32.ps1 | iex"
 ```
 
 No admin rights required. This installs:
@@ -180,7 +180,7 @@ Works the same way on Linux, macOS, and Windows — anywhere Docker runs.
 ### 1. Run the container
 
 ```sh
-docker pull ghcr.io/full-bars/urnetwork-3.23-fix:latest
+docker pull ghcr.io/full-bars/meso-miner:latest
 ```
 
 **Linux/macOS:**
@@ -201,7 +201,7 @@ docker run -d \
   -v ~/proxies.txt:/app/proxies.txt \
   -e BUILD=jwt \
   -e URNETWORK_AUTH_CODE="<your-auth-code>" \
-  ghcr.io/full-bars/urnetwork-3.23-fix:latest
+  ghcr.io/full-bars/meso-miner:latest
 ```
 
 **Windows (PowerShell):**
@@ -222,7 +222,7 @@ docker run -d `
   -v "$env:USERPROFILE\proxies.txt:/app/proxies.txt" `
   -e BUILD=jwt `
   -e URNETWORK_AUTH_CODE="<your-auth-code>" `
-  ghcr.io/full-bars/urnetwork-3.23-fix:latest
+  ghcr.io/full-bars/meso-miner:latest
 ```
 
 The provider will find and load the proxy file automatically on startup. If you need to add proxies after the container is already running, use:
