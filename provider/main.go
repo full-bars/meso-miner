@@ -3932,11 +3932,7 @@ func provide(opts docopt.Opts) {
 	// with new creds, "added 100" printed, daemon kept dialing the old
 	// user). Deliberately capture the same *connect.ProxySettings pointers
 	// the goroutines below run against.
-	if len(allProxySettings) > 0 {
-		for _, s := range allProxySettings {
-			reloader.runningAuth[s.Address] = s
-		}
-	}
+	reloader.seedRunningAuth(allProxySettings)
 	reloader.StartWatcher(ctx)
 	// Enforce an operator trim cap immediately at startup. The initial launch
 	// loop spawns every entry in the source, so without this the first reload
