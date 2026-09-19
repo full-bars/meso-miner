@@ -32,15 +32,15 @@ func TestSameAuth(t *testing.T) {
 		}
 	})
 	t.Run("same credentials equal", func(t *testing.T) {
-		a := &connect.ProxySettings{Auth: &proxy.Auth{User: "sppmr4vcnj", Password: "naIi5=EuO4ns5Fis5h"}}
-		b := &connect.ProxySettings{Auth: &proxy.Auth{User: "sppmr4vcnj", Password: "naIi5=EuO4ns5Fis5h"}}
+		a := &connect.ProxySettings{Auth: &proxy.Auth{User: "test-user", Password: "test-pass"}}
+		b := &connect.ProxySettings{Auth: &proxy.Auth{User: "test-user", Password: "test-pass"}}
 		if !sameAuth(a, b) {
 			t.Fatal("identical credentials must compare equal")
 		}
 	})
 	t.Run("credential rotation detected", func(t *testing.T) {
-		oldCred := &connect.ProxySettings{Auth: &proxy.Auth{User: "sppmr4vcnj", Password: "old-pass"}}
-		newCred := &connect.ProxySettings{Auth: &proxy.Auth{User: "user-sppmr4vcnj-country-us-city-los_angeles", Password: "new-pass"}}
+		oldCred := &connect.ProxySettings{Auth: &proxy.Auth{User: "test-user", Password: "old-pass"}}
+		newCred := &connect.ProxySettings{Auth: &proxy.Auth{User: "test-user-rotated", Password: "new-pass"}}
 		if sameAuth(oldCred, newCred) {
 			t.Fatal("different credentials must not compare equal (LA7 paste incident)")
 		}
@@ -130,12 +130,12 @@ func TestProxyAddRotatesCredentials(t *testing.T) {
 	t.Setenv("HOME", dir)
 
 	writeProxyConfigForTest(t, filepath.Join(dir, ".urnetwork"), map[string]string{
-		"1.2.3.4:1080:olduser:oldpass": "",
-		"9.9.9.9:1080":                 "",
+		"192.0.2.4:1080:olduser:oldpass": "",
+		"192.0.2.9:1080":                 "",
 	})
 
 	opts := docopt.Opts{
-		"<key_address>": []string{"1.2.3.4:1080:newuser:newpass"},
+		"<key_address>": []string{"192.0.2.4:1080:newuser:newpass"},
 		"-f":            true,
 	}
 	proxyAdd(opts)
@@ -144,13 +144,13 @@ func TestProxyAddRotatesCredentials(t *testing.T) {
 	if len(got.Servers) != 2 {
 		t.Fatalf("want 2 servers after rotation (replaced 1, kept 1), got %d: %v", len(got.Servers), got.Servers)
 	}
-	if _, ok := got.Servers["1.2.3.4:1080:newuser:newpass"]; !ok {
+	if _, ok := got.Servers["192.0.2.4:1080:newuser:newpass"]; !ok {
 		t.Fatalf("new credential entry missing: %v", got.Servers)
 	}
-	if _, ok := got.Servers["1.2.3.4:1080:olduser:oldpass"]; ok {
+	if _, ok := got.Servers["192.0.2.4:1080:olduser:oldpass"]; ok {
 		t.Fatalf("old credential entry was not rotated away: %v", got.Servers)
 	}
-	if _, ok := got.Servers["9.9.9.9:1080"]; !ok {
+	if _, ok := got.Servers["192.0.2.9:1080"]; !ok {
 		t.Fatalf("unrelated proxy must survive: %v", got.Servers)
 	}
 }
@@ -164,9 +164,9 @@ func TestProxyAddMultiProxyInlineCreds(t *testing.T) {
 
 	opts := docopt.Opts{
 		"<key_address>": []string{
-			"1.1.1.1:1080:userA:passA",
-			"2.2.2.2:1080:userB:passB",
-			"3.3.3.3:1080",
+			"192.0.2.1:1080:userA:passA",
+			"192.0.2.2:1080:userB:passB",
+			"192.0.2.3:1080",
 		},
 		"-f": true,
 	}
@@ -182,28 +182,28 @@ func TestProxyAddMultiProxyInlineCreds(t *testing.T) {
 		byAddr[s.Address] = s
 	}
 
-	s1, ok := byAddr["1.1.1.1:1080"]
+	s1, ok := byAddr["192.0.2.1:1080"]
 	if !ok {
-		t.Fatal("missing setting for 1.1.1.1:1080")
+		t.Fatal("missing setting for 192.0.2.1:1080")
 	}
 	if s1.Auth == nil || s1.Auth.User != "userA" || s1.Auth.Password != "passA" {
-		t.Errorf("1.1.1.1:1080 should have userA/passA credentials, got %v", s1.Auth)
+		t.Errorf("192.0.2.1:1080 should have userA/passA credentials, got %v", s1.Auth)
 	}
 
-	s2, ok := byAddr["2.2.2.2:1080"]
+	s2, ok := byAddr["192.0.2.2:1080"]
 	if !ok {
-		t.Fatal("missing setting for 2.2.2.2:1080")
+		t.Fatal("missing setting for 192.0.2.2:1080")
 	}
 	if s2.Auth == nil || s2.Auth.User != "userB" || s2.Auth.Password != "passB" {
-		t.Errorf("2.2.2.2:1080 should have userB/passB credentials, got %v", s2.Auth)
+		t.Errorf("192.0.2.2:1080 should have userB/passB credentials, got %v", s2.Auth)
 	}
 
-	s3, ok := byAddr["3.3.3.3:1080"]
+	s3, ok := byAddr["192.0.2.3:1080"]
 	if !ok {
-		t.Fatal("missing setting for 3.3.3.3:1080")
+		t.Fatal("missing setting for 192.0.2.3:1080")
 	}
 	if s3.Auth != nil {
-		t.Errorf("3.3.3.3:1080 should have no credentials, got %v", s3.Auth)
+		t.Errorf("192.0.2.3:1080 should have no credentials, got %v", s3.Auth)
 	}
 }
 
@@ -215,7 +215,7 @@ func TestProxyReloader_ReloadRotationExecution(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("DISABLE_DIRECT_IP", "1")
 
-	proxyAddr := "1.2.3.4:1080"
+	proxyAddr := "192.0.2.4:1080"
 	oldSettings := &connect.ProxySettings{
 		Network: "tcp",
 		Address: proxyAddr,
@@ -308,7 +308,7 @@ func TestStartupRunningAuthSeeding(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("DISABLE_DIRECT_IP", "1")
 
-	proxyKey := "1.2.3.4:1080:user:pass"
+	proxyKey := "192.0.2.4:1080:user:pass"
 	cfg := ProxyConfig{
 		Servers: map[string]string{proxyKey: ""},
 	}
@@ -369,7 +369,7 @@ func TestProxyReloader_UnrecordedAuthTriggersRotation(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("DISABLE_DIRECT_IP", "1")
 
-	proxyAddr := "1.2.3.4:1080"
+	proxyAddr := "192.0.2.4:1080"
 	cfg := ProxyConfig{
 		Servers: map[string]string{
 			fmt.Sprintf("%s:u:p", proxyAddr): "",
@@ -427,9 +427,9 @@ func TestProxyReloader_RemovedProxyCleansUpRunningAuth(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("DISABLE_DIRECT_IP", "1")
 
-	proxyAddr := "1.2.3.4:1080"
+	proxyAddr := "192.0.2.4:1080"
 	// Keep one proxy so desired set is non-empty (reload won't early-return on empty)
-	keptAddr := "9.9.9.9:1080"
+	keptAddr := "192.0.2.9:1080"
 	cfg := ProxyConfig{
 		Servers: map[string]string{
 			keptAddr: "",
