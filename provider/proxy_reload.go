@@ -244,6 +244,22 @@ func (r *ProxyReloader) runningAuthFor(addr string) (*connect.ProxySettings, boo
 	return s, ok
 }
 
+// seedRunningAuth records the settings the startup loop launched each proxy
+// with. It must run before the first reload(): reload() treats a running proxy
+// with no recorded auth as "unknown, rotate", so an unseeded first pass would
+// cancel and relaunch every boot-launched proxy. The same pointers the running
+// goroutines use are stored, so later comparisons see exactly what is dialing.
+func (r *ProxyReloader) seedRunningAuth(settings []*connect.ProxySettings) {
+	r.cancelMapMu.Lock()
+	defer r.cancelMapMu.Unlock()
+	if r.runningAuth == nil {
+		r.runningAuth = make(map[string]*connect.ProxySettings, len(settings))
+	}
+	for _, s := range settings {
+		r.runningAuth[s.Address] = s
+	}
+}
+
 // sameAuth reports whether two proxy settings carry identical credentials
 // (both nil auth or identical user+password). Address/network are ignored —
 // those are the diff key; only the credentials decide whether a running
@@ -526,7 +542,9 @@ func (r *ProxyReloader) reload() {
 	// The rotated set is appended here: its addresses were already placed in
 	// `added` above (so they relaunch with the new auth in this same pass),
 	// and folding them into `removed` is what cancels the OLD goroutine.
+	rotatedSet := make(map[string]bool, len(rotated))
 	for _, addr := range rotated {
+		rotatedSet[addr] = true
 		removed = append(removed, addr)
 	}
 	for addr := range running {
@@ -640,7 +658,12 @@ func (r *ProxyReloader) reload() {
 		r.cancelMapMu.Unlock()
 
 		bw := connect.ProxyBandwidthByAddress(addr)
-		if bw == nil || bw.Clients.Load() == 0 {
+		// A rotated proxy is never drained: its old credentials are being
+		// replaced (usually because they are dead or revoked), the launch pass
+		// skips addresses that are still draining, and the drain loop has no
+		// deadline. Draining would keep the old credentials serving until the
+		// last client leaves, i.e. the rotation would not take effect.
+		if rotatedSet[addr] || bw == nil || bw.Clients.Load() == 0 {
 			cancel()
 			continue
 		}
