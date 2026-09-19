@@ -3906,8 +3906,21 @@ func provide(opts docopt.Opts) {
 		drainingProxies: make(map[string]context.CancelFunc),
 		directDone:      directStartupDone,
 		networkID:       currentNetworkId,
+		runningAuth:     make(map[string]*connect.ProxySettings),
 	}
 	reloader.StartWatcher(ctx)
+	// Seed runningAuth with the STARTUP launch settings. The startup loop
+	// above launched every proxy directly (before the reloader existed), so
+	// without this the rotation branch in reload() would see no recorded
+	// auth for boot-launched proxies, and re-pasting with new credentials
+	// would silently keep the old auth (LA7 incident). Deliberately
+	// capture the same *connect.ProxySettings pointers the goroutines
+	// below run against.
+	if len(allProxySettings) > 0 {
+		for _, s := range allProxySettings {
+			reloader.runningAuth[s.Address] = s
+		}
+	}
 	// Enforce an operator trim cap immediately at startup. The initial launch
 	// loop spawns every entry in the source, so without this the first reload
 	// reconciler tick (up to an hour later) would be the first time the cap
@@ -5002,6 +5015,23 @@ func proxyAdd(opts docopt.Opts) {
 			if ok {
 				user = proxyAuth.User
 				password = proxyAuth.Password
+			}
+		}
+
+		// Credential rotation: purge any existing entry for the same
+		// host:port whose credentials differ, so adding the same address
+		// with new credentials is a ROTATION, not a duplicate. The
+		// reloader diffs the desired set by address only (desiredSet[s.Address]),
+		// so two keys for one host:port with different user:pass made the new
+		// creds invisible — the same address was already "desired", the new
+		// creds were silently dropped, and the running proxy kept the old auth
+		// (LA7 incident 2026-09-18: 100 proxies pasted with new creds,
+		// "added 100" printed, daemon kept dialing the old user).
+		for existing := range proxyConfig.Servers {
+			existingAddress, _, _ := parseProxyAddress(existing)
+			if existingAddress == address && existing != proxyAddress {
+				delete(proxyConfig.Servers, existing)
+				fmt.Printf("rotated credentials for server %s\n", address)
 			}
 		}
 
