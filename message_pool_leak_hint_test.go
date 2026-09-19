@@ -119,3 +119,14 @@ func TestRegisterDebugTagLockedAvoidsCollisions(t *testing.T) {
 		t.Fatalf("colliding call sites must get distinct tags, both got %d", a)
 	}
 }
+
+// Tags with no outstanding buffers are not leak offenders and must not appear
+// in the report, even when fewer than the limit have real leaks.
+func TestMessagePoolLeakHintOmitsBalancedTags(t *testing.T) {
+	ResetMessagePoolStats()
+	b := MessagePoolGet(64)
+	MessagePoolReturn(b)
+	if hints := MessagePoolLeakHint(10); len(hints) != 0 {
+		t.Fatalf("balanced get/return must not be reported, got %v", hints)
+	}
+}

@@ -128,6 +128,7 @@ func writeProxyConfigForTest(t *testing.T, dir string, servers map[string]string
 func TestProxyAddRotatesCredentials(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
+	resetReloadTriggerForTest(t)
 
 	writeProxyConfigForTest(t, filepath.Join(dir, ".urnetwork"), map[string]string{
 		"192.0.2.4:1080:olduser:oldpass": "",
@@ -464,4 +465,52 @@ func TestProxyReloader_RemovedProxyCleansUpRunningAuth(t *testing.T) {
 	if _, ok := reloader.runningAuthFor(proxyAddr); ok {
 		t.Fatal("expected runningAuth entry to be purged for removed proxy")
 	}
+}
+
+// An existing entry whose credentials come from the Auths table is the same
+// credential as an inline user:pass form of the same address; adding it is not
+// a rotation and must not purge the existing mapping.
+func TestProxyAddKeepsEntryWithSameEffectiveCredentials(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	resetReloadTriggerForTest(t)
+
+	cfg := readProxyConfig()
+	cfg.Servers = map[string]string{"192.0.2.4:1080": "k1"}
+	cfg.Auths = map[string]*ProxyAuth{"k1": {User: "alice", Password: "secret"}}
+	if err := os.MkdirAll(filepath.Join(dir, ".urnetwork"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeProxyConfig(cfg)
+
+	proxyAdd(docopt.Opts{
+		"<key_address>": []string{"192.0.2.4:1080:alice:secret"},
+		"-f":            true,
+	})
+
+	got := readProxyConfig()
+	if _, ok := got.Servers["192.0.2.4:1080"]; !ok {
+		t.Fatalf("entry with the same effective credentials was purged: %v", got.Servers)
+	}
+}
+
+// resetReloadTriggerForTest isolates the process-global reload-trigger
+// debounce: proxyAdd writes the trigger, and a trailing time.AfterFunc from
+// one test must not recreate files under another test's HOME or suppress its
+// trigger writes.
+func resetReloadTriggerForTest(t *testing.T) {
+	t.Helper()
+	lastReloadTriggerTime.Lock()
+	oldDebounce := writeReloadTriggerDebounce
+	oldTS, oldPending := lastReloadTriggerTime.ts, lastReloadTriggerTime.pending
+	writeReloadTriggerDebounce = 0
+	lastReloadTriggerTime.ts = time.Time{}
+	lastReloadTriggerTime.pending = false
+	lastReloadTriggerTime.Unlock()
+	t.Cleanup(func() {
+		lastReloadTriggerTime.Lock()
+		writeReloadTriggerDebounce = oldDebounce
+		lastReloadTriggerTime.ts, lastReloadTriggerTime.pending = oldTS, oldPending
+		lastReloadTriggerTime.Unlock()
+	})
 }

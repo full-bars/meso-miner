@@ -400,8 +400,10 @@ func MessagePoolLeakHint(limit int) []MessagePoolLeakTag {
 		// the report with an astronomically-lying leak count. Clamp below
 		// zero and report honestly.
 		leaked := int64(a.taken) - int64(a.returned)
-		if leaked < 0 {
-			leaked = 0
+		if leaked <= 0 {
+			// Balanced (or over-returned) tags have no outstanding buffers;
+			// they are not leak offenders and must not pad the report.
+			continue
 		}
 		var returnedPct, reusedPct float64
 		if a.taken > 0 {
