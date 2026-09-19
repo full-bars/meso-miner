@@ -3297,9 +3297,7 @@ func provide(opts docopt.Opts) {
 							// Clean up proxyCancelMap so the reloader can
 							// relaunch this proxy if the operator refreshes
 							// the proxy list.
-							proxyCancelMu.Lock()
-							delete(proxyCancelMap, proxySettings.Address)
-							proxyCancelMu.Unlock()
+							deleteProxyCancelIfCurrent(&proxyCancelMu, proxyCancelMap, proxyCtx, proxySettings.Address)
 							return "", connect.Id{}, false, fmt.Errorf("proxy dropped after %s of continuous failure — %s", formatDuration(dropAge), cause)
 						}
 						// The 24h daily gate only applies after the first 3
@@ -3362,9 +3360,7 @@ func provide(opts docopt.Opts) {
 		if err != nil {
 			if proxySettings != nil {
 				if isURLSourced {
-					proxyCancelMu.Lock()
-					delete(proxyCancelMap, proxySettings.Address)
-					proxyCancelMu.Unlock()
+					deleteProxyCancelIfCurrent(&proxyCancelMu, proxyCancelMap, proxyCtx, proxySettings.Address)
 
 					if errors.Is(err, errProxyURLBelowBar) {
 						// Quality rejection: the proxy was filtered
@@ -3861,6 +3857,8 @@ func provide(opts docopt.Opts) {
 			proxyCtx, proxyCancel := context.WithCancel(ctx)
 			proxyCancelMu.Lock()
 			proxyCancelMap[proxySettings.Address] = proxyCancel
+			launchGen := beginProxyLaunch(proxySettings.Address)
+			proxyCtx = withProxyLaunchGen(proxyCtx, launchGen)
 			proxyCancelMu.Unlock()
 
 			stableID := proxySettings.Index
@@ -3870,7 +3868,7 @@ func provide(opts docopt.Opts) {
 			wg.Add(1)
 			go connect.HandleError(func() {
 				defer wg.Done()
-				defer connect.UnregisterProxy(stableID)
+				defer unregisterProxyIfCurrent(proxySettings.Address, launchGen, stableID)
 				defer proxyCancel()
 
 				if !backoffPacerWithDelay(baseDelay, staggerDuration, proxyCtx) {
@@ -5057,12 +5055,26 @@ func proxyAdd(opts docopt.Opts) {
 		// were silently dropped, and the running proxy kept the old auth
 		// (LA7 incident 2026-09-18: 100 proxies pasted with new creds,
 		// "added 100" printed, daemon kept dialing the old user).
-		for existing := range proxyConfig.Servers {
-			existingAddress, _, _ := parseProxyAddress(existing)
-			if existingAddress == address && existing != proxyAddress {
-				delete(proxyConfig.Servers, existing)
-				fmt.Printf("rotated credentials for server %s\n", address)
+		for existing, existingKey := range proxyConfig.Servers {
+			existingAddress, existingUser, existingPassword := parseProxyAddress(existing)
+			if existingAddress != address || existing == proxyAddress {
+				continue
 			}
+			// Compare EFFECTIVE credentials: a stored key can carry its
+			// credentials in the Auths table instead of in the server string,
+			// and an alternate representation of the same credentials is not
+			// a rotation.
+			if proxyConfig.Auths != nil {
+				if existingAuth, ok := proxyConfig.Auths[existingKey]; ok {
+					existingUser = existingAuth.User
+					existingPassword = existingAuth.Password
+				}
+			}
+			if existingUser == user && existingPassword == password {
+				continue
+			}
+			delete(proxyConfig.Servers, existing)
+			fmt.Printf("rotated credentials for server %s\n", address)
 		}
 
 		fmt.Printf(
