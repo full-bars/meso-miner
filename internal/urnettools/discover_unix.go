@@ -3,7 +3,9 @@
 package urnettools
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	osuser "os/user"
 	"path/filepath"
@@ -315,6 +317,26 @@ func isContainerCgroupComponent(comp string) bool {
 	return false
 }
 
+// classifyContainerUnknownNS is the pure decision core for the case where
+// the peer's mount namespace is UNREADABLE (EACCES/EPERM): a non-root tool
+// cannot readlink the ns of another user's process, which is exactly the
+// rootless podman/docker situation (their containers live under a subuid).
+// The namespace half of the usual classification is unavailable, so the
+// cgroup alone must not over-classify: the peer is foreign only when its
+// cgroup names a container runtime AND its cgroup content differs from the
+// tool's OWN cgroup. The difference test is essential on cgroup v1, where a
+// tool running inside a container sees /docker/<id> (or the runtime's own
+// scope) for its container siblings too — those same-container providers
+// must stay discoverable. An empty cgroup or an unreadable own cgroup
+// establishes nothing and is never classified foreign.
+func classifyContainerUnknownNS(cgroup, ourCgroup string) bool {
+	if cgroup == "" || ourCgroup == "" || cgroup == ourCgroup {
+		return false
+	}
+	// The runtime-marker scan is shared with the namespace-visible case.
+	return classifyContainerByNamespaceAndCgroup(true, cgroup)
+}
+
 // inForeignContainer reports whether pid runs in a container from this
 // tool's point of view. Two conditions must BOTH hold so legitimate host
 // processes with private namespaces are never skipped:
@@ -338,6 +360,26 @@ func inForeignContainer(pid int) bool {
 	}
 	theirs, err := os.Readlink(fmt.Sprintf("/proc/%d/ns/mnt", pid))
 	if err != nil {
+		// A permission failure reading THEIR namespace must not make the
+		// process look unclassifiable-clean: without this branch every
+		// container process returns false here (never skipped), surfacing
+		// rootless podman/docker providers as host ghosts. The
+		// peer's /proc/<pid>/cgroup is world-readable where ns is not, so
+		// classify on cgroup alone — but only against a DIFFERENT cgroup,
+		// so a tool running inside the same container still sees its
+		// siblings. Any other error (process gone mid-scan) keeps the
+		// conservative "unclassifiable -> keep" behavior.
+		if errors.Is(err, fs.ErrPermission) {
+			cg, cerr := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
+			if cerr != nil {
+				return false
+			}
+			ourCg, oerr := os.ReadFile("/proc/self/cgroup")
+			if oerr != nil {
+				return false
+			}
+			return classifyContainerUnknownNS(string(cg), string(ourCg))
+		}
 		return false
 	}
 	cg, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
