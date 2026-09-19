@@ -100,3 +100,32 @@ func TestReload_RotatedBusyProxy_IsNotDrained(t *testing.T) {
 		t.Fatalf("relaunched proxy must record the new credentials, got %+v ok=%v", got, ok)
 	}
 }
+
+// Rotating credentials relaunches the proxy in the same pass; it must keep its
+// state entry so the relaunch reuses the stable ID and persisted health.
+func TestReload_RotatedProxy_KeepsStateEntry(t *testing.T) {
+	const addr = "192.0.2.20:1080"
+	boot := &connect.ProxySettings{Network: "tcp", Address: addr, Auth: &proxy.Auth{User: "test-user", Password: "test-pass"}}
+	r, _ := bootLaunchedReloader(t, writeProxyFile(t, addr+":test-user:rotated-pass"), boot)
+	r.seedRunningAuth([]*connect.ProxySettings{boot})
+
+	state := &ProxyState{Proxies: map[string]ProxyEntry{addr: {ID: 7, Health: "up"}}}
+	if err := writeProxyState(state); err != nil {
+		t.Fatal(err)
+	}
+	r.state = state
+
+	r.reload()
+
+	after, err := readProxyState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept, ok := after.Proxies[addr]
+	if !ok {
+		t.Fatal("rotated proxy lost its state entry")
+	}
+	if kept.ID != 7 || kept.Health != "up" {
+		t.Fatalf("rotated proxy must keep ID 7 and health up, got ID=%d health=%q", kept.ID, kept.Health)
+	}
+}

@@ -650,7 +650,12 @@ func (r *ProxyReloader) reload() {
 		if !ok {
 			continue
 		}
-		delete(r.state.Proxies, addr)
+		// Keep the state entry of a rotated proxy: it is relaunched in this same
+		// pass, and dropping it would make the relaunch allocate a new ID and
+		// lose its persisted health, downtime and grading history.
+		if !rotatedSet[addr] {
+			delete(r.state.Proxies, addr)
+		}
 		// The goroutine for this address has now been cancelled; drop its
 		// recorded auth so a credential change is picked up on relaunch.
 		r.cancelMapMu.Lock()
