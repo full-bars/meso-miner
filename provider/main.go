@@ -5008,6 +5008,7 @@ func proxyAdd(opts docopt.Opts) {
 		proxyConfig.Servers = map[string]string{}
 	}
 
+keyAddressLoop:
 	for _, keyAddress := range allKeyAddress {
 		var key string
 		var proxyAddress string
@@ -5071,7 +5072,7 @@ func proxyAdd(opts docopt.Opts) {
 				}
 			}
 			if existingUser == user && existingPassword == password {
-				continue
+				continue keyAddressLoop
 			}
 			delete(proxyConfig.Servers, existing)
 			fmt.Printf("rotated credentials for server %s\n", address)
