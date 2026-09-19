@@ -2025,6 +2025,21 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 				reading := poolHealth.observe(inUse, totalCreated, interval)
 				tlog("❤️ [health][pool] %s\n",
 					poolHealthLine(reading, inUse, totalCreated, totalTaken, totalReturned))
+				// Leak attribution: with URNETWORK_POOL_DEBUG_TAGS=1 the
+				// pools stamp each allocation with its call site; when a
+				// verdict is not healthy, name the worst offending caller
+				// so the operator knows what code path is leaking before
+				// digging through 5 pool-size buckets of logs.
+				if reading.Verdict == poolVerdictLeak || reading.Verdict == poolVerdictWatch {
+					// Attribution is always on (debugTags defaults true), so
+					// name the worst offending caller for the operator.
+					if hints := connect.MessagePoolLeakHint(3); len(hints) > 0 {
+						for _, h := range hints {
+							tlog("❤️ [health][pool][leak] tag=%d caller=%s leaked=%d returned=%.2f%% (%.2f%% reused)\n",
+								h.Tag, h.Caller, h.Leaked, h.ReturnedPct, h.ReusedPct)
+						}
+					}
+				}
 			}
 		}
 
@@ -3898,6 +3913,7 @@ func provide(opts docopt.Opts) {
 	reloader := &ProxyReloader{
 		cancelMap:       proxyCancelMap,
 		cancelMapMu:     &proxyCancelMu,
+		runningAuth:     make(map[string]*connect.ProxySettings),
 		state:           proxyState,
 		sourcePath:      proxyFile,
 		parentCtx:       ctx,
@@ -3906,6 +3922,20 @@ func provide(opts docopt.Opts) {
 		drainingProxies: make(map[string]context.CancelFunc),
 		directDone:      directStartupDone,
 		networkID:       currentNetworkId,
+	}
+
+	// Seed runningAuth with the STARTUP launch settings. The startup loop
+	// above launched every proxy directly (before the reloader existed), so
+	// without this the rotation branch in reload() would see no recorded
+	// auth for boot-launched proxies, and re-pasting with new credentials
+	// would silently keep the old auth (LA7 incident: 100 proxies pasted
+	// with new creds, "added 100" printed, daemon kept dialing the old
+	// user). Deliberately capture the same *connect.ProxySettings pointers
+	// the goroutines below run against.
+	if len(allProxySettings) > 0 {
+		for _, s := range allProxySettings {
+			reloader.runningAuth[s.Address] = s
+		}
 	}
 	reloader.StartWatcher(ctx)
 	// Enforce an operator trim cap immediately at startup. The initial launch
@@ -5019,6 +5049,23 @@ func proxyAdd(opts docopt.Opts) {
 				if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
 					return
 				}
+			}
+		}
+
+		// Credential rotation: purge any existing entry for the same
+		// host:port whose credentials differ, so adding the same address
+		// with new credentials is a ROTATION, not a duplicate. The
+		// reloader diffs by address only (desiredSet[s.Address]), so two
+		// keys for one host:port with different user:pass made re-paste a
+		// no-op — the same address was already "desired", the new creds
+		// were silently dropped, and the running proxy kept the old auth
+		// (LA7 incident 2026-09-18: 100 proxies pasted with new creds,
+		// "added 100" printed, daemon kept dialing the old user).
+		for existing := range proxyConfig.Servers {
+			existingAddress, _, _ := parseProxyAddress(existing)
+			if existingAddress == address && existing != proxyAddress {
+				delete(proxyConfig.Servers, existing)
+				fmt.Printf("rotated credentials for server %s\n", address)
 			}
 		}
 

@@ -1,0 +1,81 @@
+[0m
+> build · deepseek/deepseek-v4-pro-0813
+[0m
+## Findings
+
+### 1. HIGH — Leak-contract tests snapshot the baseline *after* the exercising code, making the assertion vacuous
+`ip_send_backpressure_leak_test.go` (`TestTcp4BufferSendNonSynDropDoesNotDoubleReturn`), `ip_udp_write_pipeline_leak_test.go` (`TestUdpSequenceWritePipelineDrainsBuffersOnCancel`), `transfer_test.go` (`TestSendEncryptedControlReturnsPoolBufferOnCancel`), `transport_pt_queue_test.go` (`TestCombineRemoveOlderReturnsPooledBuffers`, `TestCombineDuplicateIndexReturnsPooledBuffer`).
+
+In every case the drop/cancel/`RemoveOlder` activity completes first, and *then* `baseTaken, baseReturned := waitForPoolBalance(t, 2048)` runs. A permanent leak (buffers taken and never returned) is already baked into that baseline, so the second snapshot is identical, `takenDelta == returnedDelta == 0`, and `takenDelta > returnedDelta` can never fire. Result: the tests now pass regardless of whether the leak they were written to catch has regressed — they test "did a background goroutine leak during my two adjacent snapshots", not "did this code path leak".
+
+**Fix:** capture the baseline *before* the exercising code, then run the code, then `waitForPoolBalance` and assert the delta. (Equivalently: snapshot→exercise→wait→snapshot.)
+
+### 2. HIGH — The double-return test no longer detects a double-return
+`TestTcp4BufferSendNonSynDropDoesNotDoubleReturn` previously asserted `ratio != 1.0`, which caught both a leak (`ratio < 1`) and an over-return (`ratio > 1`, the namesake "double return corrupts the pool" case). The replacement `takenDelta > returnedDelta` only detects the leak direction; an over-return makes `returnedDelta > takenDelta`, so `takenDelta > returnedDelta` is false and the test passes. The regression this test is named for is now unguarded.
+
+**Fix:** assert equality, e.g. `if takenDelta != returnedDelta { ... }` (or check both directions explicitly), so both leak and double-return fail the test.
+
+### 3. HIGH — Global mutex serializes every pool Get/Put on the packet path
+`debugTag()` (message_pool.go) takes `debugStateLock` (a package-global `sync.Mutex`) on *every* Get and Put, even in the "already seen this tag" case. That is a single contended cache line across every shard and every goroutine — it defeats the sharded design the pool exists to provide and is a far larger cost than the "low single-digit % CPU" the new comment claims. The tag is already persisted in each buffer's 13-byte header (`[1 byte tag]`), so Put doesn't need `debugTag()` at all.
+
+**Fix:** read the tag from the buffer header on Put; for the Get path, make the caller registry read-mostly (`sync.Map.Load`, or an atomic/`RWMutex` read for the common path with the write only on first-sight). Only consult the lock on the cold path.
+
+### 4. HIGH — Rotation does not cover proxies started at initial startup
+`runningAuth` is populated only in `reload()`'s add loop (proxy_reload.go). `runningAuthFor`'s own doc admits "initial startup loop populates cancelMap but not runningAuth". A daemon that loaded a large proxy file at boot — plausibly the LA7 population — has no `runningAuth` entries, so on re-paste `runningAuthFor(addr)` returns `ok=false`, the rotation branch is skipped, and those proxies keep the old creds until a restart. That is exactly the "running proxy keeps old creds forever" symptom the fix targets.
+
+**Fix:** record `runningAuth` in the initial startup launch path too (or route startup launches through `reload()`), and gate the rotation on that being in place rather than silently skipping.
+
+### 5. MEDIUM — `debugTag` skip level is off-by-one vs. the old code
+Old code used `runtime.Caller(2)` and `Caller(3)` (the Get/Put site and its caller). New code uses `runtime.Callers(3, pcs[:])`, which captures frames at skip **3 and 4** — one level deeper. The reported `caller=file:line` (`f.FileLine(pcs[0])`) points one frame above the actual Get/Put site, and the tag identity diverges from the old scheme. If the intent is to name where the buffer was taken, use `runtime.Callers(2, ...)`; otherwise the top-of-report caller will often be the caller-of-the-caller, which can be a generic loop/helper and hurt attribution precision.
+
+### 6. MEDIUM — `uint8` tag = 256 buckets → guaranteed collisions, mis-attributed
+A large codebase has far more than 256 Get/Put call sites. Two distinct sites that hash to the same `uint8` tag are both reported under whichever one was seen first, because the cold branch records only `pcs[0]` and only on first sight. Consequently `tagCallers[tag]` can never contain more than one entry, and the `map[string]bool` + `strings.Join(maps.Keys(...), "/")` in `MessagePoolLeakHint` is dead complexity. Under a real leak, the "worst offender" caller may be the wrong function.
+
+**Fix:** widen the tag (e.g. `uint16`/`uint32`), or record *all* colliding callers on first-sight misses and report them all; at minimum drop the misleading `maps.Keys`/join plumbing.
+
+### 7. MEDIUM — "URNETWORK_POOL_DEBUG_TAGS=1" messaging is misleading / dead code
+`debugTags` is now `var debugTags = true` with no env-var hook visible in this diff. `MessagePoolLeakHint`'s `if !debugTags → nil` and main.go's `else { "...attribution off — run with URNETWORK_POOL_DEBUG_TAGS=1..." }` branch are unreachable. The operator-facing message tells users to set an env var that (per this diff) does nothing.
+
+**Fix:** either actually read `os.Getenv("URNETWORK_POOL_DEBUG_TAGS")` in an `init()`, or reword the symptom message to say attribution is always on. Pick one.
+
+### 8. MEDIUM — Rotating a busy proxy may be deferred/skipped (the "still draining" problem)
+`reload()` routes rotated addresses through the *same* removal pass that does `ProxyBandwidthByAddress`/`Clients.Load()` client-drain/backoff logic. If the old proxy has active clients, cancellation can be deferred, and the add pass (which for rotated addresses skips the give-up backoff check but may still consult `isDraining`) can skip the relaunch, leaving the address cancelled for a full cycle — or briefly running two goroutines for one address. The "one reload, minimal gap" claim in the code comment doesn't account for this.
+
+**Fix:** confirm the add loop doesn't gate rotated addresses on `isDraining`, and that removal of a rotated address cancels immediately rather than through the graceful-drain path.
+
+### 9. MEDIUM — `sameAuth` only compares user+password
+If `connect.ProxySettings.Auth` carries any other credential material (scheme/token/extra headers), a change there won't be detected as "different" and no rotation fires. The function is also nil-pointer-fragile if either `*ProxySettings` were ever nil (currently unreachable, but worth a guard).
+
+**Fix:** compare the full credential value (or `reflect.DeepEqual` on Auth), and guard `a != nil && b != nil`.
+
+### 10. LOW — `TestUdp4BufferSendReturnsPacketOnBackpressureDrop` uses un-based absolute equality
+It asserts `returned != taken` (and `taken >= 2`) globally with no baseline, unlike its siblings. Any cross-test or background-goroutine imbalance in the 2048 bucket at that instant makes it flaky. Convert it to the same baseline+delta pattern.
+
+### 11. LOW — Unsigned underflow in the leak-hint math
+`Leaked := a.taken - a.returned` underflows to a huge `uint64` if a double-return ever makes `returned > taken`; that tag would sort to the *top* of the report as an astronomically leaked count. Same for `AllocatedPct`'s `a.taken - a.created` if `created > taken`.
+
+**Fix:** use signed arithmetic (`int64(a.taken) - int64(a.returned)`) and clamp negatives.
+
+### 12. LOW — `AllocatedPct` is misnamed and semantically wrong
+`AllocatedPct = 100 * (taken - created) / taken` is actually the **reused** (pool-hit) fraction — and main.go prints it as `(%.2f%% reused)`. The field/JSON key `allocated_pct` is the opposite of what it holds.
+
+**Fix:** rename `AllocatedPct`→`ReusedPct` / `json:"reused_pct"`.
+
+### 13. LOW — Diff as presented is incomplete (compilation/review hazard)
+The modified tests reference `waitForPoolBalance` and `ResetMessagePoolStats`, whose definitions (prompt says `pool_quiesce_test.go`) are **not among the 10 files in the diff**. I therefore cannot verify the stability-window semantics (point 5 of the review brief) or confirm the tests would compile. If that helper isn't actually added in this change, the package won't build.
+
+### 14. NIT — Contradictory comment and hand-wavy log ordering in the rotation paths
+(a) The `reload()` comment "those addresses were deliberately kept OUT of `added` above … re-added on the next reload pass" contradicts the code, which appends them to `added` in the same pass. (b) `proxyAdd` prints "rotated credentials for server %s" per-delete *before* the add step and before persistence is committed. Fix the misleading comment, and consider printing the rotation notice after the add is durable.
+
+### 15. NIT — Heartbeat leaks build-time paths
+`caller=file:line` emits absolute source paths (potentially build-machine home/module/vendor paths) into daemon logs on untrusted boxes. Minor, but consider trimming to `basename(file):line` or `package/file:line`.
+
+### 16. NIT — `encoding/binary` import not shown
+Only `sort` is added in the diff's import hunk, but the new `debugTag` uses `binary.LittleEndian`. Likely already imported elsewhere in the file, but verify it compiles.
+
+---
+
+## Verdict
+
+**Needs-work.** The rotation work is directionally correct and the server-paste purge plus `runningAuth` tracking is a reasonable design, but four issues must be fixed before merge: the leak-contract tests are now vacuous (baseline captured after the exercising code) and the double-return test no longer tests double-returns (findings 1–2); `debugTag` adds a global mutex on the hottest packet path and a likely off-by-one attribution frame (findings 3, 5); and rotation silently skips proxies launched at initial startup (finding 4), the exact "running proxy keeps old creds" case this change is meant to eliminate. The env-var messaging, 256-bucket tag collisions, and the missing `pool_quiesce_test.go` helper (findings 7, 6, 13) also need resolving. Approve only after the vacuous-enforcement and startup-rotation gaps are addressed, with the pool-contention cost measured rather than asserted.
+EXIT=0
