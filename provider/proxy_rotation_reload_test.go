@@ -50,8 +50,8 @@ func writeProxyFile(t *testing.T, line string) string {
 // A seeded, boot-launched proxy whose credentials are unchanged must survive
 // the first reload untouched.
 func TestReload_SeededBootProxy_NotRestarted(t *testing.T) {
-	boot := &connect.ProxySettings{Network: "tcp", Address: "1.1.1.1:1080", Auth: &proxy.Auth{User: "alice", Password: "secret"}}
-	r, cancelled := bootLaunchedReloader(t, writeProxyFile(t, "1.1.1.1:1080:alice:secret"), boot)
+	boot := &connect.ProxySettings{Network: "tcp", Address: "192.0.2.1:1080", Auth: &proxy.Auth{User: "alice", Password: "secret"}}
+	r, cancelled := bootLaunchedReloader(t, writeProxyFile(t, "192.0.2.1:1080:alice:secret"), boot)
 	r.seedRunningAuth([]*connect.ProxySettings{boot})
 
 	r.reload()
@@ -64,8 +64,8 @@ func TestReload_SeededBootProxy_NotRestarted(t *testing.T) {
 // Pins why seeding must precede the first reload: an unseeded boot-launched
 // proxy is treated as unknown and rotated.
 func TestReload_UnseededBootProxy_IsRotated(t *testing.T) {
-	boot := &connect.ProxySettings{Network: "tcp", Address: "1.1.1.1:1080", Auth: &proxy.Auth{User: "alice", Password: "secret"}}
-	r, cancelled := bootLaunchedReloader(t, writeProxyFile(t, "1.1.1.1:1080:alice:secret"), boot)
+	boot := &connect.ProxySettings{Network: "tcp", Address: "192.0.2.1:1080", Auth: &proxy.Auth{User: "alice", Password: "secret"}}
+	r, cancelled := bootLaunchedReloader(t, writeProxyFile(t, "192.0.2.1:1080:alice:secret"), boot)
 
 	r.reload()
 
@@ -78,7 +78,7 @@ func TestReload_UnseededBootProxy_IsRotated(t *testing.T) {
 // drained: draining keeps the old credentials serving until the last client
 // leaves, and the launch pass skips addresses that are still draining.
 func TestReload_RotatedBusyProxy_IsNotDrained(t *testing.T) {
-	const addr = "10.255.0.7:1080"
+	const addr = "192.0.2.7:1080"
 	boot := &connect.ProxySettings{Network: "tcp", Address: addr, Auth: &proxy.Auth{User: "alice", Password: "secret"}}
 	r, cancelled := bootLaunchedReloader(t, writeProxyFile(t, addr+":alice:NEWPASS"), boot)
 	r.seedRunningAuth([]*connect.ProxySettings{boot})

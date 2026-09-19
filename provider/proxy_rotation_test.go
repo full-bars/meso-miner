@@ -28,15 +28,15 @@ func TestSameAuth(t *testing.T) {
 		}
 	})
 	t.Run("same credentials equal", func(t *testing.T) {
-		a := &connect.ProxySettings{Auth: &proxy.Auth{User: "sppmr4vcnj", Password: "naIi5=EuO4ns5Fis5h"}}
-		b := &connect.ProxySettings{Auth: &proxy.Auth{User: "sppmr4vcnj", Password: "naIi5=EuO4ns5Fis5h"}}
+		a := &connect.ProxySettings{Auth: &proxy.Auth{User: "test-user", Password: "test-pass"}}
+		b := &connect.ProxySettings{Auth: &proxy.Auth{User: "test-user", Password: "test-pass"}}
 		if !sameAuth(a, b) {
 			t.Fatal("identical credentials must compare equal")
 		}
 	})
 	t.Run("credential rotation detected", func(t *testing.T) {
-		oldCred := &connect.ProxySettings{Auth: &proxy.Auth{User: "sppmr4vcnj", Password: "old-pass"}}
-		newCred := &connect.ProxySettings{Auth: &proxy.Auth{User: "user-sppmr4vcnj-country-us-city-los_angeles", Password: "new-pass"}}
+		oldCred := &connect.ProxySettings{Auth: &proxy.Auth{User: "test-user", Password: "old-pass"}}
+		newCred := &connect.ProxySettings{Auth: &proxy.Auth{User: "test-user-rotated", Password: "new-pass"}}
 		if sameAuth(oldCred, newCred) {
 			t.Fatal("different credentials must not compare equal (LA7 paste incident)")
 		}
@@ -69,12 +69,12 @@ func TestProxyAddRotatesCredentials(t *testing.T) {
 	t.Setenv("HOME", dir)
 
 	writeProxyConfigForTest(t, filepath.Join(dir, ".urnetwork"), map[string]string{
-		"1.2.3.4:1080:olduser:oldpass": "",
-		"9.9.9.9:1080":                 "",
+		"192.0.2.4:1080:olduser:oldpass": "",
+		"192.0.2.9:1080":                 "",
 	})
 
 	opts := docopt.Opts{
-		"<key_address>": []string{"1.2.3.4:1080:newuser:newpass"},
+		"<key_address>": []string{"192.0.2.4:1080:newuser:newpass"},
 		"-f":            true,
 	}
 	proxyAdd(opts)
@@ -83,13 +83,13 @@ func TestProxyAddRotatesCredentials(t *testing.T) {
 	if len(got.Servers) != 2 {
 		t.Fatalf("want 2 servers after rotation (replaced 1, kept 1), got %d: %v", len(got.Servers), got.Servers)
 	}
-	if _, ok := got.Servers["1.2.3.4:1080:newuser:newpass"]; !ok {
+	if _, ok := got.Servers["192.0.2.4:1080:newuser:newpass"]; !ok {
 		t.Fatalf("new credential entry missing: %v", got.Servers)
 	}
-	if _, ok := got.Servers["1.2.3.4:1080:olduser:oldpass"]; ok {
+	if _, ok := got.Servers["192.0.2.4:1080:olduser:oldpass"]; ok {
 		t.Fatalf("old credential entry was not rotated away: %v", got.Servers)
 	}
-	if _, ok := got.Servers["9.9.9.9:1080"]; !ok {
+	if _, ok := got.Servers["192.0.2.9:1080"]; !ok {
 		t.Fatalf("unrelated proxy must survive: %v", got.Servers)
 	}
 }
