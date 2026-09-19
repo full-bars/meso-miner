@@ -140,8 +140,12 @@ func discoverProcesses() []Provider {
 		if p.StateDir != "" && p.PID > 0 {
 			// An owner whose home cannot be resolved has no trusted root to
 			// validate against, so the argv value is rejected, not believed.
-			_, home := processOwner(p.PID)
-			if !stateDirInsideHome(home, p.StateDir) {
+			// ownerHome comes from the SINGLE processOwner call above (the
+			// kernel /proc/<pid> uid, captured before the Provider was built);
+			// re-resolving the owner here would open a PID-reuse window in
+			// which a different process has taken the pid and one process's
+			// argv could be paired with another's home.
+			if !stateDirInsideHome(ownerHome, p.StateDir) {
 				p.StateDir = ""
 			}
 		}
