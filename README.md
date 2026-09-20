@@ -26,7 +26,7 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 | Crash diagnostics | Journal-only, logs lost on restart | Shared-memory RAM logs (`shmlog`) + disk-based critical event log, panic hooks |
 | Custom API/connect backend | One-off `--api_url`/`--connect_url` flags only, re-passed on every invocation | `choose_network` persists the URLs to disk; flags still override per-call |
 | Runtime settings | Edit systemd drop-ins by hand, then restart | Live control socket (`~/.urnetwork/provider.sock`); changes apply without a restart and are queued in `pending_overrides.json` when the provider is stopped |
-| Binary upgrade | Stop, swap, start (20–60 s of downtime) | Zero-downtime HotSwap handoff to a verified candidate, with automatic rollback (requires a `Type=notify` unit, see the release notes) |
+| Binary upgrade | Stop, swap, start (20–60 s of downtime) | HotSwap handoff to a verified candidate, with automatic rollback: no gap where no provider process is running, though proxy connections still ramp back over about 30 s (requires a `Type=notify` unit, which `urnet-tools update` sets up; see [docs/HotSwap.md](docs/HotSwap.md)) |
 | Node identity on the dashboard | Hostname only | `rename` sets the display label and `show-ip` appends the public IP, both without a restart |
 | Multi-provider boxes | One provider per host, no targeting | One provider per OS user, with `providers` / `providers --all` inventory and cross-user `sudo` self-elevation |
 | Session migration | None | `session save` / `session load` exports identity + proxy state as an encrypted bundle for cross-machine transfer |
@@ -199,7 +199,7 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 | `urnet-tools proxy refresh` | You updated your proxy list and want the node to reload live |
 | `urnet-tools hot-restart on/off` | Toggle client JWT reuse across restarts (on by default; `off` sets `URNETWORK_HOT_RESTART=0`) |
 | `urnet-tools set [<key> [<value>]]` | Show or change a runtime tuning override live, without editing a drop-in or restarting |
-| `urnet-tools hotswap` | Swap to an updated binary with no downtime (needs a `Type=notify` unit; otherwise `update` falls back to a restart) |
+| `urnet-tools hotswap` | Swap to an updated binary without a gap where no process is running (needs a `Type=notify` unit; otherwise `update` falls back to a restart). Proxy connections still ramp back over about 30 s. Procedure and measured costs: [docs/HotSwap.md](docs/HotSwap.md) |
 | `urnet-tools config [--json]` | Show every provider setting with the source it came from, so you can see which writer won |
 | `urnet-tools history [limit]` | Read the provider's command audit trail |
 | `urnet-tools dashboard` | Terminal status panel: state, active settings, proxy sources, restart warnings |
