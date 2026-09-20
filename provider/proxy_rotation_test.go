@@ -214,6 +214,7 @@ func TestProxyAddMultiProxyInlineCreds(t *testing.T) {
 // goroutine) and the added set (relaunches with new auth) in a single pass.
 func TestProxyReloader_ReloadRotationExecution(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	resetReloadTriggerForTest(t)
 	t.Setenv("DISABLE_DIRECT_IP", "1")
 
 	proxyAddr := "192.0.2.4:1080"
@@ -307,6 +308,7 @@ func TestProxyReloader_ReloadRotationExecution(t *testing.T) {
 // prevents reload() from churning running proxies when the configuration matches.
 func TestStartupRunningAuthSeeding(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	resetReloadTriggerForTest(t)
 	t.Setenv("DISABLE_DIRECT_IP", "1")
 
 	proxyKey := "192.0.2.4:1080:user:pass"
@@ -368,6 +370,7 @@ func TestStartupRunningAuthSeeding(t *testing.T) {
 // in cancelMap but absent in runningAuth triggers rotation on reload.
 func TestProxyReloader_UnrecordedAuthTriggersRotation(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	resetReloadTriggerForTest(t)
 	t.Setenv("DISABLE_DIRECT_IP", "1")
 
 	proxyAddr := "192.0.2.4:1080"
@@ -426,6 +429,7 @@ func TestProxyReloader_UnrecordedAuthTriggersRotation(t *testing.T) {
 // cancels it and drops its entry from runningAuth.
 func TestProxyReloader_RemovedProxyCleansUpRunningAuth(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	resetReloadTriggerForTest(t)
 	t.Setenv("DISABLE_DIRECT_IP", "1")
 
 	proxyAddr := "192.0.2.4:1080"
@@ -513,4 +517,50 @@ func resetReloadTriggerForTest(t *testing.T) {
 		lastReloadTriggerTime.ts, lastReloadTriggerTime.pending = oldTS, oldPending
 		lastReloadTriggerTime.Unlock()
 	})
+}
+
+// Regression: an existing entry with the same EFFECTIVE credentials (held in
+// the Auths table under a differently spelled key) made proxyAdd skip the add
+// at the first such entry it saw, so a stale duplicate for the same address
+// survived or was purged depending on Go's random map order. Every duplicate
+// must be scanned first. Repeated to cover the iteration orders.
+func TestProxyAddPurgesStaleDuplicatesWhenSameCredentialsExist(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	resetReloadTriggerForTest(t)
+	if err := os.MkdirAll(filepath.Join(dir, ".urnetwork"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 40; i++ {
+		cfg := readProxyConfig()
+		cfg.Servers = map[string]string{
+			"192.0.2.4:1080":              "k1",
+			"192.0.2.4:1080:bob:oldpass":  "",
+			"192.0.2.4:1080:carol:oldpas": "",
+			"192.0.2.9:1080":              "",
+		}
+		cfg.Auths = map[string]*ProxyAuth{"k1": {User: "alice", Password: "secret"}}
+		writeProxyConfig(cfg)
+
+		proxyAdd(docopt.Opts{
+			"<key_address>": []string{"192.0.2.4:1080:alice:secret"},
+			"-f":            true,
+		})
+
+		got := readProxyConfig()
+		if _, ok := got.Servers["192.0.2.4:1080"]; !ok {
+			t.Fatalf("iteration %d: entry with the same effective credentials was lost: %v", i, got.Servers)
+		}
+		for _, stale := range []string{"192.0.2.4:1080:bob:oldpass", "192.0.2.4:1080:carol:oldpas"} {
+			if _, ok := got.Servers[stale]; ok {
+				t.Fatalf("iteration %d: stale duplicate %q survived: %v", i, stale, got.Servers)
+			}
+		}
+		if _, ok := got.Servers["192.0.2.9:1080"]; !ok {
+			t.Fatalf("iteration %d: unrelated proxy was removed: %v", i, got.Servers)
+		}
+		if len(got.Servers) != 2 {
+			t.Fatalf("iteration %d: want exactly the kept entry plus the unrelated one, got %v", i, got.Servers)
+		}
+	}
 }
