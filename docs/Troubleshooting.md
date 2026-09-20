@@ -123,23 +123,39 @@ In high-volume environments, a pegged CPU can delay the processing of OOB signal
 
 **Symptom**: `urnet-tools hotswap`, or a `urnet-tools update` on a HotSwap-capable
 release, restarts the provider normally instead of handing off with no downtime.
+The update prints `hotswap trigger unavailable (...); falling back to service restart`.
 
 **Cause**: the systemd handoff requires a `Type=notify` unit. The retiring
 process aborts whenever systemd started it (`INVOCATION_ID` is set) but
 `NOTIFY_SOCKET` is empty, which is exactly what a `Type=simple` unit looks like.
-Only `install_systemd_units` in `Provider_Install_Linux.sh` writes
-`Type=notify`, and `urnet-tools update` only ever swaps the binary, never the
-unit. **Every node installed before v3.23.0-fix.31.0 therefore still runs
-`Type=simple`.**
+`Provider_Install_Linux.sh` deliberately writes a unit with **no `Type=` line**
+(systemd's default, `simple`), because `Type=notify` blocks `systemctl start`
+until the provider is ready and can wedge every start when the binary and the
+unit come from different releases. Instead, `urnet-tools update` migrates the
+unit to `Type=notify` when the binary it installs can signal readiness
+(v3.23.0-fix.31.0 or newer). That first update is a normal restart; later ones
+hotswap.
 
-**This is working as intended.** `urnet-tools` checks the unit type, declines
-HotSwap, and falls back to a normal restart, so the update still lands with the
-usual 20-60s stall.
+> [!WARNING]
+> Releases up to and including v3.23.0-fix.32.0 skipped that migration for units
+> with no `Type=` line, so those nodes stay on restart-only updates
+> indefinitely, and the "update migrates it" wording in the decline message was
+> not true for them. Fixed in the release after v3.23.0-fix.32.0.
 
 ```bash
 # Confirm what the unit actually is
-systemctl --user show urnetwork.service -p Type
+systemctl --user show urnetwork.service -p Type,NotifyAccess   # drop --user for a system unit
 ```
+
+**Fix**: nothing manual. Run `urnet-tools update` on a build that includes the
+migration fix: the first update converts the unit to `Type=notify` and restarts
+once, and the updates after that hotswap (see [HotSwap](HotSwap.md#which-update-hotswaps)).
+If the update prints `note: ... is Type=simple but its unit file cannot be
+migrated automatically`, `Type=` is set by a drop-in you control: change it
+there to `Type=notify` and `NotifyAccess=all`, then `systemctl daemon-reload`.
+A `hotswap unavailable: the running provider was started before its systemd
+unit became Type=notify` message means the unit was converted but the provider
+has not restarted since; the update restarts it for you and later ones hotswap.
 
 > [!IMPORTANT]
 > The check deliberately fails closed. An earlier revision gated only on the
@@ -147,9 +163,6 @@ systemctl --user show urnetwork.service -p Type
 > and the "hotswap triggered" path skipped the restart fallback entirely,
 > turning every update on a pre-existing node into a permanent no-op. Losing
 > zero-downtime is the safe failure; a bricked update is not.
-
-**To get zero-downtime updates on a node**: reinstall it, so it picks up the
-`Type=notify` unit. A binary update alone will not do it.
 
 ---
 
