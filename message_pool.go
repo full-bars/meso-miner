@@ -122,7 +122,9 @@ func addSizeDistribution(size int) {
 // throughput), which is cheap next to the alternative — an unattributed
 // buffer leak keeps growing until the provider restarts (LA7: 4.19M buffers
 // taken and never given back before anyone could name the call site).
-var debugTags = true
+var debugTags atomic.Bool
+
+func init() { debugTags.Store(true) }
 
 // [8 byte id][1 byte tag][1 byte flags][2 byte ref count][1 byte shard index]
 const MessagePoolMetaByteCount = 13
@@ -354,7 +356,7 @@ func MessagePoolSummary() []MessagePoolBucket {
 // every allocation shares tag 0 and no caller mapping exists — the returned
 // list is empty so callers can tell the feature is off.
 func MessagePoolLeakHint(limit int) []MessagePoolLeakTag {
-	if !debugTags || limit <= 0 {
+	if !debugTags.Load() || limit <= 0 {
 		return nil
 	}
 	type agg struct {
@@ -443,7 +445,7 @@ var orderedMessagePools = sync.OnceValue(func() []*messagePool {
 		newMessagePool(65536, int(InitialMessagePoolByteCount/ByteCount(65536))),
 	}
 
-	if debugTags {
+	if debugTags.Load() {
 		// poolStats' per-tag breakdown is only meaningful when debugTags
 		// assigns real caller tags; with it off every allocation is tag 0,
 		// so this would otherwise log 5 near-empty Infof lines every 60s in
@@ -614,13 +616,25 @@ func registerDebugTagLocked(key [2]uintptr, pcs [2]uintptr, hashed uint8) uint8 
 		callers = map[string]bool{}
 		tagCallers[tag] = callers
 	}
+	// pcs are return addresses from runtime.Callers; CallersFrames applies the
+	// return-address adjustment so the recorded line is the call site, not the
+	// instruction after it (FuncForPC(pc).FileLine(pc) can name the next line).
+	returnPCs := make([]uintptr, 0, len(pcs))
 	for _, pc := range pcs {
-		if pc == 0 {
-			continue
+		if pc != 0 {
+			returnPCs = append(returnPCs, pc)
 		}
-		if f := runtime.FuncForPC(pc); f != nil {
-			file, line := f.FileLine(pc)
-			callers[fmt.Sprintf("%s:%d", filepath.Base(file), line)] = true
+	}
+	if len(returnPCs) > 0 {
+		frames := runtime.CallersFrames(returnPCs)
+		for {
+			frame, more := frames.Next()
+			if frame.File != "" {
+				callers[fmt.Sprintf("%s:%d", filepath.Base(frame.File), frame.Line)] = true
+			}
+			if !more {
+				break
+			}
 		}
 	}
 	return tag
@@ -755,7 +769,7 @@ func MessagePoolCopy(message []byte) []byte {
 	// the frame that called the public pool function, so an extra wrapper
 	// frame would make every MessagePoolCopy caller share one tag.
 	var tag uint8
-	if debugTags {
+	if debugTags.Load() {
 		tag = debugTag()
 	}
 	b, _ := MessagePoolCopyDetailedWithTag(message, tag)
@@ -764,7 +778,7 @@ func MessagePoolCopy(message []byte) []byte {
 
 func MessagePoolCopyDetailed(message []byte) ([]byte, bool) {
 	var tag uint8
-	if debugTags {
+	if debugTags.Load() {
 		tag = debugTag()
 	}
 	return MessagePoolCopyDetailedWithTag(message, tag)
@@ -779,7 +793,7 @@ func MessagePoolCopyDetailedWithTag(message []byte, tag uint8) ([]byte, bool) {
 func MessagePoolGet(n int) []byte {
 	// See MessagePoolCopy: stamp the tag at the public-function depth.
 	var tag uint8
-	if debugTags {
+	if debugTags.Load() {
 		tag = debugTag()
 	}
 	b, _ := MessagePoolGetDetailedWithTag(n, tag)
@@ -788,7 +802,7 @@ func MessagePoolGet(n int) []byte {
 
 func MessagePoolGetDetailed(n int) ([]byte, bool) {
 	var tag uint8
-	if debugTags {
+	if debugTags.Load() {
 		tag = debugTag()
 	}
 	return MessagePoolGetDetailedWithTag(n, tag)
@@ -873,7 +887,7 @@ func MessagePoolReturn(message []byte) bool {
 						(refusedCount << MessagePoolRefusedShareCountShift)
 					DefaultLogger().Warningf("[mp]return message[%d] flagged no-return (refused share); skipping decrement", id)
 				} else if count == 0 {
-					if debugTags {
+					if debugTags.Load() {
 						err := fmt.Errorf("[mp]return message[%d] not taken", id)
 						DefaultLogger().Errorf("[mp]%s", ErrorJson(err, debug.Stack()))
 					}
@@ -992,7 +1006,7 @@ func MessagePoolCheck(message []byte) (pooled bool, shared bool) {
 
 func ProtoMarshal(m proto.Message) ([]byte, error) {
 	var tag uint8
-	if debugTags {
+	if debugTags.Load() {
 		tag = debugTag()
 	}
 	return ProtoMarshalWithTag(m, tag)

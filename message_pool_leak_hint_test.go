@@ -14,7 +14,7 @@ import (
 func TestMessagePoolLeakHintAttribution(t *testing.T) {
 	// debugTags is permanently on; just make sure the leak hint reflects a
 	// deliberately-leaked buffer so the heartbeat can name the caller.
-	if !debugTags {
+	if !debugTags.Load() {
 		t.Fatal("debugTags must be true (on by default)")
 	}
 
@@ -47,6 +47,8 @@ func TestMessagePoolLeakHintAttribution(t *testing.T) {
 			found = true
 			if h.Caller == "" {
 				t.Errorf("leaky tag %d has empty caller (debugTag not stamped?)", h.Tag)
+			} else if !strings.Contains(h.Caller, "message_pool_leak_hint_test.go") {
+				t.Errorf("leaky tag %d names %q, want the test file that made the deliberate allocation", h.Tag, h.Caller)
 			}
 		}
 	}
@@ -59,8 +61,8 @@ func TestMessagePoolLeakHintAttribution(t *testing.T) {
 // no-tags behavior guard: even if debugTags were ever disabled, the leak hint
 // must return nothing rather than a meaningless tag-0 aggregate.
 func TestMessagePoolLeakHintRequiresDebugTags(t *testing.T) {
-	debugTags = false
-	t.Cleanup(func() { debugTags = true })
+	debugTags.Store(false)
+	t.Cleanup(func() { debugTags.Store(true) })
 	ResetMessagePoolStats()
 	off := MessagePoolGet(64)
 	t.Cleanup(func() { MessagePoolReturn(off) })
@@ -109,6 +111,11 @@ func TestRegisterDebugTagLockedAvoidsCollisions(t *testing.T) {
 	a := registerDebugTagLocked([2]uintptr{0xA1, 0xA2}, [2]uintptr{}, hashed)
 	b := registerDebugTagLocked([2]uintptr{0xB1, 0xB2}, [2]uintptr{}, hashed)
 	t.Cleanup(func() {
+		// The test body holds debugStateLock until it returns (deferred
+		// unlock runs before Cleanup), so take it again here: other
+		// goroutines register tags under the same lock.
+		debugStateLock.Lock()
+		defer debugStateLock.Unlock()
 		delete(tagCallers, a)
 		delete(tagCallers, b)
 	})
