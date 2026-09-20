@@ -199,7 +199,7 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 | `urnet-tools proxy refresh` | You updated your proxy list and want the node to reload live |
 | `urnet-tools hot-restart on/off` | Toggle client JWT reuse across restarts (on by default; `off` sets `URNETWORK_HOT_RESTART=0`) |
 | `urnet-tools set [<key> [<value>]]` | Show or change a runtime tuning override live, without editing a drop-in or restarting |
-| `urnet-tools hotswap` | Swap to an updated binary with no downtime (needs a `Type=notify` unit; otherwise `update` falls back to a restart). Procedure and costs: [docs/HotSwap.md](docs/HotSwap.md) |
+| `urnet-tools hotswap` | Swap to an updated binary without a gap where no process is running (needs a `Type=notify` unit; otherwise `update` falls back to a restart). Proxy connections still ramp back over about 30 s. Procedure and measured costs: [docs/HotSwap.md](docs/HotSwap.md) |
 | `urnet-tools config [--json]` | Show every provider setting with the source it came from, so you can see which writer won |
 | `urnet-tools history [limit]` | Read the provider's command audit trail |
 | `urnet-tools dashboard` | Terminal status panel: state, active settings, proxy sources, restart warnings |
