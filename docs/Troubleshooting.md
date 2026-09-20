@@ -140,7 +140,7 @@ hotswap.
 > Releases up to and including v3.23.0-fix.32.0 skipped that migration for units
 > with no `Type=` line, so those nodes stay on restart-only updates
 > indefinitely, and the "update migrates it" wording in the decline message was
-> not true for them. Fixed in the release after v3.23.0-fix.32.0.
+> not true for them. Fixed in v3.23.0-fix.32.1.
 
 ```bash
 # Confirm what the unit actually is
