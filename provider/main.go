@@ -3935,7 +3935,17 @@ func provide(opts docopt.Opts) {
 	if profileAddr := os.Getenv("URNETWORK_PPROF"); profileAddr != "" {
 		tlog("[profile] enabling diagnostics on %s (loopback only): /debug/pprof/*, /metrics/pool, /metrics/errors, /metrics\n", profileAddr)
 		if err := connect.EnableProfiling(profileAddr); err != nil {
-			tlog("[profile] failed to enable diagnostics: %v\n", err)
+			if isHotSwapCandidate && errors.Is(err, syscall.EADDRINUSE) {
+				// The parent keeps the port through its stream drain; keep
+				// trying so the promoted process is not left without
+				// diagnostics for the rest of its life.
+				tlog("[profile] %s is held by the hotswap parent; retrying until it exits\n", profileAddr)
+				go connect.HandleError(func() {
+					enableProfilingWithRetry(ctx, profileAddr, connect.EnableProfiling, 90*time.Second, time.Second, tlog)
+				})
+			} else {
+				tlog("[profile] failed to enable diagnostics: %v\n", err)
+			}
 		}
 	}
 	// URNETWORK_METRICS binds a Prometheus /metrics endpoint on the given
