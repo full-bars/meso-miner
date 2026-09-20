@@ -26,7 +26,7 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 | Crash diagnostics | Journal-only, logs lost on restart | Shared-memory RAM logs (`shmlog`) + disk-based critical event log, panic hooks |
 | Custom API/connect backend | One-off `--api_url`/`--connect_url` flags only, re-passed on every invocation | `choose_network` persists the URLs to disk; flags still override per-call |
 | Runtime settings | Edit systemd drop-ins by hand, then restart | Live control socket (`~/.urnetwork/provider.sock`); changes apply without a restart and are queued in `pending_overrides.json` when the provider is stopped |
-| Binary upgrade | Stop, swap, start (20–60 s of downtime) | Zero-downtime HotSwap handoff to a verified candidate, with automatic rollback (requires a `Type=notify` unit, see the release notes) |
+| Binary upgrade | Stop, swap, start (20–60 s of downtime) | HotSwap handoff to a verified candidate, with automatic rollback: no gap where no provider process is running, though proxy connections still ramp back over about 30 s (requires a `Type=notify` unit, which `urnet-tools update` sets up; see [docs/HotSwap.md](docs/HotSwap.md)) |
 | Node identity on the dashboard | Hostname only | `rename` sets the display label and `show-ip` appends the public IP, both without a restart |
 | Multi-provider boxes | One provider per host, no targeting | One provider per OS user, with `providers` / `providers --all` inventory and cross-user `sudo` self-elevation |
 | Session migration | None | `session save` / `session load` exports identity + proxy state as an encrypted bundle for cross-machine transfer |
