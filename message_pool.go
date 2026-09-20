@@ -7,9 +7,11 @@ import (
 	"hash/maphash"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"runtime/metrics"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -112,7 +114,17 @@ func addSizeDistribution(size int) {
 // `MessagePoolReturn`/`MessagePoolShareReadOnly` is a noop when using a `[]byte` that is not part of the pool.
 
 // set this to true to tag messages with useful debugging information e.g. the creation site
-const debugTags = false
+// debugTags enables per-call-site tag accounting for the message pools:
+// each Get/Put stamps the allocation with a maphash tag derived from the
+// caller's file:line, and poolStats logs a per-tag return-ratio report every
+// 60s. It is ON BY DEFAULT and permanent: the cost is one runtime.Caller
+// pair per pool cycle on the packet path (low single-digit % CPU at max
+// throughput), which is cheap next to the alternative — an unattributed
+// buffer leak keeps growing until the provider restarts (LA7: 4.19M buffers
+// taken and never given back before anyone could name the call site).
+var debugTags atomic.Bool
+
+func init() { debugTags.Store(true) }
 
 // [8 byte id][1 byte tag][1 byte flags][2 byte ref count][1 byte shard index]
 const MessagePoolMetaByteCount = 13
@@ -334,6 +346,96 @@ func MessagePoolSummary() []MessagePoolBucket {
 	return buckets
 }
 
+// MessagePoolLeakHint returns the per-call-site tags with the worst
+// returned/taken ratio, aggregated across all pool sizes and shards. It is
+// the operator-facing leak attribution: with URNETWORK_POOL_DEBUG_TAGS=1
+// enabled, each buffer Get stamps its caller (file:line) as a tag, so a
+// leak shows up as a tag whose returned count stays well below taken over
+// time. Returns the worst offenders sorted by (taken-returned) descending,
+// each with caller, leak count, and return ratio. When debugTags is off,
+// every allocation shares tag 0 and no caller mapping exists — the returned
+// list is empty so callers can tell the feature is off.
+func MessagePoolLeakHint(limit int) []MessagePoolLeakTag {
+	if !debugTags.Load() || limit <= 0 {
+		return nil
+	}
+	type agg struct {
+		taken    uint64
+		returned uint64
+		created  uint64
+	}
+	byTag := make(map[uint8]*agg, 256)
+	for _, pool := range orderedMessagePools() {
+		for _, shard := range pool.shards {
+			func() {
+				shard.mutex.Lock()
+				defer shard.mutex.Unlock()
+				for tag := range 256 {
+					if shard.takenTags[tag] == 0 {
+						continue
+					}
+					a, ok := byTag[uint8(tag)]
+					if !ok {
+						a = &agg{}
+						byTag[uint8(tag)] = a
+					}
+					a.taken += shard.takenTags[tag]
+					a.returned += shard.returnedTags[tag]
+					a.created += shard.createdTags[tag]
+				}
+			}()
+		}
+	}
+	out := []MessagePoolLeakTag{}
+	for tag, a := range byTag {
+		if a.taken == 0 {
+			continue
+		}
+		callers := func() string {
+			debugStateLock.RLock()
+			defer debugStateLock.RUnlock()
+			return strings.Join(maps.Keys(tagCallers[tag]), "/")
+		}()
+		// Signed math: if a double-return ever makes returned > taken, or a
+		// counter reset races a live goroutine, an unsigned subtraction
+		// would underflow to a huge number and sort this tag to the TOP of
+		// the report with an astronomically-lying leak count. Clamp below
+		// zero and report honestly.
+		leaked := int64(a.taken) - int64(a.returned)
+		if leaked <= 0 {
+			// Balanced (or over-returned) tags have no outstanding buffers;
+			// they are not leak offenders and must not pad the report.
+			continue
+		}
+		var returnedPct, reusedPct float64
+		if a.taken > 0 {
+			returnedPct = float64(a.returned) * 100 / float64(a.taken)
+			reusedPct = 100 * float64(a.taken-a.created) / float64(a.taken)
+		}
+		out = append(out, MessagePoolLeakTag{
+			Tag:         tag,
+			Caller:      callers,
+			Leaked:      uint64(leaked),
+			ReturnedPct: returnedPct,
+			ReusedPct:   reusedPct,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Leaked > out[j].Leaked })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+// MessagePoolLeakTag is one call site in the leak-hint report.
+type MessagePoolLeakTag struct {
+	Tag         uint8   `json:"tag"`
+	Caller      string  `json:"caller"`
+	Leaked      uint64  `json:"leaked"`
+	ReturnedPct float64 `json:"returned_pct"`
+	ReusedPct   float64 `json:"reused_pct"`
+}
+
 var orderedMessagePools = sync.OnceValue(func() []*messagePool {
 	pools := []*messagePool{
 		newMessagePool(2048, int(InitialMessagePoolByteCount/ByteCount(2048))),
@@ -343,7 +445,7 @@ var orderedMessagePools = sync.OnceValue(func() []*messagePool {
 		newMessagePool(65536, int(InitialMessagePoolByteCount/ByteCount(65536))),
 	}
 
-	if debugTags {
+	if debugTags.Load() {
 		// poolStats' per-tag breakdown is only meaningful when debugTags
 		// assigns real caller tags; with it off every allocation is tag 0,
 		// so this would otherwise log 5 near-empty Infof lines every 60s in
@@ -417,31 +519,124 @@ func ClearMessagePools() {
 }
 
 var seed = maphash.MakeSeed()
-var debugStateLock sync.Mutex
+var debugStateLock sync.RWMutex
 var tagCallers = map[uint8]map[string]bool{}
 
-func debugTag() uint8 {
-	_, file2, line2, ok := runtime.Caller(2)
-	if !ok {
-		return 0
-	}
-	_, file3, line3, ok := runtime.Caller(3)
-	if !ok {
-		return 0
-	}
-	caller := fmt.Sprintf("%s:%d->%s:%d", file3, line3, file2, line2)
-	tag := uint8(maphash.String(seed, caller))
-	func() {
-		debugStateLock.Lock()
-		defer debugStateLock.Unlock()
+// pcToTag maps a [2]uintptr (pc pair) to its 8-bit tag. Updated
+// Copy-On-Write on cold misses so the hot path is a single atomic load
+// with zero allocations. This eliminates the 256-bucket collision
+// blindness of the previous debugTagsSeen gate: two distinct call sites
+// can share a tag, but each registers its own PC pair and both appear
+// in the leak report.
+var pcToTag atomic.Pointer[map[[2]uintptr]uint8]
 
-		callers, ok := tagCallers[tag]
-		if !ok {
-			callers = map[string]bool{}
-			tagCallers[tag] = callers
+// debugTag returns a stable tag for the caller site, and is allowed to be
+// called on every pool Get on the packet path. Hot-path constraints:
+//   - ZERO allocations (runtime.Callers into a stack buffer + maphash).
+//   - No global caller-registry lock on the common path. The lock was
+//     previously held on EVERY call, serializing all shards through one
+//     cache line — the exact contention the sharded pool exists to avoid.
+//     Instead a COW map keyed by PC pair is used; the common case is a
+//     single atomic load + map lookup.
+//
+// The tag is then stored in each buffer's 13-byte header, so Put reads it
+// back from the buffer and never needs to call debugTag() again — that is
+// where the old implementation's per-Put lock hurt most.
+func debugTag() uint8 {
+	var pcs [2]uintptr
+	// Frames: 0=runtime.Callers, 1=debugTag, 2=the public pool function that
+	// called debugTag (MessagePoolGet, MessagePoolCopy, ProtoMarshal, ...),
+	// 3=the external call site we want to attribute. Every debugTag caller
+	// must therefore be a public pool function invoked directly by client
+	// code, never a wrapper around another public pool function.
+	n := runtime.Callers(3, pcs[:])
+	if n < 1 {
+		return 0
+	}
+	// Hash both returned PCs: a caller that spans two frames gets the same
+	// tag regardless of which frame the micro-optimizer inlined away.
+	var b [16]byte
+	binary.LittleEndian.PutUint64(b[0:8], uint64(pcs[0]))
+	binary.LittleEndian.PutUint64(b[8:16], uint64(pcs[1]))
+	tag := uint8(maphash.Bytes(seed, b[:]))
+
+	key := pcs // key is [2]uintptr, comparable
+
+	// Fast path: read the COW map; if key exists, return its tag.
+	if m := pcToTag.Load(); m != nil {
+		if t, ok := (*m)[key]; ok {
+			return t
 		}
-		callers[caller] = true
-	}()
+	}
+
+	// Cold path: first sighting of this call site.
+	debugStateLock.Lock()
+	defer debugStateLock.Unlock()
+	if m := pcToTag.Load(); m != nil {
+		if t, ok := (*m)[key]; ok {
+			return t
+		}
+	}
+	return registerDebugTagLocked(key, pcs, tag)
+}
+
+// registerDebugTagLocked assigns a tag to a newly seen call site and records
+// its caller string. Tags are 8-bit, so two call sites can hash to the same
+// tag; because the leak report aggregates counters per tag, a shared tag would
+// make it impossible to tell which site leaked. A hash collision therefore
+// probes for the next unused tag (0 is reserved for "untagged"). Only when
+// all 255 tags are taken do call sites share one. Caller holds debugStateLock.
+func registerDebugTagLocked(key [2]uintptr, pcs [2]uintptr, hashed uint8) uint8 {
+	tag := hashed
+	for i := 0; i < 256; i++ {
+		candidate := hashed + uint8(i)
+		if candidate == 0 {
+			continue
+		}
+		if _, used := tagCallers[candidate]; !used {
+			tag = candidate
+			break
+		}
+	}
+	if tag == 0 {
+		tag = 1
+	}
+
+	newM := make(map[[2]uintptr]uint8)
+	if m := pcToTag.Load(); m != nil {
+		for k, v := range *m {
+			newM[k] = v
+		}
+	}
+	newM[key] = tag
+	pcToTag.Store(&newM)
+
+	callers, ok := tagCallers[tag]
+	if !ok {
+		callers = map[string]bool{}
+		tagCallers[tag] = callers
+	}
+	// pcs are return addresses from runtime.Callers; CallersFrames applies the
+	// return-address adjustment so the recorded line is the call site, not the
+	// instruction after it (FuncForPC(pc).FileLine(pc) can name the next line).
+	returnPCs := make([]uintptr, 0, len(pcs))
+	for _, pc := range pcs {
+		if pc != 0 {
+			returnPCs = append(returnPCs, pc)
+		}
+	}
+	if len(returnPCs) > 0 {
+		frames := runtime.CallersFrames(returnPCs)
+		for {
+			frame, more := frames.Next()
+			if frame.File != "" {
+				callers[fmt.Sprintf("%s:%d", filepath.Base(frame.File), frame.Line)] = true
+			}
+			if !more {
+				break
+			}
+		}
+	}
 	return tag
 }
 
@@ -484,6 +679,29 @@ func MessagePoolStats() map[int]map[int]float32 {
 		sizeTagRatios[pool.size] = tagRatios
 	}
 	return sizeTagRatios
+}
+
+// MessagePoolTotals returns the aggregate taken/returned counts for one pool
+// size, summed across every shard and every tag. This is the pool-contract
+// view used by leak regression tests: per-tag ratios are a diagnostic, but a
+// buffer that is taken and returned through any tag must balance globally.
+func MessagePoolTotals(size int) (taken uint64, returned uint64) {
+	for _, pool := range orderedMessagePools() {
+		if pool.size != size {
+			continue
+		}
+		for _, shard := range pool.shards {
+			func() {
+				shard.mutex.Lock()
+				defer shard.mutex.Unlock()
+				for tag := range 256 {
+					taken += shard.takenTags[tag]
+					returned += shard.returnedTags[tag]
+				}
+			}()
+		}
+	}
+	return taken, returned
 }
 
 func MessagePoolReadAll(r io.Reader) ([]byte, error) {
@@ -547,13 +765,20 @@ func MessagePoolReadAllWithTag(r io.Reader, tag uint8) ([]byte, error) {
 }
 
 func MessagePoolCopy(message []byte) []byte {
-	b, _ := MessagePoolCopyDetailed(message)
+	// Stamp the tag here, not via MessagePoolCopyDetailed: debugTag attributes
+	// the frame that called the public pool function, so an extra wrapper
+	// frame would make every MessagePoolCopy caller share one tag.
+	var tag uint8
+	if debugTags.Load() {
+		tag = debugTag()
+	}
+	b, _ := MessagePoolCopyDetailedWithTag(message, tag)
 	return b
 }
 
 func MessagePoolCopyDetailed(message []byte) ([]byte, bool) {
 	var tag uint8
-	if debugTags {
+	if debugTags.Load() {
 		tag = debugTag()
 	}
 	return MessagePoolCopyDetailedWithTag(message, tag)
@@ -566,13 +791,18 @@ func MessagePoolCopyDetailedWithTag(message []byte, tag uint8) ([]byte, bool) {
 }
 
 func MessagePoolGet(n int) []byte {
-	b, _ := MessagePoolGetDetailed(n)
+	// See MessagePoolCopy: stamp the tag at the public-function depth.
+	var tag uint8
+	if debugTags.Load() {
+		tag = debugTag()
+	}
+	b, _ := MessagePoolGetDetailedWithTag(n, tag)
 	return b
 }
 
 func MessagePoolGetDetailed(n int) ([]byte, bool) {
 	var tag uint8
-	if debugTags {
+	if debugTags.Load() {
 		tag = debugTag()
 	}
 	return MessagePoolGetDetailedWithTag(n, tag)
@@ -657,7 +887,7 @@ func MessagePoolReturn(message []byte) bool {
 						(refusedCount << MessagePoolRefusedShareCountShift)
 					DefaultLogger().Warningf("[mp]return message[%d] flagged no-return (refused share); skipping decrement", id)
 				} else if count == 0 {
-					if debugTags {
+					if debugTags.Load() {
 						err := fmt.Errorf("[mp]return message[%d] not taken", id)
 						DefaultLogger().Errorf("[mp]%s", ErrorJson(err, debug.Stack()))
 					}
@@ -776,7 +1006,7 @@ func MessagePoolCheck(message []byte) (pooled bool, shared bool) {
 
 func ProtoMarshal(m proto.Message) ([]byte, error) {
 	var tag uint8
-	if debugTags {
+	if debugTags.Load() {
 		tag = debugTag()
 	}
 	return ProtoMarshalWithTag(m, tag)
