@@ -30,7 +30,7 @@ groups:
             This does NOT tell a stopped provider apart from a provider with
             metrics switched off, a blocked port or a Tailscale outage, and it
             does not fire for a node that was removed from targets/providers.yml
-            or never scraped. It says nothing about whether a reachable node is
+            is absent from the scrape (a configured target with no successful scrape still fires). It says nothing about whether a reachable node is
             earning.
 
       # More than 3 restarts of one node within an hour.

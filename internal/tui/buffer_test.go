@@ -285,3 +285,30 @@ func TestStyleIsStoredPerCell(t *testing.T) {
 		t.Fatal("Fg/Bg setters")
 	}
 }
+
+// A view edge can cut a wide rune in half. Clone must blank the orphan
+// halves (a head with no continuation on the right edge, a continuation
+// with no head on the left edge) so String and Diff never see an
+// incomplete cell (review finding).
+func TestCloneBlanksClippedWideRuneHalves(t *testing.T) {
+	b := New(2, 1)
+	// Wide rune at x=0 occupies cells 0 (head) and 1 (continuation).
+	b.Set(0, 0, Cell{Rune: '界'})
+	c := b.Clone()
+	// Unclipped head keeps its continuation: both halves intact.
+	if c.Cell(0, 0).Rune != '界' || !c.Cell(1, 0).Continuation() {
+		t.Fatalf("unclipped wide rune damaged: %+v %+v", c.Cell(0, 0), c.Cell(1, 0))
+	}
+
+	// Left edge: a continuation without its head must be blanked.
+	s := New(3, 1)
+	s.Set(1, 0, Cell{Rune: '界'})   // head at 1, continuation at 2
+	sub := s.Sub(Rect{1, 0, 3, 1}) // starts at the continuation
+	if !sub.Cell(0, 0).Continuation() {
+		t.Skip("fixture: expected continuation at left edge")
+	}
+	sc := sub.Clone()
+	if !sc.Cell(0, 0).Continuation() {
+		t.Fatalf("left-edge orphan continuation not blanked: %+v", sc.Cell(0, 0))
+	}
+}

@@ -34,7 +34,7 @@ tests:
               instance: n1
             exp_annotations:
               summary: "URnetwork node n1 is down"
-              description: "Prometheus could not scrape n1 for 5 minutes. This does NOT tell a stopped provider apart from a provider with metrics switched off, a blocked port or a Tailscale outage, and it does not fire for a node that was removed from targets/providers.yml or never scraped. It says nothing about whether a reachable node is earning."
+              description: "Prometheus could not scrape n1 for 5 minutes. This does NOT tell a stopped provider apart from a provider with metrics switched off, a blocked port or a Tailscale outage, and it does not apply to a node that was removed from targets/providers.yml is absent from the scrape (a configured target with no successful scrape still fires). It says nothing about whether a reachable node is earning."
 
   - interval: 1m
     input_series:
