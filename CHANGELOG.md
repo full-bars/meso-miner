@@ -7,12 +7,15 @@ meso-miner's own releases.
 
 ---
 
-## [Unreleased]
+## [v2026.9.21-1790006725-meso] — 2026-09-21
 
 ### Added
 
+- **Audit ring survives hotswap** (<https://github.com/full-bars/meso-miner/pull/118>): the parent flushes the audit ring at the handoff commit point on every path (systemd, Windows, Docker); the successor merges it back from disk after takeover with timezone-safe deduplication. Lifecycle events (start, hotswap, shutdown) join the `set`/`clear` entries in `urnet-tools history`.
+- **Sliding severity scale for provider status** (<https://github.com/full-bars/meso-miner/pull/118>): `active` >= 90%, `partial` 70-89%, `degraded` 50-69%, `critical` < 50%, percentage always rendered and clamped at 100.
 - **HotSwap how-to and measured costs** (<https://github.com/full-bars/meso-miner/pull/109>): new `docs/HotSwap.md` covering requirements, the update flow, what you will see, and measured costs (connection ramp, memory, drain).
-- **Design proposal: per-client make-before-break HotSwap handover** (<https://github.com/full-bars/meso-miner/pull/111>): `docs/design/hotswap-make-before-break.md` plans a handover that keeps every client connected throughout. A proposal only, no code; it needs research before development.
+- **Design proposal: per-client make-before-break HotSwap handover** (<https://github.com/full-bars/meso-miner/pull/111>): `docs/design/hotswap-make-before-break.md` plans a handover that keeps every client connected throughout. A proposal only, no code.
+- **Bandwidth and heartbeat reporters ported, legacy ps1 scripts retired** (<https://github.com/full-bars/meso-miner/pull/103>).
 
 ### Security
 
@@ -20,23 +23,31 @@ meso-miner's own releases.
 
 ### Fixed
 
-- **HotSwap unit migration was a silent no-op** (<https://github.com/full-bars/meso-miner/pull/109>): the installer writes a unit with no `Type=` line and `update` only rewrote an explicit `Type=simple`, so nodes set up by the current installer never reached a hotswap. A unit with no `Type=` now gets `Type=notify` and `NotifyAccess=all`, and the update says so when a unit cannot be migrated.
-- **HotSwap declines up front when the running provider has no notify socket** (<https://github.com/full-bars/meso-miner/pull/109>): a migrated unit whose provider has not restarted no longer aborts after SIGUSR2 and rolls back; new decline label `needs_restart`.
-- **pprof diagnostics disappeared on every other hotswap** (<https://github.com/full-bars/meso-miner/pull/109>): a candidate retries the diagnostics bind until its parent releases the port.
-- **`urnet-tools` not found** (<https://github.com/full-bars/meso-miner/pull/109>) from non-interactive shells, zsh and root: the installer links `urnet-tools` and `urnetwork` into `~/.local/bin` and `/usr/local/bin` and writes the PATH block to `~/.bashrc`, `~/.profile` and `~/.zshenv`; `urnet-tools update` repairs older installs.
-- **Proxy credential rotation on re-paste** (<https://github.com/full-bars/meso-miner/pull/107>): pasting an address that already exists with different credentials now rotates the running proxy instead of silently keeping the old credentials; all duplicate entries for an address are scanned before an add is skipped.
+- **HotSwap unit migration was a silent no-op** (<https://github.com/full-bars/meso-miner/pull/109>): the installer writes a unit with no `Type=` line and `update` only rewrote an explicit `Type=simple`. A unit with no `Type=` now gets `Type=notify` and `NotifyAccess=all`.
+- **HotSwap declines up front when the running provider has no notify socket** (<https://github.com/full-bars/meso-miner/pull/109>): no SIGUSR2 abort and rollback; new decline label `needs_restart`.
+- **pprof diagnostics reappear on every hotswap** (<https://github.com/full-bars/meso-miner/pull/109>): the candidate retries the diagnostics bind until its parent releases the port.
+- **`urnet-tools` is on PATH** (<https://github.com/full-bars/meso-miner/pull/109>) for non-interactive shells, zsh and root: the installer links the binaries into `~/.local/bin` and `/usr/local/bin` and writes PATH blocks; `urnet-tools update` repairs older installs.
+- **Proxy credential rotation on re-paste** (<https://github.com/full-bars/meso-miner/pull/107>): pasting an address with different credentials rotates the running proxy instead of silently keeping the old credentials; every duplicate entry for an address is scanned before an add is skipped.
 - **Docker idle-update poll is bounded** (<https://github.com/full-bars/meso-miner/pull/106>): a hung Docker daemon can no longer stall the idle wait past its own timeout.
-- **Message-pool leak attribution** (<https://github.com/full-bars/meso-miner/pull/107>): per-call-site leak tags are on by default, name the acquiring call site, and are safe under the race detector.
+- **Message-pool leak attribution** (<https://github.com/full-bars/meso-miner/pull/107>): per-call-site leak tags are on by default, name the acquiring call site, and are race-detector safe.
+- **Interactive delegated subcommands wire stdin** (<https://github.com/full-bars/meso-miner/pull/105>): `proxy remove-dead`, `remove`, and `trim` read your answer instead of timing out on piped runs.
+- **Stale docs links and CI targets fixed** (<https://github.com/full-bars/meso-miner/pull/102>).
 
 ### Changed
 
-- **HotSwap is no longer described as zero-downtime.** Measured on a live node, a hotswap removes the 2 to 3 second window with no provider process, but the old process drops its proxy connections at the handover and the new one rebuilds them over about 30 s, the same ramp as a restart. Earlier entries that say "zero-downtime" describe the process handover only. See `docs/HotSwap.md`.
+- **HotSwap is no longer described as zero-downtime.** Measured on a live node, a hotswap removes the 2 to 3 second window with no provider process, but proxy connections still ramp back over about 30 s, the same as a restart. See `docs/HotSwap.md`.
 
 ### Maintenance
 
-- **Security blocklist sync** (<https://github.com/full-bars/meso-miner/pull/108>): refreshed the content filtering blocklist.
+- **CFAA blocklist syncs** (<https://github.com/full-bars/meso-miner/pull/101>, <https://github.com/full-bars/meso-miner/pull/104>, <https://github.com/full-bars/meso-miner/pull/108>).
+- **Parity completion and release prep** (<https://github.com/full-bars/meso-miner/pull/94>, <https://github.com/full-bars/meso-miner/pull/112>).
+
+### CI
+
+- **Ship-release hands off to the tag-triggered pipeline** (<https://github.com/full-bars/meso-miner/pull/99>, <https://github.com/full-bars/meso-miner/pull/100>).
 
 ---
+
 
 ## [v2026.9.18-1049118720-meso] — 2026-09-18
 
