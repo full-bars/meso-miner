@@ -199,23 +199,6 @@ func (self *Buffer) Clone() *Buffer {
 	out := New(self.w, self.h)
 	for y := 0; y < self.h; y++ {
 		copy(out.cells[y*self.w:(y+1)*self.w], self.cells[self.index(0, y):self.index(0, y)+self.w])
-		// A view edge can cut a wide rune: the head cell without its
-		// continuation (right edge) or a continuation cell without its
-		// head (left edge) renders as an orphan that breaks both String
-		// and Diff. Blank the clipped halves so the clone holds only
-		// complete cells.
-		row := out.cells[y*self.w : (y+1)*self.w]
-		for x := range row {
-			if row[x].Rune != 0 && x+1 < len(row) {
-				// Head cell whose right half was clipped elsewhere.
-				if !row[x+1].Continuation() && RuneWidth(row[x].Rune) >= 2 {
-					row[x] = blankCell(row[x].Style)
-				}
-			}
-			if row[x].Continuation() && x == 0 {
-				row[x] = blankCell(row[x].Style)
-			}
-		}
 	}
 	return out
 }
