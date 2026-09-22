@@ -95,6 +95,8 @@ jobs:
           echo "${GPG_RELEASE_KEY}" | gpg --batch --import 2>&1
           SIGNING_KEY=$(gpg --list-keys --keyid-format long meso-release-bot 2>&1 | awk '/^pub/{print $2}' | cut -d/ -f2)
           echo "GPG signing key: ${SIGNING_KEY}" >> "$GITHUB_STEP_SUMMARY"
+          git config user.name "full-bars"
+          git config user.email "45684698+full-bars@users.noreply.github.com"
           git config user.signingkey "${SIGNING_KEY}"
 
           # Signed annotated tag — GitHub shows "Verified" badge.
