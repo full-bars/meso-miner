@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Message-pool buffer leak on connect failure** (<https://github.com/full-bars/meso-miner/pull/126>): the upstream-connect failure path released the pooled packet without returning its buffer to the pool. It now returns the buffer exactly once, with a regression test. Restart a provider to reclaim memory the leak already took.
+
+### Maintenance
+
+- **Deterministic test suite** (<https://github.com/full-bars/meso-miner/pull/124>).
+- **Security blocklist sync** (<https://github.com/full-bars/meso-miner/pull/125>).
+
+---
+
+## [v2026.09.21-1790052822-meso] — 2026-09-22
+
 ### Added
 
 - **Audit ring now records lifecycle events** (<https://github.com/full-bars/meso-miner/pull/118>): `urnet-tools history` previously showed only `set` and `clear` config changes. It now also records process start (with the version), the hotswap handoff, and control-socket shutdown. After an update the sequence reads `hotswap` on the retired process, and the successor's ring shows `start` plus the merged `hotswap` (`start` then `hotswap` on spawned candidates, `hotswap` then `start` on the Docker execve path).
