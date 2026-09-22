@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+_Nothing yet._
+
+---
+
+## [v2026.9.22-1052862940-meso] — 2026-09-22
+
 ### Fixed
 
 - **Message-pool buffer leak on connect failure** (<https://github.com/full-bars/meso-miner/pull/126>): the upstream-connect failure path released the pooled packet without returning its buffer to the pool. It now returns the buffer exactly once, with a regression test. Restart a provider to reclaim memory the leak already took.
