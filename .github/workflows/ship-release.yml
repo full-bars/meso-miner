@@ -80,6 +80,7 @@ jobs:
         if: steps.tag.outputs.dry_run == 'false'
         env:
           GPG_RELEASE_KEY: ${{ secrets.GPG_RELEASE_KEY }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
           # Tag the main commit that carries the notes file (verified above).
