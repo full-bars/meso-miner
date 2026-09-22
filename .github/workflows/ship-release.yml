@@ -25,6 +25,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # gh workflow run release.yml (downstream dispatch) needs this; without
+      # it the dispatch step 403s and the tag ships but the build never starts.
+      actions: write
     outputs:
       tag_name: ${{ steps.tag.outputs.tag }}
       dry_run: ${{ steps.tag.outputs.dry_run }}
