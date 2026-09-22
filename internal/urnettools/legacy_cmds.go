@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -129,6 +130,14 @@ func selectLifecycleTarget(verb string, args []string, force, dryRun bool) (Prov
 	if err != nil {
 		return Provider{}, err
 	}
+	// The docker-namespace guard MUST run before any cross-user elevation:
+	// a non-root operator running `stop --unit ps` against a docker target
+	// must get "use urnet-docker" immediately, not a sudo prompt for a
+	// namespace the systemd tool cannot act on. Guard before elevate so the
+	// conflict is resolved with zero privileges spent.
+	if err := guardSystemdProvider(p); err != nil {
+		return Provider{}, err
+	}
 	// Managing another user's provider requires root; re-exec under sudo.
 	// A dry run plans without acting and needs no root, so it never elevates.
 	if !dryRun {
@@ -138,9 +147,6 @@ func selectLifecycleTarget(verb string, args []string, force, dryRun bool) (Prov
 	}
 	if narrowed {
 		printLifecycleNarrowedNote(len(providers), p, verb)
-	}
-	if err := guardSystemdProvider(p); err != nil {
-		return Provider{}, err
 	}
 	return p, nil
 }
@@ -180,6 +186,9 @@ func cmdStop(args []string, force, dryRun bool) error {
 	if runtime.GOOS == "windows" {
 		return cmdStopWindows(p, force, dryRun)
 	}
+	if p.Unit == "" {
+		return stopUnitlessProvider(p, force)
+	}
 	fmt.Printf("stopping %s...\n", providerLabel(p))
 	if err := unitCommand(p, "stop"); err != nil {
 		fmt.Printf("FAILED to stop %s: %v\n", providerLabel(p), err)
@@ -187,6 +196,99 @@ func cmdStop(args []string, force, dryRun bool) error {
 	}
 	fmt.Printf("stopped %s\n", providerLabel(p))
 	return nil
+}
+
+// unitlessStopGracePeriod is how long unitless stop waits for a SIGTERM'd
+// provider to drain before suggesting --force. Matches systemd's default
+// TimeoutStopSec so drain semantics are identical to a unit-managed stop.
+var unitlessStopGracePeriod = 90 * time.Second
+
+// stopUnitlessProvider stops a provider that is running as a plain process
+// with no owning systemd unit (e.g. a manual `provide & disown` launch). The
+// provider drains on SIGTERM — the same signal systemd sends on a
+// unit-managed stop — and there is nothing to invoke through systemctl, so
+// the process is signaled directly and waited on. SIGKILL is only used with
+// --force, mirroring systemd's stop-timeout escalation.
+func stopUnitlessProvider(p Provider, force bool) error {
+	if !p.Running || p.PID <= 0 {
+		return fmt.Errorf("provider %s has no systemd unit and is not a running process — nothing to stop", providerLabel(p))
+	}
+	fmt.Printf("stopping %s (pid %d): no systemd unit, sending SIGTERM (graceful drain)...\n", providerLabel(p), p.PID)
+	proc, err := os.FindProcess(p.PID)
+	if err != nil {
+		return fmt.Errorf("failed to find pid %d: %v", p.PID, err)
+	}
+	if err := proc.Signal(syscall.SIGTERM); err != nil {
+		return fmt.Errorf("failed to send SIGTERM to pid %d: %v", p.PID, err)
+	}
+	deadline := time.Now().Add(unitlessStopGracePeriod)
+	for time.Now().Before(deadline) {
+		if !processAlive(p.PID) {
+			fmt.Printf("stopped %s (pid %d). NOTE: it was started outside systemd, so no unit or watchdog will restart it.\n", providerLabel(p), p.PID)
+			return nil
+		}
+		time.Sleep(time.Second)
+	}
+	if !force {
+		return fmt.Errorf("pid %d still running after %ds of graceful drain — use --force to escalate to SIGKILL", p.PID, int(unitlessStopGracePeriod/time.Second))
+	}
+	fmt.Printf("pid %d did not drain within %ds; --force: sending SIGKILL\n", p.PID, int(unitlessStopGracePeriod/time.Second))
+	if err := proc.Signal(syscall.SIGKILL); err != nil {
+		return fmt.Errorf("failed to send SIGKILL to pid %d: %v", p.PID, err)
+	}
+	deadline = time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if !processAlive(p.PID) {
+			fmt.Printf("stopped %s (pid %d). NOTE: it was started outside systemd, so no unit or watchdog will restart it.\n", providerLabel(p), p.PID)
+			return nil
+		}
+		time.Sleep(time.Second)
+	}
+	return fmt.Errorf("pid %d still alive after SIGKILL — the process may be unkillable or already reaped; check with ps", p.PID)
+}
+
+// processAlive reports whether a pid still runs and can receive signals. A
+// signal-0 probe never kills; ESRCH means the process is gone, EPERM means
+// it exists but belongs to another user. A zombie is treated as dead: the
+// process has exited and only awaits its parent's reaping (systemd reaps
+// unit children immediately; a disowned provider rests under PID 1).
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	if b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
+		fields := strings.Fields(string(b))
+		if len(fields) >= 3 && (fields[2] == "Z" || fields[2] == "X") {
+			return false
+		}
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return proc.Signal(syscall.Signal(0)) == nil
+}
+
+// logsUnitlessProvider streams — or precisely explains the absence of — logs
+// for a provider running as a plain process with no systemd unit. The
+// process's own stdout is the only log stream; when the launcher discarded
+// it (`&>/dev/null & disown`, the classic manual-start trap), there is
+// genuinely nothing to show, so the operator gets a diagnosis instead of a
+// silent empty stream. Otherwise the /proc fd is tailed directly.
+func logsUnitlessProvider(p Provider, lines int) error {
+	fdPath := fmt.Sprintf("/proc/%d/fd/1", p.PID)
+	dest, err := os.Readlink(fdPath)
+	if err != nil {
+		return fmt.Errorf("provider %s has no systemd unit and its stdout cannot be read (%s: %v) — no log source. Run it under a systemd unit (or with a RAMLOGS profile) to get logs", providerLabel(p), fdPath, err)
+	}
+	if dest == "/dev/null" || strings.HasPrefix(dest, "/dev/null ") {
+		return fmt.Errorf("provider %s runs outside systemd with its output discarded (%s) — there is no log stream to show. Restart it under a systemd unit (or with a RAMLOGS/eco profile) to capture logs", providerLabel(p), dest)
+	}
+	fmt.Printf("Streaming stdout of pid %d (%s, %d lines) — provider %s\n", p.PID, dest, lines, providerLabel(p))
+	cmd := exec.Command("tail", "-n", strconv.Itoa(lines), "-f", fdPath)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 // cmdRestart restarts the provider's owning unit (destructive gate applies).
@@ -202,6 +304,8 @@ func cmdRestart(args []string, force, dryRun bool) error {
 	if !ok {
 		return nil // dry-run
 	}
+	// Leave the reason for the provider's next start (best effort).
+	recordRestartReason(p, restartReasonManual)
 	if runtime.GOOS == "windows" {
 		return cmdRestartWindows(p, force, dryRun)
 	}
@@ -228,7 +332,7 @@ var discoverSystemdFn = Discover
 // hard-errors on leftovers before selection runs.
 func hasExplicitTarget(t Target) bool {
 	return t.Unit != "" || t.User != "" || t.Network != "" ||
-		t.NetworkID != "" || t.StateDir != ""
+		t.NetworkID != "" || t.StateDir != "" || t.PID > 0
 }
 
 // lifecycleCandidates builds the candidate pool for start/stop/restart.
@@ -280,6 +384,58 @@ func errWithDockerHint(err error, systemdProviderCount int) error {
 	return fmt.Errorf("%s", b.String())
 }
 
+// validateLogsTarget performs the pre-journalctl sanity checks for cmdLogs:
+// a provider with NO systemd unit cannot be followed through journald (an
+// empty unit would build `journalctl -fu ""`, which journalctl rejects with
+// "Failed to add filter for units: Invalid argument"). Returns an actionable
+// error naming the docker namespace when the provider is container-attributed
+// so the operator is pointed at `urnet-docker logs` instead of a raw
+// journalctl failure.
+func validateLogsTarget(p Provider) error {
+	if p.Unit != "" {
+		return nil
+	}
+	hint := ""
+	if isDockerProvider(p) {
+		hint = " — it is a container provider; use `urnet-docker logs " + providerLabel(p) + "`"
+	} else {
+		hint = " — the provider has no systemd unit to follow in journald"
+	}
+	return fmt.Errorf("provider %s has no systemd unit%s", providerLabel(p), hint)
+}
+
+// logsPlatformCheck runs the pre-journalctl checks for cmdLogs. Windows is
+// decided FIRST: it has no systemd/journalctl and its providers never carry a
+// unit, so the no-unit validation below would turn the intended "not
+// supported" notice into a hard error. handled=true means the command is
+// finished (nil error) and the caller must not continue.
+func logsPlatformCheck(p Provider, goos string) (handled bool, err error) {
+	if goos == "windows" {
+		fmt.Println("urnet-tools: journalctl is not available on Windows — logs are not supported via this command.")
+		return true, nil
+	}
+	// No systemd unit = nothing journald can follow. Fail with an
+	// actionable message (docker hint when it's a container provider)
+	// instead of building `journalctl -fu ""`, which journalctl rejects
+	// with a raw "Failed to add filter for units: Invalid argument".
+	if err := validateLogsTarget(p); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+// journalctlArgsGuard refuses to build journalctl argv for a provider with an
+// empty unit: journalctl -fu "" errors with "Invalid argument", and the guard
+// must fail fast inside the CLI rather than forward a command journalctl is
+// guaranteed to reject. Returns nil when a unit exists (callers then use
+// journalctlArgs).
+func journalctlArgsGuard(p Provider) error {
+	if p.Unit == "" {
+		return fmt.Errorf("provider %s has no systemd unit — nothing to follow in journald", providerLabel(p))
+	}
+	return nil
+}
+
 // cmdLogs streams logs for the provider: RAMLOGS-aware (reads the provider's
 // own RAM buffer) when the unit has URNETWORK_RAMLOGS=1 / a RAM profile,
 // else journald. An optional trailing positional N (e.g. `logs --unit foo
@@ -290,10 +446,20 @@ func cmdLogs(args []string) error {
 		return err
 	}
 	lines := 250
+	numSeen := false
 	for _, a := range rest {
 		if n, err := strconv.Atoi(a); err == nil && n > 0 && n < 1000000 {
 			lines = n
+			numSeen = true
+			continue
 		}
+		// Reject anything that is not a valid line-count positional instead
+		// of silently swallowing it: `logs --unit X garbage` or a stray flag
+		// would otherwise be dropped with no notice.
+		return fmt.Errorf("logs: unexpected argument %q (expected a line count, e.g. 'logs 500')", a)
+	}
+	if numSeen && len(rest) > 1 {
+		return fmt.Errorf("logs: too many arguments (expected one optional line count, got %d)", len(rest))
 	}
 	providers := Discover()
 	p, narrowed, err := selectTargetOrSoleAccessible(providers, t, false)
@@ -324,10 +490,15 @@ func cmdLogs(args []string) error {
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
 	}
-	// Windows has no systemd/journalctl — print a diagnostic and exit cleanly.
-	if runtime.GOOS == "windows" {
-		fmt.Println("urnet-tools: journalctl is not available on Windows — logs are not supported via this command.")
-		return nil
+	// No systemd unit but the provider is a live process: the process's own
+	// stdout is the only possible log stream. Windows has no /proc and is
+	// handled below; on unix we tail the fd directly, or give a precise
+	// diagnosis when the launcher discarded output (`&>/dev/null`).
+	if p.Unit == "" && p.Running && runtime.GOOS != "windows" {
+		return logsUnitlessProvider(p, lines)
+	}
+	if handled, err := logsPlatformCheck(p, runtime.GOOS); handled || err != nil {
+		return err
 	}
 	// journalctl is a standalone binary, not a systemctl verb — calling it
 	// through unitCommand would execute `systemctl journalctl` (invalid).

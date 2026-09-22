@@ -94,6 +94,7 @@ Usage: urnet-docker <command> [flags]
 Core Commands:
   providers               list all provider containers (identified by in-container JWT)
   status [target]         detailed status of one container
+  top [target]            live full-screen status dashboard inside container
   start|stop|restart [target]   control container lifecycle (docker start/stop/restart)
   logs [target] [N]       follow container logs (RAMLOGS-aware /dev/shm fallback)
   auth [<code>] [target]  authenticate provider inside container
@@ -113,6 +114,7 @@ Proxy Management [target]:
   proxy traffic             real-time bandwidth & client session load
   proxy remove-dead         prune dead/degraded proxies
   proxy trim <N>            hold running proxies at N, shed worst first (F -> A)
+  proxy audit [action]      manage automated proxy audit engine (status|on|off|release)
   proxy exclude [<pattern>] exclude proxies matching pattern
 
 Performance & Tuning [target]:
@@ -185,6 +187,38 @@ func consumeDockerBareTarget(providers []Provider, t Target, rest []string) (Tar
 	return t, rest
 }
 
+// consumeDockerTrailingTarget promotes a trailing bare positional that matches
+// a discovered container name to the target when no explicit target flag was
+// given, provided there are at least minPositionals non-flag positional
+// arguments present. Commands like `session <save|load> <file> [target]` require
+// 3 non-flag positionals before consuming a trailing target, so a file operand
+// that shares a name with a container (e.g. `session save urnet-test`) is preserved
+// as the file argument rather than stripped as a target.
+func consumeDockerTrailingTarget(providers []Provider, t Target, rest []string, minPositionals int) (Target, []string) {
+	if t.Unit != "" || t.User != "" || t.Network != "" || t.NetworkID != "" || t.StateDir != "" {
+		return t, rest
+	}
+	var nonFlags []int
+	for i, a := range rest {
+		if !strings.HasPrefix(a, "-") {
+			nonFlags = append(nonFlags, i)
+		}
+	}
+	if len(nonFlags) < minPositionals || len(nonFlags) == 0 {
+		return t, rest
+	}
+	lastIdx := nonFlags[len(nonFlags)-1]
+	for _, p := range providers {
+		if p.Unit == rest[lastIdx] {
+			t.Unit = rest[lastIdx]
+			out := append([]string{}, rest[:lastIdx]...)
+			out = append(out, rest[lastIdx+1:]...)
+			return t, out
+		}
+	}
+	return t, rest
+}
+
 // cmdDockerProviders lists every provider container on the box.
 func cmdDockerProviders(args []string) error {
 	providers := DiscoverDocker()
@@ -223,6 +257,23 @@ func cmdDockerStatus(args []string) error {
 		fmt.Fprintf(w, "jwt-expires:\t%s\n", p.JWTExpires.Format("2006-01-02 15:04:05"))
 	}
 	return w.Flush()
+}
+
+// cmdDockerTop opens the live full-screen status dashboard inside the targeted container.
+func cmdDockerTop(args []string) error {
+	providers := DiscoverDocker()
+	t, rest, err := parseTargetFlagsLenient(args)
+	if err != nil {
+		return err
+	}
+	t, rest = consumeDockerBareTarget(providers, t, rest)
+	t, rest = consumeDockerTrailingTarget(providers, t, rest, 1)
+	p, err := selectTargetInteractive(providers, t)
+	if err != nil {
+		return err
+	}
+	inner := append([]string{"urnet-tools", "top"}, rest...)
+	return containerInteractiveExecByName(p.Unit, inner...)
 }
 
 // cmdDockerExec runs a command inside the targeted container — the
@@ -281,6 +332,19 @@ func splitExecArgs(args []string) (pre, rest []string, err error) {
 	}
 	split := 0
 	for split < len(args) && strings.HasPrefix(args[split], "-") {
+		// Accept the equals form (--unit=X) alongside the space form, so
+		// `urnet-docker exec --unit=X -- cmd` behaves like the rest of the
+		// suite, where --flag=value is accepted everywhere.
+		if strings.HasPrefix(args[split], "--") {
+			eqName, _, hasEq := strings.Cut(args[split], "=")
+			switch eqName {
+			case "--unit", "--user", "--network", "--network-id", "--state-dir":
+				if hasEq {
+					split++
+					continue
+				}
+			}
+		}
 		switch args[split] {
 		case "--unit", "--user", "--network", "--network-id", "--state-dir":
 			// A recognized target flag MUST have a value; a trailing flag
@@ -572,8 +636,14 @@ func updateTargetFromArgs(args []string, providers []Provider) (Target, []string
 		sort.Strings(names)
 		return Target{}, nil, fmt.Errorf("no provider container named %q — available: %s (use `self-update` for the host tool)", args[first], strings.Join(names, ", "))
 	}
-	// No bare container target: fall through to the host self-update and let it
-	// interpret the args (remaining flags or a typo).
+	// No bare container target: fall through to the host self-update.
+	// Any remaining flag-like argument is a typo or an unsupported option —
+	// refuse instead of silently dropping it and proceeding with the update.
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") {
+			return Target{}, nil, fmt.Errorf("unrecognized option %q for self-update (supported: --tag, --digest, --url)", a)
+		}
+	}
 	return Target{}, nil, nil
 }
 
@@ -713,10 +783,14 @@ func cmdDockerLogs(args []string) error {
 // cmdDockerAuth delegates provider authentication into the container.
 func cmdDockerAuth(args []string) error {
 	providers := DiscoverDocker()
-	t, rest, err := dockerTargetFromArgs(args, providers)
+	// Lenient parse so pass-through flags for the container command
+	// (auth: --api_url=/--source; session: --allow-different-account/-f/-n;
+	// sn-status: --json) survive and are forwarded to the container command.
+	t, rest, err := parseTargetFlagsLenient(args)
 	if err != nil {
 		return err
 	}
+	t, rest = consumeDockerTrailingTarget(providers, t, rest, 1)
 	p, err := selectTargetInteractive(providers, t)
 	if err != nil {
 		return err
@@ -866,10 +940,14 @@ func cmdDockerFastAuth(args []string) error {
 // cmdDockerSession delegates interactive session save/load into the container.
 func cmdDockerSession(args []string) error {
 	providers := DiscoverDocker()
-	t, rest, err := dockerTargetFromArgs(args, providers)
+	// Lenient parse so pass-through flags for the container command
+	// (auth: --api_url=/--source; session: --allow-different-account/-f/-n;
+	// sn-status: --json) survive and are forwarded to the container command.
+	t, rest, err := parseTargetFlagsLenient(args)
 	if err != nil {
 		return err
 	}
+	t, rest = consumeDockerTrailingTarget(providers, t, rest, 3)
 	p, err := selectTargetInteractive(providers, t)
 	if err != nil {
 		return err
@@ -885,7 +963,7 @@ func cmdDockerSession(args []string) error {
 // in-container urnet-tools proxy invocation.
 func cmdDockerProxy(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | refresh | add-source <url> | remove-source <url> | remove-dead | trim <N> | exclude")
+		return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | refresh | add-source <url> | remove-source <url> | remove-dead | trim <N> | exclude | audit")
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -1043,6 +1121,9 @@ func cmdDockerProxy(args []string) error {
 		}
 		inner := append([]string{"urnet-tools", "proxy", "trim"}, rest2...)
 		return containerExecByName(container, inner...)
+	case "audit":
+		inner := append([]string{"urnet-tools", "proxy", "audit"}, rest2...)
+		return containerExecByName(container, inner...)
 	case "exclude":
 		inner := append([]string{"urnet-tools", "proxy", "exclude"}, rest2...)
 		return containerExecByName(container, inner...)
@@ -1066,10 +1147,14 @@ func dockerCopyInto(container, hostFile, destPath string) error {
 // cmdDockerSnStatus queries Subnet 25 telemetry inside the targeted container.
 func cmdDockerSnStatus(args []string) error {
 	providers := DiscoverDocker()
-	t, rest, err := dockerTargetFromArgs(args, providers)
+	// Lenient parse so pass-through flags for the container command
+	// (auth: --api_url=/--source; session: --allow-different-account/-f/-n;
+	// sn-status: --json) survive and are forwarded to the container command.
+	t, rest, err := parseTargetFlagsLenient(args)
 	if err != nil {
 		return err
 	}
+	t, rest = consumeDockerBareTarget(providers, t, rest)
 	p, err := selectTargetInteractive(providers, t)
 	if err != nil {
 		return err

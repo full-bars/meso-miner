@@ -12,18 +12,18 @@ The provider is designed to run as a **non-privileged user service** for maximum
 Install:
 
 ```bash
-curl -fSsL https://dl.fullbars.xyz/install.sh | sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh
 ```
 
 Uninstall:
 
 ```bash
-curl -fSsL https://dl.fullbars.xyz/uninstall.sh | sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Uninstall_Linux.sh | sh
 ```
 
 ### 🔑 Post-Install Authentication
 
-After installation, you must source your terminal profile so the new commands are available, and authenticate the provider. Then you can load your proxy list:
+After installation, source your terminal profile so the new commands are available in the terminal you installed from (new terminals, `ssh host urnet-tools ...`, cron and root find them without this step: the installer links `urnet-tools` and `urnetwork` into `~/.local/bin` and `/usr/local/bin` and writes the PATH block to `~/.bashrc`, `~/.profile` and `~/.zshenv`), and authenticate the provider. Then you can load your proxy list:
 
 ```bash
 source ~/.bashrc
@@ -43,7 +43,7 @@ urnet-tools proxy refresh
 The macOS installer is the equivalent of the Linux installer but uses `launchd` instead of `systemd`:
 
 ```bash
-curl -fSsL https://dl.fullbars.xyz/install-mac.sh | sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh
 ```
 
 Uninstall (manual — macOS uninstall script not yet available):
@@ -126,13 +126,13 @@ The installation includes the `urnet-tools` suite for management. Since v3.23.0-
 Install via PowerShell (no admin required):
 
 ```powershell
-powershell -c "irm https://dl.fullbars.xyz/install-win.ps1 | iex"
+powershell -c "irm https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Win32.ps1 | iex"
 ```
 
 Uninstall via PowerShell (no admin required):
 
 ```powershell
-powershell -c "irm https://dl.fullbars.xyz/uninstall-win.ps1 | iex"
+powershell -c "irm https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Uninstall_Win32.ps1 | iex"
 ```
 
 ### What gets installed
@@ -183,7 +183,7 @@ urnet-tools update
 
 Starting with v3.23.0-fix.31.2, the Windows release tarball includes `urnet-tools` alongside the provider binary. If you prefer a manual or offline install:
 
-1. Download the release tarball from [GitHub Releases](https://github.com/full-bars/urnetwork-3.23-fix/releases).
+1. Download the release tarball from [GitHub Releases](https://github.com/full-bars/meso-miner/releases).
 2. Extract the archive to your desired location (e.g. `%LOCALAPPDATA%\urnetwork`).
 3. Open **PowerShell** and run the included install script:
 
@@ -211,7 +211,7 @@ When the provider starts, it logs a **System Auditor** report that checks kernel
 For Docker-only users who do not want the systemd provider service, run the installer on the host to install the tools:
 
 ```bash
-curl -fSsL https://dl.fullbars.xyz/install.sh | sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh
 ```
 
 Then optimize the host:

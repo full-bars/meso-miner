@@ -1,8 +1,84 @@
 # Changelog
 
-All notable changes to this project are documented here.
+## [Unreleased]
+
+### Fixed
+
+- **Message-pool buffer leak on connect failure** (<https://github.com/full-bars/meso-miner/pull/126>): the upstream-connect failure path released the pooled packet without returning its buffer to the pool. It now returns the buffer exactly once, with a regression test. Restart a provider to reclaim memory the leak already took.
+
+### Maintenance
+
+- **Deterministic test suite** (<https://github.com/full-bars/meso-miner/pull/124>).
+- **Security blocklist sync** (<https://github.com/full-bars/meso-miner/pull/125>).
 
 ---
+
+## [v2026.09.21-1790052822-meso] — 2026-09-22
+
+### Added
+
+- **Audit ring now records lifecycle events** (<https://github.com/full-bars/meso-miner/pull/118>): `urnet-tools history` previously showed only `set` and `clear` config changes. It now also records process start (with the version), the hotswap handoff, and control-socket shutdown. After an update the sequence reads `hotswap` on the retired process, and the successor's ring shows `start` plus the merged `hotswap` (`start` then `hotswap` on spawned candidates, `hotswap` then `start` on the Docker execve path).
+- **Audit entries survive hotswap** (<https://github.com/full-bars/meso-miner/pull/118>): the parent flushes the audit ring at the handoff commit point, before the takeover message, on every handover path (systemd, Windows, Docker). The successor merges the ring from disk after takeover, with timezone-safe deduplication, so the last control-socket commands before an update are not lost. The parent quiesces its control socket at the same commit point, so a command accepted after the flush cannot vanish in the parent's memory; it falls back to the pending-overrides queue, which the successor merges.
+- **Live node snapshot and a live block in `urnet-tools status`** (<https://github.com/full-bars/meso-miner/pull/114>): the provider keeps a snapshot of the node, cached for about a second, and serves it over the control socket as `snapshot`. It carries the billable rate now and as 1 and 5 minute averages with a 10 minute history, active clients and sessions, the proxy pool by status, pressure, memory, descriptors and goroutines, the restart reason, and a flowing, idle, degraded or starting verdict with a hint when idle. `urnet-tools status` shows it as a live block, `urnet-tools status --json` prints it for scripts, and a host with several providers gets a one-line summary of each.
+- **Restart reason** (<https://github.com/full-bars/meso-miner/pull/114>): `urnet-tools update`, `hotswap` and `restart` record why the provider is about to restart, and the provider reports it after it starts (`update`, `hotswap`, `manual`, `clean`, `unclean` or `first-start`) in the snapshot and as `urnet_restart_reason`.
+- **Resource metrics and alert rules** (<https://github.com/full-bars/meso-miner/pull/114>): `urnet_mem_limit_bytes`, `urnet_rss_bytes`, `urnet_open_fds` and `urnet_fd_limit` (the last three on Linux); `UrnetworkNodeDown` and `UrnetworkRestartLoop` Prometheus alerts on by default in the Monitoring bundle, plus four commented-out fleet-specific ones. See `docs/Monitoring.md`.
+- **`urnet-tools top`, a live full-screen view of a provider** (<https://github.com/full-bars/meso-miner/pull/115>): the last 10 minutes of throughput as a graph, current and average rate, clients, the proxy pool, memory and descriptors, and recent events such as restarts and state changes. It reads only the provider's control socket (the live snapshot above) and changes nothing. Also available as `urtop`, a link the installer and `urnet-tools update` now create. Keys: `q`, `Esc` or `Ctrl-C` quit; `Tab` and `Shift-Tab` switch provider; `+` and `-` change the refresh rate; `?` shows help. When the provider does not answer (stopped, or an older build) the screen stays up, shows `DISCONNECTED` with the reason and a countdown, and resumes by itself. It needs an interactive terminal; use `status` for scripts.
+- **HotSwap how-to and measured costs** (<https://github.com/full-bars/meso-miner/pull/109>): new `docs/HotSwap.md` covering requirements, the update flow, what you will see, and measured costs (connection ramp, memory, drain).
+- **Design proposal: per-client make-before-break HotSwap handover** (<https://github.com/full-bars/meso-miner/pull/111>): `docs/design/hotswap-make-before-break.md` plans a handover that keeps every client connected throughout. A proposal only, no code.
+- **Bandwidth and heartbeat reporters ported, legacy ps1 scripts retired** (<https://github.com/full-bars/meso-miner/pull/103>).
+- **Automated proxy audit and quality enforcement** (<https://github.com/full-bars/meso-miner/pull/116>): `urnet-tools proxy audit on|off|status|release`, parking proxies that grade as junk; status reports parked and paused honestly.
+- **Control unitless providers** (<https://github.com/full-bars/meso-miner/pull/119>): lifecycle and settings commands work against bare or containerized providers without a systemd unit, state-dir rows are deduplicated, and `urnet-tools get` reads one setting.
+- **File-backed proxy add and paste fixed** (<https://github.com/full-bars/meso-miner/pull/113>): comments and blank lines survive, lock-guarded deduplication, keyed credentials preserved.
+- **Security blocklist sync** (<https://github.com/full-bars/meso-miner/pull/117>): refreshed the content-filtering blocklist from upstream — a net reduction of about 6,400 IPv4 ranges and 32 IPv6 prefixes after upstream pruning. The shipped file is the sync-time upstream snapshot; upstream has since moved.
+
+### Security
+
+- **Container-discovery ghost hardening, round 2** (<https://github.com/full-bars/meso-miner/pull/106>): containerized providers no longer appear as host providers (cgroup classification when the mount namespace is unreadable); provider state is read and written through descriptor-pinned handles that walk from the kernel-attributed owner home without following symlinks; state-dir arguments are validated against the owner captured in the same process scan; `docker cp` output is decoded from the tar stream and size-capped; Docker commands have deadlines and the exec fallback rejects option injection; session load and save, the pending-overrides lock, self-heal, hotswap counters, the direct toggle, the reload trigger and the unit backup and replace paths no longer re-resolve a user-controlled pathname as root; a recovered provider binary is chmod'ed and chown'ed on the open file descriptor.
+
+### Fixed
+
+- **HotSwap unit migration was a silent no-op** (<https://github.com/full-bars/meso-miner/pull/109>): the installer writes a unit with no `Type=` line and `update` only rewrote an explicit `Type=simple`. A unit with no `Type=` now gets `Type=notify` and `NotifyAccess=all`.
+- **HotSwap declines up front when the running provider has no notify socket** (<https://github.com/full-bars/meso-miner/pull/109>): no SIGUSR2 abort and rollback; new decline label `needs_restart`.
+- **pprof diagnostics reappear on every hotswap** (<https://github.com/full-bars/meso-miner/pull/109>): the candidate retries the diagnostics bind until its parent releases the port.
+- **`urnet-tools` is on PATH** (<https://github.com/full-bars/meso-miner/pull/109>) for non-interactive shells, zsh and root: the installer links the binaries into `~/.local/bin` and `/usr/local/bin` and writes PATH blocks; `urnet-tools update` repairs older installs.
+- **Proxy credential rotation on re-paste** (<https://github.com/full-bars/meso-miner/pull/107>): pasting an address with different credentials rotates the running proxy instead of silently keeping the old credentials; every duplicate entry for an address is scanned before an add is skipped.
+- **Docker idle-update poll is bounded** (<https://github.com/full-bars/meso-miner/pull/106>): a hung Docker daemon can no longer stall the idle wait past its own timeout.
+- **Message-pool leak attribution** (<https://github.com/full-bars/meso-miner/pull/107>): per-call-site leak tags are on by default, name the acquiring call site, and are race-detector safe.
+- **Interactive delegated subcommands wire stdin** (<https://github.com/full-bars/meso-miner/pull/105>): `proxy remove-dead`, `remove`, and `trim` read your answer instead of timing out on piped runs.
+- **Stale docs links and CI targets fixed** (<https://github.com/full-bars/meso-miner/pull/102>).
+
+### Changed
+
+- **Provider status uses a sliding severity scale** (<https://github.com/full-bars/meso-miner/pull/118>): `active` at 90% or more of configured proxies live, `partial` at 70-89%, `degraded` at 50-69%, `critical` below 50% (including zero), with the exact percentage always rendered and clamped at 100. A healthy node with a small dead tail of proxies no longer reads as `partial` forever.
+- **Start entries persist immediately on normal boots** (<https://github.com/full-bars/meso-miner/pull/118>): only a hotswap successor defers its start entry until the takeover merge; a regular boot keeps writing to disk at once.
+- **HotSwap is no longer described as zero-downtime.** Measured on a live node, a hotswap removes the 2 to 3 second window with no provider process, but proxy connections still ramp back over about 30 s, the same as a restart. See `docs/HotSwap.md`.
+
+### Maintenance
+
+- **CFAA blocklist syncs** (<https://github.com/full-bars/meso-miner/pull/101>, <https://github.com/full-bars/meso-miner/pull/104>, <https://github.com/full-bars/meso-miner/pull/108>).
+- **Parity completion and release prep** (<https://github.com/full-bars/meso-miner/pull/94>, <https://github.com/full-bars/meso-miner/pull/112>).
+
+### CI
+
+- **Ship-release hands off to the tag-triggered pipeline** (<https://github.com/full-bars/meso-miner/pull/99>, <https://github.com/full-bars/meso-miner/pull/100>).
+
+---
+
+## [v2026.9.18-1049118720-meso] — 2026-09-18
+
+### Added
+- **Full parity port (PR #92, #93, #94)**: provider runtime (zero-downtime HotSwap, UNIX control socket with live overrides, Prometheus `/metrics` endpoint, dynamic state overrides, earnings-aware proxy prioritization, audit ring buffer, systemd `Type=notify`), the complete urnet-tools CLI (`config`, `hotswap`, `history`, `lifecycle`, `metrics`, `profile`, `proxy_ids`, `ramlogs`, `dashboard`), all fork test suites, and the Prometheus/Grafana monitoring bundle.
+- **Transfer engine parity (PR #93)**: transfer flight tracking with forget-on-RTO congestion semantics, selective-ack ordering and provable-hole wake, WebRTC data channel hardening, route-manager concurrency fixes.
+- **Shakedown parity (PR #96)**: `shakedown.sh`/`docker-shakedown.sh` aligned with the release state and extended with the fork's full Q-Z coverage (drop-in merge-order matrix, settings-survive-update, hotswap decline/engage, failure injection, MemoryMax sweep, 5000-proxy stress, multi-provider).
+- **`VT_JSON_FILE` machine-readable export in `vt-scan.py` (PR #95)**: JSON write failures now fail the scan instead of silently skipping WDSI staging.
+
+### Fixed
+- **Docker publish GHCR-only (PR #97)**: the Docker Hub login leg had no credentials on this repo and failed every main push; the GHCR image (`ghcr.io/full-bars/meso-miner`) is the registry the fleet and installers pull from.
+- JWT build mode autodetect: passing an auth code positionally (or `URNETWORK_AUTH_CODE`) selects jwt mode automatically; explicit `BUILD=` still overrides.
+
+---
+
+## Inherited from urnetwork-3.23-fix (carried by the parity port)
 
 ## [v3.23.0-fix.31.4]
 

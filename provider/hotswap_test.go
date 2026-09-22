@@ -349,6 +349,13 @@ func TestHotSwapParentPID1ExecveSuccess(t *testing.T) {
 		return nil
 	}
 
+	ring := &AuditRing{path: t.TempDir() + "/audit.json"}
+	prevRing := globalAuditRing
+	globalAuditRing = ring
+	defer func() { globalAuditRing = prevRing }()
+	prevPersist := lastAuditPersist
+	defer func() { lastAuditPersist = prevPersist }()
+
 	spawnCandidateFunc = func(exe string, args []string) (*HotswapParentSession, error) {
 		return &HotswapParentSession{
 			childCmd: nil,
@@ -365,7 +372,9 @@ func TestHotSwapParentPID1ExecveSuccess(t *testing.T) {
 	})
 
 	// Simulate candidate announcing READY on childFile
+	childDone := make(chan struct{})
 	go func() {
+		defer close(childDone)
 		childReader := bufio.NewReader(childFile)
 		_ = writeHotswapMessage(childFile, HotswapMessage{
 			Type:    HotswapMsgReady,
@@ -391,9 +400,16 @@ func TestHotSwapParentPID1ExecveSuccess(t *testing.T) {
 		t.Fatal("timed out waiting for in-place execve call")
 	}
 
+	select {
+	case <-childDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for candidate goroutine to finish")
+	}
+
 	if !coordinatorYielded {
 		t.Errorf("expected coordinator session to be yielded before execve")
 	}
+	assertHotSwapEntryRecorded(t, ring, "docker execve branch")
 }
 
 func TestHotSwapParentPID1PreflightFailurePreservesProcess(t *testing.T) {
@@ -747,12 +763,26 @@ func TestGetHotSwapChildIPCValidation(t *testing.T) {
 		t.Errorf("expected isChild=false when %s is unset", EnvHotSwap)
 	}
 
-	// If env var is set but fd 3 is not a socket, returns false (F-11)
+	// If env var is set but the descriptor is not a socket, returns false
+	// (F-11). Never touch the real fd 3 here: in the test process it belongs
+	// to some live Go object, and closing it behind that object's back makes
+	// the owner double-close the number after it has been reused by an
+	// unrelated socket (this used to break later tests' loopback listeners).
 	os.Setenv(EnvHotSwap, "1")
-	// On arbitrary process fd 3 is typically either closed or not a socket
-	_ = syscall.Close(3)
-	if _, isChild := getHotSwapChildIPC(); isChild {
-		t.Errorf("expected isChild=false when fd 3 is invalid/closed")
+
+	// An invalid descriptor number.
+	if _, isChild := getHotSwapChildIPCFromFd(1 << 20); isChild {
+		t.Errorf("expected isChild=false for an invalid descriptor")
+	}
+
+	// A valid descriptor that is not a socket (a regular file we own).
+	f, err := os.CreateTemp(t.TempDir(), "notsock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, isChild := getHotSwapChildIPCFromFd(int(f.Fd())); isChild {
+		t.Errorf("expected isChild=false for a non-socket descriptor")
 	}
 }
 
@@ -1049,10 +1079,12 @@ func TestHotSwapParentPID1RestoresStdioBeforeExec(t *testing.T) {
 	getpidFunc = func() int { return 1 }
 
 	var order []string
+	var gotEnv []string
 	done := make(chan struct{}, 1)
 	restoreStdioBeforeExecFunc = func() { order = append(order, "restore") }
 	execInPlaceFunc = func(exe string, args []string, env []string) error {
 		order = append(order, "exec")
+		gotEnv = env
 		done <- struct{}{}
 		return nil
 	}
@@ -1077,5 +1109,212 @@ func TestHotSwapParentPID1RestoresStdioBeforeExec(t *testing.T) {
 	}
 	if fmt.Sprint(order) != fmt.Sprint([]string{"restore", "exec"}) {
 		t.Fatalf("order = %v, want stdio restored before exec", order)
+	}
+	hasSuccessor := false
+	hasHotSwap := false
+	for _, e := range gotEnv {
+		if e == EnvHotSwapExec+"=1" {
+			hasSuccessor = true
+		}
+		if e == EnvHotSwap+"=1" {
+			hasHotSwap = true
+		}
+	}
+	if !hasSuccessor {
+		t.Errorf("exec env missing successor marker %s", EnvHotSwapExec)
+	}
+	if hasHotSwap {
+		t.Errorf("exec env must not contain %s", EnvHotSwap)
+	}
+}
+
+// assertHotSwapEntryRecorded verifies the commit-point audit entry landed
+// in the live ring after a handoff ran. A branch that omits
+// recordHotSwapAndFlush (or records only on failure paths) fails here.
+func assertHotSwapEntryRecorded(t *testing.T, ring *AuditRing, label string) {
+	t.Helper()
+	entries, _ := ring.Entries(10, "")
+	for _, e := range entries {
+		if e.Cmd == "hotswap" {
+			return
+		}
+	}
+	t.Fatalf("%s: handoff ran but no hotswap audit entry recorded (entries %+v)", label, entries)
+}
+
+// The systemd/Unix branch must record the handoff before sending the
+// takeover message: this exercises the branch end-to-end (READY ->
+// TAKEOVER -> ACK -> drain) and asserts the commit-point entry exists.
+func TestHotSwapSystemdBranchRecordsEntry(t *testing.T) {
+	// Run this regardless of the ambient environment: the pre-flight gate
+	// fires when INVOCATION_ID is set but NOTIFY_SOCKET is empty, and either
+	// var can leak into the test process depending on test order (a leaked
+	// INVOCATION_ID made this flaky under -shuffle on CI). Pin both to empty
+	// so the systemd branch selection below is what drives the flow, and no
+	// sdNotify dial leaks through.
+	t.Setenv("INVOCATION_ID", "")
+	t.Setenv("NOTIFY_SOCKET", "")
+
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatalf("socketpair: %v", err)
+	}
+	parentFile := os.NewFile(uintptr(fds[0]), "parent")
+	childFile := os.NewFile(uintptr(fds[1]), "child")
+	defer parentFile.Close()
+	defer childFile.Close()
+
+	origGetpid, origSpawn, origExit := getpidFunc, spawnCandidateFunc, exitFunc
+	defer func() {
+		getpidFunc, spawnCandidateFunc, exitFunc = origGetpid, origSpawn, origExit
+	}()
+
+	getpidFunc = func() int { return 9999 } // not docker, not PID 1 -> systemd branch
+	parentExited := make(chan int, 1)
+	exitFunc = func(code int) { parentExited <- code }
+	spawnCandidateFunc = func(exe string, args []string) (*HotswapParentSession, error) {
+		return &HotswapParentSession{
+			parentFd: parentFile,
+			Reader:   bufio.NewReader(parentFile),
+			Writer:   parentFile,
+		}, nil
+	}
+
+	ring := &AuditRing{path: t.TempDir() + "/audit.json"}
+	prevRing := globalAuditRing
+	globalAuditRing = ring
+	defer func() { globalAuditRing = prevRing }()
+	prevPersist := lastAuditPersist
+	defer func() { lastAuditPersist = prevPersist }()
+
+	ClearCoordinatorClosers()
+	unreg := RegisterCoordinatorCloser(func() {})
+	defer unreg()
+
+	childErr := make(chan error, 1)
+	go func() {
+		r := bufio.NewReader(childFile)
+		if err := writeHotswapMessage(childFile, HotswapMessage{Type: HotswapMsgReady, PID: 10000, Version: "v3.23.0-fix.31.0"}); err != nil {
+			childErr <- err
+			return
+		}
+		msg, err := readHotswapMessage(r)
+		if err != nil {
+			childErr <- err
+			return
+		}
+		if msg.Type != HotswapMsgTakeover {
+			childErr <- fmt.Errorf("child expected TAKEOVER, got %s", msg.Type)
+			return
+		}
+		childErr <- writeHotswapMessage(childFile, HotswapMessage{Type: HotswapMsgAck, PID: 10000})
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := runHotSwapParentHandoff(ctx, cancel, docopt.Opts{}); err != nil {
+		t.Fatalf("runHotSwapParentHandoff returned error: %v", err)
+	}
+	select {
+	case err := <-childErr:
+		if err != nil {
+			t.Fatalf("child simulation error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for child simulation")
+	}
+
+	cancel()
+	select {
+	case code := <-parentExited:
+		if code != 0 {
+			t.Fatalf("parent exited with code %d, want 0", code)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for parent exit on drain")
+	}
+
+	assertHotSwapEntryRecorded(t, ring, "systemd branch")
+}
+
+// An aborted handoff must not leave a phantom "hotswap" audit entry: the
+// event is recorded only at each branch's commit point, after every abort
+// check (spawn, pre-flight, takeover) has passed.
+// A handoff that fails AFTER the child connects (the child reports a
+// pre-flight error instead of READY) must abort before the commit point, so
+// the audit ring holds no hotswap entry. The spawn-failure abort is covered
+// above; this is the READY-stage abort, which runs past the socket pair.
+func TestHotSwapAbortedAfterConnectRecordsNoEntry(t *testing.T) {
+	t.Setenv("INVOCATION_ID", "")
+	t.Setenv("NOTIFY_SOCKET", "")
+
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatalf("socketpair: %v", err)
+	}
+	parentFile := os.NewFile(uintptr(fds[0]), "parent")
+	childFile := os.NewFile(uintptr(fds[1]), "child")
+	defer parentFile.Close()
+	defer childFile.Close()
+
+	origSpawn, origExit := spawnCandidateFunc, exitFunc
+	defer func() { spawnCandidateFunc, exitFunc = origSpawn, origExit }()
+
+	getpidFunc = func() int { return 9999 }
+	exitFunc = func(code int) {}
+	spawnCandidateFunc = func(exe string, args []string) (*HotswapParentSession, error) {
+		return &HotswapParentSession{
+			parentFd: parentFile,
+			Reader:   bufio.NewReader(parentFile),
+			Writer:   parentFile,
+		}, nil
+	}
+
+	ring := &AuditRing{path: t.TempDir() + "/audit.json"}
+	prevRing := globalAuditRing
+	globalAuditRing = ring
+	defer func() { globalAuditRing = prevRing }()
+
+	childErr := make(chan error, 1)
+	go func() {
+		childErr <- writeHotswapMessage(childFile, HotswapMessage{Type: HotswapMsgError, Error: "pre-flight failed"})
+	}()
+
+	if err := runHotSwapParentHandoff(context.Background(), func() {}, docopt.Opts{}); err == nil {
+		t.Fatal("expected handoff to abort on the child's pre-flight error")
+	}
+	entries, _ := ring.Entries(10, "")
+	for _, e := range entries {
+		if e.Cmd == "hotswap" {
+			t.Fatalf("aborted-after-connect handoff recorded a hotswap entry: %+v", e)
+		}
+	}
+	if err := <-childErr; err != nil {
+		t.Fatalf("child write: %v", err)
+	}
+}
+
+func TestHotSwapAbortedHandoffRecordsNoEntry(t *testing.T) {
+	origSpawn := spawnCandidateFunc
+	defer func() { spawnCandidateFunc = origSpawn }()
+
+	ring := &AuditRing{path: t.TempDir() + "/audit.json"}
+	prevRing := globalAuditRing
+	globalAuditRing = ring
+	defer func() { globalAuditRing = prevRing }()
+
+	spawnCandidateFunc = func(exe string, args []string) (*HotswapParentSession, error) {
+		return nil, fmt.Errorf("spawn failed")
+	}
+
+	if err := runHotSwapParentHandoff(context.Background(), func() {}, docopt.Opts{}); err == nil {
+		t.Fatal("expected handoff to abort on spawn failure")
+	}
+	entries, _ := ring.Entries(10, "")
+	for _, e := range entries {
+		if e.Cmd == "hotswap" {
+			t.Fatalf("aborted handoff recorded a hotswap entry: %+v", e)
+		}
 	}
 }

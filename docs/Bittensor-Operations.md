@@ -60,7 +60,7 @@ Pass your coldkey directly via `docker-compose.yml` or container flags:
 ```yaml
 services:
   provider:
-    image: ghcr.io/full-bars/urnetwork-3.23-fix:v3.23.0-fix.30.9
+    image: ghcr.io/full-bars/meso-miner:latest
     command: ["provide", "--wallet=5FjfHgd4K3H5Vge2igPtBYyWRbRKdgH84roTCnWwwtNgAhU5"]
     volumes:
       - ur_config_1:/home/urnet/.urnetwork

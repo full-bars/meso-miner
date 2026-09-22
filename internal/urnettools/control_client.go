@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"net"
 	"net/netip"
 	"os"
@@ -19,11 +21,13 @@ import (
 
 // controlRequest is one line of the control socket protocol.
 type controlRequest struct {
-	Cmd    string `json:"cmd"` // "set", "clear", "get", "status", or "history"
-	Key    string `json:"key,omitempty"`
-	Value  string `json:"value,omitempty"`
-	Limit  int    `json:"limit,omitempty"`
-	Cursor string `json:"cursor,omitempty"`
+	Cmd     string `json:"cmd"` // "set", "clear", "get", "status", "history", "snapshot", or "audit"
+	Key     string `json:"key,omitempty"`
+	Value   string `json:"value,omitempty"`
+	Limit   int    `json:"limit,omitempty"`
+	Cursor  string `json:"cursor,omitempty"`
+	Action  string `json:"action,omitempty"`
+	Address string `json:"address,omitempty"`
 }
 
 // AuditEntry mirrors the provider's CommandAudit for JSON wire format.
@@ -43,6 +47,28 @@ type SettingInfo struct {
 	Value  string `json:"value"`
 	Source string `json:"source"`
 	SetAt  string `json:"set_at,omitempty"`
+}
+
+// ProxyAuditStatus mirrors the provider's proxy audit snapshot in the control
+// socket "audit" and "status" replies.
+type ProxyAuditStatus struct {
+	Acting          bool               `json:"acting"`
+	NotActingReason string             `json:"not_acting_reason,omitempty"`
+	Parked          []ProxyAuditParked `json:"parked,omitempty"`
+	WouldPark       int                `json:"would_park"`
+	Distrusted      bool               `json:"distrusted,omitempty"`
+	Thin            bool               `json:"thin_pass,omitempty"`
+	Parks24h        int                `json:"parks_24h"`
+	Paused          bool               `json:"paused,omitempty"`
+	PausedSince     time.Time          `json:"paused_since,omitempty"`
+	UpdatedAt       time.Time          `json:"updated_at"`
+}
+
+// ProxyAuditParked is one proxy held out by the audit engine, with when its
+// backoff probation ends.
+type ProxyAuditParked struct {
+	Addr  string    `json:"addr"`
+	Until time.Time `json:"until"`
 }
 
 // controlResponse is one line response from the control socket.
@@ -67,7 +93,13 @@ type controlResponse struct {
 	// answered by "status". Empty when metrics is off or the provider
 	// predates the field.
 	MetricsAddrs []string `json:"metrics_addrs,omitempty"`
-	Raw          []byte   `json:"-"`
+	// Snapshot is the live node snapshot, answered by "snapshot". Absent
+	// from providers that predate the command.
+	Snapshot *NodeSnapshot `json:"snapshot,omitempty"`
+	// ProxyAudit is the provider's proxy audit status, answered by "status" and "audit".
+	ProxyAudit *ProxyAuditStatus `json:"proxy_audit,omitempty"`
+	Audit      *ProxyAuditStatus `json:"audit,omitempty"`
+	Raw        []byte            `json:"-"`
 }
 
 // pendingOp is an entry in ~/.urnetwork/pending_overrides.json.
@@ -91,6 +123,8 @@ var controlKeyCanonical = map[string]string{
 	"self-heal":                   "proxy_self_heal",
 	"proxy-self-heal":             "proxy_self_heal",
 	"proxy_self_heal":             "proxy_self_heal",
+	"proxy-audit":                 "proxy_audit",
+	"proxy_audit":                 "proxy_audit",
 	"proxy-url-max":               "proxy_url_max",
 	"proxy_url_max":               "proxy_url_max",
 	"proxy-url-refresh":           "proxy_url_refresh",
@@ -149,7 +183,7 @@ func validateControlValue(canonicalKey, value string) error {
 		default:
 			return fmt.Errorf("%s: must be none, url, or all (got %q)", canonicalKey, value)
 		}
-	case "fast_auth", "proxy_self_heal":
+	case "fast_auth", "proxy_self_heal", "proxy_audit":
 		switch strings.ToLower(value) {
 		case "on", "off":
 		default:
@@ -255,10 +289,20 @@ func sendSocketRequest(sockPath string, req controlRequest) (controlResponse, er
 		return controlResponse{}, err
 	}
 	var resp controlResponse
-	reader := bufio.NewReader(conn)
+	// Cap the response read: provider.sock can be attacker-replaced (it
+	// lives in a user-owned dir), so an unbounded read lets a hostile socket
+	// stream gigabytes into memory within the 5s deadline. The
+	// provider's real replies are short (a few KB at most); reading through
+	// an io.LimitReader bounds the allocation AND the newline scan, and a
+	// response that fills the budget without a newline is a protocol error.
+	const maxSocketResponse = 1 << 20 // 1 MiB
+	reader := bufio.NewReader(io.LimitReader(conn, maxSocketResponse+1))
 	line, err := reader.ReadBytes('\n')
 	if err != nil && len(line) == 0 {
 		return controlResponse{}, err
+	}
+	if len(line) > maxSocketResponse {
+		return controlResponse{}, fmt.Errorf("control socket response from %s exceeds %d bytes — refusing (possible hostile socket)", sockPath, maxSocketResponse)
 	}
 	if err := json.Unmarshal(line, &resp); err != nil {
 		return controlResponse{}, err
@@ -306,35 +350,73 @@ func controlSocketReachable(p Provider) bool {
 	return true
 }
 
+// pendingOverridesLockWait bounds how long a queue update waits for the lock.
+// The critical section is a small JSON read-modify-write, so a wait this long
+// means the holder is stuck or hostile. The lock lives in a directory the
+// provider user owns, so that user can flock it and never let go; without a
+// bound a root-run `urnet-tools set` would hang forever.
+const pendingOverridesLockWait = 30 * time.Second
+
+// pendingOverridesFile and pendingOverridesTmp name the queue and its temp
+// file inside the state dir. The temp name is fixed (not CreateTemp): the
+// cross-process lock serializes writers, and a fixed name lets a stale or
+// planted entry be removed by name before each write.
+const (
+	pendingOverridesFile = "pending_overrides.json"
+	pendingOverridesTmp  = ".pending_overrides.json.tmp"
+)
+
 // queuePendingOverride appends one op to pending_overrides.json in stateDir
 // using atomic temp-file-and-rename. The whole read-modify-write is held
 // under a cross-process lock: without it, two concurrent `urnet-tools`
 // invocations (the provider socket unavailable for both) can each read the
-// same queue, append their own op in memory, and let the last os.Rename win
+// same queue, append their own op in memory, and let the last rename win
 // — both commands report success, but only one op survives to be applied
 // at the provider's next startup.
+//
+// This runs as root against a directory the provider user owns, so the lock,
+// the read, the temp write (with its ownership) and the rename all go through
+// one descriptor-pinned handle on the state dir instead of re-resolving the
+// pathname for each step.
 func queuePendingOverride(stateDir, op, key, value string) error {
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+	return queuePendingOverrideIn("", stateDir, op, key, value)
+}
+
+// queuePendingOverrideIn is queuePendingOverride for a state dir known to lie
+// beneath the trusted home root (Provider.StateHome), which is then walked
+// without following symlinks.
+func queuePendingOverrideIn(root, stateDir, op, key, value string) error {
+	h, err := openStateDirInCreate(root, stateDir)
+	if err != nil {
 		return err
 	}
-	queueFile := filepath.Join(stateDir, "pending_overrides.json")
+	defer h.Close()
 
-	release, err := acquirePendingOverridesLock(queueFile)
+	release, err := h.lockFile(pendingOverridesFile+".lock", pendingOverridesLockWait)
 	if err != nil {
 		return fmt.Errorf("acquire pending-overrides lock: %w", err)
 	}
 	defer release()
 
 	var ops []pendingOp
-	data, err := os.ReadFile(queueFile)
-	if err == nil && len(data) > 0 {
-		if err := json.Unmarshal(data, &ops); err != nil {
-			// Do NOT discard a malformed queue by rewriting it with only the
-			// new op: every previously-queued override would be lost and the
-			// operator would get a success message. Surface the parse error
-			// and leave the file untouched for inspection/fix instead.
-			return fmt.Errorf("parse %s: %w (fix or remove the file, then retry)", queueFile, err)
+	data, err := h.readFile(pendingOverridesFile, maxStateFileBytes)
+	switch {
+	case err == nil:
+		if len(data) > 0 {
+			if err := json.Unmarshal(data, &ops); err != nil {
+				// Do NOT discard a malformed queue by rewriting it with only the
+				// new op: every previously-queued override would be lost and the
+				// operator would get a success message. Surface the parse error
+				// and leave the file untouched for inspection/fix instead.
+				return fmt.Errorf("parse %s: %w (fix or remove the file, then retry)", filepath.Join(stateDir, pendingOverridesFile), err)
+			}
 		}
+	case errors.Is(err, fs.ErrNotExist):
+		// no queue yet
+	default:
+		// A symlink, FIFO or oversize queue is not silently treated as empty
+		// and overwritten.
+		return fmt.Errorf("read %s: %w", filepath.Join(stateDir, pendingOverridesFile), err)
 	}
 
 	ops = append(ops, pendingOp{Op: op, Key: key, Value: value})
@@ -343,28 +425,22 @@ func queuePendingOverride(stateDir, op, key, value string) error {
 		return err
 	}
 
-	tmp, err := os.CreateTemp(stateDir, ".pending_overrides.json.tmp-*")
-	if err != nil {
+	// Clear any stale or planted entry at the temp name first (unlinkat never
+	// follows a symlink), so a leftover cannot wedge every later call.
+	if err := h.removeAll(pendingOverridesTmp); err != nil {
 		return err
 	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-
-	if _, err := tmp.Write(append(encoded, '\n')); err != nil {
-		tmp.Close()
+	// writeOwned sets the mode and the state-dir owner on the open
+	// descriptor, before the file is visible under its final name.
+	if err := h.writeOwned(pendingOverridesTmp, append(encoded, '\n'), 0o644); err != nil {
+		h.removeAll(pendingOverridesTmp)
 		return err
 	}
-	if err := tmp.Close(); err != nil {
+	// rename the already-owned file into place
+	if err := h.rename(pendingOverridesTmp, pendingOverridesFile); err != nil {
+		h.removeAll(pendingOverridesTmp)
 		return err
 	}
-	if err := os.Chmod(tmpName, 0o644); err != nil {
-		return err
-	}
-	_ = chownLikeStateOwner(stateDir, tmpName)
-	if err := os.Rename(tmpName, queueFile); err != nil {
-		return err
-	}
-	_ = chownLikeStateOwner(stateDir, queueFile)
 	return nil
 }
 
@@ -423,7 +499,20 @@ func applyControlOverride(p Provider, op, key, value string, dryRun bool) (bool,
 	}
 
 	if isSocketUnavailable(dialErr) {
-		if err := queuePendingOverride(p.StateDir, op, canonicalKey, value); err != nil {
+		// A provider the tool believes is RUNNING must have a live control
+		// socket; an unreachable one means the record is a ghost (e.g. a
+		// container process misattributed to the host — see the discovery
+		// namespace filter) or the provider is mid-crash. Queuing to a
+		// guessed host state-dir in that case both fabricates a state dir
+		// (os.MkdirAll below creates e.g. /root/.urnetwork) and prints a
+		// fake "queued" success for a config that will never apply.
+		// Only STOPPED providers are legitimately queued-to.
+		if p.Running {
+			return false, false, fmt.Errorf(
+				"provider %s is running (pid %d) but its control socket %s is unreachable — not queuing a change that would never apply; check whether this provider is actually running on this host (docker container misattribution?) or restart it",
+				providerLabel(p), p.PID, sockPath)
+		}
+		if err := queuePendingOverrideIn(p.StateHome, p.StateDir, op, canonicalKey, value); err != nil {
 			return false, false, fmt.Errorf("queue pending override: %w", err)
 		}
 		removeLegacyFile(p.StateDir, canonicalKey)

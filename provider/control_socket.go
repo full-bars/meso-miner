@@ -14,6 +14,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -36,12 +37,14 @@ func controlSocketPath() (string, error) {
 // controlRequest is one line of the socket protocol: newline-delimited JSON,
 // one request per line, one response per line, in order.
 type controlRequest struct {
-	Cmd    string `json:"cmd"` // "set", "clear", "get", "status", "history", "version", or "shutdown"
-	Key    string `json:"key"`
-	Value  string `json:"value,omitempty"`
-	Limit  int    `json:"limit,omitempty"`  // for "history" command
-	Cursor string `json:"cursor,omitempty"` // for "history" command
-	V      int    `json:"v,omitempty"`      // protocol version; 0 = legacy
+	Cmd     string `json:"cmd"` // "set", "clear", "get", "status", "history", "version", "snapshot", "shutdown", or "audit"
+	Key     string `json:"key"`
+	Value   string `json:"value,omitempty"`
+	Limit   int    `json:"limit,omitempty"`   // for "history" command
+	Cursor  string `json:"cursor,omitempty"`  // for "history" command
+	V       int    `json:"v,omitempty"`       // protocol version; 0 = legacy
+	Action  string `json:"action,omitempty"`  // for "audit" command: "status", "on", "off", "release"
+	Address string `json:"address,omitempty"` // for "audit" release action
 }
 
 // settingInfo is the per-key detail returned by the "status" command.
@@ -75,6 +78,13 @@ type controlResponse struct {
 	// MetricsAddrs are the addresses /metrics is listening on, answered by
 	// "status". Empty when metrics is off.
 	MetricsAddrs []string `json:"metrics_addrs,omitempty"`
+	// Snapshot is the live node picture, answered by "snapshot". An older
+	// provider replies "unknown command" instead.
+	Snapshot *NodeSnapshot `json:"snapshot,omitempty"`
+	// ProxyAudit is the proxy audit engine's last completed tick, answered by
+	// "status" and "audit". Nil before its first tick or on a provider that predates it.
+	ProxyAudit *proxyAuditStatus `json:"proxy_audit,omitempty"`
+	Audit      *proxyAuditStatus `json:"audit,omitempty"`
 }
 
 // startControlSocket opens the control socket and serves it until ctx is
@@ -150,9 +160,16 @@ func startControlSocket(ctx context.Context, state *controlState) (func(), error
 		}
 	}()
 
+	// cleanup is idempotent: the hotswap commit point quiesces this socket
+	// and a later graceful-exit path may call it again. A second call must
+	// not os.Remove(path) — by then the successor may have bound its own
+	// socket at the same path.
+	var cleanupOnce sync.Once
 	cleanup := func() {
-		ln.Close()
-		os.Remove(path)
+		cleanupOnce.Do(func() {
+			ln.Close()
+			os.Remove(path)
+		})
 	}
 	return cleanup, nil
 }
@@ -288,6 +305,7 @@ var liveEffectKeys = map[string]bool{
 	// resolve* functions read globalControlState on every call — already live.
 	"fast_auth":                   true,
 	"proxy_self_heal":             true,
+	"proxy_audit":                 true,
 	"report_url":                  true,
 	"report_interval":             true,
 	"proxy_url_refresh":           true,
@@ -338,7 +356,7 @@ func validateControlValue(key, value string) error {
 		default:
 			return fmt.Errorf("%s: must be none, url, or all (got %q)", key, value)
 		}
-	case "fast_auth", "proxy_self_heal":
+	case "fast_auth", "proxy_self_heal", "proxy_audit":
 		switch valLower {
 		case "on", "off":
 		default:
@@ -426,6 +444,9 @@ var liveDefaults = map[string]string{
 	// Clearing an explicit address goes back to auto, rebinding a running
 	// listener on loopback plus Tailscale.
 	"metrics_listen": "auto",
+	// Clearing audit reapplies the runtime default (off = observe mode),
+	// releasing the live override so the persisted value rules.
+	"proxy_audit": "off",
 }
 
 // applyLiveDefault reapplies the runtime default for a live-applied key.
@@ -459,6 +480,9 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 			v = "dev"
 		}
 		return controlResponse{OK: true, BuildVersion: v}
+
+	case "snapshot":
+		return controlResponse{OK: true, Snapshot: nodeSnapshots.Get()}
 
 	case "get":
 		if req.Key == "" {
@@ -597,7 +621,101 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 			}
 			settings[k] = si
 		}
-		return controlResponse{OK: true, Settings: settings, StartupValues: startupValues(), MetricsAddrs: metricsServedAddrs()}
+		snap := proxyAuditStatusSnapshot()
+		return controlResponse{OK: true, Settings: settings, StartupValues: startupValues(), MetricsAddrs: metricsServedAddrs(), ProxyAudit: snap, Audit: snap}
+
+	case "audit":
+		switch req.Action {
+		case "status", "":
+			snap := proxyAuditStatusSnapshot()
+			return controlResponse{OK: true, ProxyAudit: snap, Audit: snap}
+
+		case "on", "off":
+			val := "off"
+			if req.Action == "on" {
+				val = "on"
+			}
+			// Same persist-then-commit transaction as "set": apply, persist,
+			// roll back memory on failure so disk and memory never disagree
+			// about whether audit is on. The in-memory override alone made
+			// `proxy audit on` revert to observe mode on every restart.
+			state.txMu.Lock()
+			defer state.txMu.Unlock()
+			oldValue, oldMeta, hadOld := state.getWithMeta("proxy_audit")
+			if err := state.set("proxy_audit", val); err != nil {
+				tlog("❌ [control] audit %s rejected: %s\n", req.Action, err)
+				return controlResponse{OK: false, Error: err.Error()}
+			}
+			if err := state.persist(); err != nil {
+				state.mu.Lock()
+				if hadOld {
+					state.values["proxy_audit"] = oldValue
+					state.meta["proxy_audit"] = oldMeta
+				} else {
+					delete(state.values, "proxy_audit")
+					delete(state.meta, "proxy_audit")
+				}
+				state.mu.Unlock()
+				tlog("❌ [control] audit %s failed to persist, rolled back: %s\n", req.Action, err)
+				return controlResponse{OK: false, Error: "audit applied in memory but failed to persist: " + err.Error()}
+			}
+			if err := applyLiveSideEffect("proxy_audit", val); err != nil {
+				tlog("⚠️ [control] audit %s persisted but live apply failed: %s\n", req.Action, err)
+				return controlResponse{OK: false, Error: "persisted, but failed to apply live: " + err.Error()}
+			}
+			tlog("✓ [proxy][audit] proxy audit %s via control socket (was %s)\n", req.Action, formerValue(oldValue, hadOld))
+			recordAndPersist(CommandAudit{
+				Timestamp: time.Now(),
+				Cmd:       "audit",
+				Key:       "proxy_audit",
+				Value:     val,
+				OK:        true,
+			})
+			return controlResponse{OK: true, Value: val}
+
+		case "release":
+			a := currentProxyAuditor.Load()
+			if a == nil {
+				return controlResponse{OK: false, Error: "proxy auditor not active"}
+			}
+			// Serialize with the ticker: release mutates the same park and
+			// backoff state a running tick is reading and rewriting.
+			a.mu.Lock()
+			if req.Address == "" {
+				a.mu.Unlock()
+				return controlResponse{OK: false, Error: "proxy audit release requires an address or --all"}
+			}
+			if req.Address == "--all" {
+				released := a.st.releaseAll()
+				for _, addr := range released {
+					a.releaseBackoff(addr)
+				}
+				a.publish(a.env.now(), a.env.act(), proxyAuditResult{})
+				a.mu.Unlock()
+				tlog("✓ [proxy][audit] released all %d parked proxies via control socket\n", len(released))
+				return controlResponse{OK: true, Value: fmt.Sprintf("released %d proxies", len(released))}
+			}
+			addr := req.Address
+			wasParked := a.st.isParked(addr)
+			if wasParked {
+				a.st.release(addr)
+			}
+			a.releaseBackoff(addr)
+			if globalProxyFailureHistory != nil {
+				globalProxyFailureHistory.Reset(addr)
+			}
+			a.publish(a.env.now(), a.env.act(), proxyAuditResult{})
+			a.mu.Unlock()
+			if wasParked {
+				tlog("✓ [proxy][audit] released parked proxy %s via control socket\n", addr)
+				return controlResponse{OK: true, Value: fmt.Sprintf("released proxy %s", addr)}
+			}
+			tlog("✓ [proxy][audit] cleared backoff for proxy %s via control socket (was not parked)\n", addr)
+			return controlResponse{OK: true, Value: fmt.Sprintf("cleared backoff for proxy %s", addr)}
+
+		default:
+			return controlResponse{OK: false, Error: fmt.Sprintf("unknown audit action %q (status|on|off|release)", req.Action)}
+		}
 
 	case "history":
 		if globalAuditRing == nil {
@@ -614,6 +732,13 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		return controlResponse{OK: true, Entries: entries, NextCursor: nextCursor}
 
 	case "shutdown":
+		// Record the operator's remote stop in the audit ring.
+		recordAndPersist(CommandAudit{
+			Timestamp: time.Now(),
+			Cmd:       "shutdown",
+			Source:    "control-socket",
+			OK:        true,
+		})
 		// Trigger the same graceful shutdown path as SIGTERM: cancel
 		// the main context so all goroutines drain, then the deferred
 		// flushRetentionEvents / cleanupControlSocket run.
@@ -739,6 +864,18 @@ func applyLiveSideEffect(key, value string) error {
 			}
 			debug.SetGCPercent(percent)
 		}
+	case "proxy_audit":
+		enabled := strings.EqualFold(value, "on")
+		setProxyAuditOverride(enabled)
+		if enabled {
+			tlog("✓ [proxy][audit] proxy audit enabled via control socket\n")
+		} else {
+			tlog("✓ [proxy][audit] proxy audit disabled via control socket\n")
+		}
+		if a := currentProxyAuditor.Load(); a != nil {
+			spawnRunOnce(a)
+		}
+		return nil
 	case "metrics":
 		return applyMetricsLive(value)
 	case "metrics_listen":

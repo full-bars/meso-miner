@@ -72,7 +72,7 @@ test_do_install_rate_limit() {
 
     local output=$(
         tag="latest"
-        api_base="https://api.github.com/repos/full-bars/urnetwork-3.23-fix"
+        api_base="https://api.github.com/repos/full-bars/meso-miner"
         api_url="$api_base/releases/latest"
 
         release="$(network_fetch "$api_url" 2>/dev/null || true)"
@@ -80,7 +80,7 @@ test_do_install_rate_limit() {
 
         if [ "$tag" = "latest" ] && [ -z "$version_to_install" ]; then
             if command -v curl > /dev/null; then
-                tag_url=$(curl -Ls -o /dev/null -w %{url_effective} "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest" 2>/dev/null || true)
+                tag_url=$(curl -Ls -o /dev/null -w %{url_effective} "https://github.com/full-bars/meso-miner/releases/latest" 2>/dev/null || true)
                 # Extract version from URL: /tag/v3.23.0-fix.18.1 -> v3.23.0-fix.18.1
                 if [ -n "$tag_url" ]; then
                     case "$tag_url" in
@@ -95,7 +95,7 @@ test_do_install_rate_limit() {
 
     # Check if fallback grabbed the latest release correctly
     case "$output" in
-        v3.23.0-fix*)
+        v3.23.0-fix*|v2026.*-meso*)
             assert_eq "$output" "$output" "Rate limit fallback successfully scraped web redirect ($output)"
             ;;
         *)
@@ -270,6 +270,124 @@ test_pending_overrides_append_to_empty_array() {
     rm -rf "$home"
 }
 test_pending_overrides_append_to_empty_array
+
+# --- TESTS: PATH setup (symlinks for non-interactive shells and root, rc blocks) ---
+path_test_env() {
+    PT_HOME="$(mktemp -d)"
+    PT_INSTALL="$PT_HOME/.local/share/urnetwork-provider"
+    mkdir -p "$PT_INSTALL/bin"
+    printf '#!/bin/sh\necho urnet-tools-ok\n' > "$PT_INSTALL/bin/urnet-tools"
+    printf '#!/bin/sh\necho urnetwork-ok\n' > "$PT_INSTALL/bin/urnetwork"
+    chmod +x "$PT_INSTALL/bin/urnet-tools" "$PT_INSTALL/bin/urnetwork"
+}
+
+test_link_tools_reach_a_non_interactive_shell() {
+    path_test_env
+    (
+        HOME="$PT_HOME"
+        link_tools_into_dir "$HOME/.local/bin" "$PT_INSTALL/bin"
+    )
+    # The shell behind `ssh host urnet-tools`: no rc files, minimal PATH that
+    # contains only the usual per-user bin dir.
+    local out
+    out="$(env -i HOME="$PT_HOME" PATH="/usr/bin:/bin:$PT_HOME/.local/bin" bash -c 'urnet-tools' 2>&1)"
+    assert_eq "urnet-tools-ok" "$out" "urnet-tools is found by a non-interactive shell without any rc file"
+    out="$(env -i HOME="$PT_HOME" PATH="/usr/bin:/bin:$PT_HOME/.local/bin" bash -c 'urnetwork' 2>&1)"
+    assert_eq "urnetwork-ok" "$out" "urnetwork is found the same way"
+    rm -rf "$PT_HOME"
+}
+test_link_tools_reach_a_non_interactive_shell
+
+test_link_tools_idempotent_and_never_clobbers_a_real_file() {
+    path_test_env
+    mkdir -p "$PT_HOME/bin2"
+    printf 'mine\n' > "$PT_HOME/bin2/urnet-tools"          # a real file, not ours
+    link_tools_into_dir "$PT_HOME/bin2" "$PT_INSTALL/bin"
+    assert_eq "mine" "$(cat "$PT_HOME/bin2/urnet-tools")" "a real file that is not a symlink is left alone"
+    assert_eq "$PT_INSTALL/bin/urnetwork" "$(readlink "$PT_HOME/bin2/urnetwork")" "the other tool is still linked"
+    link_tools_into_dir "$PT_HOME/bin2" "$PT_INSTALL/bin"
+    link_tools_into_dir "$PT_HOME/bin2" "$PT_INSTALL/bin"
+    assert_eq "$PT_INSTALL/bin/urnetwork" "$(readlink "$PT_HOME/bin2/urnetwork")" "running it again keeps the same link"
+    # A stale link from an older install path is repointed.
+    ln -sfn /nonexistent/urnetwork "$PT_HOME/bin2/urnetwork"
+    link_tools_into_dir "$PT_HOME/bin2" "$PT_INSTALL/bin"
+    assert_eq "$PT_INSTALL/bin/urnetwork" "$(readlink "$PT_HOME/bin2/urnetwork")" "a stale link is repointed at the current install"
+    rm -rf "$PT_HOME"
+}
+test_link_tools_idempotent_and_never_clobbers_a_real_file
+
+test_link_tools_adds_urtop_as_a_name_for_urnet_tools() {
+    path_test_env
+    mkdir -p "$PT_HOME/bin2"
+    link_tools_into_dir "$PT_HOME/bin2" "$PT_INSTALL/bin"
+    # urtop is not a binary of its own: it is a second name for urnet-tools,
+    # which behaves as `top` when started under that name.
+    assert_eq "$PT_INSTALL/bin/urnet-tools" "$(readlink "$PT_HOME/bin2/urtop")" "urtop points at the urnet-tools binary"
+    local out
+    out="$(env -i HOME="$PT_HOME" PATH="/usr/bin:/bin:$PT_HOME/bin2" bash -c 'urtop' 2>&1)"
+    assert_eq "urnet-tools-ok" "$out" "urtop runs the urnet-tools binary"
+    # A stale link from an older install path is repointed.
+    ln -sfn /nonexistent/urnet-tools "$PT_HOME/bin2/urtop"
+    link_tools_into_dir "$PT_HOME/bin2" "$PT_INSTALL/bin"
+    assert_eq "$PT_INSTALL/bin/urnet-tools" "$(readlink "$PT_HOME/bin2/urtop")" "a stale urtop link is repointed at urnet-tools"
+    # Someone else's real urtop is never overwritten.
+    rm -f "$PT_HOME/bin2/urtop"
+    printf 'theirs\n' > "$PT_HOME/bin2/urtop"
+    link_tools_into_dir "$PT_HOME/bin2" "$PT_INSTALL/bin"
+    assert_eq "theirs" "$(cat "$PT_HOME/bin2/urtop")" "a real urtop file that is not a symlink is left alone"
+    rm -rf "$PT_HOME"
+}
+test_link_tools_adds_urtop_as_a_name_for_urnet_tools
+
+test_root_style_link_dir_reachable_without_the_users_path() {
+    # /usr/local/bin for root is modelled by any dir on a PATH that has none of
+    # the installing user's entries.
+    path_test_env
+    mkdir -p "$PT_HOME/usr-local-bin"
+    link_tools_into_dir "$PT_HOME/usr-local-bin" "$PT_INSTALL/bin"
+    local out
+    out="$(env -i HOME="$PT_HOME" PATH="/usr/bin:/bin:$PT_HOME/usr-local-bin" bash -c 'urnet-tools' 2>&1)"
+    assert_eq "urnet-tools-ok" "$out" "a system-wide link works for a user (root) with no per-user PATH"
+    rm -rf "$PT_HOME"
+}
+test_root_style_link_dir_reachable_without_the_users_path
+
+test_rc_blocks_written_once_and_removed_cleanly() {
+    path_test_env
+    (
+        HOME="$PT_HOME"
+        printf 'export A=1\n' > "$HOME/.profile"
+        add_path_blocks "$PT_INSTALL" > /dev/null
+        add_path_blocks "$PT_INSTALL" > /dev/null
+    )
+    assert_eq "1" "$(grep -c '# == urnetwork-provider start' "$PT_HOME/.bashrc")" "bashrc block is written exactly once across two runs"
+    assert_eq "1" "$(grep -c '# == urnetwork-provider start' "$PT_HOME/.profile")" "an existing ~/.profile gets the block too"
+    assert_eq "0" "$(ls "$PT_HOME/.zshenv" 2>/dev/null | wc -l)" "no zshenv is created when zsh is not installed"
+    (
+        HOME="$PT_HOME"
+        remove_path_block "$HOME/.bashrc"
+        remove_path_block "$HOME/.profile"
+    )
+    assert_eq "0" "$(grep -c 'urnetwork-provider' "$PT_HOME/.bashrc")" "removal leaves no urnetwork block in bashrc"
+    assert_eq "export A=1" "$(cat "$PT_HOME/.profile" | tr -d '\n')" "removal keeps the user's own profile content"
+    rm -rf "$PT_HOME"
+}
+test_rc_blocks_written_once_and_removed_cleanly
+
+test_remove_tool_links_only_removes_our_links() {
+    path_test_env
+    mkdir -p "$PT_HOME/.local/bin"
+    ln -sfn "$PT_INSTALL/bin/urnet-tools" "$PT_HOME/.local/bin/urnet-tools"      # ours
+    ln -sfn /usr/bin/true "$PT_HOME/.local/bin/urnetwork"                         # someone else's
+    (
+        HOME="$PT_HOME"
+        remove_tool_links "$PT_INSTALL"
+    )
+    assert_eq "0" "$([ -L "$PT_HOME/.local/bin/urnet-tools" ] && echo 1 || echo 0)" "our link is removed on uninstall"
+    assert_eq "/usr/bin/true" "$(readlink "$PT_HOME/.local/bin/urnetwork")" "a link that points elsewhere is left alone"
+    rm -rf "$PT_HOME"
+}
+test_remove_tool_links_only_removes_our_links
 
 echo "======================================"
 if [ $FAILS -eq 0 ]; then

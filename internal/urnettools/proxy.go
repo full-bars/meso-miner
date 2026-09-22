@@ -6,7 +6,20 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+// containsAny reports whether args contains any of the given tokens.
+func containsAny(args []string, tokens ...string) bool {
+	for _, a := range args {
+		for _, tok := range tokens {
+			if a == tok {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // providerSubcommand runs a provider-binary subcommand against the targeted
 // provider, streaming stdout/stderr. This is the delegation pattern the
@@ -31,13 +44,20 @@ func providerSubcommand(p Provider, args ...string) error {
 	cmd := exec.Command(bin, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	// Wire stdin through ONLY for the interactive `proxy paste` subcommand,
-	// which reads its proxy list from stdin — without this the child sees
-	// /dev/null, readLines gets EOF, and paste always reports "no input
-	// received". Other subcommands must not inherit stdin.
+	// Wire stdin through for interactive subcommands. `proxy paste` reads its
+	// proxy list from stdin and must get it even when piped (no TTY). The
+	// interactive confirm subcommands (`remove-dead`, `remove`, `trim`, ...)
+	// read the terminal through confirm(): without this the child inherits
+	// /dev/null, confirm() hits EOF, and the user's "y" is never read —
+	// "Remove N dead proxies? [y/N] Nothing to remove." with the answer
+	// falling through to the shell. Gate those on stdinIsInteractive so
+	// non-interactive (cron/systemd/pipe) invocations still see EOF and
+	// refuse by default.
 	// The paste dispatch builds args as ["proxy", "paste", ...], so args[1]
 	// is the subcommand name here (args[0] is always "proxy").
 	if len(args) > 0 && args[0] == "paste" || len(args) > 1 && args[0] == "proxy" && args[1] == "paste" {
+		cmd.Stdin = os.Stdin
+	} else if stdinIsInteractive() {
 		cmd.Stdin = os.Stdin
 	}
 	// Run with the provider's HOME so state lands in the right directory.
@@ -52,8 +72,11 @@ func providerSubcommand(p Provider, args ...string) error {
 		cmd.Env = os.Environ()
 	}
 	// Also run as that user when we are root, so auth/network files are written
-	// owned by the provider user and remain readable by it.
-	dropPrivilegesTo(p.User, cmd)
+	// owned by the provider user and remain readable by it. A failed drop is
+	// an error, never a silent root fallback (see dropPrivilegesTo).
+	if err := dropPrivilegesTo(p.User, cmd); err != nil {
+		return fmt.Errorf("provider %s: %v", providerLabel(p), err)
+	}
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("provider %s: %v", providerLabel(p), err)
 	}
@@ -156,9 +179,26 @@ func checkReadableAsUser(path, user string) error {
 
 // cmdProxy dispatches proxy sub-operations to the targeted provider(s).
 // Usage: urnet-tools proxy add <file> | clear | remove | refresh [targets]
+// withProxyRemoveYes re-adds the provider's own --yes to a `proxy remove`
+// argv when the global force flag consumed it. The provider grammar accepts
+// --yes only on the --match form (`proxy remove --match=<pattern> [--yes]`);
+// address and --all removals reject it as a usage error, so it is appended
+// only when a --match operand is present.
+func withProxyRemoveYes(opArgs []string, force bool) []string {
+	if !force || containsAny(opArgs, "--yes", "-y") {
+		return opArgs
+	}
+	for _, a := range opArgs {
+		if a == "--match" || strings.HasPrefix(a, "--match=") {
+			return append(opArgs, "--yes")
+		}
+	}
+	return opArgs
+}
+
 func cmdProxy(args []string, force, dryRun bool) error {
 	if len(args) == 0 {
-		return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | refresh | add-source <url> | remove-source <url> | health | traffic | ids | remove-dead | trim <N>")
+		return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | refresh | add-source <url> | remove-source <url> | health | traffic | ids | remove-dead | trim <N> | audit")
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -187,11 +227,15 @@ Subcommands:
   ids                    client_id per proxy from JWT store (single target)
   remove-dead            remove dead/degraded proxies (single target)
   trim <N>               hold running proxies at N, shed the A-F-worst (single target)
+  audit [action]         inspect or toggle automated proxy audit engine (status|on|off|release)
   exclude                targeting flag, not a subcommand (see 'urnet-tools help')
 
 Examples (proxy add):
   urnet-tools proxy add ~/proxies.txt                 # Linux / macOS
   urnet-tools proxy add C:\Users\<you>\proxies.txt     # Windows (\ or / separators)
+  urnet-tools proxy audit status                      # Show proxy quality audit status
+  urnet-tools proxy audit on                          # Enable automated quality enforcement
+  urnet-tools proxy audit release 1.2.3.4:1080        # Unbench and release a parked proxy
 
 Targets and batch flags work as for other commands (--unit/--user/--network,
 --all/--include/--exclude). See 'urnet-tools help' for targeting.
@@ -219,7 +263,11 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 		a := rest[i]
 		switch {
 		case a == "--all" || a == "-all":
-			all = true
+			if sub == "audit" && len(positionals) > 0 && positionals[0] == "release" {
+				positionals = append(positionals, "--all")
+			} else {
+				all = true
+			}
 		case strings.HasPrefix(a, "--include="):
 			include = splitLabels(strings.TrimPrefix(a, "--include="))
 		case strings.HasPrefix(a, "--exclude="):
@@ -277,20 +325,54 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 
 	providers := Discover()
 	var chosen []Provider
-	if all {
-		// --all conflicts with an explicit target — error rather than
-		// silently discarding it.
-		if t.Unit != "" || t.User != "" || t.Network != "" || t.NetworkID != "" || t.StateDir != "" {
-			return fmt.Errorf("--all conflicts with an explicit target (%s); use one or the other", t)
+	// Single-target subcommands (add with URL, add-source, remove-source,
+	// trim, paste, health, traffic, ids, remove-dead) resolve their own
+	// provider inside the dispatch (selectTarget). Pre-selecting here would
+	// pop the interactive multi-select picker on a TTY and then THROW THE
+	// PICK AWAY — the dispatch's selectTarget would refuse after the user
+	// already chose. Only batch subcommands (add <file>, clear,
+	// remove, refresh) act on a chosen SET.
+	//
+	// add <http://url> is single-target (resolves its own provider), so it
+	// must not enter batch mode even though sub == "add" — only file-form
+	// add is batch.
+	batchSub := false
+	if sub == "clear" || sub == "remove" || sub == "refresh" {
+		batchSub = true
+	} else if sub == "add" {
+		// add <file> is batch; add <http://url> is single-target. The two
+		// forms select providers differently, so one invocation cannot mix
+		// them: the file form would run against the empty batch selection
+		// and be skipped while the command still reported success.
+		var haveURL, haveFile bool
+		for _, target := range positionals {
+			if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
+				haveURL = true
+			} else {
+				haveFile = true
+			}
 		}
-		if len(providers) == 0 {
-			return fmt.Errorf("no providers found on this box")
+		if haveURL && haveFile {
+			return fmt.Errorf("proxy add cannot mix a proxy file and a URL in one command; run them separately")
 		}
-		chosen = providers
-	} else {
-		chosen, err = selectTargets(providers, t, include, exclude, interactive)
-		if err != nil {
-			return err
+		batchSub = !haveURL
+	}
+	if batchSub {
+		if all {
+			// --all conflicts with an explicit target — error rather than
+			// silently discarding it.
+			if t.Unit != "" || t.User != "" || t.Network != "" || t.NetworkID != "" || t.StateDir != "" {
+				return fmt.Errorf("--all conflicts with an explicit target (%s); use one or the other", t)
+			}
+			if len(providers) == 0 {
+				return fmt.Errorf("no providers found on this box")
+			}
+			chosen = providers
+		} else {
+			chosen, err = selectTargets(providers, t, include, exclude, interactive)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -373,6 +455,14 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 		} else {
 			opArgs = []string{"proxy", "remove", "--all"}
 		}
+		// H6: the dispatcher's parseGlobalFlags consumes -y/--yes as the
+		// GLOBAL force flag before cmdProxy runs, so `proxy remove
+		// --match=X --yes` never forwards the provider's own --yes — the
+		// provider then prompts, and with stdin not passed through it reads
+		// EOF, prints "Aborted." and exits 0 (a silent no-op reported as
+		// success). Re-add --yes when the global force flag was set, exactly
+		// like refresh re-adds --force.
+		opArgs = withProxyRemoveYes(opArgs, force)
 	case "refresh":
 		opArgs = []string{"proxy", "refresh"}
 		// The dispatcher's parseGlobalFlags consumes -f/--force as the
@@ -485,8 +575,17 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 			}
 			return providerSubcommand(p, append([]string{"proxy", "remove-dead"}, positionals...)...)
 		}
+	case "audit":
+		if all || len(include) > 0 || len(exclude) > 0 {
+			return fmt.Errorf("proxy audit operates on ONE provider — use --unit/--user/--network to target it")
+		}
+		p, err := selectTarget(providers, t)
+		if err != nil {
+			return err
+		}
+		return cmdProxyAuditTarget(p, positionals, dryRun)
 	default:
-		return fmt.Errorf("unknown proxy subcommand %q (add|paste|clear|health|traffic|ids|refresh|remove-dead|add-source|remove-source|trim)", sub)
+		return fmt.Errorf("unknown proxy subcommand %q (add|paste|clear|health|traffic|ids|refresh|remove-dead|add-source|remove-source|trim|audit)", sub)
 	}
 
 	// Destructive gate for clear/remove; add/refresh are additive.
@@ -533,4 +632,176 @@ func expandHomePath(p string) string {
 		}
 	}
 	return p
+}
+
+// shortDuration renders d as "1h30m" or "45m", never negative.
+func shortDuration(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	h, m := int(d.Hours()), int(d.Minutes())%60
+	if h > 0 {
+		return fmt.Sprintf("%dh%dm", h, m)
+	}
+	return fmt.Sprintf("%dm", m)
+}
+
+// formatProxyAuditStatus renders the proxy audit status as status-command lines.
+func formatProxyAuditStatus(as *ProxyAuditStatus, now time.Time) []string {
+	if as == nil {
+		return nil
+	}
+	var lines []string
+	if !as.Acting {
+		if as.WouldPark > 0 {
+			advice := "turn proxy audit on to act: urnet-tools proxy audit on"
+			switch as.NotActingReason {
+			case "audit-off":
+				advice = "proxy audit is off; turn it on to act: urnet-tools proxy audit on"
+			case "hot-restart-off":
+				advice = "proxy audit is on, but parking also needs hot restart: urnet-tools hot-restart on"
+			}
+			lines = append(lines, fmt.Sprintf("proxy audit: observing only, %d would be parked (%s)", as.WouldPark, advice))
+		} else {
+			lines = append(lines, "proxy audit: observing only, nothing would be parked")
+		}
+	} else {
+		parked := "none parked"
+		if len(as.Parked) > 0 {
+			parked = fmt.Sprintf("%d parked", len(as.Parked))
+		}
+		lines = append(lines, fmt.Sprintf("proxy audit: acting, %s, %d parks in the last 24h", parked, as.Parks24h))
+	}
+	if as.Paused {
+		lines = append(lines, fmt.Sprintf("proxy audit: PAUSED for %s: the paid proxy list is unreadable or empty, so nothing is parked until it can be read again", shortDuration(now.Sub(as.PausedSince))))
+	}
+	for _, p := range as.Parked {
+		remaining := p.Until.Sub(now)
+		if remaining < 0 {
+			remaining = 0
+		}
+		lines = append(lines, fmt.Sprintf("  parked %s for another %s", p.Addr, shortDuration(remaining)))
+	}
+	if as.Distrusted {
+		lines = append(lines, "  last pass distrusted: a large share of grades went bad at once, so nothing was parked")
+	}
+	if as.Thin {
+		lines = append(lines, "  last pass thin: too few proxies could be graded from this box, so nothing was parked")
+	}
+	return lines
+}
+
+// cmdProxyAuditTarget executes a proxy audit command on a single targeted provider.
+func cmdProxyAuditTarget(p Provider, positionals []string, dryRun bool) error {
+	action := "status"
+	if len(positionals) > 0 {
+		action = positionals[0]
+	}
+
+	switch action {
+	case "status":
+		sockPath := filepath.Join(p.StateDir, "provider.sock")
+		resp, err := sendSocketRequest(sockPath, controlRequest{Cmd: "audit", Action: "status"})
+		if err != nil || !resp.OK {
+			if resp2, err2 := sendSocketRequest(sockPath, controlRequest{Cmd: "status"}); err2 == nil && resp2.OK {
+				resp = resp2
+			} else {
+				if err != nil {
+					return fmt.Errorf("connect to provider on %s: %w", sockPath, err)
+				}
+				return fmt.Errorf("provider rejected audit status on %s: %s", sockPath, resp.Error)
+			}
+		}
+		as := resp.ProxyAudit
+		if as == nil {
+			as = resp.Audit
+		}
+		lines := formatProxyAuditStatus(as, time.Now())
+		if len(lines) == 0 {
+			fmt.Println("proxy audit: observing only, nothing to report yet")
+			return nil
+		}
+		for _, l := range lines {
+			fmt.Println(l)
+		}
+		return nil
+
+	case "on":
+		if dryRun {
+			fmt.Printf("[dry-run] would enable proxy audit on %s\n", providerLabel(p))
+			return nil
+		}
+		sockPath := filepath.Join(p.StateDir, "provider.sock")
+		resp, err := sendSocketRequest(sockPath, controlRequest{Cmd: "audit", Action: "on"})
+		if err != nil || !resp.OK {
+			applied, _, cErr := applyControlOverride(p, "set", "proxy_audit", "on", false)
+			if cErr != nil {
+				return fmt.Errorf("enable proxy audit on %s: %w", providerLabel(p), cErr)
+			}
+			if !applied {
+				fmt.Printf("✓ Proxy audit enabled for %s (queued; takes effect on next provider start)\n", providerLabel(p))
+				return nil
+			}
+		} else {
+			_ = queuePendingOverrideIn(p.StateHome, p.StateDir, "set", "proxy_audit", "on")
+		}
+		fmt.Printf("✓ Proxy audit enabled for %s (evaluates proxy quality every 5m; parks junk paid/file proxies)\n", providerLabel(p))
+		return nil
+
+	case "off":
+		if dryRun {
+			fmt.Printf("[dry-run] would disable proxy audit on %s\n", providerLabel(p))
+			return nil
+		}
+		sockPath := filepath.Join(p.StateDir, "provider.sock")
+		resp, err := sendSocketRequest(sockPath, controlRequest{Cmd: "audit", Action: "off"})
+		if err != nil || !resp.OK {
+			applied, _, cErr := applyControlOverride(p, "set", "proxy_audit", "off", false)
+			if cErr != nil {
+				return fmt.Errorf("disable proxy audit on %s: %w", providerLabel(p), cErr)
+			}
+			if !applied {
+				fmt.Printf("✓ Proxy audit disabled for %s (queued; takes effect on next provider start)\n", providerLabel(p))
+				return nil
+			}
+		} else {
+			_ = queuePendingOverrideIn(p.StateHome, p.StateDir, "set", "proxy_audit", "off")
+		}
+		fmt.Printf("✓ Proxy audit disabled for %s (observe mode only; any parked proxies released)\n", providerLabel(p))
+		return nil
+
+	case "release":
+		if len(positionals) < 2 {
+			return fmt.Errorf("proxy audit release requires a proxy address (e.g. 'urnet-tools proxy audit release 1.2.3.4:1080') or '--all'")
+		}
+		targetAddr := positionals[1]
+		if targetAddr == "all" {
+			targetAddr = "--all"
+		}
+		if dryRun {
+			if targetAddr == "--all" {
+				fmt.Printf("[dry-run] would release all parked proxies on %s\n", providerLabel(p))
+			} else {
+				fmt.Printf("[dry-run] would release parked proxy %s on %s\n", targetAddr, providerLabel(p))
+			}
+			return nil
+		}
+		sockPath := filepath.Join(p.StateDir, "provider.sock")
+		resp, err := sendSocketRequest(sockPath, controlRequest{Cmd: "audit", Action: "release", Address: targetAddr})
+		if err != nil {
+			return fmt.Errorf("release on %s: %w", providerLabel(p), err)
+		}
+		if !resp.OK {
+			return fmt.Errorf("release on %s: %s", providerLabel(p), resp.Error)
+		}
+		if targetAddr == "--all" {
+			fmt.Printf("✓ Released all parked proxies on %s (%s)\n", providerLabel(p), resp.Value)
+		} else {
+			fmt.Printf("✓ Released proxy %s on %s (%s)\n", targetAddr, providerLabel(p), resp.Value)
+		}
+		return nil
+
+	default:
+		return fmt.Errorf("unknown proxy audit action %q (status|on|off|release)", action)
+	}
 }

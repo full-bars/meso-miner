@@ -102,7 +102,7 @@ func hotSwapVersionOK(p Provider) bool {
 			// and handed isHotSwapSupportedVersion a string that can never
 			// parse as a release, leaving supportsHotSwap permanently false
 			// on every release binary.
-			if ver := providerVersion(exe); ver != "" {
+			if ver := providerVersionReadOnly(exe); ver != "" {
 				return isHotSwapSupportedVersion(ver)
 			}
 		}
@@ -170,6 +170,14 @@ func queryUnitType(p Provider) (string, error) {
 // works; a false "yes" fires triggerHotSwap into a handoff that silently
 // aborts and, per the paragraph above, bricks the update entirely. Between
 // those two failure modes, losing zero-downtime is always the safe one.
+// processNotifySocketFunc is overridable so tests need no live process.
+var processNotifySocketFunc = processNotifySocket
+
+// ErrHotSwapNeedsRestart is returned when the unit is Type=notify but the
+// running provider was started before that, so it has no notify socket to
+// hand the main PID over with.
+var ErrHotSwapNeedsRestart = errors.New("zero-downtime hotswap unavailable: the running provider was started before its systemd unit became Type=notify, so it has no notify socket; this update uses a service restart, and updates after it can hot swap")
+
 func hotSwapUnitOK(p Provider) error {
 	if p.Unit == "" {
 		return nil
@@ -184,6 +192,17 @@ func hotSwapUnitOK(p Provider) error {
 	}
 	if typ != "notify" {
 		return ErrHotSwapUnitNotNotify
+	}
+	// The unit being Type=notify says what systemd will do at the NEXT start.
+	// The process already running may predate that (the unit was migrated by
+	// an update or by hand and the provider was never restarted): it then has
+	// no NOTIFY_SOCKET, the handoff aborts after SIGUSR2, and the update waits
+	// out its verification window before rolling back. Decline up front
+	// instead, with the one action that fixes it.
+	if p.PID > 0 {
+		if has, known := processNotifySocketFunc(p.PID); known && !has {
+			return ErrHotSwapNeedsRestart
+		}
 	}
 	return nil
 }
@@ -213,6 +232,8 @@ func cmdHotswap(args []string, force, dryRun bool) error {
 	if !ok {
 		return nil // dry-run or declined
 	}
+	// Leave the reason for the provider's next start (best effort).
+	recordRestartReason(p, restartReasonHotswap)
 	if err := triggerHotSwap(p); err != nil {
 		return fmt.Errorf("hotswap %s: %w", providerLabel(p), err)
 	}

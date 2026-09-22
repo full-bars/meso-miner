@@ -185,15 +185,19 @@ func selectTargets(providers []Provider, t Target, include, exclude []string, in
 		if err != nil {
 			return nil, err
 		}
+	case len(providers) == 1:
+		// The sole provider auto-picks even on a TTY — prompting when there is
+		// exactly one candidate is noise. (Was previously reached only when the
+		// interactive case above did not fire, so update/paste/clear on a
+		// single-provider box popped a pointless picker; reported 2026-09-20.)
+		chosen = providers
+	case len(providers) == 0:
+		return nil, fmt.Errorf("no providers found on this box")
 	case interactive:
 		chosen, err = interactivePick(providers)
 		if err != nil {
 			return nil, err
 		}
-	case len(providers) == 1:
-		chosen = providers
-	case len(providers) == 0:
-		return nil, fmt.Errorf("no providers found on this box")
 	default:
 		// An explicitly persisted default provider (default set) resolves the
 		// no-target case with multiple providers, before any other heuristic.
@@ -230,7 +234,13 @@ func selectTargets(providers []Provider, t Target, include, exclude []string, in
 		// providers (single-provider default path), mutating the input
 		filtered := make([]Provider, 0, len(chosen))
 		for _, p := range chosen {
-			if !excluded[matchKey(p)] && !excluded[p.Unit] && !excluded[p.Network] {
+			// Exclude matches on every provider label a user can name:
+			// the composite key, unit, network, USER and NetworkID. The
+			// user and NetworkID axes were previously ignored, so
+			// `--exclude alice` and `--exclude 0197d746` were silently
+			// ignored.
+			if !excluded[matchKey(p)] && !excluded[p.Unit] && !excluded[p.Network] &&
+				!excluded[p.User] && !excluded[p.NetworkID] {
 				filtered = append(filtered, p)
 			}
 		}

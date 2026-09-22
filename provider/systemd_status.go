@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,6 +20,13 @@ import (
 var (
 	proxiesConfigured    atomic.Int64
 	proxiesAuthenticated atomic.Int64
+
+	// proxiesParked is how many configured proxies the proxy audit engine is
+	// deliberately holding out, and proxyAuditPaused is whether it is unable to
+	// act. Parked proxies are configured but not authenticated on purpose, so
+	// they must not read as an outage in the line.
+	proxiesParked    atomic.Int64
+	proxyAuditPaused atomic.Bool
 )
 
 // proxyResolutionStatus tracks whether proxy resolution has been attempted
@@ -37,6 +45,16 @@ const (
 	proxyResolutionFailed  int32 = 1 // attempted, source unreachable
 	proxyResolutionEmpty   int32 = 2 // succeeded but zero usable proxies
 	proxyResolutionOK      int32 = 3 // resolved with at least one proxy
+)
+
+// Status severity bands for the live/configured proxy ratio. The exact
+// percentage always renders alongside the word so the scale reads
+// continuously; a node with 40% live and one with 9% live are both
+// "critical", and the number says how bad it is.
+const (
+	statusActiveBand   = 90 // >= this percent of configured proxies live: healthy steady state
+	statusPartialBand  = 70 // 70-89%: first real attention
+	statusDegradedBand = 50 // 50-69%: significant loss; below 50% is critical
 )
 
 // setProxyResolutionStatus records the outcome of a proxy resolution attempt
@@ -75,6 +93,22 @@ const maxStatusReasonLen = 60
 func setConfiguredProxyCount(n int) {
 	proxiesConfigured.Store(int64(n))
 	reportProxyStatusToSystemd()
+}
+
+// setProxyAuditSystemdState records the proxy audit's parked count and
+// whether it is paused, and refreshes STATUS= only when either changed (the
+// proxy audit calls this every tick).
+func setProxyAuditSystemdState(parked int, paused bool) {
+	if parked < 0 {
+		parked = 0
+	}
+	changed := proxiesParked.Swap(int64(parked)) != int64(parked)
+	if proxyAuditPaused.Swap(paused) != paused {
+		changed = true
+	}
+	if changed {
+		reportProxyStatusToSystemd()
+	}
 }
 
 // proxyBecameLive/proxyWentDown bracket a proxy's live transport. Both report
@@ -117,12 +151,54 @@ func systemdStatusLine() string {
 		default: // proxyResolutionPending or stale OK
 			return "starting: resolving proxies"
 		}
-	case live == 0:
-		return fmt.Sprintf("degraded: 0/%d proxies authenticated, retrying", total)
-	case live < total:
-		return fmt.Sprintf("partial: %d/%d proxies authenticated", live, total)
 	default:
-		return fmt.Sprintf("active: %d/%d proxies authenticated", live, total)
+		// Parks and pauses are deliberate, not outages: the word is chosen
+		// against the proxies that SHOULD be live (configured minus parked),
+		// while the rendered percentage still reflects the configured set.
+		// The band compares on the true ratio, not the rounded percentage, so
+		// an 89.5% node reads partial, not an accidental active.
+		parked := proxiesParked.Load()
+		if parked > total {
+			parked = total
+		}
+		eff := total - parked
+		ratio := 0.0
+		if total > 0 {
+			ratio = float64(live) / float64(total)
+		}
+		effRatio := ratio
+		if eff > 0 {
+			effRatio = float64(live) / float64(eff)
+		}
+		pct := int(math.Round(ratio * 100))
+		if pct > 100 {
+			// live > configured happens transiently when a reload shrinks
+			// the desired set; a >100% figure would be nonsense in
+			// systemctl status.
+			pct = 100
+		}
+		word := "critical"
+		switch {
+		case effRatio*100 >= statusActiveBand:
+			word = "active"
+		case effRatio*100 >= statusPartialBand:
+			word = "partial"
+		case effRatio*100 >= statusDegradedBand:
+			word = "degraded"
+		}
+		line := fmt.Sprintf("%s: %d/%d proxies authenticated (%d%%)", word, live, total, pct)
+		// The percentage and the park/pause notes always render, even at
+		// zero live: an operator with every proxy parked still sees why.
+		if parked > 0 {
+			line += fmt.Sprintf(", %d parked by proxy audit", parked)
+		}
+		if proxyAuditPaused.Load() {
+			line += "; proxy audit paused (paid proxy list unreadable)"
+		}
+		if word == "degraded" || word == "critical" {
+			return line + ", retrying"
+		}
+		return line
 	}
 }
 

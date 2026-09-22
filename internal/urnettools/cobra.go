@@ -28,10 +28,11 @@ Core Commands:
   stop                    Stop the provider
   restart [-y|-f]         Restart the provider (-y/-f to skip confirmation)
   update                  Upgrade to the latest version
-  hotswap                 Zero-downtime in-process binary reload
+  hotswap                 Swap provider process with no gap; proxies rebuild ~30s
   self-update             Update this tool binary itself
   status                  Show provider service status
-  logs [all|dump|-i]      Stream logs (all=from start, dump=save, -i=important only)
+  top [--interval D]      Live full-screen view of a provider (also: urtop)
+  logs [target] [N]       Show recent logs, then follow (N lines, default 250)
   dashboard               Status panel: state, settings, sources, warnings
   history [limit]         Show the provider's command audit trail
 
@@ -43,6 +44,7 @@ Performance & Tuning:
   ramlogs <on|off>        RAM LOGS zero disk I/O logging
   optimize                Apply Golden Fleet OS/kernel limits
   set [<k> [<v>|off]]     Show or change runtime tuning overrides
+  get [key] [target]      Show the current value of a runtime override (alias: show)
   fast-auth [on|off]      Bypass auth rate limiter without restart
   config [--json]         Show all provider settings with source and age
   profile [<name>]        Show or set the memory/GC tuning profile
@@ -139,6 +141,7 @@ func buildRootCmd() *cobra.Command {
 	rootCmd.AddCommand(
 		newProvidersCmd(),
 		newStatusCmd(),
+		newTopCmd(),
 		newSnStatusCmd(),
 		newStartCmd(),
 		newStopCmd(),
@@ -174,6 +177,7 @@ func buildRootCmd() *cobra.Command {
 		newDoRestartCmd(), // HIDDEN internal entry point for the updater's escalated restart
 		newIPDetectCmd(),
 		newRenameCmd(),
+		newGetCmd(),
 		newHistoryCmd(),
 		newMetricsCmd(),
 		newProfileCmd(),
@@ -234,7 +238,15 @@ func newStatusCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdStatus(rest)
 		})
-	}), "Show detailed status for one provider: user, unit, binary, version, state dir, PID, running state, network identity, and JWT expiry. On Linux this reproduces `systemctl status <unit>`; on Windows and macOS it renders a status panel with a proxy summary. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir.", "  urnet-tools status\n  urnet-tools status --network tacogonzalez3000\n  urnet-tools status --unit urnetwork-native.service")
+	}), "Show detailed status for one provider: user, unit, binary, version, state dir, PID, running state, network identity, and JWT expiry. On Linux this reproduces `systemctl status <unit>`; on Windows and macOS it renders a status panel with a proxy summary. When the provider answers, a live block follows: state, throughput, clients, proxies, uptime, last restart reason, memory. With several providers and no target, prints one compact row per provider. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir. --json prints the raw live snapshot for scripts.", "  urnet-tools status\n  urnet-tools status --network tacogonzalez3000\n  urnet-tools status --unit urnetwork-native.service\n  urnet-tools status --json")
+}
+
+func newTopCmd() *cobra.Command {
+	return withHelp(newCobraCmd("top [target]", "live full-screen view of a provider", nil, func(cmd *cobra.Command, args []string) error {
+		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
+			return cmdTop(rest)
+		})
+	}), "Open a live, full-screen view of one provider: throughput graph for the last 10 minutes, current and average rate, clients, proxy pool, memory and descriptors, and recent events such as restarts and state changes. Reads only the provider's control socket and changes nothing. Also available as `urtop`. Keys: q, Esc or Ctrl-C quit; Tab and Shift-Tab switch provider; + and - change the refresh rate; ? shows help. When the provider stops answering the screen stays up, shows DISCONNECTED with a countdown, and resumes by itself. Needs an interactive terminal; use `status` for scripts. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir. --interval sets the refresh period (default 1s, minimum 250ms).", "  urnet-tools top\n  urnet-tools top --network tacogonzalez3000\n  urnet-tools top --interval 500ms\n  urtop")
 }
 
 func newSnStatusCmd() *cobra.Command {
@@ -427,11 +439,11 @@ func newOptimizeCmd() *cobra.Command {
 }
 
 func newHotswapCmd() *cobra.Command {
-	return withHelp(newCobraCmd("hotswap", "zero-downtime in-process binary reload", []string{"hot-swap"}, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("hotswap", "swap the provider process with no service gap (proxies rebuild ~30s)", []string{"hot-swap"}, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdHotswap(rest, force, dryRun)
 		})
-	}), "Trigger an in-process zero-downtime HotSwap on a running provider without cycling the unit.", "  urnet-tools hotswap --unit urnetwork-native.service\n  urnet-tools hotswap --force")
+	}), "Trigger an in-process HotSwap on a running provider without cycling the unit. The provider process is swapped without a gap in service, but proxy connections still rebuild over about 30 s.", "  urnet-tools hotswap --unit urnetwork-native.service\n  urnet-tools hotswap --force")
 }
 
 func newFastAuthCmd() *cobra.Command {
@@ -452,6 +464,41 @@ func newFastAuthCmd() *cobra.Command {
 			})
 		},
 	}
+}
+
+func newGetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:                "get [key] [target]",
+		Short:              "show the current value of a runtime override",
+		Long:               "Show the current value of one runtime override applied to the targeted provider. With no key it lists every active override. This is the read-only face of `set`: pass a single key only, never a value — use `set <key> <value>` to change anything. Run 'get help' to list the available keys.",
+		Example:            "  urnet-tools get gomemlimit\n  urnet-tools get --unit urnetwork-native.service\n  urnet-tools show gomemlimit",
+		Aliases:            []string{"show"},
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if hasHelpFlag(args) {
+				printSetHelp()
+				return nil
+			}
+			return parseGlobal(args, func(force, dryRun bool, rest []string) error {
+				return cmdGet(rest)
+			})
+		},
+	}
+}
+
+// cmdGet implements `urnet-tools get [key] [target]` — a strictly read-only
+// view of the provider's runtime overrides. It reuses the set machinery's
+// read forms (no key = list, one key = value) but rejects any value form so
+// a stray `get gomemlimit 1G` can never silently write.
+func cmdGet(args []string) error {
+	_, rest, err := parseTargetFlags(args)
+	if err != nil {
+		return err
+	}
+	if len(rest) > 1 {
+		return fmt.Errorf("get is read-only: pass a single key (e.g. `urnet-tools get gomemlimit`); to change a value use `urnet-tools set <key> <value>`")
+	}
+	return cmdSet(args, false, false)
 }
 
 func newSetCmd() *cobra.Command {
@@ -536,7 +583,7 @@ func newProxyCmd() *cobra.Command {
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
-				return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | refresh | add-source <url> | remove-source <url> | health | traffic | ids | remove-dead | trim <N>")
+				return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | refresh | add-source <url> | remove-source <url> | health | traffic | ids | remove-dead | trim <N> | audit")
 			}
 			for _, a := range args {
 				if a == "-h" || a == "--help" {
@@ -552,15 +599,10 @@ func newProxyCmd() *cobra.Command {
 
 func newReportCmd() *cobra.Command {
 	return withHelp(newCobraCmd("report", "set report URL", nil, func(cmd *cobra.Command, args []string) error {
-		rest, err := parseDelegationArgs(args)
-		if err == errHelpShown {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		return cmdReport(rest)
-	}), "Set the report URL for one targeted provider at runtime, or pass \"off\" to disable reporting. This writes an override file the provider's bandwidth reporter re-reads on its next tick, so no restart is needed.", "  urnet-tools report http://192.0.2.10:8080 --unit urnetwork-native.service\n  urnet-tools report off --unit urnetwork-native.service")
+		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
+			return cmdReport(rest, dryRun, force)
+		})
+	}), "Set the report URL for one targeted provider at runtime, or pass \"off\" to disable reporting. This writes an override file the provider's bandwidth reporter re-reads on its next tick, so no restart is needed. Honors -n/--dry-run, which prints the plan and changes nothing.", "  urnet-tools report http://192.0.2.10:8080 --unit urnetwork-native.service\n  urnet-tools report off --unit urnetwork-native.service")
 }
 
 func newReinstallCmd() *cobra.Command {
@@ -662,7 +704,12 @@ func newMetricsCmd() *cobra.Command {
 			if hasHelpFlag(args) {
 				return cmd.Help()
 			}
-			return cmdMetrics(args, false)
+			// M4: command used to force dryRun=false unconditionally, so
+			// `metrics on -n` applied the change. Route through the global
+			// flag parser so -n/--dry-run (and -f) are honored.
+			return parseGlobal(args, func(force, dryRun bool, rest []string) error {
+				return cmdMetrics(rest, dryRun)
+			})
 		},
 	}
 }
@@ -921,7 +968,7 @@ func cmdProfile(args []string) error {
 		if err := validateControlValue("profile", profile); err != nil {
 			return err
 		}
-		if err := queuePendingOverride(p.StateDir, "set", "profile", profile); err != nil {
+		if err := queuePendingOverrideIn(p.StateHome, p.StateDir, "set", "profile", profile); err != nil {
 			return fmt.Errorf("queue pending override: %w", err)
 		}
 		fmt.Printf("Profile set to %s for %s (queued — takes effect on next start)\n", profile, providerLabel(p))
@@ -1059,8 +1106,17 @@ func cmdDashboard(args []string) error {
 		fmt.Printf("  %sPID:%s     %d\n", bold, reset, p.PID)
 	}
 
-	// Network identity
-	fmt.Printf("  %sNetwork:%s %s (%s)\n", bold, reset, p.netLabel(), p.NetworkID[:8]+"...")
+	// Network identity — a provider with no readable JWT (ghost/discovered-bare
+	// record, stopped unit, empty identity) has an empty NetworkID; slice it
+	// defensively instead of panicking on ""[:8].
+	netID := p.NetworkID
+	if len(netID) > 8 {
+		netID = netID[:8] + "..."
+	}
+	if netID == "" {
+		netID = "(none)"
+	}
+	fmt.Printf("  %sNetwork:%s %s (%s)\n", bold, reset, p.netLabel(), netID)
 
 	// JWT expiry
 	if !p.JWTExpires.IsZero() {

@@ -2025,6 +2025,21 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 				reading := poolHealth.observe(inUse, totalCreated, interval)
 				tlog("❤️ [health][pool] %s\n",
 					poolHealthLine(reading, inUse, totalCreated, totalTaken, totalReturned))
+				// Leak attribution: with URNETWORK_POOL_DEBUG_TAGS=1 the
+				// pools stamp each allocation with its call site; when a
+				// verdict is not healthy, name the worst offending caller
+				// so the operator knows what code path is leaking before
+				// digging through 5 pool-size buckets of logs.
+				if reading.Verdict == poolVerdictLeak || reading.Verdict == poolVerdictWatch {
+					// Attribution is always on (debugTags defaults true), so
+					// name the worst offending caller for the operator.
+					if hints := connect.MessagePoolLeakHint(3); len(hints) > 0 {
+						for _, h := range hints {
+							tlog("❤️ [health][pool][leak] tag=%d caller=%s leaked=%d returned=%.2f%% (%.2f%% reused)\n",
+								h.Tag, h.Caller, h.Leaked, h.ReturnedPct, h.ReusedPct)
+						}
+					}
+				}
 			}
 		}
 
@@ -2886,6 +2901,12 @@ func provide(opts docopt.Opts) {
 	applyPersistedRuntimeTuning(globalControlState)
 	initPersistentErrors()
 	initAuditRing()
+	// A Docker in-place execve successor is not a candidate process (no
+	// IPC descriptor) but the env marker survives the exec, so both kinds
+	// of handoff successor get labelled hotswap. The persist gate is armed
+	// only for spawned candidates: the Docker successor's ring loaded
+	// after the parent's pre-exec flush, so it persists immediately.
+	recordProcessStart(isHotSwapCandidate || os.Getenv(EnvHotSwapExec) == "1", isHotSwapCandidate)
 	// The cancel function is captured by the control socket's "shutdown"
 	// command so a client can request graceful shutdown remotely.
 	globalControlState.shutdownFn = cancel
@@ -2896,9 +2917,21 @@ func provide(opts docopt.Opts) {
 		if err != nil {
 			tlog("[control] failed to start control socket, urnet-tools will fall back to file-based overrides: %s\n", err)
 		} else {
+			// The hotswap commit point quiesces this socket so no command
+			// accepted after the audit flush can be lost in the parent's
+			// memory mid-handoff. The wrapper nils the closure on the way
+			// out so a later graceful exit cannot clean up again and delete
+			// the successor's freshly bound socket.
+			setQuiesceHook(func() {
+				if cleanupControlSocket != nil {
+					cleanupControlSocket()
+					cleanupControlSocket = nil
+				}
+			})
 			defer func() {
 				if cleanupControlSocket != nil {
 					cleanupControlSocket()
+					cleanupControlSocket = nil
 				}
 			}()
 			unregSocketCloser := RegisterCoordinatorCloser(func() {
@@ -2992,12 +3025,18 @@ func provide(opts docopt.Opts) {
 	}
 
 	go connect.HandleError(func() { runHealthHeartbeat(ctx, provideStartTime, os.Getenv("URNETWORK_PROFILE")) })
-	_ = watcherName // hub reporter display name; hub reporting is stripped on meso-miner
+	go connect.HandleError(func() {
+		runBandwidthReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
+	})
+	go connect.HandleError(func() {
+		runHeartbeatReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
+	})
 	go connect.HandleError(func() { runJWTRefresher(ctx, apiUrl) })
 	go connect.HandleError(func() { runEarningWindows(ctx) })
 	go connect.HandleError(func() { runLifetimeCollector(ctx) })
 	go connect.HandleError(func() { runProfitHeartbeat(ctx) })
 	go connect.HandleError(func() { runBillableRateWriter(ctx) })
+	go connect.HandleError(func() { runNodeSnapshotSampler(ctx) })
 
 	proxyURLs := resolveProxyURLs(opts)
 	proxyURLRefresh := resolveDuration(opts, "--proxy_url_refresh", "PROXY_URL_REFRESH", 1*time.Hour)
@@ -3007,6 +3046,9 @@ func provide(opts docopt.Opts) {
 	// Self-heal defaults OFF: the pressure-based load shedding system is opt-in
 	// via URNETWORK_SELF_HEAL=1 or `urnet-tools self-heal on`.
 	selfHealEnabled := os.Getenv("URNETWORK_SELF_HEAL") == "1"
+	// Proxy audit defaults OFF (observe mode): enabled via URNETWORK_PROXY_AUDIT=1
+	// or `urnet-tools proxy audit on` at runtime without restarting.
+	proxyAuditEnabled := resolveProxyAuditEnabled(os.Getenv("URNETWORK_PROXY_AUDIT") == "1")
 
 	// Extract API host:port for the reachability probe (from the chosen
 	// network's API URL, already resolved above via resolveApiUrl).
@@ -3277,9 +3319,7 @@ func provide(opts docopt.Opts) {
 							// Clean up proxyCancelMap so the reloader can
 							// relaunch this proxy if the operator refreshes
 							// the proxy list.
-							proxyCancelMu.Lock()
-							delete(proxyCancelMap, proxySettings.Address)
-							proxyCancelMu.Unlock()
+							deleteProxyCancelIfCurrent(&proxyCancelMu, proxyCancelMap, proxyCtx, proxySettings.Address)
 							return "", connect.Id{}, false, fmt.Errorf("proxy dropped after %s of continuous failure — %s", formatDuration(dropAge), cause)
 						}
 						// The 24h daily gate only applies after the first 3
@@ -3342,9 +3382,7 @@ func provide(opts docopt.Opts) {
 		if err != nil {
 			if proxySettings != nil {
 				if isURLSourced {
-					proxyCancelMu.Lock()
-					delete(proxyCancelMap, proxySettings.Address)
-					proxyCancelMu.Unlock()
+					deleteProxyCancelIfCurrent(&proxyCancelMu, proxyCancelMap, proxyCtx, proxySettings.Address)
 
 					if errors.Is(err, errProxyURLBelowBar) {
 						// Quality rejection: the proxy was filtered
@@ -3524,17 +3562,37 @@ func provide(opts docopt.Opts) {
 				}
 				mergePendingOverrides(globalControlState)
 				applyPersistedRuntimeTuning(globalControlState)
+
+				// The parent flushed its final audit entries before the
+				// takeover message; this ring was loaded at spawn time and
+				// predates that write, so pull them in now. Without this the
+				// handoff event and the last control-socket commands would
+				// exist only on disk and be dropped by the next persist.
+				mergeAuditRingFromDisk()
+
 				startMetricsAfterTakeover(globalControlState)
 
 				// Bind control socket now that the parent yielded its listener
 				if cleanup, err := startControlSocket(ctx, globalControlState); err != nil {
 					tlog("[control] candidate failed to start control socket on takeover: %s\n", err)
+					// Do not carry the parent's socket closer into the hotswap
+					// commit point: this process never bound that socket.
+					setQuiesceHook(nil)
 				} else {
 					cleanupControlSocket = cleanup
+					// Same nil-out wrapper as the parent path: quiesce once,
+					// then this process's socket is no longer ours to remove.
+					setQuiesceHook(func() {
+						if cleanupControlSocket != nil {
+							cleanupControlSocket()
+							cleanupControlSocket = nil
+						}
+					})
 					unregSocketCloser = RegisterCoordinatorCloser(func() {
 						if cleanupControlSocket != nil {
 							cleanupControlSocket()
 							cleanupControlSocket = nil
+							setQuiesceHook(nil)
 						}
 					})
 				}
@@ -3841,6 +3899,8 @@ func provide(opts docopt.Opts) {
 			proxyCtx, proxyCancel := context.WithCancel(ctx)
 			proxyCancelMu.Lock()
 			proxyCancelMap[proxySettings.Address] = proxyCancel
+			launchGen := beginProxyLaunch(proxySettings.Address)
+			proxyCtx = withProxyLaunchGen(proxyCtx, launchGen)
 			proxyCancelMu.Unlock()
 
 			stableID := proxySettings.Index
@@ -3850,7 +3910,7 @@ func provide(opts docopt.Opts) {
 			wg.Add(1)
 			go connect.HandleError(func() {
 				defer wg.Done()
-				defer connect.UnregisterProxy(stableID)
+				defer unregisterProxyIfCurrent(proxySettings.Address, launchGen, stableID)
 				defer proxyCancel()
 
 				if !backoffPacerWithDelay(baseDelay, staggerDuration, proxyCtx) {
@@ -3893,6 +3953,7 @@ func provide(opts docopt.Opts) {
 	reloader := &ProxyReloader{
 		cancelMap:       proxyCancelMap,
 		cancelMapMu:     &proxyCancelMu,
+		runningAuth:     make(map[string]*connect.ProxySettings),
 		state:           proxyState,
 		sourcePath:      proxyFile,
 		parentCtx:       ctx,
@@ -3902,6 +3963,16 @@ func provide(opts docopt.Opts) {
 		directDone:      directStartupDone,
 		networkID:       currentNetworkId,
 	}
+
+	// Seed runningAuth with the STARTUP launch settings. The startup loop
+	// above launched every proxy directly (before the reloader existed), so
+	// without this the rotation branch in reload() would see no recorded
+	// auth for boot-launched proxies, and re-pasting with new credentials
+	// would silently keep the old auth (LA7 incident: 100 proxies pasted
+	// with new creds, "added 100" printed, daemon kept dialing the old
+	// user). Deliberately capture the same *connect.ProxySettings pointers
+	// the goroutines below run against.
+	reloader.seedRunningAuth(allProxySettings)
 	reloader.StartWatcher(ctx)
 	// Enforce an operator trim cap immediately at startup. The initial launch
 	// loop spawns every entry in the source, so without this the first reload
@@ -3925,12 +3996,29 @@ func provide(opts docopt.Opts) {
 	go connect.HandleError(func() { runPressureMonitor(ctx, selfHealEnabled) })
 	go connect.HandleError(func() { runPoolController(ctx, proxyURLMax, selfHealEnabled) })
 	go connect.HandleError(func() { runDegradedProxyReaper(ctx, proxyCancelMap, &proxyCancelMu) })
+	// Proxy audit: parks proven-junk paid/file proxies when proxy audit is on
+	// (`urnet-tools proxy audit on`), and only logs would-park otherwise. Also
+	// started in a HotSwap candidate on purpose: its memory begins at its own
+	// start and its earn tracker must warm up first, so it cannot act during the
+	// short overlap with the parent, and skipping it would leave a swapped node
+	// without an auditor until the next full restart.
+	go connect.HandleError(func() { runProxyAudit(ctx, proxyCancelMap, &proxyCancelMu, proxyAuditEnabled) })
 	go connect.HandleError(func() { runReloadReconciler(ctx) })
 
 	if profileAddr := os.Getenv("URNETWORK_PPROF"); profileAddr != "" {
 		tlog("[profile] enabling diagnostics on %s (loopback only): /debug/pprof/*, /metrics/pool, /metrics/errors, /metrics\n", profileAddr)
 		if err := connect.EnableProfiling(profileAddr); err != nil {
-			tlog("[profile] failed to enable diagnostics: %v\n", err)
+			if isHotSwapCandidate && errors.Is(err, syscall.EADDRINUSE) {
+				// The parent keeps the port through its stream drain; keep
+				// trying so the promoted process is not left without
+				// diagnostics for the rest of its life.
+				tlog("[profile] %s is held by the hotswap parent; retrying until it exits\n", profileAddr)
+				go connect.HandleError(func() {
+					enableProfilingWithRetry(ctx, profileAddr, connect.EnableProfiling, 90*time.Second, time.Second, tlog)
+				})
+			} else {
+				tlog("[profile] failed to enable diagnostics: %v\n", err)
+			}
 		}
 	}
 	// URNETWORK_METRICS binds a Prometheus /metrics endpoint on the given
@@ -4221,37 +4309,6 @@ func proxyAuthRetryDelay(err error, attempt int) time.Duration {
 		delay = 15 * time.Second
 	}
 	return delay
-}
-
-// nodeNameOverridePath returns ~/.urnetwork/node_name, a file an operator can
-// write at any time to change the node identity reported to the fleet without
-// restarting. An empty file or missing file falls back to the startup hostname.
-func nodeNameOverridePath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".urnetwork", "node_name"), nil
-}
-
-// resolveNodeName checks the control-socket state first, then the legacy
-// override file, then startupName (the hostname captured at process start).
-// Re-resolved on every call so a change takes effect on the reporter's next
-// tick.
-func resolveNodeName(startupName string) string {
-	if v, ok := globalControlState.get("node_name"); ok && v != "" {
-		return v
-	}
-
-	path, err := nodeNameOverridePath()
-	if err == nil {
-		if b, err := os.ReadFile(path); err == nil {
-			if v := strings.TrimSpace(string(b)); v != "" {
-				return v
-			}
-		}
-	}
-	return startupName
 }
 
 // providerDescription builds the display-name string sent as the client
@@ -4948,8 +5005,129 @@ func expandPath(p string) string {
 }
 
 func proxyAdd(opts docopt.Opts) {
+	// File-backed providers (Workflow A: --proxy_file=<X>) load their proxies
+	// from that external file on every reload; writes to the internal config
+	// are discarded. So additions must be appended to the source file itself
+	// (then reloaded), not the internal config. Delegate and return.
+	if state, err := readProxyState(); err == nil && state.Source != "" {
+		proxyAddFileBacked(state.Source, opts)
+		return
+	}
+
 	proxyConfig := readProxyConfig()
 
+	allKeyAddress := proxyAddCollectAddresses(opts)
+
+	if proxyConfig.Servers == nil {
+		proxyConfig.Servers = map[string]string{}
+	}
+
+keyAddressLoop:
+	for _, keyAddress := range allKeyAddress {
+		var key string
+		var proxyAddress string
+		i := strings.Index(keyAddress, "@")
+		if 0 <= i {
+			key = keyAddress[:i]
+			proxyAddress = keyAddress[i+1:]
+		} else {
+			key = ""
+			proxyAddress = keyAddress
+		}
+
+		address, user, password := parseProxyAddress(proxyAddress)
+		if proxyConfig.Auths != nil {
+			proxyAuth, ok := proxyConfig.Auths[key]
+			if ok {
+				user = proxyAuth.User
+				password = proxyAuth.Password
+			}
+		}
+
+		if currentKey, ok := proxyConfig.Servers[proxyAddress]; ok && currentKey != key {
+			if force, _ := opts.Bool("-f"); !force {
+				fmt.Printf(
+					"server %s (%s/%s) exists with different key. Change key? [yN]\n",
+					address,
+					obfuscateUser(user),
+					obfuscatePassword(password),
+				)
+
+				reader := bufio.NewReader(os.Stdin)
+				confirm, _ := reader.ReadString('\n')
+				if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
+					return
+				}
+			}
+		}
+
+		// Credential rotation: purge any existing entry for the same
+		// host:port whose credentials differ, so adding the same address
+		// with new credentials is a ROTATION, not a duplicate. The
+		// reloader diffs by address only (desiredSet[s.Address]), so two
+		// keys for one host:port with different user:pass made re-paste a
+		// no-op — the same address was already "desired", the new creds
+		// were silently dropped, and the running proxy kept the old auth
+		// (LA7 incident 2026-09-18: 100 proxies pasted with new creds,
+		// "added 100" printed, daemon kept dialing the old user).
+		// Scan EVERY entry for this address before deciding anything. Stopping
+		// at the first entry with identical credentials (the old behavior)
+		// left any stale duplicate not yet visited in place, and Go's random
+		// map order made whether it was purged nondeterministic.
+		keepExisting := false
+		var stale []string
+		for existing, existingKey := range proxyConfig.Servers {
+			existingAddress, existingUser, existingPassword := parseProxyAddress(existing)
+			if existingAddress != address || existing == proxyAddress {
+				continue
+			}
+			// Compare EFFECTIVE credentials: a stored key can carry its
+			// credentials in the Auths table instead of in the server string,
+			// and an alternate representation of the same credentials is not
+			// a rotation.
+			if proxyConfig.Auths != nil {
+				if existingAuth, ok := proxyConfig.Auths[existingKey]; ok {
+					existingUser = existingAuth.User
+					existingPassword = existingAuth.Password
+				}
+			}
+			if existingUser == user && existingPassword == password {
+				keepExisting = true
+				continue
+			}
+			stale = append(stale, existing)
+		}
+		for _, existing := range stale {
+			delete(proxyConfig.Servers, existing)
+			if keepExisting {
+				fmt.Printf("removed stale duplicate entry for server %s\n", address)
+			} else {
+				fmt.Printf("rotated credentials for server %s\n", address)
+			}
+		}
+		if keepExisting {
+			continue keyAddressLoop
+		}
+
+		fmt.Printf(
+			"added server %s (%s/%s)\n",
+			address,
+			obfuscateUser(user),
+			obfuscatePassword(password),
+		)
+
+		proxyConfig.Servers[proxyAddress] = key
+	}
+
+	writeProxyConfig(proxyConfig)
+}
+
+// proxyAddCollectAddresses gathers the addresses to add from opts, resolving
+// --url/positional-URL sources through proxyAddSource and expanding file
+// arguments inline (a path positional or --proxy_file/--file whose contents
+// are read line-by-line). Shared by the internal-config add path and the
+// file-backed add path so both accept the same inputs.
+func proxyAddCollectAddresses(opts docopt.Opts) []string {
 	allKeyAddress := []string{}
 	if allKeyAddressAny, ok := opts["<key_address>"]; ok {
 		allKeyAddress = append(allKeyAddress, allKeyAddressAny.([]string)...)
@@ -5006,59 +5184,91 @@ func proxyAdd(opts docopt.Opts) {
 		}
 	}
 
-	if proxyConfig.Servers == nil {
-		proxyConfig.Servers = map[string]string{}
+	return allKeyAddress
+}
+
+// proxyAddFileBacked appends new proxy addresses to a Workflow A source file
+// (the --proxy_file=... the running provider reads on every reload) instead
+// of the internal config, which a file-backed reload discards. Lines already
+// present in the file are skipped (dedup by full line, matching add-time
+// semantics); the file is written atomically and a reload trigger is fired so
+// the additions take effect without a restart. URL sources are still routed
+// to proxyAddSource — URL sources are additive and work alongside a file
+// source.
+func proxyAddFileBacked(sourcePath string, opts docopt.Opts) {
+	release, err := acquireProxyLockWithRetry()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "proxy add: could not acquire proxy lock: %v\n", err)
+		return
 	}
+	defer release()
 
-	for _, keyAddress := range allKeyAddress {
-		var key string
-		var proxyAddress string
-		i := strings.Index(keyAddress, "@")
-		if 0 <= i {
-			key = keyAddress[:i]
-			proxyAddress = keyAddress[i+1:]
-		} else {
-			key = ""
-			proxyAddress = keyAddress
-		}
+	allKeyAddress := proxyAddCollectAddresses(opts)
 
-		address, user, password := parseProxyAddress(proxyAddress)
-		if proxyConfig.Auths != nil {
-			proxyAuth, ok := proxyConfig.Auths[key]
-			if ok {
-				user = proxyAuth.User
-				password = proxyAuth.Password
-			}
-		}
-
-		if currentKey, ok := proxyConfig.Servers[proxyAddress]; ok && currentKey != key {
-			if force, _ := opts.Bool("-f"); !force {
-				fmt.Printf(
-					"server %s (%s/%s) exists with different key. Change key? [yN]\n",
-					address,
-					obfuscateUser(user),
-					obfuscatePassword(password),
-				)
-
-				reader := bufio.NewReader(os.Stdin)
-				confirm, _ := reader.ReadString('\n')
-				if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
-					return
+	// Read existing file content, preserving comments/blank lines, and track
+	// which normalized proxy lines are already present.
+	existing := map[string]bool{}
+	var out []string
+	if b, err := os.ReadFile(sourcePath); err == nil {
+		s := strings.TrimSuffix(string(b), "\n")
+		s = strings.TrimSuffix(s, "\r")
+		if len(s) > 0 {
+			for _, line := range strings.Split(s, "\n") {
+				line = strings.TrimSuffix(line, "\r")
+				trimmed := strings.TrimSpace(line)
+				if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+					out = append(out, line)
+					continue
 				}
+				existing[trimmed] = true
+				out = append(out, line)
 			}
 		}
-
-		fmt.Printf(
-			"added server %s (%s/%s)\n",
-			address,
-			obfuscateUser(user),
-			obfuscatePassword(password),
-		)
-
-		proxyConfig.Servers[proxyAddress] = key
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "proxy add: could not read %s: %v\n", sourcePath, err)
+		return
 	}
 
-	writeProxyConfig(proxyConfig)
+	added := 0
+	for _, keyAddress := range allKeyAddress {
+		// Strip a key@ prefix; the source file stores bare host:port:user:pass.
+		proxyAddress := keyAddress
+		if i := strings.Index(keyAddress, "@"); 0 <= i {
+			proxyAddress = keyAddress[i+1:]
+		}
+		trimmed := strings.TrimSpace(proxyAddress)
+		if existing[trimmed] {
+			fmt.Printf("server %s already present in %s\n", trimmed, sourcePath)
+			continue
+		}
+		existing[trimmed] = true
+		out = append(out, trimmed)
+		address, user, password := parseProxyAddress(trimmed)
+		fmt.Printf("added server %s (%s/%s)\n", address, obfuscateUser(user), obfuscatePassword(password))
+		added++
+	}
+
+	if added == 0 {
+		fmt.Println("no new proxies to add")
+		return
+	}
+
+	content := strings.Join(out, "\n") + "\n"
+	if err := atomicWriteFile(sourcePath, []byte(content), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "proxy add: could not write %s: %v\n", sourcePath, err)
+		return
+	}
+	fmt.Printf("appended %d proxy(ies) to %s\n", added, sourcePath)
+
+	// Apply immediately without restarting: file-backed reloads re-read the
+	// source file, so a reload trigger is all that's needed (paste does the
+	// same).
+	reloadPath, err := proxyReloadPath()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "proxy refresh failed: %v\n", err)
+	} else if err := writeReloadTrigger(reloadPath); err != nil {
+		fmt.Fprintf(os.Stderr, "proxy refresh failed: %v\n", err)
+	}
 }
 
 func proxyRemove(opts docopt.Opts) {
@@ -6163,7 +6373,11 @@ func collectRemoveDeadCandidates(state *ProxyState, o removeDeadOptions, uptime 
 		// removeDeadProxies de-dupes by source bucket and each per-source
 		// removal is idempotent, so the overlap has no removal-correctness
 		// impact (it only double-prints in the confirmation prompt).
-		if o.authFailMin > 0 && e.Health != "up" {
+		// A parked proxy is resting, not failing: proxy audit stopped it,
+		// and its cumulative AuthFailures can be high from before. It is not
+		// "up", so without this it would be collected here (and --degraded turns
+		// this check on by default) and removed from the operator's proxy file.
+		if o.authFailMin > 0 && e.Health != "up" && e.Health != proxyHealthParked {
 			days := int64(max(1, int(uptime.Hours())/24))
 			if e.AuthFailures >= o.authFailMin*days {
 				authFailing = append(authFailing, removedProxy{addr: addr, entry: e})

@@ -362,6 +362,10 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 		fmt.Fprintf(os.Stderr, "tool self-update failed: %v\n", err)
 	}
 
+	// Make the tool findable from non-interactive shells and from root.
+	// Installs that predate the installer doing this are repaired here.
+	ensureToolOnPath()
+
 	if failures > 0 {
 		return fmt.Errorf("%d of %d provider(s) failed to update", failures, len(chosen))
 	}
@@ -808,6 +812,10 @@ func updateProvider(p Provider, cfg updateConfig) error {
 		migratedUnit = migrated
 	}
 
+	// Leave the restart reason for the provider's next start, whichever of
+	// HotSwap or a plain restart follows (best effort, never aborts the update).
+	recordRestartReason(p, restartReasonUpdate)
+
 	// Attempt zero-downtime HotSwap first if supported on running process.
 	// hotSwapPreflight decides, and its error IS the operator-facing reason:
 	// gating on a bool here (as an earlier revision did) discarded that
@@ -893,7 +901,11 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 				// restart landed — just waiting for version match.
 				if rp.PID != oldPID && !pidChanged {
 					pidChanged = true
-					fmt.Printf("provider %s restarted (pid %d -> %d), waiting for version %s...\n", providerLabel(p), oldPID, rp.PID, cfg.Tag)
+					verb := "restarted"
+					if hotSwapTriggered {
+						verb = "handed off"
+					}
+					fmt.Printf("provider %s %s (pid %d -> %d), waiting for version %s...\n", providerLabel(p), verb, oldPID, rp.PID, cfg.Tag)
 				}
 
 				procExe, perr := verifyRunningImageHandleFn(rp.PID)
@@ -1537,20 +1549,24 @@ func migrateUnitToNotify(p Provider) (bool, error) {
 	// Rewrite: Type=simple → Type=notify, add NotifyAccess=all if missing.
 	newContent, changed := rewriteUnitContent(string(content))
 	if !changed {
-		return false, nil // nothing to do (Type=notify already)
+		// The effective Type is simple but the unit file offers nothing to
+		// rewrite (for example Type=simple set by a drop-in, or no [Service]
+		// section). Say so: a silent no-op leaves the operator believing the
+		// migration ran and hotswap will start working.
+		fmt.Printf("note: %s is Type=simple but its unit file cannot be migrated automatically; set Type=notify and NotifyAccess=all in %s or in the drop-in that sets Type=, then run `systemctl daemon-reload`. Updates keep using a service restart until then.\n", p.Unit, unitPath)
+		return false, nil
 	}
 
-	// Back up the original unit file before overwriting. writeStateFile
-	// (O_NOFOLLOW), not copyFile: a user unit lives in a directory the
-	// provider user controls, and this runs as root.
-	backupPath := unitPath + ".bak"
-	if err := writeStateFile(filepath.Dir(unitPath), filepath.Base(backupPath), content, 0o644); err != nil {
+	// Back up the original unit file before overwriting. The backup goes
+	// through a descriptor-pinned handle (see writeUnitBackup): a user
+	// unit lives in a directory the provider user controls, and this runs
+	// as root.
+	if err := writeUnitBackupIn(p.StateHome, unitPath, content); err != nil {
 		return false, fmt.Errorf("backup unit file %s: %w", unitPath, err)
 	}
-	_ = chownLikeStateOwner(filepath.Dir(unitPath), backupPath)
-	fmt.Printf("backed up unit file %s -> %s\n", unitPath, backupPath)
+	fmt.Printf("backed up unit file %s -> %s\n", unitPath, unitPath+".bak")
 
-	if err := replaceUnitFile(unitPath, []byte(newContent)); err != nil {
+	if err := replaceUnitFileIn(p.StateHome, unitPath, []byte(newContent)); err != nil {
 		return false, fmt.Errorf("write updated unit file: %w", err)
 	}
 	fmt.Printf("migrated %s from Type=simple to Type=notify\n", unitPath)
@@ -1601,9 +1617,14 @@ func rewriteUnitContent(content string) (string, bool) {
 	lines := strings.Split(content, "\n")
 	changed := false
 	hasNotifyAccess := false
+	hasTypeKey := false
+	serviceIdx := -1
 	typeLineIdx := -1
 
 	for i, line := range lines {
+		if serviceIdx < 0 && strings.EqualFold(strings.TrimSpace(line), "[Service]") {
+			serviceIdx = i
+		}
 		trimmed := strings.TrimSpace(line)
 		// Strip inline comments (# and ;) before parsing.
 		if idx := strings.IndexAny(trimmed, "#;"); idx >= 0 {
@@ -1615,6 +1636,9 @@ func rewriteUnitContent(content string) (string, bool) {
 		}
 		key := strings.TrimSpace(parts[0])
 		val := strings.TrimSpace(parts[1])
+		if strings.EqualFold(key, "Type") {
+			hasTypeKey = true
+		}
 		if strings.EqualFold(key, "Type") && strings.EqualFold(val, "simple") {
 			lines[i] = "Type=notify"
 			changed = true
@@ -1623,6 +1647,24 @@ func rewriteUnitContent(content string) (string, bool) {
 		if strings.EqualFold(key, "NotifyAccess") {
 			hasNotifyAccess = true
 		}
+	}
+
+	// Provider_Install_Linux.sh (since #546) writes NO Type= line: the unit is
+	// Type=simple by systemd's default and only a comment says so. With no
+	// explicit Type= anywhere there is nothing to rewrite, so add the line
+	// under [Service]; without this the migration was a silent no-op on every
+	// node the current installer set up. A unit that does carry some other
+	// Type= (oneshot, forking, ...) is left alone.
+	if !changed && !hasTypeKey && serviceIdx >= 0 {
+		insert := []string{"Type=notify"}
+		if !hasNotifyAccess {
+			insert = append(insert, "NotifyAccess=all")
+		}
+		out := make([]string, 0, len(lines)+len(insert))
+		out = append(out, lines[:serviceIdx+1]...)
+		out = append(out, insert...)
+		out = append(out, lines[serviceIdx+1:]...)
+		return strings.Join(out, "\n"), true
 	}
 
 	if !changed {
@@ -1717,7 +1759,7 @@ func demoteUnitToSimple(p Provider) (bool, error) {
 	if !changed {
 		return false, nil
 	}
-	if err := replaceUnitFile(unitPath, []byte(newContent)); err != nil {
+	if err := replaceUnitFileIn(p.StateHome, unitPath, []byte(newContent)); err != nil {
 		return false, fmt.Errorf("write unit file %s: %w", unitPath, err)
 	}
 	fmt.Printf("restored %s to Type=simple\n", unitPath)
@@ -1727,24 +1769,53 @@ func demoteUnitToSimple(p Provider) (bool, error) {
 	return true, nil
 }
 
+// writeUnitBackup writes <unitPath>.bak next to the unit file, handing it
+// to the directory owner through a descriptor-pinned handle: the write and
+// its ownership are relative to one open directory, so a unit directory
+// that is a symlink (or is swapped for one) cannot aim a root backup write
+// at another tree.
+func writeUnitBackup(unitPath string, content []byte) error {
+	return writeUnitBackupIn("", unitPath, content)
+}
+
+// writeUnitBackupIn is writeUnitBackup with a trusted home root (see
+// Provider.StateHome): a unit dir beneath it is walked without following
+// symlinks.
+func writeUnitBackupIn(root, unitPath string, content []byte) error {
+	dir, name := filepath.Dir(unitPath), filepath.Base(unitPath)+".bak"
+	h, err := openStateDirIn(root, dir)
+	if err != nil {
+		return err
+	}
+	defer h.Close()
+	return h.writeOwned(name, content, 0o644)
+}
+
 // replaceUnitFile atomically replaces a unit file. A user unit lives in a
 // directory the provider user controls while this runs as root, so the temp
-// file goes through writeStateFile (O_NOFOLLOW): os.WriteFile would follow
-// a symlink planted at the temp path. rename(2) replaces a symlink at the
-// final path rather than writing through it.
+// file goes through a descriptor-pinned handle: the write and its ownership
+// are relative to one open directory, and a unit directory that is a symlink
+// (or is swapped for one) cannot aim a root write at another tree.
+// rename(2) replaces a symlink at the final path rather than writing through
+// it.
 func replaceUnitFile(unitPath string, content []byte) error {
+	return replaceUnitFileIn("", unitPath, content)
+}
+
+// replaceUnitFileIn is replaceUnitFile with a trusted home root (see
+// Provider.StateHome).
+func replaceUnitFileIn(root, unitPath string, content []byte) error {
 	dir, tmpName := filepath.Dir(unitPath), filepath.Base(unitPath)+".tmp"
-	if err := writeStateFile(dir, tmpName, content, 0o644); err != nil {
+	h, err := openStateDirIn(root, dir)
+	if err != nil {
 		return err
 	}
-	// A new file created by root would leave the provider user's own unit
-	// owned by root; hand it to the directory's owner before it goes live.
-	if err := chownLikeStateOwner(dir, filepath.Join(dir, tmpName)); err != nil {
-		os.Remove(filepath.Join(dir, tmpName))
+	defer h.Close()
+	if err := h.writeOwned(tmpName, content, 0o644); err != nil {
 		return err
 	}
-	if err := os.Rename(filepath.Join(dir, tmpName), unitPath); err != nil {
-		os.Remove(filepath.Join(dir, tmpName))
+	if err := h.rename(tmpName, filepath.Base(unitPath)); err != nil {
+		h.removeAll(tmpName)
 		return err
 	}
 	return nil

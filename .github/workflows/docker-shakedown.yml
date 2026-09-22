@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
   push:
     tags:
-      - 'v3.23.0-fix.*'
+      - 'v2026.*'
 
 permissions:
   contents: read
@@ -65,7 +65,7 @@ jobs:
             VER="${GITHUB_REF_NAME}"
           else
             VER=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-              "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/latest" \
+              "https://api.github.com/repos/full-bars/meso-miner/releases/latest" \
               2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get('tag_name',''))" 2>/dev/null || echo "")
             if [ -z "$VER" ]; then
               echo "::error::could not determine latest release from GitHub API"
@@ -75,11 +75,11 @@ jobs:
           GITHUB_SHA_SHORT="${GITHUB_SHA}"
           ASSETS_OK=0
           REL_RUN_ID=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-            "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/actions/runs?event=push&head_sha=${GITHUB_SHA_SHORT}&per_page=20" \
+            "https://api.github.com/repos/full-bars/meso-miner/actions/runs?event=push&head_sha=${GITHUB_SHA_SHORT}&per_page=20" \
             2>/dev/null | python3 -c "import sys,json;print(next((r.get('id','') for r in json.load(sys.stdin).get('workflow_runs',[]) if r.get('path')=='.github/workflows/release.yml'),''))" 2>/dev/null || echo "")
           if [ -n "$REL_RUN_ID" ]; then
             REL_JOB_CONC=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-              "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/actions/runs/${REL_RUN_ID}/jobs?per_page=50" \
+              "https://api.github.com/repos/full-bars/meso-miner/actions/runs/${REL_RUN_ID}/jobs?per_page=50" \
               2>/dev/null | python3 -c "import sys,json;print(next((j.get('conclusion','') for j in json.load(sys.stdin).get('jobs',[]) if j.get('name')=='Create Release'),''))" 2>/dev/null || echo "")
             if echo "$REL_JOB_CONC" | grep -qE "failure|cancelled|timed_out|action_required"; then
               echo "::error::create-release job FAILED ($REL_JOB_CONC) — ENV_BLOCKER"
@@ -88,7 +88,7 @@ jobs:
           fi
           for i in $(seq 1 120); do
             if curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-              "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/tags/${VER}" \
+              "https://api.github.com/repos/full-bars/meso-miner/releases/tags/${VER}" \
               2>/dev/null | grep -q '"browser_download_url"'; then
               ASSETS_OK=1; echo "release assets for ${VER} appeared"; break
             fi
@@ -106,7 +106,7 @@ jobs:
           # when the image does not exist yet.
           IMG_OK=0
           for i in $(seq 1 120); do
-            timeout 30 docker manifest inspect "ghcr.io/full-bars/urnetwork-3.23-fix:${VER}" >/dev/null 2>&1 && { IMG_OK=1; echo "docker image ${VER} found"; break; }
+            timeout 30 docker manifest inspect "ghcr.io/full-bars/meso-miner:${VER}" >/dev/null 2>&1 && { IMG_OK=1; echo "docker image ${VER} found"; break; }
             echo "waiting for docker image ${VER} (${i}/120)..."; sleep 30
           done
           if [ "$IMG_OK" != "1" ] && [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then

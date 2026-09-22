@@ -8,6 +8,11 @@ on:
         required: false
         default: 'false'
         type: boolean
+      tag:
+        description: 'Explicit tag (default: computed from the current time)'
+        required: false
+        default: ''
+        type: string
 
 # Prevent concurrent releases — only one at a time.
 concurrency:
@@ -32,8 +37,20 @@ jobs:
 
       - name: Compute release tag
         id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          TAG=$(scripts/compute-meso-tag.sh)
+          TAG="$INPUT_TAG"
+          if [ -z "$TAG" ]; then
+            TAG=$(scripts/compute-meso-tag.sh)
+          fi
+          # Validate before any use: the input reaches this script as an env
+          # value (not expanded shell source), but a malformed tag must still
+          # be rejected here rather than flowing into paths and git commands.
+          if ! echo "$TAG" | grep -qE '^v[0-9]{4}\.[0-9]+\.[0-9]+-[0-9]+-meso$'; then
+            echo "::error::Tag '$TAG' does not match the meso tag shape (vYYYY.M.D-<code>-meso)"
+            exit 1
+          fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "## Release tag: ${TAG}" >> "$GITHUB_STEP_SUMMARY"
 
@@ -51,32 +68,24 @@ jobs:
         if: steps.tag.outputs.dry_run == 'false'
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
-          NOTE_FILE="releases/v3.23.0-fix.30.8.md"
-          if [[ ! -f "$NOTE_FILE" ]]; then
-            echo "::error::Release notes not found at ${NOTE_FILE}"
+          # The notes file is committed to main before dispatch, named exactly
+          # releases/${TAG}.md; release.yml looks it up at checkout.
+          if [[ ! -f "releases/${TAG}.md" ]]; then
+            echo "::error::Release notes not found at releases/${TAG}.md — commit them to main before dispatch"
             exit 1
           fi
-          # The notes file uses the 3.23-fix historical name, but release.yml
-          # looks up releases/\${TAG}.md. Copy it to the tag-named path so the
-          # release body uses the meso-customized notes, not auto-generated.
-          cp "$NOTE_FILE" "releases/${TAG}.md"
-          git add "releases/${TAG}.md"
-          git config user.name "full-bars"
-          git config user.email "45684698+full-bars@users.noreply.github.com"
-          git commit -m "docs: release notes for \${TAG}" || echo "notes already committed"
-          git push origin HEAD:main
-          echo "Release notes staged at releases/\${TAG}.md" >> "$GITHUB_STEP_SUMMARY"
+          echo "Release notes: releases/${TAG}.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Push release tag
         if: steps.tag.outputs.dry_run == 'false'
         env:
           GPG_RELEASE_KEY: ${{ secrets.GPG_RELEASE_KEY }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
-          # Tag the EXACT commit that carries the notes file. `git reset --hard
-          # origin/main` is racy (local origin/main may lag the push), so instead
-          # capture the notes-commit SHA before pushing and tag that. This
-          # guarantees release.yml finds releases/\${TAG}.md at checkout.
+          # Tag the main commit that carries the notes file (verified above).
+          # Pushing the tag is what ships the release: release.yml triggers on
+          # v* tag pushes and builds/publishes from releases/${TAG}.md.
           NOTES_SHA="$(git rev-parse HEAD)"
           git push origin "${NOTES_SHA}:main"
 
@@ -87,6 +96,8 @@ jobs:
           echo "${GPG_RELEASE_KEY}" | gpg --batch --import 2>&1
           SIGNING_KEY=$(gpg --list-keys --keyid-format long meso-release-bot 2>&1 | awk '/^pub/{print $2}' | cut -d/ -f2)
           echo "GPG signing key: ${SIGNING_KEY}" >> "$GITHUB_STEP_SUMMARY"
+          git config user.name "full-bars"
+          git config user.email "45684698+full-bars@users.noreply.github.com"
           git config user.signingkey "${SIGNING_KEY}"
 
           # Signed annotated tag — GitHub shows "Verified" badge.
@@ -94,19 +105,9 @@ jobs:
           git push origin "${TAG}"
           echo "### Tag pushed: ${TAG} @ ${NOTES_SHA} (GPG signed)" >> "$GITHUB_STEP_SUMMARY"
 
-  release:
-    name: Build & Release Binaries
-    needs: ship
-    if: needs.ship.outputs.dry_run == 'false'
-    uses: ./.github/workflows/release.yml
-    with:
-      tag_name: ${{ needs.ship.outputs.tag_name }}
-    # CRITICAL: pass all caller secrets to the called workflow. Without
-    # this, the reusable workflow (release.yml) sees secrets.* as empty —
-    # which is why every ship-release run has failed the VirusTotal step
-    # with "VIRUS_TOTAL secret not set" and the verdict-post 404'd
-    # (no report file to attach). `inherit` passes every secret the
-    # caller has: VIRUS_TOTAL, GITHUB_TOKEN, BUILD_NOTIFY, etc.
-    secrets: inherit
-    permissions:
-      contents: write
+          # A GITHUB_TOKEN push does not trigger other workflows, so the tag
+          # push alone would leave the release unpublished. Dispatch
+          # release.yml on the tag ref explicitly; it resolves the tag via
+          # GITHUB_REF_NAME.
+          gh workflow run release.yml --repo "${{ github.repository }}" --ref "${TAG}"
+          echo "### Release Binaries dispatched on ${TAG}" >> "$GITHUB_STEP_SUMMARY"
