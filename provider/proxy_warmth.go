@@ -86,8 +86,9 @@ func proxyLaunchStagger(tier ProxyWarmthTier, isURLSourced bool) time.Duration {
 	}
 }
 
-// evaluateProxyWarmth checks whether a proxy address has a warm client JWT stored on disk.
-func evaluateProxyWarmth(address string, currentNetworkID string) ProxyWarmthTier {
+// evaluateProxyWarmth checks whether a proxy (by client JWT store key, see
+// jwtStoreKey) has a warm client JWT stored on disk.
+func evaluateProxyWarmth(storeKey string, currentNetworkID string) ProxyWarmthTier {
 	if !hotRestartEnabled() {
 		return WarmthCold
 	}
@@ -97,7 +98,7 @@ func evaluateProxyWarmth(address string, currentNetworkID string) ProxyWarmthTie
 	if currentNetworkID == "" {
 		currentNetworkID = currentProviderNetworkID()
 	}
-	entry, ok := globalClientJWTStore.Get(address)
+	entry, ok := globalClientJWTStore.Get(storeKey)
 	if !ok || entry.ByClientJWT == "" || entry.ClientID == "" {
 		return WarmthCold
 	}
@@ -153,9 +154,17 @@ func prioritizeAndScheduleProxies(
 	var warmCount, renewableCount, coldCount int
 
 	for _, s := range proxies {
-		tier := evaluateProxyWarmth(s.Address, currentNetworkID)
-		warmthMap[s.Address] = tier
-		earningsMap[s.Address] = proxyEarningsScore(s.Address, now)
+		// warmthMap/earningsMap are keyed by identity (ProxySettings.Key()),
+		// not bare address, so two accounts sharing a gateway address get
+		// independent tier/earnings records instead of colliding in these
+		// maps. The client-JWT store is identity-keyed as well (jwtStoreKey), so
+		// each account has its own hot-restart slot. proxyEarningsScore is
+		// looked up by the real key: the earnings store is identity-keyed too
+		// (see proxy_earnings_store.go).
+		key := s.Key()
+		tier := evaluateProxyWarmth(key, currentNetworkID)
+		warmthMap[key] = tier
+		earningsMap[key] = proxyEarningsScore(key, now)
 		switch tier {
 		case WarmthValid:
 			warmCount++
@@ -172,13 +181,13 @@ func prioritizeAndScheduleProxies(
 	// billable traffic: at that point it is no longer an unproven address
 	// off a public list, it is a known earner, and making it wait behind
 	// every file proxy costs real throughput during the warmup window.
-	trusted := func(addr string) bool {
-		return proxySourceOf[addr] != "url" || earningsMap[addr] >= earningsPromotionBytes
+	trusted := func(key string) bool {
+		return proxySourceOf[key] != "url" || earningsMap[key] >= earningsPromotionBytes
 	}
 
 	sort.SliceStable(proxies, func(i, j int) bool {
-		addrI := proxies[i].Address
-		addrJ := proxies[j].Address
+		addrI := proxies[i].Key()
+		addrJ := proxies[j].Key()
 
 		// 1. Primary rule: higher warmth tier dials first. Warmth is the
 		//    primary rule because a cold identity must mint against the
@@ -225,8 +234,8 @@ func prioritizeAndScheduleProxies(
 	trustedCold := make([]*connect.ProxySettings, 0, len(proxies))
 	unprovenCold := make([]*connect.ProxySettings, 0, len(proxies))
 	for _, s := range proxies {
-		if warmthMap[s.Address] == WarmthCold {
-			if trusted(s.Address) {
+		if warmthMap[s.Key()] == WarmthCold {
+			if trusted(s.Key()) {
 				trustedCold = append(trustedCold, s)
 			} else {
 				unprovenCold = append(unprovenCold, s)
@@ -237,7 +246,7 @@ func prioritizeAndScheduleProxies(
 		reordered := make([]*connect.ProxySettings, 0, len(proxies))
 		// Append warm + renewable proxies first (they always go first).
 		for _, s := range proxies {
-			if warmthMap[s.Address] != WarmthCold {
+			if warmthMap[s.Key()] != WarmthCold {
 				reordered = append(reordered, s)
 			}
 		}
@@ -260,9 +269,10 @@ func prioritizeAndScheduleProxies(
 	var cumulativeDelay time.Duration
 
 	for i, s := range proxies {
-		tier := warmthMap[s.Address]
-		isURL := proxySourceOf[s.Address] == "url"
-		promoted := isURL && earningsMap[s.Address] >= earningsPromotionBytes
+		key := s.Key()
+		tier := warmthMap[key]
+		isURL := proxySourceOf[key] == "url"
+		promoted := isURL && earningsMap[key] >= earningsPromotionBytes
 		// Promoted URL proxies belong with the cold file group; they have
 		// earned trusted provenance and should not be penalised with the
 		// conservative ColdURLStagger.
