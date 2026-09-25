@@ -246,7 +246,7 @@ func newTopCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdTop(rest)
 		})
-	}), "Open a live, full-screen view of one provider: throughput graph for the last 10 minutes, current and average rate, clients, proxy pool, memory and descriptors, and recent events such as restarts and state changes. Reads only the provider's control socket and changes nothing. Also available as `urtop`. Keys: q, Esc or Ctrl-C quit; Tab and Shift-Tab switch provider; + and - change the refresh rate; ? shows help. When the provider stops answering the screen stays up, shows DISCONNECTED with a countdown, and resumes by itself. Needs an interactive terminal; use `status` for scripts. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir. --interval sets the refresh period (default 1s, minimum 250ms).", "  urnet-tools top\n  urnet-tools top --network tacogonzalez3000\n  urnet-tools top --interval 500ms\n  urtop")
+	}), "Open a live, full-screen view of one provider: billable and total throughput graphs for the last 10 minutes, current and average rates, bytes moved this run, clients, proxy pool, memory and descriptors, and recent events such as restarts and state changes. Reads only the provider's control socket and changes nothing. Also available as `urtop`. Keys: q, Esc or Ctrl-C quit; Tab and Shift-Tab switch provider; - refreshes faster and + slower, like btop; w zooms the graphs to the last 15 seconds; g lists where the provider's goroutines are parked; m opens a menu for the color theme and graph style (braille, block or tty), which is remembered; ? shows help. When the provider is slow to answer the screen keeps the last data and shows SLOW; when it stops answering the screen stays up, shows DISCONNECTED with a countdown, and resumes by itself. Needs an interactive terminal; use `status` for scripts. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir. --interval sets the refresh period (default 1s, minimum 100ms; the rate numbers and the newest graph column update at that rate, the full snapshot at most once a second).", "  urnet-tools top\n  urnet-tools top --network tacogonzalez3000\n  urnet-tools top --interval 500ms\n  urtop")
 }
 
 func newSnStatusCmd() *cobra.Command {
@@ -286,7 +286,7 @@ func newUpdateCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdUpdate(rest, force, dryRun)
 		})
-	}), "Download and install the latest provider release, verify its sha256 digest, swap the binary, and restart the owning unit. With no target and multiple providers it prompts interactively; use --all to update every provider, or --include/--exclude to pick a subset. Pin a release with --tag, or an exact asset with --digest and --url. This also refreshes the urnet-tools binary itself from the same release.", "  urnet-tools update\n  urnet-tools update --unit urnetwork-native.service\n  urnet-tools update --all --force\n  urnet-tools update --tag v3.23.0-fix.30.5")
+	}), "Download and install the latest provider release, verify its sha256 digest, swap the binary, and restart the owning unit. With no target and multiple providers it prompts interactively; use --all to update every provider, or --include/--exclude to pick a subset. Pin a release with --tag, or an exact asset with --digest and --url. This also refreshes the urnet-tools binary itself from the same release.", "  urnet-tools update\n  urnet-tools update --unit urnetwork-native.service\n  urnet-tools update --all --force\n  urnet-tools update --tag v2026.9.22-1052862940-meso")
 }
 
 func newIdleUpdateCmd() *cobra.Command {
@@ -305,7 +305,7 @@ Flags:
   --threshold <bytes/s>   Max billable throughput to be considered idle (default: 5120 = 5 KiB/s)
   --window <duration>     Duration traffic must stay quiet (default: 5m; e.g. 300, 5m, 10m; 0 = immediate)
   --timeout <duration>    Maximum wait time before forcing the update (default: 30m; e.g. 1800, 30m, 1h; 0 = infinite)
-  --tag <version>         Pin to a specific release tag (e.g. v3.23.0-fix.30.9)
+  --tag <version>         Pin to a specific release tag (e.g. v2026.9.22-1052862940-meso)
   -f, --force             Skip interactive confirmation prompts
   -n, --dry-run           Print the traffic wait plan and release target without modifying anything`
 
@@ -333,7 +333,7 @@ func newSelfUpdateCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdSelfUpdate(rest, force, dryRun)
 		})
-	}), "Update only the urnet-tools binary itself to the latest release, verifying its sha256 digest before swapping it in. No provider is touched or restarted. Pin a version with --tag, or point at an exact asset with --digest and --url.", "  urnet-tools self-update\n  urnet-tools self-update --tag v3.23.0-fix.30.5\n  urnet-tools self-update --force")
+	}), "Update only the urnet-tools binary itself to the latest release, verifying its sha256 digest before swapping it in. No provider is touched or restarted. Pin a version with --tag, or point at an exact asset with --digest and --url.", "  urnet-tools self-update\n  urnet-tools self-update --tag v2026.9.22-1052862940-meso\n  urnet-tools self-update --force")
 }
 
 func newLogsCmd() *cobra.Command {
