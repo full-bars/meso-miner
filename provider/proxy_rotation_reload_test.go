@@ -169,6 +169,50 @@ func TestReload_EmptySource_StopsRunningProxies(t *testing.T) {
 // A proxy source that WAS configured but yielded zero proxies still reads
 // degraded (empty), even though the node may run direct alongside it — it is
 // not a deliberate direct-only config.
+// A source that goes empty must DRAIN a proxy that still has live clients, not
+// cut them: the cancel is deferred until the last client leaves, exactly as
+// the ordinary removal path does. A proxy with no clients still stops at once.
+func TestReload_EmptySource_DrainsProxyWithActiveClients(t *testing.T) {
+	resetProxyCounters(t)
+
+	r := emptyReloader(t, writeProxyFile(t, "# empty"))
+	var cancelled atomic.Int32
+	boot := &connect.ProxySettings{Address: "busy.example:1"}
+	r.cancelMap[boot.Address] = func() { cancelled.Add(1) }
+	r.runningAuth[boot.Address] = boot
+	r.state.Proxies[boot.Address] = ProxyEntry{Source: "file"}
+
+	// Give that proxy active sessions.
+	connect.RegisterProxy(987002, boot.Address, boot.Address)
+	bw := connect.RegisterProxyBandwidth(987002)
+	t.Cleanup(func() { connect.UnregisterProxy(987002) })
+	bw.Clients.Store(3)
+
+	r.reload()
+
+	if got := cancelled.Load(); got != 0 {
+		t.Fatalf("cancelled = %d, want 0: a proxy with 3 live clients must not be cut", got)
+	}
+	r.drainMu.Lock()
+	_, draining := r.drainingProxies[boot.Address]
+	r.drainMu.Unlock()
+	if !draining {
+		t.Fatalf("proxy with live clients was not handed to the drain path")
+	}
+	// Once the sessions go, the deferred cancel runs.
+	bw.Clients.Store(0)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if cancelled.Load() == 1 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if got := cancelled.Load(); got != 1 {
+		t.Fatalf("cancelled = %d after the last client left, want 1", got)
+	}
+}
+
 func TestReload_EmptySource_StillReadsEmpty(t *testing.T) {
 	resetProxyCounters(t)
 
