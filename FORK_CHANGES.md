@@ -3452,3 +3452,30 @@ Rebalances meso-miner with the upstream connect fix, applied in the same batch a
 **Files Modified**: `ip.go`, `ip_synack_leak_test.go`.
 
 - **Pooled-buffer leak on upstream connect failure**: in the TCP sequence's syn-plus-ack path, when the probe connection to the upstream peer failed, the pooled packet was released without returning its byte buffer to the message pool. On a node where many dials fail, the pool grows without bound. The dial-failure branch now returns the buffer exactly once, covered by a regression test. Applying the fix to an existing node stops new leaks on its next connection; a restart reclaims the memory the old process pinned.
+
+## 167. Live Provider Status, Runtime Internals & Reworked `top` (PR #131)
+
+Brings the provider-side status work from the 3.23-fix v32.6 to v32.7 range, adapted to this repository's layout.
+
+**Files Modified**: `provider/node_snapshot.go`, `provider/proxy_reload.go`, `provider/systemd_status.go`, `provider/control_socket.go`, `provider/proxy_url_source.go`, `provider/proxy_url_log.go`, `provider/important_log.go`, `provider/node_internals.go`, `internal/urnettools/top_*.go`, `internal/urnettools/snapshot*.go`, `internal/tui/graph.go`, `internal/tui/theme.go`, `message_pool_summary.go`.
+
+### Added
+
+- **Light control-socket commands**: `traffic`, `internals`, and `goroutines` answer without building a snapshot, so the 100ms poll stays cheap. Additive — an older provider replies "unknown command" and `top` falls back to the snapshot's own rates.
+- **Billable versus total traffic**: the snapshot carries both, plus a session total, so bytes that were not billable (a direct socket) are visible rather than folded into one number. The billable and total histories are anchored on the same sample via an absolute history index, so a graph cannot draw one series ahead of the other.
+- **A stated reason for `starting` and `degraded`** (`StateReason`): still resolving proxies, a source that could not be read, a source that returned nothing, or how many proxies are dead against how many are configured. `proxyStartupPhase()` and `systemdStatusLine()` read the same two atomics, so the systemd STATUS line and `urnet-tools status` cannot contradict each other.
+- **The idle hint blames auth only when it explains the idleness**: a steady retry trickle on a large healthy pool is not an auth outage. Auth is blamed for a failure wave, or when most of the pool is unconnected while failures are happening; otherwise the hint states what is true and shows the numbers behind it.
+- **`top` gains** a zoomable graph, a runtime panel (goroutines, heap, descriptors), a theme/graph menu, and a layout that adapts to a small terminal. The menu now persists: it writes through a settings path that the startup path sets and loads, so a chosen theme or graph style survives a restart. A theme forced by the environment is omitted from the save rather than written as the operator's choice.
+
+### Changed
+
+- **Four-way zero-proxy resolution**: a configured-but-empty source, an unreadable `proxy_url.json`, direct-off-with-no-source, and a settled direct-only node are told apart. **A direct-only node now reads `active` instead of `degraded`** — serving on the direct transport with no proxy source configured is a valid, completed configuration and was previously indistinguishable from a real outage.
+- **The reload summary says where additions came from**: the `reloaded: +N added` line breaks the additions down by source, and URL-sourced launches get their own line.
+
+### Fixed
+
+- **The empty-source path drains and persists**: it previously returned before the removal pass, so a source that went empty left its proxies dialling with a stale configured count that made the status line ignore the new state. It now cancels only proxies with no live clients, hands the rest to a drain goroutine exactly as the ordinary removal path does, reconciles the state file against the desired set (a proxy whose goroutine already exited was never in the running set), and writes it. The unreadable-URL-cache case stays exempt: there the sources are unknown rather than empty, and a transient read error must not cut a working fleet.
+- **A file source that cannot be read is recorded as a failure**: it left the resolution pending, so the status line read `starting: resolving proxies` and the snapshot later read it as a stuck startup. Running proxies are deliberately left alone.
+- **Source URLs cannot leak their token**: every per-source log line and the operator warning take a label from `urlSourceLabels`, which strips the query, the userinfo, and credential-bearing path segments, so a source like `.../token/SECRET/list` never reaches the important log. One source no longer produces two different warning keys.
+- **A no-source node stops claiming it is retrying**: that configuration has nothing to retry, and the reason now matches the systemd status line.
+- **Pool reuse and growth are judged per interval**: the take and create counters are cumulative, so a tag that churned heavily once stayed flagged as low-reuse forever — a warning nothing could clear. A leak is now sustained growth across the window rather than a single burst at the end of it.
