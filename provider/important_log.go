@@ -27,6 +27,9 @@ var importantLogMarkers = []string{
 	"[proxy][url] probe grade breakdown",
 	"[proxy][url] admitted by tier",
 	"[proxy][url] cap eviction",
+	"[proxy][url] cycle:",
+	"[proxy][url] source ",
+	"[proxy][url] launching",
 	"[proxy][url] reaper: refreshed grade",
 	// Grade summary + per-address delta lines (design 2026-08-09): the
 	// running-tier snapshot, per-source breakdown, changes-vs-last-round,
@@ -45,6 +48,17 @@ var importantLogMarkers = []string{
 	// them here.
 	"[proxy][grade] paid",
 	"[proxy][grade] graded",
+	// Capacity-control decisions (trim commands and results, the OOM-aware start
+	// cap and its kill switch, startup limit warnings, low memory headroom):
+	// rare and high-value, and the only record of why a box ran fewer proxies or
+	// got short of memory. Exact substrings (matched with Contains) chosen so the trim
+	// write-failure warning and other per-cycle lines do not match; a new marker
+	// must be checked against those lines.
+	"[proxy][trim] received",
+	"[proxy][trim] applied",
+	"[proxy][trim] startup",
+	"[oomcap]",
+	"[proxy][resources]",
 }
 
 // isImportantLogLine reports whether a single log line should be mirrored to the

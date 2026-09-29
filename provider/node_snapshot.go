@@ -529,3 +529,15 @@ func totalProxyAuthFailures() int64 {
 func runNodeSnapshotSampler(ctx context.Context) {
 	nodeSnapshots.run(ctx)
 }
+
+type LiveTraffic struct {
+	AtUnixNano    int64  `json:"at_unix_nano"`
+	BillableBytes uint64 `json:"billable_bytes"`
+	TotalBytes    uint64 `json:"total_bytes"`
+}
+
+// liveTrafficSample reads the counter sums at now.
+func liveTrafficSample(now time.Time, totals func() (billable, total uint64)) *LiveTraffic {
+	billable, total := totals()
+	return &LiveTraffic{AtUnixNano: now.UnixNano(), BillableBytes: billable, TotalBytes: total}
+}
