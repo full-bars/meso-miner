@@ -37,6 +37,31 @@ type NodeSnapshot struct {
 
 	// IdleHint says why the node is idle. Set only when State is idle.
 	IdleHint string `json:"idle_hint,omitempty"`
+
+	// Traffic carries the byte totals and the total-traffic rate that sit next
+	// to the billable Rate. The provider always sets it; it is a pointer so a
+	// snapshot from a provider that predates it (and the fixtures that stand
+	// for one) round-trips without it.
+	Traffic *SnapshotTraffic `json:"traffic,omitempty"`
+}
+
+// SnapshotTraffic is billable versus total traffic. Rate stays the billable
+// rate; this adds what was actually moved. Session totals count from provider
+// start and are built from the same deltas as the rates, so a proxy that is
+// removed or respawns never adds or subtracts bytes.
+type SnapshotTraffic struct {
+	BillableBytes uint64 `json:"billable_bytes"`
+	TotalBytes    uint64 `json:"total_bytes"`
+	// LifetimeBillableBytes is the persisted lifetime total. Omitted when the
+	// lifetime store is not running.
+	LifetimeBillableBytes *uint64 `json:"lifetime_billable_bytes,omitempty"`
+
+	// The total-traffic rate, sampled the same way and at the same interval as
+	// Rate.HistoryBps.
+	TotalNowBps     int64   `json:"total_now_bps"`
+	TotalAvg1mBps   int64   `json:"total_avg_1m_bps"`
+	TotalAvg5mBps   int64   `json:"total_avg_5m_bps"`
+	TotalHistoryBps []int64 `json:"total_history_bps"`
 }
 
 // SnapshotRate is billable throughput in bytes per second. HistoryBps holds
@@ -112,6 +137,9 @@ type rateSampler struct {
 	ring     [snapshotRingSize]int64
 	next     int // slot the next sample is written to
 	count    int // valid samples, capped at snapshotRingSize
+	// sessionBytes is every delta counted so far, so the total since the
+	// provider started survives proxies being removed and respawned.
+	sessionBytes uint64
 }
 
 func newRateSampler() *rateSampler {
@@ -141,6 +169,7 @@ func (s *rateSampler) sample(cur map[string]uint64, now time.Time) {
 	if first {
 		return
 	}
+	s.sessionBytes += delta
 	if elapsed < 1 {
 		elapsed = 1
 	}
@@ -149,6 +178,13 @@ func (s *rateSampler) sample(cur map[string]uint64, now time.Time) {
 	if s.count < snapshotRingSize {
 		s.count++
 	}
+}
+
+// session returns the bytes counted since the provider started.
+func (s *rateSampler) session() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sessionBytes
 }
 
 // history returns the samples oldest first. Never nil.
@@ -324,13 +360,21 @@ type snapshotSources struct {
 	resources  func() SnapshotResources
 
 	restartPending func() bool
+
+	// traffic maps proxy key to cumulative TOTAL bytes (rx+tx), like billable
+	// does for billable bytes. Nil means no total-traffic figures.
+	traffic func() map[string]uint64
+	// lifetimeBillable reports the persisted lifetime billable total, false
+	// when the lifetime store is not running. Nil means not available.
+	lifetimeBillable func() (uint64, bool)
 }
 
 // nodeSnapshotCollector samples the node once a second and builds snapshots.
 type nodeSnapshotCollector struct {
-	src  snapshotSources
-	rate *rateSampler
-	hist *cumulativeHistory
+	src     snapshotSources
+	rate    *rateSampler // billable bytes
+	traffic *rateSampler // total bytes
+	hist    *cumulativeHistory
 
 	mu       sync.Mutex
 	cached   *NodeSnapshot
@@ -338,13 +382,16 @@ type nodeSnapshotCollector struct {
 }
 
 func newNodeSnapshotCollector(src snapshotSources) *nodeSnapshotCollector {
-	return &nodeSnapshotCollector{src: src, rate: newRateSampler(), hist: &cumulativeHistory{}}
+	return &nodeSnapshotCollector{src: src, rate: newRateSampler(), traffic: newRateSampler(), hist: &cumulativeHistory{}}
 }
 
 // tick takes one rate sample and, when due, one counter sample.
 func (c *nodeSnapshotCollector) tick() {
 	now := c.src.now()
 	c.rate.sample(c.src.billable(), now)
+	if c.src.traffic != nil {
+		c.traffic.sample(c.src.traffic(), now)
+	}
 	if c.hist.due(now) {
 		auth, contracts := c.src.cumulative()
 		c.hist.add(cumulativeSample{at: now, auth: auth, contracts: contracts})
@@ -414,10 +461,30 @@ func (c *nodeSnapshotCollector) build(now time.Time) *NodeSnapshot {
 		Resources: c.src.resources(),
 	}
 	snap.State = deriveSnapshotState(stateInputs{uptime: uptime, proxies: proxies, pressure: pressure, avg1m: avg1m})
+	snap.Traffic = c.trafficSnapshot()
 	if snap.State == "idle" {
 		snap.IdleHint = deriveIdleHint(proxies, c.hist.copy(), now)
 	}
 	return snap
+}
+
+// trafficSnapshot builds the billable-versus-total block.
+func (c *nodeSnapshotCollector) trafficSnapshot() *SnapshotTraffic {
+	nowBps, avg1m, avg5m := c.traffic.rates()
+	tr := &SnapshotTraffic{
+		BillableBytes:   c.rate.session(),
+		TotalBytes:      c.traffic.session(),
+		TotalNowBps:     nowBps,
+		TotalAvg1mBps:   avg1m,
+		TotalAvg5mBps:   avg5m,
+		TotalHistoryBps: c.traffic.history(),
+	}
+	if c.src.lifetimeBillable != nil {
+		if v, ok := c.src.lifetimeBillable(); ok {
+			tr.LifetimeBillableBytes = &v
+		}
+	}
+	return tr
 }
 
 // restartPendingFor reports whether any restart-required control key now
@@ -508,6 +575,24 @@ func productionSnapshotSources() snapshotSources {
 		resources: collectResources,
 		restartPending: func() bool {
 			return restartPendingFor(globalControlState.get, startupValues())
+		},
+		traffic: func() map[string]uint64 {
+			if connect.ProxyHealthCount() == 0 {
+				return map[string]uint64{}
+			}
+			_, _, _, bw, _ := connect.ProxyHealthSnapshot()
+			out := make(map[string]uint64, len(bw))
+			for k, p := range bw {
+				out[k] = p.TotalRx.Load() + p.TotalTx.Load()
+			}
+			return out
+		},
+		lifetimeBillable: func() (uint64, bool) {
+			if lifetimeStore == nil {
+				return 0, false
+			}
+			_, _, _, _, _, _, bill := lifetimeStore.Snapshot()
+			return bill, true
 		},
 	}
 }

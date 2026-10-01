@@ -279,15 +279,18 @@ func TestRestartPendingFor(t *testing.T) {
 // --- collector ---
 
 type fakeSnapshotEnv struct {
-	now       time.Time
-	billable  map[string]uint64
-	proxies   SnapshotProxies
-	clients   int64
-	auth      int64
-	contracts int64
-	pressure  float64
-	pending   bool
-	reads     int
+	now         time.Time
+	billable    map[string]uint64
+	proxies     SnapshotProxies
+	clients     int64
+	auth        int64
+	contracts   int64
+	pressure    float64
+	pending     bool
+	reads       int
+	traffic     map[string]uint64
+	lifetime    uint64
+	hasLifetime bool
 }
 
 func (f *fakeSnapshotEnv) sources() snapshotSources {
@@ -307,6 +310,10 @@ func (f *fakeSnapshotEnv) sources() snapshotSources {
 		restart:        func() SnapshotRestart { return SnapshotRestart{Reason: "update", CleanShutdown: true} },
 		resources:      func() SnapshotResources { return SnapshotResources{HeapInuseBytes: 5, Goroutines: 2} },
 		restartPending: func() bool { return f.pending },
+		traffic:        func() map[string]uint64 { return f.traffic },
+		lifetimeBillable: func() (uint64, bool) {
+			return f.lifetime, f.hasLifetime
+		},
 	}
 }
 
