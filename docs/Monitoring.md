@@ -4,6 +4,16 @@ Every provider can serve Prometheus metrics at `/metrics`. The `monitoring/` bun
 
 It takes two steps: turn metrics on at each provider, then start the bundle on any machine that can reach them.
 
+## Before you set anything up: the built-in baseline
+
+Prometheus is the fleet view: it answers "how is this node doing right now", across every box, on a live dashboard. It is also the heavier option, and it says nothing about how a box behaved *before* an upgrade unless you were already recording.
+
+Every provider therefore also keeps a small local record of its own behaviour in `~/.urnetwork/baseline.jsonl`, on by default, with no setup. It holds counts and totals only, never proxy addresses, usernames or passwords. `urnet-tools baseline show` prints the newest rows and `urnet-tools baseline compare` reports a rate, proxy count, memory and restart difference across an upgrade, warning you when the capacity changed so a trimmed box is not misread as a regression.
+
+This is the no-setup alternative for the one question Prometheus does not answer: did that upgrade make this box worse? It is not a replacement for the fleet view, and it is not a time-series database. For a fleet, use the bundle below.
+
+The record has one field this build leaves out. `state_reason`, a short "why is this node starting or degraded" string, is recorded only where the node snapshot computes one, and this tree's snapshot does not yet, so the key is absent from every row rather than present and empty. Nothing in `show` or `compare` reads it, so no comparison or table changes; it will appear when the snapshot gains the startup-phase reporting.
+
 ## 1. Turn on metrics on each provider
 
 ```bash
