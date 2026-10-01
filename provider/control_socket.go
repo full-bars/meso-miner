@@ -357,7 +357,7 @@ func validateControlValue(key, value string) error {
 		default:
 			return fmt.Errorf("%s: must be none, url, or all (got %q)", key, value)
 		}
-case "fast_auth", "proxy_self_heal", "proxy_audit", "smart_dialer":
+	case "fast_auth", "proxy_self_heal", "proxy_audit", "smart_dialer":
 		switch valLower {
 		case "on", "off":
 		default:
