@@ -250,6 +250,19 @@ func TestRAMReserveNeverExceedsTheBox(t *testing.T) {
 	}
 }
 
+// withTempHome is the isolation boundary for tests, so a critical-log line one
+// test queued and never drained must not reach the next. Before the queue was
+// reset there, TestDeferredCritWriteDoesNotDoubleTheNewline failed whenever a
+// shuffled predecessor (for example the unreadable-proxy_trim test) ran first
+// and left its warning in the process-wide queue.
+func TestWithTempHomeStartsWithAnEmptyDeferredCritQueue(t *testing.T) {
+	deferCritWrite("left behind by an earlier test")
+	withTempHome(t)
+	if lines := drainDeferredCrit(); len(lines) != 0 {
+		t.Fatalf("a new temp home must start with an empty deferred critical-log queue, got %q", lines)
+	}
+}
+
 // The URL launch line goes through reload's logImportant like the trim
 // receipts: its events.log copy is written after r.mu is released, in reload
 // order, and with exactly one newline. Writing it with importantLogf("%s\n")
