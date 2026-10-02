@@ -25,6 +25,6 @@ Live provider status, runtime internals and a reworked `urnet-tools top`, plus a
 
 ### Deploy Notes
 
-1. **No action is needed on deploy.** Every change here is inside the provider and `urnet-tools`; the control-socket commands are additive, so a new `urnet-tools` against an older provider falls back cleanly and an older `urnet-tools` against a new provider is unaffected.
+1. **No action is needed on deploy.** The changes are in the provider, `urnet-tools` and the root `connect` package (`ip.go`, `net.go`, `message_pool.go`, `message_pool_summary.go`, `proxy_health.go`), so the provider binary needs the update, not only `urnet-tools`; the control-socket commands are additive, so a new `urnet-tools` against an older provider falls back cleanly and an older `urnet-tools` against a new provider is unaffected.
 2. **Expect the status line to read differently on a direct-only node.** A node that serves on the direct transport with no proxy source now reports `active` where it used to report `degraded`. That is the intended reading, not a new fault.
 3. **The `top` menu now persists.** A theme or graph style chosen with `m` is written to `top.conf` and restored on the next run. A theme forced by the environment (`NO_COLOR`, a dumb terminal) is not saved, so it does not outlive the terminal that forced it.
