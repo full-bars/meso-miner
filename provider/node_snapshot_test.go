@@ -180,13 +180,42 @@ func hist(samples ...cumulativeSample) []cumulativeSample {
 	return samples
 }
 
+// histAt builds a history whose samples are spaced one snapshotHistoryInterval
+// apart and END at now, so "the last minute" windows line up with the test.
+func histAt(now time.Time, samples ...cumulativeSample) []cumulativeSample {
+	for i := range samples {
+		samples[i].at = now.Add(-time.Duration(len(samples)-1-i) * snapshotHistoryInterval)
+	}
+	return samples
+}
+
+// A trickle of failed auths is normal steady state on a big paid pool (a few
+// percent of the pool retrying every minute). Only a real wave, or a pool that
+// mostly cannot connect, is worth blaming on auth.
 func TestDeriveIdleHint(t *testing.T) {
-	up := SnapshotProxies{Up: 5, Dead: 1}
-	flat := hist(cumulativeSample{auth: 3, contracts: 10}, cumulativeSample{auth: 3, contracts: 10}, cumulativeSample{auth: 3, contracts: 10})
-	authUp := hist(cumulativeSample{auth: 3, contracts: 10}, cumulativeSample{auth: 4, contracts: 10}, cumulativeSample{auth: 4, contracts: 10})
-	authDown := hist(cumulativeSample{auth: 9, contracts: 10}, cumulativeSample{auth: 3, contracts: 10}, cumulativeSample{auth: 3, contracts: 10})
-	contractsUp := hist(cumulativeSample{auth: 3, contracts: 10}, cumulativeSample{auth: 3, contracts: 11})
-	now := snapT0.Add(5 * time.Minute)
+	now := snapT0.Add(30 * time.Minute)
+	healthy := SnapshotProxies{Up: 90, Connecting: 8, Degraded: 2} // 90% up
+
+	// n failures spread over the last minute (6 intervals), no contract growth.
+	failing := func(perInterval int64, contracts int64) []cumulativeSample {
+		var ss []cumulativeSample
+		for i := int64(0); i <= 6; i++ {
+			ss = append(ss, cumulativeSample{auth: 1000 + i*perInterval, contracts: contracts})
+		}
+		return histAt(now, ss...)
+	}
+	steady := failing(1, 10) // 6 failures in the last minute on a 100 pool: 6%
+	wave := failing(5, 10)   // 30 in the last minute on a 100 pool: 30%
+	quiet := failing(0, 10)
+	// Failures that stopped four minutes ago: history, not "happening".
+	oldFailures := func() []cumulativeSample {
+		ss := []cumulativeSample{{auth: 0, contracts: 10}, {auth: 40, contracts: 10}}
+		for i := 0; i < 24; i++ {
+			ss = append(ss, cumulativeSample{auth: 40, contracts: 10})
+		}
+		return histAt(now, ss...)
+	}()
+	contractsUp := histAt(now, cumulativeSample{auth: 1000, contracts: 10}, cumulativeSample{auth: 1000, contracts: 11})
 
 	cases := []struct {
 		name    string
@@ -194,16 +223,44 @@ func TestDeriveIdleHint(t *testing.T) {
 		hist    []cumulativeSample
 		want    string
 	}{
-		{"no proxies wins", SnapshotProxies{}, authUp, "no proxies configured"},
-		{"all dead or connecting", SnapshotProxies{Connecting: 12, Dead: 46}, authUp, "all 58 proxies dead or connecting"},
-		{"lone connection connecting", SnapshotProxies{Connecting: 1}, authUp, "the only connection is dead or connecting"},
-		{"lone connection dead", SnapshotProxies{Dead: 1}, authUp, "the only connection is dead or connecting"},
-		{"auth failing, first increase at 10s", up, authUp, "auth failing for 4 min"},
-		{"auth decrease is not failing", up, authDown, "no contracts acquired in the last 10 min"},
-		{"no contracts", up, flat, "no contracts acquired in the last 10 min"},
-		{"no history counts as no contracts", up, nil, "no contracts acquired in the last 10 min"},
-		{"contracts flowing in", up, contractsUp, "no traffic offered"},
-		{"auth beats contracts", up, hist(cumulativeSample{auth: 1, contracts: 1}, cumulativeSample{auth: 2, contracts: 1}), "auth failing for 4 min"},
+		{"no proxies wins", SnapshotProxies{}, wave, "no proxies configured"},
+		{"all dead or connecting", SnapshotProxies{Connecting: 12, Dead: 46}, wave, "all 58 proxies dead or connecting"},
+		{"lone connection connecting", SnapshotProxies{Connecting: 1}, wave, "the only connection is dead or connecting"},
+		{"lone connection dead", SnapshotProxies{Dead: 1}, wave, "the only connection is dead or connecting"},
+
+		{"a steady retry trickle is not an auth problem", healthy, steady,
+			"no contracts acquired in the last 10 min (90/100 proxies up, ~6 auth retries/min)"},
+		{"trickle but contracts flowing is just no traffic", healthy, histAt(now,
+			cumulativeSample{auth: 1000, contracts: 10}, cumulativeSample{auth: 1001, contracts: 11}),
+			"no traffic offered (90/100 proxies up, ~1 auth retries/min)"},
+		{"a failure wave is auth failing", healthy, wave, "auth failing: 30 failures in the last minute across 100 proxies"},
+		{"majority unconnected with failures is auth failing", SnapshotProxies{Up: 30, Connecting: 70}, steady,
+			"auth failing: only 30 of 100 proxies authenticated"},
+		{"majority unconnected without failures is not blamed on auth", SnapshotProxies{Up: 30, Connecting: 70}, quiet,
+			"only 30 of 100 proxies connected"},
+		{"majority unconnected with only OLD failures is not blamed on auth", SnapshotProxies{Up: 30, Connecting: 70}, oldFailures,
+			"only 30 of 100 proxies connected"},
+		{"exactly half up is not a majority down", SnapshotProxies{Up: 50, Connecting: 50}, quiet,
+			"no contracts acquired in the last 10 min (50/100 proxies up)"},
+
+		{"no history counts as no contracts", healthy, nil, "no contracts acquired in the last 10 min (90/100 proxies up)"},
+		{"contracts flowing in, no failures", healthy, contractsUp, "no traffic offered (90/100 proxies up)"},
+		{"an auth counter decrease is not failing", healthy,
+			histAt(now, cumulativeSample{auth: 9000, contracts: 10}, cumulativeSample{auth: 3, contracts: 10}, cumulativeSample{auth: 3, contracts: 10}),
+			"no contracts acquired in the last 10 min (90/100 proxies up)"},
+		{"old failures outside the last minute are not a wave", healthy,
+			func() []cumulativeSample {
+				h := histAt(now,
+					cumulativeSample{auth: 0, contracts: 10}, cumulativeSample{auth: 500, contracts: 10},
+					cumulativeSample{auth: 500, contracts: 10}, cumulativeSample{auth: 500, contracts: 10},
+					cumulativeSample{auth: 500, contracts: 10}, cumulativeSample{auth: 500, contracts: 10},
+					cumulativeSample{auth: 500, contracts: 10}, cumulativeSample{auth: 500, contracts: 10},
+					cumulativeSample{auth: 500, contracts: 10})
+				return h
+			}(), "no contracts acquired in the last 10 min (90/100 proxies up)"},
+		{"a small pool needs a floor before a wave counts", SnapshotProxies{Up: 3, Connecting: 1}, histAt(now,
+			cumulativeSample{auth: 0, contracts: 10}, cumulativeSample{auth: 1, contracts: 10}),
+			"no contracts acquired in the last 10 min (3/4 proxies up, ~1 auth retries/min)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -214,11 +271,19 @@ func TestDeriveIdleHint(t *testing.T) {
 	}
 }
 
-func TestDeriveIdleHintAuthMinutesFloorAtOne(t *testing.T) {
-	h := hist(cumulativeSample{auth: 1}, cumulativeSample{auth: 2})
-	got := deriveIdleHint(SnapshotProxies{Up: 1}, h, h[1].at.Add(5*time.Second))
-	if got != "auth failing for 1 min" {
-		t.Fatalf("hint = %q", got)
+// Chicago's real steady state (measured): ~229 failed auths a minute on a
+// ~4,800 proxy pool with ~430 still connecting. That must not read as an
+// outage, and the hint must say what is actually true.
+func TestDeriveIdleHintBigPoolSteadyStateIsNotAuthFailing(t *testing.T) {
+	now := snapT0.Add(30 * time.Minute)
+	var ss []cumulativeSample
+	for i := int64(0); i <= 6; i++ {
+		ss = append(ss, cumulativeSample{auth: 10000 + i*38, contracts: 500 + i}) // ~229/min, contracts still arriving
+	}
+	got := deriveIdleHint(SnapshotProxies{Up: 4056, Degraded: 30, Connecting: 427}, histAt(now, ss...), now)
+	want := "no traffic offered (4056/4513 proxies up, ~228 auth retries/min)"
+	if got != want {
+		t.Fatalf("hint = %q, want %q", got, want)
 	}
 }
 
@@ -279,15 +344,19 @@ func TestRestartPendingFor(t *testing.T) {
 // --- collector ---
 
 type fakeSnapshotEnv struct {
-	now       time.Time
-	billable  map[string]uint64
-	proxies   SnapshotProxies
-	clients   int64
-	auth      int64
-	contracts int64
-	pressure  float64
-	pending   bool
-	reads     int
+	now         time.Time
+	billable    map[string]uint64
+	proxies     SnapshotProxies
+	clients     int64
+	auth        int64
+	contracts   int64
+	pressure    float64
+	pending     bool
+	startup     string
+	traffic     map[string]uint64
+	lifetime    uint64
+	hasLifetime bool
+	reads       int
 }
 
 func (f *fakeSnapshotEnv) sources() snapshotSources {
@@ -299,14 +368,17 @@ func (f *fakeSnapshotEnv) sources() snapshotSources {
 			f.reads++
 			return f.proxies, f.clients
 		},
-		cumulative:     func() (int64, int64) { return f.auth, f.contracts },
-		sessions:       func() (int64, int64) { return 7, 3 },
-		pressure:       func() float64 { return f.pressure },
-		version:        func() string { return "v9" },
-		prevVer:        func() string { return "v8" },
-		restart:        func() SnapshotRestart { return SnapshotRestart{Reason: "update", CleanShutdown: true} },
-		resources:      func() SnapshotResources { return SnapshotResources{HeapInuseBytes: 5, Goroutines: 2} },
-		restartPending: func() bool { return f.pending },
+		cumulative:       func() (int64, int64) { return f.auth, f.contracts },
+		sessions:         func() (int64, int64) { return 7, 3 },
+		pressure:         func() float64 { return f.pressure },
+		version:          func() string { return "v9" },
+		prevVer:          func() string { return "v8" },
+		restart:          func() SnapshotRestart { return SnapshotRestart{Reason: "update", CleanShutdown: true} },
+		resources:        func() SnapshotResources { return SnapshotResources{HeapInuseBytes: 5, Goroutines: 2} },
+		restartPending:   func() bool { return f.pending },
+		startup:          func() string { return f.startup },
+		traffic:          func() map[string]uint64 { return f.traffic },
+		lifetimeBillable: func() (uint64, bool) { return f.lifetime, f.hasLifetime },
 	}
 }
 
@@ -361,16 +433,34 @@ func TestCollectorIdleHintOnlyWhenIdle(t *testing.T) {
 }
 
 func TestCollectorAuthFailingHintUsesHistory(t *testing.T) {
+	// A wave: the failures land inside the last minute, so auth is blamed.
+	env := &fakeSnapshotEnv{now: snapT0, proxies: SnapshotProxies{Up: 2}, billable: map[string]uint64{}}
+	c := newNodeSnapshotCollector(env.sources())
+	c.tick()
+	env.now = env.now.Add(150 * time.Second)
+	c.tick()
+	env.now = env.now.Add(150 * time.Second) // 300s uptime, past starting
+	env.auth = 4
+	c.tick()
+	snap := c.Get()
+	if snap.State != "idle" || snap.IdleHint != "auth failing: 4 failures in the last minute across 2 proxies" {
+		t.Fatalf("state=%q hint=%q", snap.State, snap.IdleHint)
+	}
+}
+
+func TestCollectorOldAuthFailuresDoNotBlameAuth(t *testing.T) {
+	// The same failures 150s ago are history, not a wave: the hint falls through
+	// to what is actually true instead of reporting a stale outage.
 	env := &fakeSnapshotEnv{now: snapT0, proxies: SnapshotProxies{Up: 2}, billable: map[string]uint64{}}
 	c := newNodeSnapshotCollector(env.sources())
 	c.tick()
 	env.now = env.now.Add(150 * time.Second)
 	env.auth = 4
 	c.tick()
-	env.now = env.now.Add(150 * time.Second) // 300s uptime, past starting
+	env.now = env.now.Add(150 * time.Second)
 	c.tick()
 	snap := c.Get()
-	if snap.State != "idle" || snap.IdleHint != "auth failing for 2 min" {
+	if snap.State != "idle" || snap.IdleHint != "no contracts acquired in the last 10 min (2/2 proxies up)" {
 		t.Fatalf("state=%q hint=%q", snap.State, snap.IdleHint)
 	}
 }
