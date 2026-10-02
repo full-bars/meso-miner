@@ -93,9 +93,7 @@ func TestBaselineSampleRoundsOutTheSchema(t *testing.T) {
 		snap: &NodeSnapshot{
 			V: 1, Version: "v1.2.3", PreviousVersion: "v1.2.2",
 			StartedAt: now.Add(-time.Hour), Now: now, UptimeSeconds: 3600,
-			State: "degraded",
-			// StateReason is deliberately left unset: this tree's node snapshot
-			// does not compute one yet, and the recorder must not invent it.
+			State: "degraded", StateReason: "dead proxies",
 			Rate:      SnapshotRate{Avg5mBps: 1234},
 			Clients:   7,
 			Sessions:  SnapshotSessions{PQE: 3, Classical: 4},
@@ -119,7 +117,7 @@ func TestBaselineSampleRoundsOutTheSchema(t *testing.T) {
 	line := string(b)
 	for _, want := range []string{
 		`"v":1`, `"version":"v1.2.3"`, `"previous_version":"v1.2.2"`, `"uptime_seconds":3600`,
-		`"state":"degraded"`,
+		`"state":"degraded"`, `"state_reason":"dead proxies"`,
 		`"up":10`, `"degraded":1`, `"connecting":2`, `"dead":3`,
 		`"desired":500`, `"trim_cap":400`, `"trim_cap_source":"operator"`,
 		`"clients":7`, `"pqe":3`, `"classical":4`, `"avg5m_bps":1234`,
@@ -140,37 +138,30 @@ func TestBaselineSampleRoundsOutTheSchema(t *testing.T) {
 	}
 }
 
-// state_reason is a diagnostic the recorder does not copy on this tree, because
-// the node snapshot does not compute one yet. The distinction this pins is
-// "absent" versus "present and empty": the field is omitempty and must stay out
-// of the record entirely, because an empty string would claim the reason was
-// measured and found to be nothing, which is a different statement from never
-// having looked. This test fails if the field is ever written as "".
-func TestBaselineSampleOmitsStateReasonRatherThanWritingItEmpty(t *testing.T) {
+// state_reason is copied from the node snapshot, which computes it
+// (deriveStateReason) whenever the node is starting or degraded. When the
+// snapshot has no reason the key stays out of the record entirely: an empty
+// string would claim a reason was measured and found to be nothing.
+func TestBaselineSampleCopiesStateReasonAndOmitsItWhenEmpty(t *testing.T) {
 	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
 	got := buildBaselineSample(baselineInputs{
 		now:  now,
-		snap: &NodeSnapshot{V: 1, Version: "v1.2.3", State: "degraded"},
+		snap: &NodeSnapshot{V: 1, Version: "v1.2.3", State: "degraded", StateReason: "dead proxies"},
 	})
-
-	if got.StateReason != "" {
-		t.Fatalf("StateReason was set to %q, want it left unset", got.StateReason)
+	if got.StateReason != "dead proxies" {
+		t.Fatalf("StateReason = %q, want the snapshot's %q", got.StateReason, "dead proxies")
 	}
-	b, err := json.Marshal(got)
+
+	empty := buildBaselineSample(baselineInputs{
+		now:  now,
+		snap: &NodeSnapshot{V: 1, Version: "v1.2.3", State: "up"},
+	})
+	b, err := json.Marshal(empty)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(b), "state_reason") {
-		t.Errorf("sample carries state_reason, want the key absent, not empty:\n%s", b)
-	}
-	// The field is still declared, so a build that later computes a reason has
-	// somewhere to put it, and older records keep round-tripping.
-	var probe map[string]any
-	if err := json.Unmarshal(b, &probe); err != nil {
-		t.Fatal(err)
-	}
-	if _, present := probe["state_reason"]; present {
-		t.Errorf("state_reason present in the decoded sample, want absent:\n%s", b)
+		t.Errorf("sample without a reason carries state_reason, want the key absent:\n%s", b)
 	}
 }
 
@@ -427,10 +418,7 @@ func TestBaselineCapHoldsAfterTwoThousandSamples(t *testing.T) {
 		e := baselineSample{V: 1, Kind: "sample", Version: "v3.23.0-fix.32.9"}
 		e.TS = base.Add(time.Duration(i) * 15 * time.Minute).Format(time.RFC3339)
 		e.Proxies.Up = i % 1200
-		// Widened with a long label rather than StateReason, which this tree's
-		// recorder deliberately leaves unset. The point of the case is the byte
-		// count and that the trim runs, not which field carries the width.
-		e.Label = strings.Repeat("x", 300)
+		e.StateReason = strings.Repeat("x", 300)
 		e.State = "degraded"
 		if err := baselineAppend(wide, e, 64<<10); err != nil {
 			t.Fatalf("wide append %d: %v", i, err)

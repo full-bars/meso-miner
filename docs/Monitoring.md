@@ -12,8 +12,6 @@ Every provider therefore also keeps a small local record of its own behaviour in
 
 This is the no-setup alternative for the one question Prometheus does not answer: did that upgrade make this box worse? It is not a replacement for the fleet view, and it is not a time-series database. For a fleet, use the bundle below.
 
-The record has one field this build leaves out. `state_reason`, a short "why is this node starting or degraded" string, is recorded only where the node snapshot computes one, and this tree's snapshot does not yet, so the key is absent from every row rather than present and empty. Nothing in `show` or `compare` reads it, so no comparison or table changes; it will appear when the snapshot gains the startup-phase reporting.
-
 ## 1. Turn on metrics on each provider
 
 ```bash

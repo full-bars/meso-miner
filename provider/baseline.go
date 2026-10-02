@@ -229,13 +229,7 @@ func buildBaselineSample(in baselineInputs) baselineSample {
 		s.UptimeSeconds = &u
 	}
 	s.State = snap.State
-	// state_reason is deliberately NOT copied. It is a diagnostic string that
-	// show and compare never read, and it is only present where the node
-	// snapshot computes one. This tree's snapshot does not yet (see the
-	// observability work PR 134 deferred), so the field stays absent from the
-	// record rather than being written as an empty string. A sample that omits
-	// it says "not measured"; a sample with "" would claim "measured, nothing
-	// to report", and those are different claims.
+	s.StateReason = snap.StateReason
 	s.Proxies = baselineProxies{
 		Up:         snap.Proxies.Up,
 		Degraded:   snap.Proxies.Degraded,
