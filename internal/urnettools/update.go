@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path"
@@ -693,7 +692,7 @@ func updateProvider(p Provider, cfg updateConfig) error {
 
 	url := cfg.AssetURL
 	if url == "" {
-		url = fmt.Sprintf("https://github.com/full-bars/urnetwork-3.23-fix/releases/download/%s/urnetwork-provider-%s.tar.gz", cfg.Tag, cfg.Tag)
+		url = providerTarballURL(cfg.Tag)
 	}
 	tarball := filepath.Join(cfg.StageDir, cfg.Tag+".tar.gz")
 
@@ -1361,7 +1360,7 @@ func runningToolAssetName() (string, error) {
 // toolAssetURL is the release download URL for a tool asset.
 func toolAssetURL(tag, asset string) string {
 	// M3 fix: escape tag in download URL to prevent path traversal.
-	return fmt.Sprintf("https://github.com/full-bars/urnetwork-3.23-fix/releases/download/%s/%s", url.PathEscape(tag), asset)
+	return releaseDownloadURL(tag, asset)
 }
 
 // selfUpdateTool updates the running tool binary (urnet-tools or
