@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/urnetwork/connect"
 )
 
 // critLog appended its own newline, so a deferred line drained with a trailing
@@ -244,5 +247,87 @@ func TestRAMReserveNeverExceedsTheBox(t *testing.T) {
 	}
 	if !strings.Contains(got, "0 MiB left") {
 		t.Fatalf("a 256 MiB box should report nothing left after the reserve, got %q", got)
+	}
+}
+
+// withTempHome is the isolation boundary for tests, so a critical-log line one
+// test queued and never drained must not reach the next. Before the queue was
+// reset there, TestDeferredCritWriteDoesNotDoubleTheNewline failed whenever a
+// shuffled predecessor (for example the unreadable-proxy_trim test) ran first
+// and left its warning in the process-wide queue.
+func TestWithTempHomeStartsWithAnEmptyDeferredCritQueue(t *testing.T) {
+	deferCritWrite("left behind by an earlier test")
+	withTempHome(t)
+	if lines := drainDeferredCrit(); len(lines) != 0 {
+		t.Fatalf("a new temp home must start with an empty deferred critical-log queue, got %q", lines)
+	}
+}
+
+// The URL launch line goes through reload's logImportant like the trim
+// receipts: its events.log copy is written after r.mu is released, in reload
+// order, and with exactly one newline. Writing it with importantLogf("%s\n")
+// did the file I/O while reload held r.mu and the proxy lock, and left a blank
+// line after it in events.log.
+func TestURLLaunchLineWritesEventsLogOutsideTheReloaderLockWithoutBlankLines(t *testing.T) {
+	withTempHome(t)
+	cache := map[string]ProxyURLEntry{}
+	for _, a := range []string{"5.5.5.5:1080", "6.6.6.6:1080"} {
+		cache[a] = ProxyURLEntry{}
+	}
+	if err := writeProxyURLState(&ProxyURLState{Cache: cache}); err != nil {
+		t.Fatal(err)
+	}
+	state := &ProxyState{Proxies: map[string]ProxyEntry{}}
+	if err := writeProxyState(state); err != nil {
+		t.Fatal(err)
+	}
+	proxyWarmupDone.Store(true)
+	t.Cleanup(func() { proxyWarmupDone.Store(false) })
+	r := &ProxyReloader{
+		cancelMap:   map[string]context.CancelFunc{},
+		cancelMapMu: &sync.Mutex{},
+		state:       state,
+		parentCtx:   context.Background(),
+		wg:          &sync.WaitGroup{},
+		spawnProxy: func(proxyCtx context.Context, settings *connect.ProxySettings, isNative bool, isURLSourced bool) {
+			<-proxyCtx.Done()
+		},
+		drainingProxies: map[string]context.CancelFunc{},
+	}
+
+	var calls, heldDuring int
+	critLogInCriticalSection = func() {
+		calls++
+		if r.mu.TryLock() {
+			r.mu.Unlock()
+			return
+		}
+		heldDuring++
+	}
+	t.Cleanup(func() { critLogInCriticalSection = nil })
+
+	out := captureTlog(t, func() { r.reload() })
+	if !strings.Contains(out, "[proxy][url] launching 2 new URL-sourced proxies") {
+		t.Fatalf("the ramlog must still show the launch line, got %q", out)
+	}
+	if calls == 0 {
+		t.Fatal("the launch line produced no events.log write")
+	}
+	if heldDuring != 0 {
+		t.Fatalf("%d of %d events.log writes ran while reload held r.mu", heldDuring, calls)
+	}
+	p, err := critLogPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "[proxy][url] launching 2 new URL-sourced proxies") {
+		t.Fatalf("events.log is missing the launch line, got %q", string(b))
+	}
+	if strings.Contains(string(b), "\n\n") {
+		t.Fatalf("events.log must not gain a blank line after the launch line, got %q", string(b))
 	}
 }

@@ -1275,7 +1275,7 @@ func (r *ProxyReloader) reload() {
 	// "reloaded: +N added" prefix for anything that matches on it.
 	fromSources := reloadSourceBreakdown(added, sourceOf)
 	if line := urlLaunchLine(urlAdded, warmupDeferred); line != "" {
-		importantLogf("%s\n", line)
+		logImportant("%s", line)
 	}
 	if pruned > 0 {
 		tlog("[proxy] pruned %d stale proxy.state entries (no longer desired)\n", pruned)
