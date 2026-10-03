@@ -389,6 +389,16 @@ test_remove_tool_links_only_removes_our_links() {
 }
 test_remove_tool_links_only_removes_our_links
 
+# --- do_install must contain exactly one install body ---
+# A pasted second copy of the body once re-ran the whole download against
+# another fork's URLs after a successful first pass.
+test_do_install_body_not_duplicated() {
+    local script="scripts/Provider_Install_Linux.sh"
+    assert_eq "1" "$(grep -c 'Fetching release information' "$script")" "do_install fetches release information exactly once"
+    assert_eq "0" "$(grep -cE 'urnetwork-3\.23-fix|dl\.fullbars\.xyz' "$script")" "installer never downloads from another fork or its mirror"
+}
+test_do_install_body_not_duplicated
+
 echo "======================================"
 if [ $FAILS -eq 0 ]; then
     echo "🎉 All tests passed!"
