@@ -1132,6 +1132,23 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 	}
 }
 
+// h3ConnStream is an established H3 connection with the transport and socket it
+// runs on. quic-go only closes a transport and its socket after the connection
+// for a single use transport, so the owner must close them when the connection ends.
+type h3ConnStream struct {
+	conn          *quic.Conn
+	stream        *quic.Stream
+	quicTransport *quic.Transport
+	packetConn    net.PacketConn
+}
+
+// close ends the connection, then the transport, then the socket
+func (self *h3ConnStream) close() {
+	self.conn.CloseWithError(0, "")
+	self.quicTransport.Close()
+	self.packetConn.Close()
+}
+
 func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.Duration, slowMultiple int) {
 	// connect and update route manager for this transport
 	defer self.cancel()
@@ -1170,12 +1187,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 
 		reconnect := NewReconnect(self.settings.ReconnectTimeout)
 
-		type ConnStream struct {
-			conn   *quic.Conn
-			stream *quic.Stream
-		}
-
-		connect := func() (*ConnStream, error) {
+		connect := func() (*h3ConnStream, error) {
 			// quicConfig := &quic.Config{
 			// 	HandshakeIdleTimeout: self.settings.QuicConnectTimeout + self.settings.QuicHandshakeTimeout,
 			// }
@@ -1319,13 +1331,15 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			}
 
 			success = true
-			return &ConnStream{
-				conn:   conn,
-				stream: stream,
+			return &h3ConnStream{
+				conn:          conn,
+				stream:        stream,
+				quicTransport: quicTransport,
+				packetConn:    packetConn,
 			}, nil
 		}
 
-		var connStream *ConnStream
+		var connStream *h3ConnStream
 		var err error
 		if self.log.V(2).Enabled() {
 			connStream, err = TraceWithReturnError(fmt.Sprintf("[t]connect %s", clientId), connect)
@@ -1370,11 +1384,13 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 		authErrBackoff = 0
 		noteBackendSuccess()
 
-		conn := connStream.conn
 		stream := connStream.stream
 
 		c := func() {
-			defer conn.CloseWithError(0, "")
+			// release the socket and the quic transport after the connection,
+			// otherwise every reconnect leaks one udp fd, its read goroutine
+			// and the transport state
+			defer connStream.close()
 
 			self.setModeAvailable(ptMode, true)
 			defer self.setModeAvailable(ptMode, false)
@@ -1385,7 +1401,15 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			framer := NewFramer(self.settings.FramerSettings)
 
 			var readCounter atomic.Uint64
+			var readPayloadCounter atomic.Uint64
 			var writeCounter atomic.Uint64
+
+			// per-connection frame counts, so the log says what this transport carried
+			connectTime := time.Now()
+			defer func() {
+				self.log.Infof("[t]h3 closed %s after %s (frames out=%d in=%d)\n",
+					clientId, time.Since(connectTime).Round(time.Second), writeCounter.Load(), readCounter.Load())
+			}()
 
 			send := make(chan []byte, self.settings.TransportBufferSize)
 			receive := make(chan []byte, self.settings.TransportBufferSize)
@@ -1428,14 +1452,14 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 				for {
 					mode, notify := self.activeMode()
 					if mode != ptMode {
-						startReadCount := readCounter.Load()
+						startReadCount := readPayloadCounter.Load()
 						startWriteCount := writeCounter.Load()
 						select {
 						case <-handleCtx.Done():
 							return
 						case <-time.After(time.Duration(slowMultiple) * self.settings.InactiveDrainTimeout):
 							// no activity after cool down, shut down this transport
-							if readCounter.Load() == startReadCount && writeCounter.Load() == startWriteCount {
+							if readPayloadCounter.Load() == startReadCount && writeCounter.Load() == startWriteCount {
 								handleCancel()
 							}
 						case <-notify:
@@ -1478,6 +1502,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 							}
 							return
 						}
+						writeCounter.Add(1)
 						self.log.V(2).Infof("[ts]%s->\n", clientId)
 					case <-WakeupAfter(self.settings.PingTimeout, self.settings.PingTimeout):
 						stream.SetWriteDeadline(time.Now().Add(time.Duration(slowMultiple) * self.settings.WriteTimeout))
@@ -1509,12 +1534,17 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 						return
 					}
 
+					readCounter.Add(1)
+
 					if 0 == len(message) {
 						// ping
 						self.log.V(2).Infof("[tr]ping %s<-\n", clientId)
 						MessagePoolReturn(message)
 						continue
 					}
+
+					// count payload reads only: pings are keepalive, not use
+					readPayloadCounter.Add(1)
 
 					select {
 					case <-handleCtx.Done():
