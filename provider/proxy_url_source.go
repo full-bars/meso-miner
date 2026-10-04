@@ -447,6 +447,19 @@ var fetchMu sync.Mutex
 func readURLStateForMerge() (*ProxyURLState, bool) {
 	state, err := readProxyURLState()
 	if err != nil {
+		// Unparseable content is not a transient read error: skipping would
+		// repeat forever (every other reader returns early too, so nothing ever
+		// rewrites the file) and the URL pipeline would stay off. Keep the bad
+		// file as evidence and start from an empty cache, as 32.7 did.
+		if isProxyURLStateCorrupt(err) {
+			dest, qerr := quarantineProxyURLState()
+			if qerr == nil {
+				importantLogf("[proxy][url] proxy_url.json is corrupt (%v); kept as %s and starting from an empty cache", err, dest)
+				return &ProxyURLState{Cache: map[string]ProxyURLEntry{}}, true
+			}
+			tlog("[proxy][url] warning: proxy_url.json is corrupt (%v) and could not be moved aside (%v), skipping this merge cycle\n", err, qerr)
+			return nil, false
+		}
 		tlog("[proxy][url] warning: could not read proxy_url.json, skipping this merge cycle to protect the cache: %v\n", err)
 		return nil, false
 	}
@@ -666,12 +679,6 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 		return g, ok
 	}
 	cands := collectRankedCandidates(fetched, grades)
-	// Snapshot which addresses were already cached BEFORE this cycle, so a
-	// newly cached address is attributed to the first source that listed it.
-	// This must be captured before the merge writes into the cache: taken
-	// afterwards, every added address already looks known and the per-source
-	// "added" counts come out zero.
-	existingBefore := cachedProxyAddresses(state)
 	admittedByTier := map[string]int{}
 	var admittedLines []string
 	for _, c := range cands {
@@ -683,6 +690,7 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 	// would be wrong if a candidate ever reached the merge without a grade —
 	// a kill-switch-disabled admission (Qualified=true, Decidable=false)
 	// ranks last while a decidable F ranks first.
+	existingBefore := cachedProxyAddresses(state)
 	added := mergeProxyURLEntries(state, admittedLines, 0, maxTotal, rankAddr, gradeFor)
 	totalAdded += added
 	// admittedByTier counts what actually entered the cache this cycle, per
