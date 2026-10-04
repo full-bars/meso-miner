@@ -1454,6 +1454,9 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			}
 		}
 		authErrBackoff = 0
+		// The connection is up, so the next outage may say "unavailable" once
+		// at info level again instead of staying silent until -v 2.
+		h3UnavailableLogged = false
 		self.noteAuthSuccess()
 
 		stream := connStream.stream
