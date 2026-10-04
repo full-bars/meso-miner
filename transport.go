@@ -1341,6 +1341,10 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			defer func() {
 				if !success {
 					conn.CloseWithError(0, "")
+					// Close the transport too, not just the conn: closing
+					// packetConn unblocks its listen loop, but the transport's
+					// own state is only released by Close.
+					quicTransport.Close()
 				}
 			}()
 
