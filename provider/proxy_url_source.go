@@ -690,6 +690,12 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 	// would be wrong if a candidate ever reached the merge without a grade —
 	// a kill-switch-disabled admission (Qualified=true, Decidable=false)
 	// ranks last while a decidable F ranks first.
+	//
+	// Snapshot which addresses were already cached BEFORE this cycle, so a
+	// newly cached address is attributed to the first source that listed it.
+	// This must be captured before the merge writes into the cache: taken
+	// afterwards, every added address already looks known and the per-source
+	// "added" counts come out zero.
 	existingBefore := cachedProxyAddresses(state)
 	added := mergeProxyURLEntries(state, admittedLines, 0, maxTotal, rankAddr, gradeFor)
 	totalAdded += added
