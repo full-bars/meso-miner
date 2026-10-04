@@ -51,6 +51,8 @@ func TestPoolSummary_SingleBurstIsNotALeak(t *testing.T) {
 		t.Fatalf("sustained growth in the later half was not flagged: %s", s)
 	}
 }
+
+// A working set that fills after a restart and then levels off is not a leak.
 func TestPoolSummary_RampThenPlateauIsNotALeak(t *testing.T) {
 	// tag=224 after a restart: outstanding climbs for a few minutes as the
 	// working set fills, then flattens. Ten samples all non-decreasing except
@@ -62,6 +64,7 @@ func TestPoolSummary_RampThenPlateauIsNotALeak(t *testing.T) {
 	}
 }
 
+// A steady climb across the whole window is reported as a possible leak.
 func TestPoolSummary_SteadyGrowthIsAPossibleLeak(t *testing.T) {
 	leak := []int64{1000, 1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900}
 	s := feed(newPoolWatch(), 4096, 9, "ip.go:100/ip.go:200", leak, 5000)
@@ -79,6 +82,7 @@ func TestPoolSummary_SteadyGrowthIsAPossibleLeak(t *testing.T) {
 	}
 }
 
+// +20 a dump is slow but sustained, and must still be caught.
 func TestPoolSummary_SlowSteadyLeakIsStillCaught(t *testing.T) {
 	slow := []int64{500, 520, 540, 560, 580, 600, 620, 640, 660, 680} // +20 a dump
 	if s := feed(newPoolWatch(), 2048, 3, "a.go:1/b.go:2", slow, 5000); s.Healthy() {
@@ -98,6 +102,7 @@ func TestPoolSummary_VerySlowSteadyLeakIsStillCaught(t *testing.T) {
 	}
 }
 
+// Wobble on a big tag and a few buffers on a tiny one are not leaks.
 func TestPoolSummary_JitterAndTinyGrowthAreNotLeaks(t *testing.T) {
 	jitter := []int64{300, 320, 290, 310, 305, 330, 295, 315, 300, 320}
 	if s := feed(newPoolWatch(), 2048, 4, "a.go:1", jitter, 5000); !s.Healthy() {
@@ -109,6 +114,7 @@ func TestPoolSummary_JitterAndTinyGrowthAreNotLeaks(t *testing.T) {
 	}
 }
 
+// A trend needs a full window of dumps before it means anything.
 func TestPoolSummary_WarmingUpNeedsAFullWindow(t *testing.T) {
 	early := []int64{1000, 1500, 2000} // rising, but only 3 dumps of evidence
 	s := feed(newPoolWatch(), 2048, 6, "a.go:1", early, 5000)
@@ -120,6 +126,7 @@ func TestPoolSummary_WarmingUpNeedsAFullWindow(t *testing.T) {
 	}
 }
 
+// Reuse is judged only once a tag has taken enough buffers to say anything.
 func TestPoolSummary_LowReuseNeedsRealVolume(t *testing.T) {
 	w := newPoolWatch()
 	// Reuse is judged on the interval between dumps, so the first observation
@@ -154,6 +161,7 @@ func TestPoolSummary_LowReuseNeedsRealVolume(t *testing.T) {
 	}
 }
 
+// The summary says what the pool is holding, healthy or not.
 func TestPoolSummary_ReportsWhatIsHeld(t *testing.T) {
 	s := newPoolWatch().observe([]poolTagStat{
 		{PoolSize: 2048, Tag: 1, Taken: 1000, Returned: 500, Created: 1}, // 500 x 2 KiB
@@ -168,6 +176,7 @@ func TestPoolSummary_ReportsWhatIsHeld(t *testing.T) {
 	}
 }
 
+// A counter reset mid-history must not crash the dump or flag a finding.
 func TestPoolSummary_CounterResetDoesNotCrashOrFlag(t *testing.T) {
 	// ResetMessagePoolStats drops the counters to zero mid-history.
 	w := newPoolWatch()
@@ -194,6 +203,7 @@ func TestPoolSummary_CounterRollbackDoesNotUnderflow(t *testing.T) {
 	}
 }
 
+// The caller label is stable from dump to dump, so it can be grepped.
 func TestPoolCallerLabelIsStable(t *testing.T) {
 	// The label used to come out of a map in random order, so the same tag
 	// flipped between two spellings from dump to dump and could not be grepped.
