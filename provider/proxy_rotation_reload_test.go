@@ -213,6 +213,123 @@ func TestReload_EmptySource_DrainsProxyWithActiveClients(t *testing.T) {
 	}
 }
 
+// A source can come back while a proxy drains. reload() skips a proxy that is
+// draining, so without a re-trigger the proxy would sit unstarted until the
+// reconciler's next hourly tick. The drain goroutine has to wake the reloader,
+// exactly as the ordinary removal path does.
+func TestReload_EmptySourceReTriggersWhenTheSourceReturnsWhileDraining(t *testing.T) {
+	resetProxyCounters(t)
+	old := drainPollInterval
+	drainPollInterval = 20 * time.Millisecond
+	t.Cleanup(func() { drainPollInterval = old })
+
+	file := writeProxyFile(t, "# empty")
+	r := emptyReloader(t, file)
+
+	// The identity key of a credentialed proxy is address+user, so parse the
+	// line the loader will read later rather than guessing the key.
+	fixture := writeProxyFile(t, "flap.example:1:u1:p1")
+	settings, err := readProxySettingsFromFile(fixture)
+	if err != nil || len(settings) != 1 {
+		t.Fatalf("fixture line: settings=%d err=%v", len(settings), err)
+	}
+	key := settings[0].Key()
+
+	r.cancelMap[key] = func() {}
+	r.runningAuth[key] = settings[0]
+	// The drain goroutine reads the desired set from proxy.state, and reload
+	// reloads that from disk, so the source has to be persisted, not just set
+	// on the in-memory struct.
+	if err := writeProxyState(&ProxyState{
+		Source:  file,
+		Proxies: map[string]ProxyEntry{key: {Source: "file"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	connect.RegisterProxy(987003, key, key)
+	bw := connect.RegisterProxyBandwidth(987003)
+	t.Cleanup(func() { connect.UnregisterProxy(987003) })
+	bw.Clients.Store(2)
+
+	r.reload() // the source is empty, so the proxy is handed to the drain path
+
+	// The source comes back while it drains.
+	if err := os.WriteFile(file, []byte("flap.example:1:u1:p1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	reloadPath, err := proxyReloadPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := readReloadSeq(reloadPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bw.Clients.Store(0)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if after, err := readReloadSeq(reloadPath); err == nil && after > before {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("the drain finished with the source back but no reload was triggered")
+}
+
+// An unreadable proxy_url.json makes the desired set UNKNOWN, not empty: a file
+// proxy the operator removed must still stop, while a URL-sourced one must keep
+// running because nothing can say whether it is still desired.
+func TestReload_EmptySourceWithUnreadableCacheStopsOnlyKnownFileProxies(t *testing.T) {
+	resetProxyCounters(t)
+
+	r := emptyReloader(t, writeProxyFile(t, "# empty"))
+
+	// A directory at the state path reads as an I/O error, not as unparseable
+	// content, which is the case that must not cancel a working fleet.
+	statePath, err := proxyURLStatePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(statePath, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	const fileKey, urlKey = "file.example:1", "url.example:1"
+	var fileCancelled, urlCancelled atomic.Int32
+	r.cancelMap[fileKey] = func() { fileCancelled.Add(1) }
+	r.cancelMap[urlKey] = func() { urlCancelled.Add(1) }
+	r.runningAuth[fileKey] = &connect.ProxySettings{Address: "file.example:1"}
+	r.runningAuth[urlKey] = &connect.ProxySettings{Address: "url.example:1"}
+	// reload() reloads proxy.state from disk, so the sources have to be there.
+	if err := writeProxyState(&ProxyState{
+		Proxies: map[string]ProxyEntry{
+			fileKey: {Source: "file"},
+			urlKey:  {Source: "url"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r.reload()
+
+	if got := fileCancelled.Load(); got != 1 {
+		t.Fatalf("file proxy cancelled = %d, want 1: an unreadable cache must not keep a removed file proxy dialling", got)
+	}
+	if got := urlCancelled.Load(); got != 0 {
+		t.Fatalf("url proxy cancelled = %d, want 0: its desired state is unknown, not gone", got)
+	}
+	if _, still := r.state.Proxies[fileKey]; still {
+		t.Fatal("the removed file proxy's state entry survived the empty-source prune")
+	}
+	if _, still := r.state.Proxies[urlKey]; !still {
+		t.Fatal("the url proxy's state entry was pruned while its desired state is unknown")
+	}
+}
+
 func TestReload_EmptySource_StillReadsEmpty(t *testing.T) {
 	resetProxyCounters(t)
 

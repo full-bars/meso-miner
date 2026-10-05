@@ -394,6 +394,7 @@ var gcTightening atomic.Bool
 // gcGovernorState tracks the single GC writer's hysteresis.
 type gcGovernorState struct {
 	baselineGOGC         int
+	baselinePinned       bool // URNETWORK_BASELINE_GOGC set it; never re-adopt over it
 	currentGOGC          int
 	level                int // 0 normal,1 tighten,2 hard,3 critical
 	consecutiveCalmCount int
@@ -549,6 +550,22 @@ func gcGovernor(heapFrac float64, hostAvail int64, psiCPU float64, canRelease bo
 		return
 	}
 
+	// The baseline is captured once when the monitor arms, but GOGC has other
+	// writers: the auto tier writes its value once per process at the first proxy
+	// launch (which can come after the monitor armed, on a box whose first proxy
+	// is delayed), and an operator can set it live. A baseline captured before
+	// such a write is stale, and the next tighten-then-release would put it back
+	// over the real value (on the smallest boxes that is the tier's 50 replaced
+	// by 100, and nothing restores it). While the governor is not tightening it
+	// owns no GOGC, so a value it did not write is the new baseline. An explicit
+	// URNETWORK_BASELINE_GOGC is never overridden.
+	if state.level == 0 && !state.baselinePinned {
+		if cur, ok := readGOGCPercent(); ok && cur > 0 && cur != state.currentGOGC {
+			state.baselineGOGC = cur
+			state.currentGOGC = cur
+		}
+	}
+
 	// Heap level from the raw fraction. Note (inference from the arithmetic, not
 	// measured): with a finite GOMEMLIMIT and a live-heap numerator, levels 1 to 3
 	// already put the heap goal at or above the limit, so the limit paces GC and
@@ -692,6 +709,7 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 		if v := os.Getenv("URNETWORK_BASELINE_GOGC"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil && n > 0 {
 				gcState.baselineGOGC = n
+				gcState.baselinePinned = true
 				debug.SetGCPercent(n)
 			} else {
 				tlog("[proxy][pressure] warn: ignoring invalid URNETWORK_BASELINE_GOGC=%q\n", v)
@@ -790,7 +808,7 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 
 		writePressureStatus(smoothed, comps, &gcState)
 		if r := pressureRegime(smoothed); r != lastRegime {
-			tlog("[proxy][pressure] %.2f (%s)\n", smoothed, formatComponents(comps))
+			tlog("🧯 [proxy][pressure] %.2f (%s)\n", smoothed, formatComponents(comps))
 			lastRegime = r
 		}
 	}
@@ -1264,12 +1282,12 @@ func runPoolController(ctx context.Context, configuredMax int, selfHealEnabled b
 		if next != urlState.TargetPoolSize {
 			urlState.TargetPoolSize = next
 			if err := writeProxyURLState(urlState); err != nil {
-				tlog("[proxy][pressure] warn: could not persist target: %v\n", err)
+				tlog("⚠️ [proxy][pressure] warn: could not persist target: %v\n", err)
 			}
 		}
 		release()
 		if next != target {
-			tlog("[proxy][pressure] pool target %d -> %d (pressure=%.2f cache=%d)\n", target, next, pressure, cacheSize)
+			tlog("🧯 [proxy][pressure] pool target %d -> %d (pressure=%.2f cache=%d)\n", target, next, pressure, cacheSize)
 		}
 
 		if pressure > aimdShrinkAbove {
@@ -1314,15 +1332,15 @@ func shedPoolToTarget(target int) {
 	shed := selectURLProxiesToShed(state, traffic, earnings, excess)
 	for _, addr := range shed {
 		if state.Proxies[addr].Health == "up" {
-			tlog("[proxy][pressure] shedding HEALTHY proxy %s (last resort, pool over target)\n", proxyKeyDisplay(addr))
+			tlog("🧯 [proxy][pressure] shedding HEALTHY proxy %s (last resort, pool over target)\n", proxyKeyDisplay(addr))
 		}
 		applyShedBackoff(addr, time.Now())
 	}
 	if err := removeDeadProxies(state, map[string][]string{"url": shed}); err != nil {
-		tlog("[proxy][pressure] warn: shed failed: %v\n", err)
+		tlog("⚠️ [proxy][pressure] warn: shed failed: %v\n", err)
 		return
 	}
-	tlog("[proxy][pressure] shed %d url proxies to reach target %d\n", len(shed), target)
+	tlog("🧯 [proxy][pressure] shed %d url proxies to reach target %d\n", len(shed), target)
 }
 
 // paidRunningCount is how many of the running proxies are paid or file

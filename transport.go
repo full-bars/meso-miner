@@ -297,6 +297,16 @@ type PlatformTransportSettings struct {
 	Log Logger
 
 	PtDnsSlowMultiple int
+
+	// EnableH3 starts an H3 (QUIC) transport beside H1 in Auto mode. It is OFF
+	// by default and is meant for an identity that reaches the platform from
+	// the host's own address (the direct identity): runH3 opens a host UDP
+	// socket, so a proxied identity must never enable it without a socket
+	// that goes through its proxy. While EnableH3 is set in Auto mode H3 is an
+	// auxiliary transport: H1 stays the authoritative health signal, so an H3
+	// connect failure (UDP filtered, no route) is "mode unavailable" and is NOT
+	// a backend failure or a proxy auth failure. See h3Auxiliary.
+	EnableH3 bool
 }
 
 func DefaultPlatformTransportSettings() *PlatformTransportSettings {
@@ -522,9 +532,11 @@ func (self *PlatformTransport) run() {
 		go HandleError(func() {
 			self.runH1(0)
 		}, self.cancel)
-		// go HandleError(func() {
-		// 	self.runH3(TransportModeH3, 0, 1)
-		// }, self.cancel)
+		if self.settings.EnableH3 {
+			go HandleError(func() {
+				self.runH3(TransportModeH3, 0, 1)
+			}, self.cancel)
+		}
 		// go HandleError(func() {
 		// 	self.runH3(TransportModeH3Dns, self.settings.ModeInitialDelay, self.settings.PtDnsSlowMultiple)
 		// }, self.cancel)
@@ -625,6 +637,47 @@ func (self *PlatformTransport) proxyIndex() (int, bool) {
 		return 0, true
 	}
 	return ps.Index, true
+}
+
+// h3Auxiliary reports whether this transport runs H3 only as an opt-in
+// auxiliary beside H1 (Auto mode with EnableH3). The explicit H3 target mode is
+// the sole transport and keeps the full failure accounting.
+func (self *PlatformTransport) h3Auxiliary() bool {
+	return self.targetMode == TransportModeAuto && self.settings.EnableH3
+}
+
+// noteAuthSuccess clears the shared backend failure state after a successful
+// auth. An auxiliary H3 authenticating must not clear failures H1 recorded: H1
+// is the health signal, so only it may reset the state.
+func (self *PlatformTransport) noteAuthSuccess() {
+	if self.h3Auxiliary() {
+		return
+	}
+	noteBackendSuccess()
+}
+
+// drainsWhenInactive reports whether a transport running ptMode should drain
+// after InactiveDrainTimeout of no traffic because activeMode is another mode.
+// Equally preferred modes tie and only one is elected active, so without an
+// exemption the other idles out and reconnects in a cycle, and when H3 wins the
+// election it is H1, the health signal, that gets torn down. With an auxiliary
+// H3 both transports stay connected and both carry traffic.
+func (self *PlatformTransport) drainsWhenInactive(activeMode TransportMode, ptMode TransportMode) bool {
+	return activeMode != ptMode && !self.h3Auxiliary()
+}
+
+// h3AuxiliaryMaxBackoff is how long an auxiliary H3 waits between attempts once
+// it keeps failing. A network that filters UDP stays filtered, and each attempt
+// costs a handshake timeout, so a failing H3 backs off far beyond the 60 second
+// ceiling the sole transport uses.
+const h3AuxiliaryMaxBackoff = 10 * time.Minute
+
+// nextH3Backoff doubles the wait between failed attempts up to max.
+func nextH3Backoff(current time.Duration, base time.Duration, max time.Duration) time.Duration {
+	if current == 0 {
+		return base
+	}
+	return min(current*2, max)
 }
 
 func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
@@ -881,7 +934,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 
 				for {
 					mode, notify := self.activeMode()
-					if mode != TransportModeH1 {
+					if self.drainsWhenInactive(mode, TransportModeH1) {
 						startReadCount := readCounter.Load()
 						startWriteCount := writeCounter.Load()
 						select {
@@ -1132,6 +1185,23 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 	}
 }
 
+// h3ConnStream is an established H3 connection with the transport and socket it
+// runs on. quic-go only closes a transport and its socket after the connection
+// for a single use transport, so the owner must close them when the connection ends.
+type h3ConnStream struct {
+	conn          *quic.Conn
+	stream        *quic.Stream
+	quicTransport *quic.Transport
+	packetConn    net.PacketConn
+}
+
+// close ends the connection, then the transport, then the socket
+func (self *h3ConnStream) close() {
+	self.conn.CloseWithError(0, "")
+	self.quicTransport.Close()
+	self.packetConn.Close()
+}
+
 func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.Duration, slowMultiple int) {
 	// connect and update route manager for this transport
 	defer self.cancel()
@@ -1151,6 +1221,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 	}
 
 	var authErrBackoff time.Duration
+	h3UnavailableLogged := false
 
 	for {
 		// stand down while a strictly better mode is active
@@ -1170,12 +1241,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 
 		reconnect := NewReconnect(self.settings.ReconnectTimeout)
 
-		type ConnStream struct {
-			conn   *quic.Conn
-			stream *quic.Stream
-		}
-
-		connect := func() (*ConnStream, error) {
+		connect := func() (*h3ConnStream, error) {
 			// quicConfig := &quic.Config{
 			// 	HandshakeIdleTimeout: self.settings.QuicConnectTimeout + self.settings.QuicHandshakeTimeout,
 			// }
@@ -1248,7 +1314,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 				if err != nil {
 					return nil, err
 				}
-				packetConn = udpConn
+				packetConn = self.countH3Socket(udpConn)
 			}
 
 			defer func() {
@@ -1275,6 +1341,10 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			defer func() {
 				if !success {
 					conn.CloseWithError(0, "")
+					// Close the transport too, not just the conn: closing
+					// packetConn unblocks its listen loop, but the transport's
+					// own state is only released by Close.
+					quicTransport.Close()
 				}
 			}()
 
@@ -1319,13 +1389,15 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			}
 
 			success = true
-			return &ConnStream{
-				conn:   conn,
-				stream: stream,
+			return &h3ConnStream{
+				conn:          conn,
+				stream:        stream,
+				quicTransport: quicTransport,
+				packetConn:    packetConn,
 			}, nil
 		}
 
-		var connStream *ConnStream
+		var connStream *h3ConnStream
 		var err error
 		if self.log.V(2).Enabled() {
 			connStream, err = TraceWithReturnError(fmt.Sprintf("[t]connect %s", clientId), connect)
@@ -1339,19 +1411,33 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			// from a closing multi-client window would otherwise gate the
 			// next session.
 			if self.ctx.Err() == nil {
-				noteBackendFailure()
-				if idx, ok := self.proxyIndex(); ok {
-					RecordProxyAuthFailure(idx, err)
+				// an auxiliary H3 (opt-in, beside H1) is not a health signal
+				if !self.h3Auxiliary() {
+					noteBackendFailure()
+					if idx, ok := self.proxyIndex(); ok {
+						RecordProxyAuthFailure(idx, err)
+					}
 				}
 			}
-			if ok, suppressed := shouldLogAuthErr(); ok {
+			if self.h3Auxiliary() {
+				// an auxiliary H3 that cannot connect is "unavailable", not an
+				// auth error: say so once, then only at verbose levels
+				if !h3UnavailableLogged {
+					h3UnavailableLogged = true
+					self.log.Infof("[t]h3 unavailable, staying on h1 (retrying quietly): %s\n", err)
+				} else if self.log.V(2).Enabled() {
+					self.log.Infof("[t]h3 unavailable: %s\n", err)
+				}
+			} else if ok, suppressed := shouldLogAuthErr(); ok {
 				if suppressed > 0 {
 					self.log.Infof("[t]auth error %s = %s (%d suppressed)\n", clientId, err, suppressed)
 				} else {
 					self.log.Infof("[t]auth error %s = %s\n", clientId, err)
 				}
 			}
-			if authErrBackoff == 0 {
+			if self.h3Auxiliary() {
+				authErrBackoff = nextH3Backoff(authErrBackoff, self.settings.ReconnectTimeout, h3AuxiliaryMaxBackoff)
+			} else if authErrBackoff == 0 {
 				authErrBackoff = self.settings.ReconnectTimeout
 			} else {
 				authErrBackoff = min(authErrBackoff*2, 60*time.Second)
@@ -1368,13 +1454,18 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			}
 		}
 		authErrBackoff = 0
-		noteBackendSuccess()
+		// The connection is up, so the next outage may say "unavailable" once
+		// at info level again instead of staying silent until -v 2.
+		h3UnavailableLogged = false
+		self.noteAuthSuccess()
 
-		conn := connStream.conn
 		stream := connStream.stream
 
 		c := func() {
-			defer conn.CloseWithError(0, "")
+			// release the socket and the quic transport after the connection,
+			// otherwise every reconnect leaks one udp fd, its read goroutine
+			// and the transport state
+			defer connStream.close()
 
 			self.setModeAvailable(ptMode, true)
 			defer self.setModeAvailable(ptMode, false)
@@ -1385,7 +1476,16 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			framer := NewFramer(self.settings.FramerSettings)
 
 			var readCounter atomic.Uint64
+			var readPayloadCounter atomic.Uint64
 			var writeCounter atomic.Uint64
+			var writePayloadCounter atomic.Uint64
+
+			// per-connection frame counts, so the log says what this transport carried
+			connectTime := time.Now()
+			defer func() {
+				self.log.Infof("[t]h3 closed %s after %s (frames out=%d in=%d)\n",
+					clientId, time.Since(connectTime).Round(time.Second), writeCounter.Load(), readCounter.Load())
+			}()
 
 			send := make(chan []byte, self.settings.TransportBufferSize)
 			receive := make(chan []byte, self.settings.TransportBufferSize)
@@ -1405,13 +1505,15 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			self.routeManager.UpdateTransport(receiveTransport, []Route{receive})
 
 			atomic.AddInt64(&activeProxyConnections, 1)
-			if idx, ok := self.proxyIndex(); ok {
+			// an auxiliary H3 is not the identity health signal: its connects and
+			// drops must not mark it up, down or dropped while H1 says if it is healthy
+			if idx, ok := self.proxyIndex(); ok && !self.h3Auxiliary() {
 				markProxyUp(idx)
 			}
 
 			defer func() {
 				atomic.AddInt64(&activeProxyConnections, -1)
-				if idx, ok := self.proxyIndex(); ok {
+				if idx, ok := self.proxyIndex(); ok && !self.h3Auxiliary() {
 					markProxyDown(idx)
 					RecordProxyTransportDrop(idx, nil)
 				}
@@ -1427,15 +1529,15 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 
 				for {
 					mode, notify := self.activeMode()
-					if mode != ptMode {
-						startReadCount := readCounter.Load()
-						startWriteCount := writeCounter.Load()
+					if self.drainsWhenInactive(mode, ptMode) {
+						startReadCount := readPayloadCounter.Load()
+						startWriteCount := writePayloadCounter.Load()
 						select {
 						case <-handleCtx.Done():
 							return
 						case <-time.After(time.Duration(slowMultiple) * self.settings.InactiveDrainTimeout):
 							// no activity after cool down, shut down this transport
-							if readCounter.Load() == startReadCount && writeCounter.Load() == startWriteCount {
+							if readPayloadCounter.Load() == startReadCount && writePayloadCounter.Load() == startWriteCount {
 								handleCancel()
 							}
 						case <-notify:
@@ -1478,6 +1580,10 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 							}
 							return
 						}
+						writeCounter.Add(1)
+						if 0 < len(message) {
+							writePayloadCounter.Add(1)
+						}
 						self.log.V(2).Infof("[ts]%s->\n", clientId)
 					case <-WakeupAfter(self.settings.PingTimeout, self.settings.PingTimeout):
 						stream.SetWriteDeadline(time.Now().Add(time.Duration(slowMultiple) * self.settings.WriteTimeout))
@@ -1485,6 +1591,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 							// note that for websocket a dealine timeout cannot be recovered
 							return
 						}
+						writeCounter.Add(1)
 					}
 				}
 			}, handleCancel)
@@ -1509,12 +1616,17 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 						return
 					}
 
+					readCounter.Add(1)
+
 					if 0 == len(message) {
 						// ping
 						self.log.V(2).Infof("[tr]ping %s<-\n", clientId)
 						MessagePoolReturn(message)
 						continue
 					}
+
+					// count payload reads only: pings are keepalive, not use
+					readPayloadCounter.Add(1)
 
 					select {
 					case <-handleCtx.Done():

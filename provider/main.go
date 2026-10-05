@@ -3705,7 +3705,22 @@ func provide(opts docopt.Opts) {
 			InstanceId: instanceId,
 			AppVersion: RequireVersion(),
 		}
-		platformTransport := connect.NewPlatformTransportWithDefaults(proxyCtx, clientStrategy, connectClient.RouteManager(), connectUrl, auth)
+		// The bandwidth record has to exist before the transport starts. With
+		// URNETWORK_H3 the transport launches runH3 in its own goroutine, and
+		// runH3 wraps the host UDP socket through the identity's bandwidth
+		// record: a record registered after this call leaves that socket
+		// unwrapped and its bytes uncounted for the life of the session.
+		var bw *connect.ProxyBandwidth
+		if proxySettings != nil {
+			bw = connect.RegisterProxyBandwidth(proxySettings.Index)
+		} else if isNative {
+			bw = connect.RegisterProxyBandwidth(0)
+		}
+		platformSettings := platformTransportSettingsFor(proxySettings, isNative)
+		if platformSettings.EnableH3 {
+			tlog("[t]h3 enabled for the direct identity (URNETWORK_H3): H3 runs beside H1 and falls back to H1 quietly\n")
+		}
+		platformTransport := connect.NewPlatformTransport(proxyCtx, clientStrategy, connectClient.RouteManager(), connectUrl, auth, platformSettings)
 		// Register coordinator closer so HotSwap yields the coordinator session cleanly during handoff.
 		// Defer unregister so proxy reloads or shutdowns don't leak stale closers (F-5).
 		unregCloser := RegisterCoordinatorCloser(func() {
@@ -3871,13 +3886,6 @@ func provide(opts docopt.Opts) {
 			InstanceId:     instanceId,
 			RevocationDone: revocationDone,
 		})
-
-		var bw *connect.ProxyBandwidth
-		if proxySettings != nil {
-			bw = connect.RegisterProxyBandwidth(proxySettings.Index)
-		} else if isNative {
-			bw = connect.RegisterProxyBandwidth(0)
-		}
 
 		localUserNat := connect.NewLocalUserNat(proxyCtx, clientId.String(), bw, localUserNatSettings)
 		defer localUserNat.Close()
@@ -4376,6 +4384,10 @@ func provide(opts docopt.Opts) {
 	flushRetentionEvents()
 	FlushPersistentErrors()
 	forceAuditPersist()
+	// Stop the background STUN probe loop. Log-only, and it would die with the
+	// process anyway, but the loop waits on a five-minute timer between cycles
+	// and there is no reason to leave it running through shutdown.
+	connect.StopStunProbe()
 	if metricsServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
