@@ -411,6 +411,62 @@ func (r *ProxyReloader) clearTrimShed(addr string) {
 	delete(r.trimShed, addr)
 }
 
+// drainProxyAfterRemoval takes over a cancelled proxy's shutdown: it waits for
+// the last client to leave, then cancels and re-triggers a reload if the proxy
+// is desired again by then. The ordinary removal pass and the empty-source path
+// both need exactly this, so they share it rather than drift apart.
+//
+// A drained proxy that is still desired is normally re-added (credential
+// rotation, or a source flap that removed and re-added it while it drained).
+// A TRIM-SHED proxy also stays in the desired set on purpose (to keep its
+// grade/health state), so IT must not re-trigger here: under a binding cap the
+// next reload would only hold it again, and each shed proxy that finished
+// draining would burn a reload cycle and log a false "re-added while draining"
+// line. Checking THIS address's shed mark (not just "some cap happens to bind")
+// matters: a non-shed proxy re-added while draining under a binding cap must
+// still re-trigger promptly rather than wait for the reconciler's next tick.
+// The next natural reload admits a shed proxy when the cap allows.
+func (r *ProxyReloader) drainProxyAfterRemoval(addr string, cancel context.CancelFunc, reason string) {
+	r.drainMu.Lock()
+	r.drainingProxies[addr] = cancel
+	r.drainMu.Unlock()
+
+	bw := connect.ProxyBandwidthByKey(addr)
+	tlog("[proxy] draining %s (%d active clients)%s\n", proxyKeyDisplay(addr), bw.Clients.Load(), reason)
+
+	go func() {
+		defer func() {
+			r.drainMu.Lock()
+			delete(r.drainingProxies, addr)
+			r.drainMu.Unlock()
+		}()
+		for {
+			bw := connect.ProxyBandwidthByKey(addr)
+			if bw == nil || bw.Clients.Load() == 0 {
+				break
+			}
+			select {
+			case <-r.parentCtx.Done():
+				return
+			case <-time.After(drainPollInterval):
+			}
+		}
+		tlog("[proxy] drain complete: %s\n", proxyKeyDisplay(addr))
+		cancel()
+
+		desired, err := currentDesiredProxyIdentities()
+		if err == nil && desired[addr] {
+			if r.isTrimShed(addr) {
+				tlog("[proxy] drain complete: %s stays within the trim cap; not re-triggering a reload\n", proxyKeyDisplay(addr))
+			} else if reloadPath, err := proxyReloadPath(); err == nil {
+				if err := writeReloadTrigger(reloadPath); err == nil {
+					tlog("[proxy] re-triggered reload for %s (re-added while draining)\n", proxyKeyDisplay(addr))
+				}
+			}
+		}
+	}()
+}
+
 // reconciliationReloadInterval is how often runReloadReconciler forces a
 // reload cycle regardless of whether anything is known to have changed. This
 // is a belt-and-suspenders safety net, not the primary reload path — normal
@@ -722,103 +778,105 @@ func (r *ProxyReloader) reload() {
 		// The unreadable proxy_url.json case is exempt: there the sources are
 		// UNKNOWN rather than empty, so a transient read error must not cancel
 		// a working fleet.
+		// A source that was configured and has now gone empty is NOT a reason to
+		// keep dialling the proxies it used to supply. The full diff below is
+		// skipped because there is nothing to add, so the removal half has to
+		// happen here: without it the old proxies keep running and the stale
+		// positive configured count makes the status line and the startup
+		// phase ignore the resolution just recorded.
+		//
+		// An unreadable proxy_url.json does not make the desired set empty, it
+		// makes it UNKNOWN, so the proxies whose desired state is unknown —
+		// URL-sourced, or with no recorded source — are left running, exactly
+		// as the removal pass below leaves them. A blanket skip instead would
+		// keep a file proxy the operator just deleted dialling for as long as
+		// the cache stayed unreadable.
+		stopped, draining := 0, 0
+		for addr := range running {
+			if addr == directProxyKey {
+				continue // managed by the direct hot-toggle block above
+			}
+			if r.isDraining(addr) {
+				continue
+			}
+			if !urlCacheLoaded {
+				if e, ok := r.state.Proxies[addr]; !ok || e.Source == "" || e.Source == "url" {
+					continue
+				}
+			}
+			r.cancelMapMu.Lock()
+			cancel, ok := r.cancelMap[addr]
+			if ok {
+				delete(r.cancelMap, addr)
+			}
+			r.cancelMapMu.Unlock()
+			if !ok {
+				continue
+			}
+			delete(r.state.Proxies, addr)
+			r.cancelMapMu.Lock()
+			delete(r.runningAuth, addr)
+			r.cancelMapMu.Unlock()
+
+			// Drain rather than hard-cancel, exactly as the removal pass below
+			// does: a proxy with live clients must not have them cut
+			// mid-session. No clients stops now; otherwise the cancel waits in
+			// a drain goroutine until the last one leaves.
+			bw := connect.ProxyBandwidthByKey(addr)
+			if bw == nil || bw.Clients.Load() == 0 {
+				cancel()
+				stopped++
+				continue
+			}
+			r.drainProxyAfterRemoval(addr, cancel, ": source went empty")
+			draining++
+		}
+		if stopped > 0 || draining > 0 {
+			tlog("[proxy] reload: source empty, stopped %d running prox(ies), draining %d with active clients\n", stopped, draining)
+		}
+		// Reconcile and persist, not just the running set. A dead or offline
+		// proxy's goroutine has already exited, so it was never in `running`
+		// and the loop above never saw it — without this its state entry would
+		// survive in proxy.state forever.
+		pruned := 0
+		for addr := range r.state.Proxies {
+			if _, ok := desiredSet[addr]; ok {
+				continue
+			}
+			if !urlCacheLoaded {
+				if e := r.state.Proxies[addr]; e.Source == "" || e.Source == "url" {
+					continue
+				}
+			}
+			delete(r.state.Proxies, addr)
+			pruned++
+		}
+		if pruned > 0 {
+			tlog("[proxy] pruned %d stale proxy.state entries (source empty)\n", pruned)
+		}
+		proxyStateMu.Lock()
+		if diskState, err := readProxyState(); err == nil {
+			for addr, entry := range r.state.Proxies {
+				if diskEntry, ok := diskState.Proxies[addr]; ok {
+					entry.Health = diskEntry.Health
+					entry.DownSince = diskEntry.DownSince
+					entry.AuthFailures = diskEntry.AuthFailures
+					r.state.Proxies[addr] = entry
+				}
+			}
+		}
+		r.state.NextID = currentProxyIDCounter()
+		if err := writeProxyState(r.state); err != nil {
+			tlog("[proxy] warning: could not write proxy.state after reload: %v\n", err)
+		}
+		proxyStateMu.Unlock()
+
+		// The configured count reflects the desired set, which is empty. Only
+		// when the URL cache was readable: an unreadable one means the URL
+		// sources are UNKNOWN, not empty, so the count they contributed stays.
+		// This must still be set when nothing was running, or a node that never
+		// had proxies would keep a stale count.
 		if urlCacheLoaded {
-			stopped, draining := 0, 0
-			for addr := range running {
-				if addr == directProxyKey {
-					continue // managed by the direct hot-toggle block above
-				}
-				if r.isDraining(addr) {
-					continue
-				}
-				r.cancelMapMu.Lock()
-				cancel, ok := r.cancelMap[addr]
-				if ok {
-					delete(r.cancelMap, addr)
-				}
-				r.cancelMapMu.Unlock()
-				if !ok {
-					continue
-				}
-				delete(r.state.Proxies, addr)
-				r.cancelMapMu.Lock()
-				delete(r.runningAuth, addr)
-				r.cancelMapMu.Unlock()
-
-				// Drain rather than hard-cancel, exactly as the removal
-				// pass below does: a proxy with live clients must not have
-				// them cut mid-session. No clients stops now; otherwise the
-				// cancel waits in a drain goroutine until the last one leaves.
-				bw := connect.ProxyBandwidthByKey(addr)
-				if bw == nil || bw.Clients.Load() == 0 {
-					cancel()
-					stopped++
-					continue
-				}
-				r.drainMu.Lock()
-				r.drainingProxies[addr] = cancel
-				r.drainMu.Unlock()
-				tlog("[proxy] draining %s (%d active clients): source went empty\n", addr, bw.Clients.Load())
-				go func(cancelFn context.CancelFunc, proxyAddr string) {
-					defer func() {
-						r.drainMu.Lock()
-						delete(r.drainingProxies, proxyAddr)
-						r.drainMu.Unlock()
-					}()
-					for {
-						bw := connect.ProxyBandwidthByKey(proxyAddr)
-						if bw == nil || bw.Clients.Load() == 0 {
-							break
-						}
-						select {
-						case <-r.parentCtx.Done():
-							return
-						case <-time.After(5 * time.Second):
-						}
-					}
-					tlog("[proxy] drain complete: %s\n", proxyAddr)
-					cancelFn()
-				}(cancel, addr)
-				draining++
-			}
-			if stopped > 0 || draining > 0 {
-				tlog("[proxy] reload: source empty, stopped %d running prox(ies), draining %d with active clients\n", stopped, draining)
-			}
-			// Reconcile and persist, not just the running set. A dead or
-			// offline proxy's goroutine has already exited, so it was never in
-			// `running` and the loop above never saw it — without this its
-			// state entry would survive in proxy.state forever. Gated on
-			// urlCacheLoaded for the same reason as the loop above.
-			pruned := 0
-			for addr := range r.state.Proxies {
-				if _, ok := desiredSet[addr]; !ok {
-					delete(r.state.Proxies, addr)
-					pruned++
-				}
-			}
-			if pruned > 0 {
-				tlog("[proxy] pruned %d stale proxy.state entries (source empty)\n", pruned)
-			}
-			proxyStateMu.Lock()
-			if diskState, err := readProxyState(); err == nil {
-				for addr, entry := range r.state.Proxies {
-					if diskEntry, ok := diskState.Proxies[addr]; ok {
-						entry.Health = diskEntry.Health
-						entry.DownSince = diskEntry.DownSince
-						entry.AuthFailures = diskEntry.AuthFailures
-						r.state.Proxies[addr] = entry
-					}
-				}
-			}
-			r.state.NextID = currentProxyIDCounter()
-			if err := writeProxyState(r.state); err != nil {
-				tlog("[proxy] warning: could not write proxy.state after reload: %v\n", err)
-			}
-			proxyStateMu.Unlock()
-
-			// The configured count reflects the desired set, which is empty.
-			// This must be set even when nothing was running, or a node that
-			// never had proxies would keep a stale count.
 			setConfiguredProxyCount(0)
 		}
 		return
@@ -885,8 +943,18 @@ func (r *ProxyReloader) reload() {
 			// prune further down is gated on urlCacheLoaded for exactly this
 			// reason; the cancel has to be too. A proxy is only "no longer
 			// desired" when we actually know what the desired set is.
+			//
+			// Only URL-sourced proxies depend on that cache. A file or internal
+			// proxy is "no longer desired" because the operator removed it from a
+			// source this reload DID read, so an unreadable proxy_url.json must
+			// not hold it up: with the gate on every address, `proxy remove` was
+			// silently never applied for as long as the file stayed unreadable. An
+			// entry with no recorded source is treated as URL-sourced (the
+			// conservative reading for state written before sources were recorded).
 			if !urlCacheLoaded {
-				continue
+				if e, ok := r.state.Proxies[addr]; !ok || e.Source == "" || e.Source == "url" {
+					continue
+				}
 			}
 			removed = append(removed, addr)
 		}
@@ -1018,8 +1086,15 @@ func (r *ProxyReloader) reload() {
 			}
 			added = kept
 		}
-		if shedCount > 0 || dropped > 0 || trimChanged {
+		// The durable line is for a change: a new cap, or running proxies shed.
+		// Held additions alone repeat on every reload for as long as desired
+		// exceeds the cap (startup-held proxies carry no backoff and re-enter
+		// the budget each cycle), so they stay on the RAM log, or the important
+		// buffer and the fsynced events.log fill with a line that carries no news.
+		if shedCount > 0 || trimChanged {
 			logImportant("[proxy][trim] applied: cap=%d: shed %d worst-graded running, held %d additions (pool ~%d)", trimCap, shedCount, dropped, runningNonDirect-shedCount)
+		} else if dropped > 0 {
+			tlog("[proxy][trim] applied: cap=%d: shed 0 worst-graded running, held %d additions (pool ~%d)\n", trimCap, dropped, runningNonDirect)
 		}
 		if trimChanged {
 			pendingCrit = append(pendingCrit, func() {
@@ -1066,56 +1141,7 @@ func (r *ProxyReloader) reload() {
 			continue
 		}
 
-		r.drainMu.Lock()
-		r.drainingProxies[addr] = cancel
-		r.drainMu.Unlock()
-
-		tlog("[proxy] draining %s (%d active clients)\n", proxyKeyDisplay(addr), bw.Clients.Load())
-
-		go func(cancelFn context.CancelFunc, proxyAddr string) {
-			defer func() {
-				r.drainMu.Lock()
-				delete(r.drainingProxies, proxyAddr)
-				r.drainMu.Unlock()
-			}()
-			for {
-				bw := connect.ProxyBandwidthByKey(proxyAddr)
-				if bw == nil || bw.Clients.Load() == 0 {
-					break
-				}
-				select {
-				case <-r.parentCtx.Done():
-					return
-				case <-time.After(drainPollInterval):
-				}
-			}
-			tlog("[proxy] drain complete: %s\n", proxyKeyDisplay(proxyAddr))
-			cancelFn()
-
-			desired, err := currentDesiredProxyIdentities()
-			if err == nil && desired[proxyAddr] {
-				// A drained proxy that is still desired is normally re-added
-				// (credential rotation, or a source flap that removed and
-				// re-added it while it drained). But a TRIM-SHED proxy also
-				// stays in the desired set on purpose (to keep its grade/health
-				// state), so IT must not re-trigger here: under a binding cap
-				// the next reload would only hold it again, and each shed
-				// proxy that finished draining would burn a reload cycle and
-				// log a false "re-added while draining" line. Checking THIS
-				// address's shed mark (not just "some cap happens to bind")
-				// matters: a non-shed proxy re-added while draining under a
-				// binding cap must still re-trigger promptly rather than wait
-				// for the reconciler's next tick. The next natural reload
-				// admits a shed proxy when the cap allows.
-				if r.isTrimShed(proxyAddr) {
-					tlog("[proxy] drain complete: %s stays within the trim cap; not re-triggering a reload\n", proxyKeyDisplay(proxyAddr))
-				} else if reloadPath, err := proxyReloadPath(); err == nil {
-					if err := writeReloadTrigger(reloadPath); err == nil {
-						tlog("[proxy] re-triggered reload for %s (re-added while draining)\n", proxyKeyDisplay(proxyAddr))
-					}
-				}
-			}
-		}(cancel, addr)
+		r.drainProxyAfterRemoval(addr, cancel, "")
 	}
 
 	// Note: if all running proxies enter draining state and none are added, the
