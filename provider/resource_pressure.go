@@ -1264,7 +1264,7 @@ func runPoolController(ctx context.Context, configuredMax int, selfHealEnabled b
 		if next != urlState.TargetPoolSize {
 			urlState.TargetPoolSize = next
 			if err := writeProxyURLState(urlState); err != nil {
-				tlog("[proxy][pressure] warn: could not persist target: %v\n", err)
+				tlog("⚠️ [proxy][pressure] warn: could not persist target: %v\n", err)
 			}
 		}
 		release()
@@ -1319,7 +1319,7 @@ func shedPoolToTarget(target int) {
 		applyShedBackoff(addr, time.Now())
 	}
 	if err := removeDeadProxies(state, map[string][]string{"url": shed}); err != nil {
-		tlog("[proxy][pressure] warn: shed failed: %v\n", err)
+		tlog("⚠️ [proxy][pressure] warn: shed failed: %v\n", err)
 		return
 	}
 	tlog("🧯 [proxy][pressure] shed %d url proxies to reach target %d\n", len(shed), target)
