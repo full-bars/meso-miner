@@ -1965,6 +1965,8 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		if dohFailures > 0 {
 			healthLine += fmt.Sprintf(" dns_failures=%d", dohFailures)
 		}
+		healthLine += connect.TransportModeStats().HealthSuffix()
+		healthLine += connect.H3DatagramCounters().HealthSuffix()
 		tlog("%s\n", healthLine)
 
 		// Message-pool heartbeat: one aggregated line per tick, written so an
@@ -3718,7 +3720,8 @@ func provide(opts docopt.Opts) {
 		}
 		platformSettings := platformTransportSettingsFor(proxySettings, isNative)
 		if platformSettings.EnableH3 {
-			tlog("[t]h3 enabled for the direct identity (URNETWORK_H3): H3 runs beside H1 and falls back to H1 quietly\n")
+			tlog("[t]h3 eligible for the direct identity, currently %s (urnet-tools set h3 on|off or URNETWORK_H3): H3 runs beside H1 and falls back to H1 quietly\n",
+				onOff(resolveH3(globalControlState)))
 		}
 		platformTransport := connect.NewPlatformTransport(proxyCtx, clientStrategy, connectClient.RouteManager(), connectUrl, auth, platformSettings)
 		// Register coordinator closer so HotSwap yields the coordinator session cleanly during handoff.
