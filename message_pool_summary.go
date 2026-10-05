@@ -54,6 +54,7 @@ func (s poolTagStat) outstanding() int64 {
 	return int64(s.Taken - s.Returned)
 }
 
+// key identifies a tag's counter row across dumps: the pool size and the tag together.
 func (s poolTagStat) key() string {
 	return fmt.Sprintf("%d/%d", s.PoolSize, s.Tag)
 }
@@ -66,6 +67,7 @@ type poolFinding struct {
 	Detail   string
 }
 
+// String renders a finding the way the summary prints it.
 func (f poolFinding) String() string {
 	return fmt.Sprintf("pool[%d] tag=%d [%s] %s", f.PoolSize, f.Tag, f.Caller, f.Detail)
 }
@@ -86,6 +88,7 @@ func (s poolSummary) Healthy() bool {
 	return len(s.Growing) == 0 && len(s.LowReuse) == 0
 }
 
+// String renders the verdict for one dump, warm or still collecting.
 func (s poolSummary) String() string {
 	held := fmt.Sprintf("holding %.1f MiB in %d buffers", float64(s.HeldBytes)/(1<<20), s.HeldBuffers)
 	if s.Healthy() {
@@ -104,6 +107,7 @@ func (s poolSummary) String() string {
 	return fmt.Sprintf("pool summary: %d tags checked, %s, %s", s.Tags, strings.Join(parts, "; "), held)
 }
 
+// joinFindings renders a finding list as the comma-separated form the log line uses.
 func joinFindings(fs []poolFinding) string {
 	out := make([]string, len(fs))
 	for i, f := range fs {
@@ -125,6 +129,7 @@ type poolWatch struct {
 	prev map[string]poolTagStat
 }
 
+// newPoolWatch returns a watch with no history: the first dump only seeds it.
 func newPoolWatch() *poolWatch {
 	return &poolWatch{hist: map[string][]int64{}, prev: map[string]poolTagStat{}}
 }
@@ -158,6 +163,15 @@ func (w *poolWatch) observe(stats []poolTagStat) poolSummary {
 		// activity this interval says nothing about its current behaviour, and
 		// reporting on it would leave a finding nothing can ever clear.
 		if prev, had := w.prev[st.key()]; had {
+			// A counter that went backwards is a reset (a subsystem restart
+			// or an explicit reset), not a negative interval: unsigned
+			// subtraction would wrap to a huge positive and report a bogus
+			// "0% reuse over 18 quintillion takes". Re-seed the baseline and
+			// say nothing this dump.
+			if st.Taken < prev.Taken || st.Created < prev.Created {
+				w.prev[st.key()] = st
+				continue
+			}
 			taken := st.Taken - prev.Taken
 			created := st.Created - prev.Created
 			if taken >= poolLowReuseTakes {
@@ -224,7 +238,11 @@ func growingWithoutLevelling(h []int64) bool {
 	// growth of its own, not just a larger final step.
 	mid := n / 2
 	laterGrowth := h[n-1] - h[mid]
-	if laterGrowth < poolLeakFloor {
+	// poolLeakFloor is defined over the whole window; the later half carries
+	// about half its intervals, so require half the floor. The full floor here
+	// would double the rate a leak has to reach before it is reported, and a
+	// steady slow leak would never show up at all.
+	if laterGrowth < poolLeakFloor/2 {
 		return false
 	}
 	// And the growth must not be a single jump: at least two of the intervals
