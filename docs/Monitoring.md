@@ -250,3 +250,5 @@ The test file covers the two enabled rules. `prometheus.yml` lists `urnetwork.ym
 | `urnet_tcp_orphans` | gauge | | Orphaned TCP sockets (Linux) |
 | `urnet_goroutines` | gauge | | Goroutines |
 | `urnet_pool_latency_ms` | gauge | | Message pool average latency |
+| `urnet_loop_restarts_total` | counter | `loop` | Times a supervised background loop ended unexpectedly and was restarted |
+| `urnet_loop_up` | gauge | `loop` | 1 while a supervised loop is running, 0 while it is stopped or backing off |
