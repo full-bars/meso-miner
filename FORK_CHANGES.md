@@ -3,8 +3,14 @@
 This document tracks all modifications made to the upstream URNetwork v3.23 codebase in this fork. Use this as a reference when rebasing to newer upstream versions.
 
 **Fork Based On**: urnetwork/connect v3.23  
-**Repository**: github.com/full-bars/urnetwork-3.23-fix  
+**Repository**: github.com/full-bars/meso-miner  
 **Current Version**: v2026.9.22-1052862940-meso
+
+---
+
+## Inherited from urnetwork-3.23-fix (carried by the parity port)
+
+Sections 1 through 165 are inherited history from `full-bars/urnetwork-3.23-fix`, carried over by the parity port. They are recorded here for rebase reference and are not meso-miner changes. The meso-miner parity work begins at section 166.
 
 ---
 
@@ -3445,6 +3451,10 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 
 **Status**: ✅ Ships with this merge (v31.4+).
 
+## Meso-miner parity work (sections 166 onward)
+
+Sections 166 through 170 are meso-miner changes, not inherited from `full-bars/urnetwork-3.23-fix`.
+
 ## 166. Message-Pool Dial-Failure Buffer Fix (PR #126)
 
 Rebalances meso-miner with the upstream connect fix, applied in the same batch as the 3.23-fix parity release.
@@ -3517,7 +3527,7 @@ Rebalances meso-miner's transport layer with the 3.23-fix H3 work, which had not
 ### Added
 
 - **H3 (QUIC) beside H1 for the direct identity** (PR #159): the engine already carried a working H3 platform transport that Auto mode never launched. With `URNETWORK_H3=on` the direct (non-proxied) identity starts it beside H1. A proxied identity never does, because `runH3` opens a host UDP socket that would bypass its proxy. H3 is auxiliary: H1 stays the health signal, so an H3 connect failure is "mode unavailable", backs off quietly up to ten minutes, and is not recorded as a backend failure or a proxy auth failure. The H3 socket's bytes count into the identity's total traffic through a `countedUDPConn` wrapper that preserves `OOBCapablePacketConn` and `ReadBatch`. The sole H3 target mode keeps the full failure accounting. No platform-side gain is proven.
-- **The H3 runtime gate and per-mode transport counters** (PR #162): the `h3` control key switches H3 on and off live with no restart, and a persisted `off` hands the decision back to `URNETWORK_H3`. `transport_mode_stats.go` counts what each transport mode carries, the `[health]` line reports it, and the H3 share is measured against the direct identity's H1 rather than against every proxy.
+- **The H3 runtime gate and per-mode transport counters** (PR #162): the `h3` control key switches H3 on and off live with no restart, a persisted `off` beats `URNETWORK_H3=on`, and clearing the key hands the decision back to `URNETWORK_H3`. `transport_mode_stats.go` counts what each transport mode carries, the `[health]` line reports it, and the H3 share is measured against the direct identity's H1 rather than against every proxy.
 - **The QUIC DATAGRAM receive lane** (PR #162): a versioned bounded message layer with offer and accept negotiation, behind the default-off `h3_datagram` control key. Receive side only; everything the provider sends stays on the reliable stream. The lane reports through the health line, `/metrics` and the Internals panel.
 - **The QUIC DATAGRAM send lane** (PR #165): on an H3 connection where the server accepted DATAGRAM, a dispatcher chooses the lane per message. A frame that fits one datagram goes as a datagram, anything larger goes to the reliable stream, and the stream side is bounded by message count and retained bytes so a blocked datagram send cannot hold up stream frames. Behind the default-off `h3_datagram_send` key, read per message. A full lane or a send error falls back to the stream, and a blackhole guard turns the lane off for the rest of a connection that sent datagrams and received none while the stream stayed alive.
 - **The baseline transport series and its panels** (PR #162): each baseline sample records which transport carried the traffic, and the DNS and DNS-pump modes count under their own names. Eight new Grafana panels chart the series.
@@ -3547,7 +3557,7 @@ Brings meso-miner level with the 3.23-fix provider line for the fixes merged the
 
 - **A STUN success aggregate in the log** (PR #153): a raw STUN binding probe per endpoint over IPv4 and IPv6, grouped by provider and aggregated as one line on an adaptive 1 or 5 minute interval, retained with the important logs. `stun.cloudflare.com` joins the ICE-gather endpoints. Probes stop on provider shutdown. Log only; no NAT or ICE behaviour changed.
 - **ReportId on the close contract** (PR #154): each logical close report carries a random 16-byte identifier. It is a backward and forward compatible proto3 optional field, so an older backend ignores it, and it gives the backend a durable dedup identity for retries and out-of-band reports. No client decodes it.
-- **The `set help` key list is complete** (PR #166): the `set` long text hardcoded a seven-key list that had already gone stale, and `set help` omitted the whole h3 and datagram family plus `baseline`, `proxy-audit` and `metrics-listen`. Four rows were added with value domain, default and effect, the stale list is gone, and the bare `set` listing now iterates every key this fork accepts. `h3-datagram-send` is deliberately not documented: meso has no canonical key for it.
+- **The `set help` key list is complete** (PR #166): the `set` long text hardcoded a seven-key list that had already gone stale, and `set help` omitted the whole h3 and datagram family plus `baseline`, `proxy-audit` and `metrics-listen`. Four rows were added with value domain, default and effect, the stale list is gone, and the bare `set` listing now iterates every documented key this fork accepts. `h3-datagram-send` is supported by the CLI and the control socket, with a canonical key, a value validator and a live apply case, but PR #166 omitted it from `set help` and from the bare `set` listing.
 
 ### Changed
 
