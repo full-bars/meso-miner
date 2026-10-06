@@ -4,6 +4,7 @@
 > Draft for the next synchronized release. The tag used below is a PLACEHOLDER, the same string the last release shipped (`v2026.9.22-1052862940-meso`). Do not dispatch with it. At cut time the user sets a fresh epoch, then this file is renamed to `releases/<final-tag>.md` on BOTH `meso-miner` and `sn` before the notes are committed, and this staging file is reset to an empty placeholder.
 
 # v2026.9.22-1052862940-meso
+<!-- PLACEHOLDER heading: re-snap tag at cut time -->
 
 This release brings meso-miner level with the 3.23-fix provider line and lands the whole H3 (QUIC) transport stack, all of it behind opt-in controls. This release also carries the live status and `top` rework staged since the last release, the capacity and observation work, and the set of correctness fixes found while porting them. `full-bars/sn` ships the same synchronized release on the same tag.
 
