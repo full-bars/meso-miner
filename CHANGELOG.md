@@ -4,8 +4,7 @@ _Nothing yet._
 
 ---
 
-## [v2026.9.22-1052862940-meso] — 2026-10-05
-<!-- PLACEHOLDER release heading. The tag string equals the last shipped release; re-snap the epoch and rename this heading to the final tag before cutting. -->
+## [v2026.10.6-1064547980-meso] — 2026-10-06
 
 ### Added
 
