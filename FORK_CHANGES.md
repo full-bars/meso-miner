@@ -3,8 +3,14 @@
 This document tracks all modifications made to the upstream URNetwork v3.23 codebase in this fork. Use this as a reference when rebasing to newer upstream versions.
 
 **Fork Based On**: urnetwork/connect v3.23  
-**Repository**: github.com/full-bars/urnetwork-3.23-fix  
+**Repository**: github.com/full-bars/meso-miner  
 **Current Version**: v2026.9.22-1052862940-meso
+
+---
+
+## Inherited from urnetwork-3.23-fix (carried by the parity port)
+
+Sections 1 through 165 are inherited history from `full-bars/urnetwork-3.23-fix`, carried over by the parity port. They are recorded here for rebase reference and are not meso-miner changes. The meso-miner parity work begins at section 166.
 
 ---
 
@@ -3445,6 +3451,10 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 
 **Status**: ✅ Ships with this merge (v31.4+).
 
+## Meso-miner parity work (sections 166 onward)
+
+Sections 166 through 170 are meso-miner changes, not inherited from `full-bars/urnetwork-3.23-fix`.
+
 ## 166. Message-Pool Dial-Failure Buffer Fix (PR #126)
 
 Rebalances meso-miner with the upstream connect fix, applied in the same batch as the 3.23-fix parity release.
@@ -3503,5 +3513,68 @@ Brings the 3.23-fix v32.8 capacity, observability and dialer work to this reposi
 - **Resource signals** (PR #142): `provider/resource_signals.go` adds `gc` and `net` blocks to `baseline.jsonl` and the `urnet_gc_*`, `urnet_conntrack_used_ratio`, `urnet_tcp_time_wait` and `urnet_tcp_orphans` gauges. Linux only for the socket readers; omission is per counter.
 - **Host memory readers** (PR #143): `sysmem_{linux,darwin,windows,other}.go` provide `HostMemoryTotalBytes` and `HostMemoryAvailableBytes`, used by `EffectiveRAMLimit` and `readMemAvailableMiB`, so the 850 MiB fallback applies only where no reader exists.
 - **Windows and macOS memory pressure** (PR #144): `collectPressureSample` falls back to `readHostMemPressure` when `/proc/pressure/memory` cannot be read: macOS `kern.memorystatus_vm_pressure_level` (warn 30, critical 60 on the PSI percent scale), Windows `LowMemoryResourceNotification`, with a retry after a failed handle creation. The mappings are untested on real hardware.
+
+**Status**: merged on `main`, unreleased.
+
+## 169. H3 (QUIC) Transport Stack: Direct H3, DATAGRAM, Mode Stats & Baseline Series (PR #155 to #165)
+
+Rebalances meso-miner's transport layer with the 3.23-fix H3 work, which had not crossed over at all: meso carried no per-mode transport counters, no runtime H3 gate, no DATAGRAM lane and no baseline transport series. Everything new is off by default, and H1 stays the health signal.
+
+**Files Added**: `provider/h3_direct.go`, `transport_h3_gate.go`, `transport_mode_stats.go`, `transport_h3_datagram.go`, `transport_h3_datagram_state.go`, `transport_h3_datagram_lane.go`, `transport_h3_datagram_guard.go`, `transport_h3_datagram_errors.go`, `transport_h3_memory.go`, `transport_h3_counted.go`, plus their tests.
+
+**Files Modified**: `transport.go`, `provider/main.go`, `provider/control_socket.go`, `provider/control_state.go`, `provider/baseline.go`, `provider/node_internals.go`, `internal/urnettools/control_client.go`, `internal/urnettools/internals.go`, `internal/urnettools/top_runtime.go`, `internal/urnettools/top_view.go`, `metrics_prometheus.go`, `protocol/transfer.proto`, `monitoring/grafana/dashboards/urnetwork-providers.json`, `go.mod`, `go.sum`.
+
+### Added
+
+- **H3 (QUIC) beside H1 for the direct identity** (PR #159): the engine already carried a working H3 platform transport that Auto mode never launched. With `URNETWORK_H3=on` the direct (non-proxied) identity starts it beside H1. A proxied identity never does, because `runH3` opens a host UDP socket that would bypass its proxy. H3 is auxiliary: H1 stays the health signal, so an H3 connect failure is "mode unavailable", backs off quietly up to ten minutes, and is not recorded as a backend failure or a proxy auth failure. The H3 socket's bytes count into the identity's total traffic through a `countedUDPConn` wrapper that preserves `OOBCapablePacketConn` and `ReadBatch`. The sole H3 target mode keeps the full failure accounting. No platform-side gain is proven.
+- **The H3 runtime gate and per-mode transport counters** (PR #162): the `h3` control key switches H3 on and off live with no restart, a persisted `off` beats `URNETWORK_H3=on`, and clearing the key hands the decision back to `URNETWORK_H3`. `transport_mode_stats.go` counts what each transport mode carries, the `[health]` line reports it, and the H3 share is measured against the direct identity's H1 rather than against every proxy.
+- **The QUIC DATAGRAM receive lane** (PR #162): a versioned bounded message layer with offer and accept negotiation, behind the default-off `h3_datagram` control key. Receive side only; everything the provider sends stays on the reliable stream. The lane reports through the health line, `/metrics` and the Internals panel.
+- **The QUIC DATAGRAM send lane** (PR #165): on an H3 connection where the server accepted DATAGRAM, a dispatcher chooses the lane per message. A frame that fits one datagram goes as a datagram, anything larger goes to the reliable stream, and the stream side is bounded by message count and retained bytes so a blocked datagram send cannot hold up stream frames. Behind the default-off `h3_datagram_send` key, read per message. A full lane or a send error falls back to the stream, and a blackhole guard turns the lane off for the rest of a connection that sent datagrams and received none while the stream stayed alive.
+- **The baseline transport series and its panels** (PR #162): each baseline sample records which transport carried the traffic, and the DNS and DNS-pump modes count under their own names. Eight new Grafana panels chart the series.
+- **Transport rows in the Internals panel** (PR #163): `top` shows a row per transport mode and the `h3/all` byte pair in one unit. The rows appear only once the provider has reported a transport read, so a box with no H3 draws the panel it drew before.
+
+### Fixed
+
+- **H3 closed its connection but not its transport or socket** (PR #155): `quic-go` left the transport and its packet socket open on a non-single-use transport, so every H3 reconnect leaked one UDP descriptor, its read goroutine and the transport state. The connection now closes the connection, the transport and the socket in order, and logs an `h3 closed` line with the connection age and frame counts.
+- **H3 keepalive writes were not counted and the drain watched all frames** (PR #156): the closed-line totals now include outbound keepalives, and the drain compares a separate payload counter on both sides, so an idle connection that pings itself still drains.
+- **H3 empty routed messages counted as payload** (PR #157): they are now kept out of the payload write counter, matching the receive-side ping classification.
+
+**Status**: merged on `main`, unreleased.
+
+### Tests
+
+- **The H3 runtime gate is covered with the gate switched off mid-dial** (PR #164): the test parks a real dial between its auth frame and the reply, flips the gate off, and checks the connection is not counted as a connect or a drop and the transport waits instead of dialling again. Removing the gate check from `transport.go` makes it fail, so it pins the behaviour rather than the harness.
+
+**Status**: merged on `main`, unreleased.
+
+## 170. Synchronized Parity Fixes: Proxy Identity, Trim Earnings, Installer, Update Repo & Pool Summary (PR #128 to #166)
+
+Brings meso-miner level with the 3.23-fix provider line for the fixes merged there after the last sync, and corrects two meso-local faults that only this layout could have: the Linux installer and the `urnet-tools` update path both pulled releases from the wrong fork.
+
+**Files Modified**: `provider/proxy_reload.go`, `provider/proxy_trim.go`, `provider/resource_pressure.go`, `provider/proxy_state.go`, `provider/proxy_earnings_store.go`, `provider/proxy_slow_retry.go`, `provider/proxy_url.go`, `provider/proxy_url_source.go`, `provider/oom_cap.go`, `provider/baseline.go`, `provider/main.go`, `provider/control_socket.go`, `net.go`, `proxy_health.go`, `message_pool_summary.go`, `transfer_contract_manager.go`, `protocol/transfer.proto`, `stun_probe.go`, `stun_tally.go`, `scripts/Provider_Install_Linux.sh`, `internal/urnettools/release.go`, `internal/urnettools/update.go`, `internal/urnettools/cobra.go`, `internal/urnettools/restore_delegate.go`, `internal/urnettools/proxy.go`, `.github/workflows/tool-functional-smoke.yml`, `docs/Monitoring.md`, `docs/urnet-tools-go.md`.
+
+### Added
+
+- **A STUN success aggregate in the log** (PR #153): a raw STUN binding probe per endpoint over IPv4 and IPv6, grouped by provider and aggregated as one line on an adaptive 1 or 5 minute interval, retained with the important logs. `stun.cloudflare.com` joins the ICE-gather endpoints. Probes stop on provider shutdown. Log only; no NAT or ICE behaviour changed.
+- **ReportId on the close contract** (PR #154): each logical close report carries a random 16-byte identifier. It is a backward and forward compatible proto3 optional field, so an older backend ignores it, and it gives the backend a durable dedup identity for retries and out-of-band reports. No client decodes it.
+- **The `set help` key list is complete** (PR #166): the `set` long text hardcoded a seven-key list that had already gone stale, and `set help` omitted the whole h3 and datagram family plus `baseline`, `proxy-audit` and `metrics-listen`. Five rows were added across PR #162 and PR #166 with value domain, default and effect, the stale list is gone, and the bare `set` listing now iterates every documented key this fork accepts. `h3-datagram-send` is supported by the CLI and the control socket, with a canonical key, a value validator and a live apply case, but PR #166 omitted it from `set help` and from the bare `set` listing.
+
+### Changed
+
+- **Proxy identity is the address plus the user, not the bare address** (PR #130): a shared gateway serves several accounts at one host and port, and the provider treated the bare address as the identity, so two accounts collided into one entry and flipped which one won on every reload. That looked like a perpetual credential change and rotated forever. `ProxySettings.Key()` is now the address, or the address plus the user for a shared-gateway proxy, with the password excluded so a password change stays the same identity. The health and bandwidth registry, the persisted state, earnings, slow-retry stores, the reload engine, the reaper, history pruning and the parked set all use the key; legacy bare-address entries migrate to it; address stays the dial target everywhere.
+- **Trim and pool-shed rank by billable earnings, not total bytes** (PR #150, #151): total bytes include the platform's non-billable traffic, about seventeen times the billable figure on a measured box, so a proxy that moved a lot of non-billable traffic and earned nothing ranked as a protected earner. The ranking now takes the larger of this run's billable bytes and the decayed earnings score, including a proxy that is still launching and has no bandwidth record yet.
+- **Log emoji markers standardized** (PR #152): a log-only pass over the operator-facing provider lines. No behaviour change.
+
+### Fixed
+
+- **Proxy credential rotation was perpetual for credentialed proxies** (PR #129): the recorded auth baseline shared a pointer with the live proxy settings, which the runtime mutates during its own auth flow, so the baseline drifted milliseconds after launch and every reload saw a change. The baseline is now a deep copy, and a real credential change still rotates exactly once.
+- **The marker, cache, GOGC, baseline and trim fixes** (PR #145, #158): the OOM start marker is written in every mode and carries a random `start_id` so a HotSwap parent cannot overwrite its candidate's marker; a no-op update self-heals a missing `Type=` on the systemd unit; an unparseable `proxy_url.json` is moved aside to `proxy_url.json.corrupt` instead of skipping every merge cycle, and `proxy remove` on a file proxy applies again; the GC governor adopts the current GOGC while it is not tightening and never overrides an explicit `URNETWORK_BASELINE_GOGC`; the baseline start row records the version being replaced and the state reason; the URL launch line goes through the reload's deferred writer; and the trim applied line is written durably only when the cap changes or proxies are shed.
+- **The pool summary under-reported a slow steady leak and underflowed on a rollback** (PR #160): the sustained-growth gate applied the whole-window floor to a half window, which doubled the rate a leak had to reach, and a counter rollback underflowed the `uint64` interval into `0% reuse over 18 quintillion takes` forever. The gate now requires half the floor, and the interval re-seeds on a rollback.
+- **The Linux installer could download from the wrong fork** (PR #146): `do_install` carried a second copy of its whole body, so after a successful first pass the stale copy looked up the latest tag on the 3.23-fix repo and its mirror, and a fresh install could end with "Failed to download from both primary and mirror". The duplicate is removed, and the test harness pins the release lookup appearing once.
+- **`urnet-tools` updates resolved 3.23-fix tags** (PR #147): the release API and download URLs were hardcoded to `full-bars/urnetwork-3.23-fix`, so the update timer could replace the meso provider with a 3.23-fix build and `--tag v...-meso` returned 404. Every URL now goes through one release repo constant set to `full-bars/meso-miner`.
+
+### Tests and Docs
+
+- **Test helpers shared, smoke runs serialized and docs staged** (PR #128, #132, #148, #149, #161): the untagged TTL tests move their TLS helpers to an untagged file so `GOOS=windows go vet .` type-checks; the smoke workflow's concurrency group becomes repo-wide so six open PRs cannot trip the shared account's sign-in limit; the capacity, dialer, baseline and memory work is documented; and the content-filtering blocklist is refreshed from upstream twice.
 
 **Status**: merged on `main`, unreleased.
