@@ -1,8 +1,15 @@
 ## [Unreleased]
 
+### Added
+
+- **A swap-thrash watchdog with a supervised restart** ([#180](https://github.com/full-bars/meso-miner/pull/180)): memory pressure alone does not say "thrashing". The watchdog senses PSI memory `full`, swap activity, page refaults and direct reclaim, and tracks one state: `calm`, `under-pressure`, `thrashing`, `critical`. It first freezes pool growth; when the condition persists it restarts the provider by exiting with status 75, which the shipped unit (`Restart=on-failure`) turns into a supervised restart. The restart is capped at 3 per 24 hours with a growing backoff, is skipped while a hot-swap is in flight, and refuses to act when the swap belongs to another process. A restart leaves a thrash cap in `~/.urnetwork/thrash_cap.json` so the next start begins leaner. It rides the existing self-heal switch; with self-heal off it senses and logs but never restarts anything.
+- **`urnet-tools status` prints the pressure summary sentence**: the live block's pressure row shows the provider's one-sentence summary (the `summary` the provider persists to `~/.urnetwork/pressure_status`), instead of only the score. Older providers keep the bare score.
+- **The installer warns when a restart-policy override weakens the watchdog**: a drop-in with `Restart=no`, `Restart=on-success`, `Restart=on-abnormal`, `Restart=on-watchdog` or `Restart=on-abort`, or a `RestartPreventExitStatus` listing 75, would leave a detected thrash unrecovered; the installer now says so. The policy itself is never rewritten.
+
 ### Changed
 
 - **The dropped bucket is labeled on its own, and the idle hint reads again** ([#169](https://github.com/full-bars/meso-miner/pull/169)): the live status and `top` view called the was-up-now-down bucket `down`, the same word the whole-pool figure uses for dead plus dropped. The breakdown bucket is `dropped` now, matching the proxy health report, so `down` has one meaning. The idle hint no longer calls every offline proxy dead. Labels and wording only; the reaper inputs are unchanged.
+- **The provider's operator logs are readable sentences** ([#180](https://github.com/full-bars/meso-miner/pull/180)): the pressure regime, pool target, trim receipt and apply, reload summary, health verdict, auth limiter and GC governor lines say what happened in plain words, with machine counters kept in a trailing `(...)` for grep. The new `[health] Verdict:` line summarizes state in one sentence. Dialer and connect lines are unchanged.
 
 ---
 
