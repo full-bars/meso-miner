@@ -166,20 +166,27 @@ Head nodes aggregate proofs from client nodes for on-chain batch verification.
 ### Binding a Hotkey
 ```bash
 provider bind-head \
-  --hotkey=0x1234567890abcdef... \
-  --registrant=0xYourEvmAddress... \
-  --contract=0xContractAddress...
+  --manifest=<fleet_manifest_file> \
+  --hotkey_seed_file=<sr25519_seed_file> \
+  --valid_from_epoch=<n> --valid_to_epoch=<n> \
+  [--client_id=<hex16>] [--client_seed_file=<file>] \
+  [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
 ```
 
 > [!IMPORTANT]
-> The `--registrant` address MUST equal the EVM transaction sender. The head-bind digest binds cryptographically to this sender, and the transaction reverts if the sender's Subtensor mirror does not match the hotkey's on-chain coldkey.
+> The retired `--hotkey` / `--registrant` / `--contract` flags are gone. The binding now reads the fleet manifest (coordinator, chain id, netuid, members) and binds the sr25519 hotkey whose seed file you pass. Without `--key_file` the command prints the calldata for offline broadcast; with `--key_file` it submits through `--rpc`.
 
 ### Unbinding a Hotkey
 ```bash
 provider unbind-head \
-  --hotkey=0x1234567890abcdef... \
-  --contract=0xContractAddress...
+  --manifest=<fleet_manifest_file> \
+  --effective_epoch=<n> \
+  [--client_id=<hex16>] [--client_seed_file=<file>] \
+  [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
 ```
+
+> [!TIP]
+> The command is air-gapped-friendly: without `--rpc` it signs against the locally computed fleet-revoke digest and prints the calldata (labelled `offline (local domain)`). Re-run with `--rpc` to cross-check the coordinator's canonical digest before broadcasting, and pass `--key_file` to submit.
 
 ---
 
