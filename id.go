@@ -130,7 +130,7 @@ func (self Id) String() string {
 
 // MarshalJSON encodes the id as a JSON string containing the dashed
 // lowercase UUID form of String.
-func (self *Id) MarshalJSON() ([]byte, error) {
+func (self Id) MarshalJSON() ([]byte, error) {
 	var buf [16]byte
 	copy(buf[0:16], self[0:16])
 	var buff bytes.Buffer

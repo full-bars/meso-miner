@@ -174,7 +174,7 @@ provider bind-head \
 ```
 
 > [!IMPORTANT]
-> The retired `--hotkey` / `--registrant` / `--contract` flags are gone. The binding now reads the fleet manifest (coordinator, chain id, netuid, members) and binds the sr25519 hotkey whose seed file you pass. Without `--key_file` the command prints the calldata for offline broadcast; with `--key_file` it submits through `--rpc`.
+> The retired `--hotkey` / `--registrant` / `--contract` flags are gone. The binding now reads the fleet manifest (coordinator, chain id, netuid, members) and binds the sr25519 hotkey whose seed file you pass — the seed must match the manifest hotkey, and the command rejects a mismatch. Seed files must be regular files readable only by their owner. Without `--key_file` the command prints the calldata for offline broadcast; with `--key_file` it submits through `--rpc`.
 
 ### Unbinding a Hotkey
 ```bash

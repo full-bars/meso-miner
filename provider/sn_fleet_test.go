@@ -241,3 +241,41 @@ func TestSnFleetRevokeDomainRoundTrip(t *testing.T) {
 		t.Fatal("client revoke signature does not verify")
 	}
 }
+
+func TestSnLoadSeedsRejectsLoosePermissions(t *testing.T) {
+	dir := t.TempDir()
+	rawSeed := make([]byte, 32)
+	for i := range rawSeed {
+		rawSeed[i] = byte(i + 3)
+	}
+
+	loose := filepath.Join(dir, "loose.seed")
+	if err := os.WriteFile(loose, rawSeed, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := snLoadHotkeySeed(loose); err == nil || !strings.Contains(err.Error(), "readable only by its owner") {
+		t.Fatalf("a 0644 hotkey seed must be refused: %v", err)
+	}
+	if _, err := snLoadClientSeedOverride(loose); err == nil {
+		t.Fatal("a 0644 client seed must be refused")
+	}
+
+	link := filepath.Join(dir, "link.seed")
+	if err := os.Symlink(loose, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(loose, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := snLoadHotkeySeed(link); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("a symlinked seed must be refused: %v", err)
+	}
+
+	good := filepath.Join(dir, "good.seed")
+	if err := os.WriteFile(good, rawSeed, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if seed, err := snLoadHotkeySeed(good); err != nil || string(seed) != string(rawSeed) {
+		t.Fatalf("a 0600 regular seed must load: %v", err)
+	}
+}

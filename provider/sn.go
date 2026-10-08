@@ -17,7 +17,6 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -405,26 +404,16 @@ func printMinerClaimed(receipt *types.Receipt, contract common.Address) {
 }
 
 // ---------------------------------------------------------------------
-// Head-tier claim — client_id <-> hotkey binding (WHITEPAPER §8.4/§11.4,
-// decisions D-6/D-18). A top-level (head) miner runs its own UID and is
-// steered by validators on pure measured quality; to be measured it must
-// publish a dual-signed association between the client_id its trails are
-// measured under and its subnet hotkey. This binary owns the client key,
-// so it produces the client_id signature. The head-bind digest read and
-// the bindHead/unbindHead calldata are packed with sn/stabi; with a
-// --key_file the transaction is signed and submitted via sn/miner/onchain,
-// otherwise the calldata is printed for snclaim.
+// Fleet binding — client <-> hotkey association (WHITEPAPER §8.4/§11.4,
+// decisions D-6/D-18). A miner is steered by validators on pure measured
+// quality; to be measured it must publish a dual-signed association between
+// the client_id its trails are measured under and its subnet hotkey. This
+// binary owns the client key, so it produces the client_id signature. The
+// fleet-bind digest read and the bindHead/unbindHead calldata are packed
+// with sn/stabi; with a --key_file the transaction is signed and submitted
+// via sn/miner/onchain, otherwise the calldata is printed for offline
+// broadcast.
 // ---------------------------------------------------------------------
-
-// snBindHeadIntent is the signed-head-binding bundle: everything needed to
-// pack and submit bindHead, plus the digest that was signed (for display).
-type snBindHeadIntent struct {
-	hotkey      [32]byte
-	clientId    [32]byte // the provider's client Ed25519 public key (ckey)
-	registrant  common.Address
-	digest      [32]byte
-	clientIdSig []byte // 64-byte Ed25519 signature (R‖S) by clientId over digest
-}
 
 // snLoadClientKey loads the provider's own client identity key (the
 // ed25519 key `provider provide` generates).
@@ -441,37 +430,6 @@ func snLoadClientKey() (ed25519.PrivateKey, error) {
 		return nil, fmt.Errorf("provider client key seed length %d; expected %d", len(seed), ed25519.SeedSize)
 	}
 	return ed25519.NewKeyFromSeed(seed), nil
-}
-
-// parseBytes32Arg parses a 0x-optional 32-byte hex argument (hotkey or
-// client_id).
-func parseBytes32Arg(field string, s string) ([32]byte, error) {
-	var out [32]byte
-	h := strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(s), "0x"), "0X")
-	b, err := hex.DecodeString(h)
-	if err != nil {
-		return out, fmt.Errorf("%s: %s", field, err)
-	}
-	if len(b) != 32 {
-		return out, fmt.Errorf("%s: %d hex bytes; expected 32", field, len(b))
-	}
-	copy(out[:], b)
-	return out, nil
-}
-
-// parseEvmAddressArg parses a 0x-optional 20-byte hex EVM address.
-func parseEvmAddressArg(field string, s string) ([20]byte, error) {
-	var out [20]byte
-	h := strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(s), "0x"), "0X")
-	b, err := hex.DecodeString(h)
-	if err != nil {
-		return out, fmt.Errorf("%s: %s", field, err)
-	}
-	if len(b) != 20 {
-		return out, fmt.Errorf("%s: %d hex bytes; expected a 20-byte EVM address", field, len(b))
-	}
-	copy(out[:], b)
-	return out, nil
 }
 
 // bindHead implements `provider bind-head --manifest=<file>
@@ -545,6 +503,9 @@ func bindHead(opts docopt.Opts) {
 
 	dryRun, _ := opts.Bool("--dry-run")
 	keyFile, _ := opts.String("--key_file")
+	if dryRun && keyFile == "" {
+		fmt.Printf("note: --dry-run has no effect without --key_file; printing the calldata for offline broadcast\n")
+	}
 	if keyFile != "" {
 		var rpcUrls []string
 		if rpcAny, ok := opts["--rpc"]; ok && rpcAny != nil {
@@ -623,6 +584,11 @@ func unbindHead(opts docopt.Opts) {
 	ctx, cancel := context.WithCancel(event.Ctx())
 	defer cancel()
 
+	dryRun, _ := opts.Bool("--dry-run")
+	if dryRun && keyFile == "" {
+		fmt.Printf("note: --dry-run has no effect without --key_file; printing the calldata for offline broadcast\n")
+	}
+
 	coordinatorHex := common.Address(manifest.Coordinator).Hex()
 	want, err := (protocol.FleetRevoke{ChainID: manifest.ChainID, Netuid: manifest.Netuid, Coordinator: manifest.Coordinator, ClientID: clientID, Generation: manifest.Generation, EffectiveEpoch: effective}).Digest()
 	if err != nil {
@@ -671,7 +637,6 @@ func unbindHead(opts docopt.Opts) {
 	fmt.Printf("coordinator: %s (chain id %d, netuid %d)\n", coordinatorHex, manifest.ChainID, manifest.Netuid)
 	fmt.Printf("digest: 0x%x (fleet-revoke-v1, via %s)\n", digest, rpcUrl)
 
-	dryRun, _ := opts.Bool("--dry-run")
 	if keyFile != "" {
 		receipt, err := snFleetSubmit(ctx, manifest, rpcUrls, keyFile, calldata, dryRun)
 		if err != nil {

@@ -127,9 +127,12 @@ func snFleetMember(manifest *protocol.FleetManifest, clientID [16]byte) (protoco
 }
 
 // snLoadHotkeySeed loads an sr25519 hotkey seed file (raw 32 bytes, or hex
-// text, mirroring how sn/miner loads seeds).
+// text, mirroring how sn/miner loads seeds). The file must be a regular file
+// readable only by its owner — the hotkey is the higher-value key, so a
+// group/world-readable or symlinked seed is refused instead of silently
+// accepted (crv4.LoadSeedFile applies the same policy on the sn side).
 func snLoadHotkeySeed(path string) ([]byte, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := snReadSeedFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -145,9 +148,9 @@ func snLoadHotkeySeed(path string) ([]byte, error) {
 }
 
 // snLoadClientSeedOverride loads an Ed25519 client seed file (raw 32 bytes,
-// or hex text).
+// or hex text) under the same regular-file/permission policy.
 func snLoadClientSeedOverride(path string) (ed25519.PrivateKey, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := snReadSeedFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -160,6 +163,24 @@ func snLoadClientSeedOverride(path string) (ed25519.PrivateKey, error) {
 		raw = decoded
 	}
 	return ed25519.NewKeyFromSeed(raw), nil
+}
+
+// snReadSeedFile reads a seed file only when it is a regular file the owner
+// alone can read. Symlinks are refused (Lstat), as are group/world-readable
+// or writable modes — a seed leaked through permissions defeats the
+// dual-signed binding the whole flow exists for.
+func snReadSeedFile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: not a regular file", path)
+	}
+	if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		return nil, fmt.Errorf("%s: seed file must be readable only by its owner (mode %o)", path, perm)
+	}
+	return os.ReadFile(path)
 }
 
 // snFleetBindingAndSign mirrors sn/miner's fleetBindingAndSign: build the
@@ -231,8 +252,10 @@ func snReadFleetRevokeDigest(ctx context.Context, rpcUrls []string, coordinatorH
 	return digest, "", fmt.Errorf("no --rpc endpoint answered the fleet revoke digest")
 }
 
-// snFleetSubmit submits coordinator calldata through sn/miner/onchain as
-// the relayer (the same path the claim command uses).
+// snFleetSubmit submits the calldata through sn/miner/onchain as the relayer
+// (the same path the claim command uses). RuntimeAdmission is deliberately
+// NOT used here: the provider line binds fleets directly (crv4/onchain own
+// admission on the sn/miner side), so this path stays the plain EVM submit.
 func snFleetSubmit(ctx context.Context, manifest *protocol.FleetManifest, rpcUrls []string, keyFile string, calldata []byte, dryRun bool) (*types.Receipt, error) {
 	key, err := onchain.LoadKeyFile(keyFile)
 	if err != nil {
