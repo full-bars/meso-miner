@@ -485,8 +485,8 @@ func TestVerifyWireJsonRoundTrip(t *testing.T) {
 				M:           2,
 			},
 			Hops: []VerifyProofHop{
-				{ClientId: testVerifyHexId(t, testVerifyClientId1Hex), TimeMs: 0x1122334455667788},
-				{ClientId: testVerifyHexId(t, testVerifyClientId2Hex), TimeMs: 0x99aabbccddeeff00},
+				{ClientId: testVerifyHexId(t, testVerifyClientId1Hex), TimeMs: 0x1122334455667788, EgressIpHash: testVerifyFill32(0xaa)},
+				{ClientId: testVerifyHexId(t, testVerifyClientId2Hex), TimeMs: 0x99aabbccddeeff00, EgressIpHash: testVerifyFill32(0xbb)},
 			},
 			ServerKeyId: 7,
 			FinalSig:    testVerifyHexBytes(t, testVerifyClientNonceHex),

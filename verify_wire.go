@@ -12,6 +12,9 @@ package connect
 //   - JSON wire types for the `POST /verify` request/response bodies
 //     (VALIDATOR.md §4.1/§4.2). Byte fields ([]byte) are base64 on the wire by
 //     the standard encoding/json convention; ids are uuid strings (`Id`).
+//     One deliberate exception: `VerifyProofHop.EgressIpHash` is a fixed
+//     [32]byte array (the sn protocol package compares it across modules),
+//     so it encodes as a JSON integer array.
 //   - Canonical binary messages (VALIDATOR.md Appendix A) — the exact byte
 //     strings the four Ed25519 signatures are computed over. Signatures are
 //     never over JSON. All multi-byte integers are big-endian.
@@ -271,6 +274,11 @@ func BuildVerifyFinalMessage(serverKeyId byte, trailId Id, serverNonce []byte, v
 	for _, hop := range hops {
 		message = append(message, hop.ClientId[:]...)
 		message = binary.BigEndian.AppendUint64(message, hop.TimeMs)
+		// EgressIpHash stays a fixed [32]byte array on purpose: the sn
+		// protocol package compares it across modules with ==/!= (see
+		// urfoundation sn provider_attempt_receipt.go), which a slice or a
+		// named type cannot do. The cost is its JSON encoding — a 32-integer
+		// array, the one deliberate exception to the base64 convention below.
 		message = append(message, hop.EgressIpHash[:]...) // VALIDATOR.md §8.1/§3.3 (D27)
 	}
 	return message, nil
