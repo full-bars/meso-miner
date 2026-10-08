@@ -278,7 +278,12 @@ func BuildVerifyFinalMessage(serverKeyId byte, trailId Id, serverNonce []byte, v
 		// protocol package compares it across modules with ==/!= (see
 		// urfoundation sn provider_attempt_receipt.go), which a slice or a
 		// named type cannot do. The cost is its JSON encoding — a 32-integer
-		// array, the one deliberate exception to the base64 convention below.
+		// array, the one deliberate exception to the base64 convention — AND
+		// its laxity: encoding/json zero-pads a short array, discards
+		// extras, and defaults an absent field, so a consumer reading this
+		// field without first verifying FinalSig can get a silently wrong
+		// value. Signature consumers are safe (the binary form is what is
+		// signed); others must treat an all-zero hash as "unknown".
 		message = append(message, hop.EgressIpHash[:]...) // VALIDATOR.md §8.1/§3.3 (D27)
 	}
 	return message, nil

@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -416,20 +417,28 @@ func printMinerClaimed(receipt *types.Receipt, contract common.Address) {
 // ---------------------------------------------------------------------
 
 // snLoadClientKey loads the provider's own client identity key (the
-// ed25519 key `provider provide` generates).
+// ed25519 key `provider provide` generates), under the same seed-custody
+// policy the --client_seed_file path enforces — the default path is the
+// common one, so a world-writable or swapped .provider.key must fail the
+// same way. Raw 32-byte (the original format) or 0x/0X hex text.
 func snLoadClientKey() (ed25519.PrivateKey, error) {
-	seed, err := readProviderClientKeySeed()
+	p, _ := providerStatePath(".provider.key")
+	raw, err := snReadSeedFile(p)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("provider client key not found at %s. Run `provider provide` once to generate the client identity key", p)
+		}
 		return nil, err
 	}
-	if len(seed) == 0 {
-		p, _ := providerStatePath(".provider.key")
-		return nil, fmt.Errorf("provider client key not found at %s. Run `provider provide` once to generate the client identity key", p)
+	if len(raw) != ed25519.SeedSize {
+		trimmed := strings.TrimSpace(string(raw))
+		decoded, decodeErr := hex.DecodeString(strings.TrimPrefix(strings.TrimPrefix(trimmed, "0x"), "0X"))
+		if decodeErr != nil || len(decoded) != ed25519.SeedSize {
+			return nil, fmt.Errorf("%s: expected raw or hex 32-byte Ed25519 seed", p)
+		}
+		raw = decoded
 	}
-	if len(seed) != ed25519.SeedSize {
-		return nil, fmt.Errorf("provider client key seed length %d; expected %d", len(seed), ed25519.SeedSize)
-	}
-	return ed25519.NewKeyFromSeed(seed), nil
+	return ed25519.NewKeyFromSeed(raw), nil
 }
 
 // bindHead implements `provider bind-head --manifest=<file>
@@ -458,6 +467,9 @@ func bindHead(opts docopt.Opts) {
 	member, err := snFleetMember(manifest, clientID)
 	if err != nil {
 		fail(err)
+	}
+	if commitment, commitmentErr := manifest.CommitmentHash(); commitmentErr == nil {
+		fmt.Printf("manifest commitment hash: 0x%x (verify against the finalized Subtensor commitment before trusting this manifest)\n", commitment)
 	}
 	from, err := snUint64Opt(opts, "--valid_from_epoch")
 	if err != nil {
@@ -577,6 +589,7 @@ func unbindHead(opts docopt.Opts) {
 	if rpcAny, ok := opts["--rpc"]; ok && rpcAny != nil {
 		rpcUrls = append(rpcUrls, rpcAny.([]string)...)
 	}
+	offline, _ := opts.Bool("--offline")
 	keyFile, _ := opts.String("--key_file")
 
 	event := connect.NewEventWithContext(context.Background())
@@ -595,16 +608,20 @@ func unbindHead(opts docopt.Opts) {
 		fail(err)
 	}
 
-	// The rpc read is a cross-check: the coordinator's canonical revoke
-	// digest must equal the local signing domain before anything is signed.
-	// It needs an endpoint; the offline path (no --key_file, calldata printed
-	// for a later broadcast) does not, so an air-gapped machine holding the
-	// client seed can produce the calldata without one.
+	// With --rpc, the digest read is a cross-check against the coordinator:
+	// it validates the manifest's chain id, netuid and coordinator — the
+	// three fields the contract substitutes — against the local signing
+	// domain. It CANNOT validate the generation or the effective epoch (both
+	// are caller-supplied ABI arguments the contract just echoes), and a
+	// hostile endpoint passes by echoing the local digest back. The offline
+	// path (below, gated behind --offline) drops even the manifest-field
+	// check, which is why it requires the explicit flag and prints the
+	// unverified-assertion warning.
 	var digest [32]byte
 	var rpcUrl string
 	if 0 < len(rpcUrls) {
 		readCalldata := stCoordinator.PackFleetRevokeDigest(clientID, manifest.Generation, effective)
-		digest, rpcUrl, err = snReadFleetRevokeDigest(ctx, rpcUrls, coordinatorHex, readCalldata)
+		digest, rpcUrl, err = snReadFleetRevokeDigest(ctx, manifest.ChainID, rpcUrls, coordinatorHex, readCalldata)
 		if err != nil {
 			fail(err)
 		}
@@ -613,9 +630,12 @@ func unbindHead(opts docopt.Opts) {
 		}
 	} else if keyFile != "" {
 		fail(fmt.Errorf("--rpc: at least one endpoint required to submit"))
+	} else if !offline {
+		fail(fmt.Errorf("--offline: signing without an on-chain cross-check requires the explicit --offline flag (air-gapped mode)"))
 	} else {
 		digest = want
 		rpcUrl = "offline (local domain)"
+		fmt.Printf("WARNING: offline mode — generation %d and effective epoch %d were NOT verified against any coordinator; verify the manifest commitment hash before broadcasting\n", manifest.Generation, effective)
 	}
 
 	clientKey, err := snClientKeyOpt(opts)
@@ -625,8 +645,17 @@ func unbindHead(opts docopt.Opts) {
 	if !bytesEqualConst(clientKey.Public().(ed25519.PublicKey), member.ClientKey[:]) {
 		fail(errors.New("client key does not match the manifest member"))
 	}
+	if commitment, commitmentErr := manifest.CommitmentHash(); commitmentErr == nil {
+		fmt.Printf("manifest commitment hash: 0x%x (verify against the finalized Subtensor commitment before trusting this manifest)\n", commitment)
+	}
 	signature := ed25519.Sign(clientKey, digest[:])
 
+	if 0 < len(rpcUrls) && rpcUrl != "" {
+		// Pin the submit to the endpoint that answered the digest read, the
+		// way the reference narrows its rpc list — do not broadcast to a
+		// different node than the one the cross-check validated.
+		rpcUrls = []string{rpcUrl}
+	}
 	calldata, err := stCoordinator.TryPackRevokeFleetBinding(clientID, manifest.Generation, effective, signature)
 	if err != nil {
 		fail(fmt.Errorf("pack revokeFleetBinding: %s", err))
@@ -650,7 +679,11 @@ func unbindHead(opts docopt.Opts) {
 	}
 
 	fmt.Printf("revokeFleetBinding calldata:\n0x%x\n", calldata)
-	fmt.Printf("submit with: provider unbind-head --manifest=<file> --effective_epoch=%d --client_id=0x%x --rpc=<rpc_url> --key_file=<evm_key_file>\n", effective, clientID)
+	if seedFile, _ := opts.String("--client_seed_file"); strings.TrimSpace(seedFile) != "" {
+		fmt.Printf("submit with: provider unbind-head --manifest=<file> --effective_epoch=%d --client_id=0x%x --rpc=<rpc_url> --key_file=<evm_key_file> --client_seed_file=%s\n", effective, clientID, seedFile)
+	} else {
+		fmt.Printf("submit with: provider unbind-head --manifest=<file> --effective_epoch=%d --client_id=0x%x --rpc=<rpc_url> --key_file=<evm_key_file>\n", effective, clientID)
+	}
 }
 
 // snStatusCmd implements `provider sn-status [--json]`.

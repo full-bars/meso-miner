@@ -182,11 +182,11 @@ provider unbind-head \
   --manifest=<fleet_manifest_file> \
   --effective_epoch=<n> \
   [--client_id=<hex16>] [--client_seed_file=<file>] \
-  [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
+  [--offline] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
 ```
 
 > [!TIP]
-> The command is air-gapped-friendly: without `--rpc` it signs against the locally computed fleet-revoke digest and prints the calldata (labelled `offline (local domain)`). Re-run with `--rpc` to cross-check the coordinator's canonical digest before broadcasting, and pass `--key_file` to submit.
+> The command is air-gapped-friendly, but signing without an on-chain cross-check is explicit: without `--rpc` pass `--offline`, and the output warns that the generation and effective epoch were not verified against any coordinator (labelled `offline (local domain)`). Re-run with `--rpc` to cross-check the coordinator's canonical digest before broadcasting, and pass `--key_file` to submit.
 
 ---
 

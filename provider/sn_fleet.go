@@ -19,6 +19,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"os"
 	"strconv"
@@ -71,6 +72,17 @@ func providerClientId16() ([16]byte, error) {
 }
 
 // snLoadFleetManifestOpt loads and validates the --manifest file.
+// Allowlisted fleet chains, mirroring the sn reference's mainnet runtime gate
+// (miner/fleet_mainnet_runtime.go): 964 is mainnet, 945 is the provisional
+// testnet. The reference additionally requires a SHA-256-pinned reviewed
+// authority document for 964 and explicit provisional flags for 945 — the
+// port enforce the allowlist itself and prints the commitment hash so the
+// operator can verify the manifest against the on-chain commitment.
+const (
+	fleetChainIDMainnet            = 964
+	fleetChainIDProvisionalTestnet = 945
+)
+
 func snLoadFleetManifestOpt(opts docopt.Opts) (*protocol.FleetManifest, error) {
 	path, _ := opts.String("--manifest")
 	if strings.TrimSpace(path) == "" {
@@ -83,6 +95,13 @@ func snLoadFleetManifestOpt(opts docopt.Opts) (*protocol.FleetManifest, error) {
 	manifest, err := protocol.ParseFleetManifest(raw)
 	if err != nil {
 		return nil, fmt.Errorf("--manifest: %s", err)
+	}
+	switch manifest.ChainID {
+	case fleetChainIDMainnet:
+	case fleetChainIDProvisionalTestnet:
+		fmt.Printf("warning: manifest chain id %d is the provisional testnet fleet; do not bind a mainnet hotkey to it\n", manifest.ChainID)
+	default:
+		return nil, fmt.Errorf("--manifest: fleet manifest chain id %d is not an allowlisted fleet chain (%d mainnet, %d provisional testnet); refusing to sign for a fleet no coordinator has attested", manifest.ChainID, fleetChainIDMainnet, fleetChainIDProvisionalTestnet)
 	}
 	return manifest, nil
 }
@@ -127,10 +146,9 @@ func snFleetMember(manifest *protocol.FleetManifest, clientID [16]byte) (protoco
 }
 
 // snLoadHotkeySeed loads an sr25519 hotkey seed file (raw 32 bytes, or hex
-// text, mirroring how sn/miner loads seeds). The file must be a regular file
-// readable only by its owner — the hotkey is the higher-value key, so a
-// group/world-readable or symlinked seed is refused instead of silently
-// accepted (crv4.LoadSeedFile applies the same policy on the sn side).
+// text, mirroring how sn/miner loads seeds). The file is read under the
+// seed-custody policy in snReadSeedFile (regular file, 0600/0400, no
+// hardlinks, owner-only, O_NOFOLLOW); the hotkey is the higher-value key.
 func snLoadHotkeySeed(path string) ([]byte, error) {
 	raw, err := snReadSeedFile(path)
 	if err != nil {
@@ -165,10 +183,13 @@ func snLoadClientSeedOverride(path string) (ed25519.PrivateKey, error) {
 	return ed25519.NewKeyFromSeed(raw), nil
 }
 
-// snReadSeedFile reads a seed file only when it is a regular file the owner
-// alone can read. Symlinks are refused (Lstat), as are group/world-readable
-// or writable modes — a seed leaked through permissions defeats the
-// dual-signed binding the whole flow exists for.
+// snReadSeedFile reads a seed file only under the custody policy that
+// matters for a key of this value: a regular file, mode exactly 0600 or
+// 0400, not hardlinked elsewhere (nlink 1), owned by the current user, and
+// opened with O_NOFOLLOW then re-stat'd against the Lstat so the path cannot
+// be swapped for a symlink between check and open. The read is bounded at
+// 4096 bytes. (crv4's loader adds an os.Root wrapper on top; the checks
+// below are the parts this port enforces itself.)
 func snReadSeedFile(path string) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -177,10 +198,27 @@ func snReadSeedFile(path string) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s: not a regular file", path)
 	}
-	if perm := info.Mode().Perm(); perm&0o077 != 0 {
-		return nil, fmt.Errorf("%s: seed file must be readable only by its owner (mode %o)", path, perm)
+	switch info.Mode().Perm() {
+	case 0o600, 0o400:
+	default:
+		return nil, fmt.Errorf("%s: seed file must be mode 0600 or 0400 (mode %o)", path, info.Mode().Perm())
 	}
-	return os.ReadFile(path)
+	if err := snSeedFileOwnership(info); err != nil {
+		return nil, fmt.Errorf("%s: %s", path, err)
+	}
+	file, err := os.OpenFile(path, seedFileOpenFlags, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	openStat, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if err := snSeedFileSameInode(info, openStat); err != nil {
+		return nil, fmt.Errorf("%s: %s", path, err)
+	}
+	return io.ReadAll(io.LimitReader(file, 4096))
 }
 
 // snFleetBindingAndSign mirrors sn/miner's fleetBindingAndSign: build the
@@ -191,16 +229,19 @@ func snFleetBindingAndSign(manifest *protocol.FleetManifest, member protocol.Fle
 	if err != nil {
 		return protocol.FleetBinding{}, nil, nil, err
 	}
-	clientSignature, err := binding.SignClient(clientKey)
-	if err != nil {
-		return binding, nil, nil, err
-	}
+	// Validate the hotkey BEFORE producing any signature: a mismatched seed
+	// must not leave a client signature over an attacker-chosen digest in
+	// memory (the reference validates the hotkey before signing, too).
 	hotkey, err := (sr25519.Scheme{}).FromSeed(hotkeySeed)
 	if err != nil {
-		return binding, nil, nil, err
+		return protocol.FleetBinding{}, nil, nil, err
 	}
 	if !bytesEqualConst(hotkey.Public(), manifest.Hotkey[:]) {
 		return binding, nil, nil, errors.New("hotkey seed does not match the manifest hotkey")
+	}
+	clientSignature, err := binding.SignClient(clientKey)
+	if err != nil {
+		return binding, nil, nil, err
 	}
 	digest, err := binding.Digest()
 	if err != nil {
@@ -227,9 +268,19 @@ func bytesEqualConst(a, b []byte) bool {
 // snReadFleetRevokeDigest reads the coordinator's canonical revoke digest
 // via eth_call (finalized), trying each endpoint in order — the same
 // read-side transport as the claim path (sn_rpc.go), against the
-// coordinator contract.
-func snReadFleetRevokeDigest(ctx context.Context, rpcUrls []string, coordinatorHex string, calldata []byte) (digest [32]byte, rpcUrl string, err error) {
+// coordinator contract. Each endpoint is chain-id-authenticated before the
+// view call, and the return is ABI-decoded, so a wrong-chain or wrong-ABI
+// node fails over instead of yielding a plausible digest.
+func snReadFleetRevokeDigest(ctx context.Context, chainId uint64, rpcUrls []string, coordinatorHex string, calldata []byte) (digest [32]byte, rpcUrl string, err error) {
 	for _, url := range rpcUrls {
+		chainIdHex, rpcErr := ethRpcHexResult(ctx, url, "eth_chainId", []any{})
+		if rpcErr != nil {
+			continue
+		}
+		rpcChainId, rpcErr := parseEthHexQuantity(chainIdHex)
+		if rpcErr != nil || rpcChainId != chainId {
+			continue
+		}
 		callHex, rpcErr := ethRpcHexResult(ctx, url, "eth_call", []any{
 			map[string]any{
 				"to":   coordinatorHex,
@@ -238,16 +289,17 @@ func snReadFleetRevokeDigest(ctx context.Context, rpcUrls []string, coordinatorH
 			"finalized",
 		})
 		if rpcErr != nil {
-			fmt.Printf("rpc %s: %s\n", url, rpcErr)
 			continue
 		}
 		returnData, rpcErr := parseEthHexBytes(callHex)
-		if rpcErr != nil || len(returnData) < 32 {
-			fmt.Printf("rpc %s: fleet revoke digest returned %d bytes; expected >= 32 (wrong coordinator address?)\n", url, len(returnData))
+		if rpcErr != nil {
 			continue
 		}
-		copy(digest[:], returnData[:32])
-		return digest, url, nil
+		unpacked, unpackErr := stCoordinator.UnpackFleetRevokeDigest(returnData)
+		if unpackErr != nil {
+			continue
+		}
+		return unpacked, url, nil
 	}
 	return digest, "", fmt.Errorf("no --rpc endpoint answered the fleet revoke digest")
 }

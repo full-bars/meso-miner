@@ -933,7 +933,7 @@ Usage:
         [-v...]
     provider bind-head --manifest=<file> --hotkey_seed_file=<file> --valid_from_epoch=<n> --valid_to_epoch=<n> [--client_id=<hex16>] [--client_seed_file=<file>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
         [-v...]
-    provider unbind-head --manifest=<file> --effective_epoch=<n> [--client_id=<hex16>] [--client_seed_file=<file>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
+    provider unbind-head --manifest=<file> --effective_epoch=<n> [--client_id=<hex16>] [--client_seed_file=<file>] [--offline] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
         [-v...]
     provider proxy auth add [<key>] <proxy_user> <proxy_password> [-f]
     provider proxy auth remove [<key>] [--all]

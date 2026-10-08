@@ -253,7 +253,7 @@ func TestSnLoadSeedsRejectsLoosePermissions(t *testing.T) {
 	if err := os.WriteFile(loose, rawSeed, 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := snLoadHotkeySeed(loose); err == nil || !strings.Contains(err.Error(), "readable only by its owner") {
+	if _, err := snLoadHotkeySeed(loose); err == nil || !strings.Contains(err.Error(), "mode 0600 or 0400") {
 		t.Fatalf("a 0644 hotkey seed must be refused: %v", err)
 	}
 	if _, err := snLoadClientSeedOverride(loose); err == nil {
