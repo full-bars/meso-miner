@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Added
+
+- **The combined TCP-segment + TLS-record fragmentation dialer** ([#183](https://github.com/full-bars/meso-miner/pull/183)): parity port of the 3.23-fix `fragment+segment` dialer ([#792](https://github.com/full-bars/urnetwork-3.23-fix/pull/792)). The new dialer cuts every fragmented ClientHello record a second time, across two TCP segments at an interior byte, so a middlebox that reassembles either layer alone cannot stitch the hello. It needs no raw sockets, so it works where the ttl reorder technique cannot. It registers at the resilient tier (priority 50), fails closed exactly like the fragment path, and changes no existing dialer's behavior.
+
 ### Changed
 
 - **The dropped bucket is labeled on its own, and the idle hint reads again** ([#169](https://github.com/full-bars/meso-miner/pull/169)): the live status and `top` view called the was-up-now-down bucket `down`, the same word the whole-pool figure uses for dead plus dropped. The breakdown bucket is `dropped` now, matching the proxy health report, so `down` has one meaning. The idle hint no longer calls every offline proxy dead. Labels and wording only; the reaper inputs are unchanged.
