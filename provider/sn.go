@@ -16,7 +16,6 @@ package main
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
@@ -33,12 +32,12 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/crypto"
 
 	"github.com/urnetwork/connect"
 
 	"github.com/urfoundation/sn/merkle"
 	"github.com/urfoundation/sn/miner/onchain"
+	"github.com/urfoundation/sn/protocol"
 	"github.com/urfoundation/sn/ss58"
 	"github.com/urfoundation/sn/stabi"
 )
@@ -406,374 +405,284 @@ func printMinerClaimed(receipt *types.Receipt, contract common.Address) {
 }
 
 // ---------------------------------------------------------------------
-// Head-tier claim — client_id <-> hotkey binding (WHITEPAPER §8.4/§11.4,
-// decisions D-6/D-18). A top-level (head) miner runs its own UID and is
-// steered by validators on pure measured quality; to be measured it must
-// publish a dual-signed association between the client_id its trails are
-// measured under and its subnet hotkey. This binary owns the client key,
-// so it produces the client_id signature. The head-bind digest read and
-// the bindHead/unbindHead calldata are packed with sn/stabi; with a
-// --key_file the transaction is signed and submitted via sn/miner/onchain,
-// otherwise the calldata is printed for snclaim.
+// Fleet binding — client <-> hotkey association (WHITEPAPER §8.4/§11.4,
+// decisions D-6/D-18). A miner is steered by validators on pure measured
+// quality; to be measured it must publish a dual-signed association between
+// the client_id its trails are measured under and its subnet hotkey. This
+// binary owns the client key, so it produces the client_id signature. The
+// fleet-bind digest read and the bindHead/unbindHead calldata are packed
+// with sn/stabi; with a --key_file the transaction is signed and submitted
+// via sn/miner/onchain, otherwise the calldata is printed for offline
+// broadcast.
 // ---------------------------------------------------------------------
 
-// snBindHeadIntent is the signed-head-binding bundle: everything needed to
-// pack and submit bindHead, plus the digest that was signed (for display).
-type snBindHeadIntent struct {
-	hotkey      [32]byte
-	clientId    [32]byte // the provider's client Ed25519 public key (ckey)
-	registrant  common.Address
-	digest      [32]byte
-	clientIdSig []byte // 64-byte Ed25519 signature (R‖S) by clientId over digest
-}
-
-// snSignBindHead signs the on-chain headBindDigest with the provider's
-// client Ed25519 private key (the `.provider.key` identity, the same key
-// that produces the `/verify` vpk signatures). ed25519.Sign returns the
-// standard 64-byte signature R‖S; the contract splits it r=sig[0:32],
-// s=sig[32:64] and verifies via the 0x402 precompile (whose r is "the
-// first 32 bytes" and s "the second 32 bytes"), so this byte order maps
-// directly with no reordering — exactly as registerValidator's
-// ed25519Sig is split (sn/evm/src/STSubnet.sol bindHead).
-func snSignBindHead(clientPrivateKey ed25519.PrivateKey, registrant common.Address, hotkey [32]byte, digest [32]byte) *snBindHeadIntent {
-	intent := &snBindHeadIntent{
-		hotkey:      hotkey,
-		registrant:  registrant,
-		digest:      digest,
-		clientIdSig: ed25519.Sign(clientPrivateKey, digest[:]),
-	}
-	copy(intent.clientId[:], clientPrivateKey.Public().(ed25519.PublicKey))
-	return intent
-}
-
-// snLoadClientKey loads the provider's long-lived Ed25519 identity key
-// from ~/.urnetwork/.provider.key (the raw 32-byte seed). This is the
-// client_id/ckey used for `/verify`; `provider provide` generates and
-// persists it on first run.
+// snLoadClientKey loads the provider's own client identity key (the
+// ed25519 key `provider provide` generates), under the same seed-custody
+// policy the --client_seed_file path enforces — the default path is the
+// common one, so a world-writable or swapped .provider.key must fail the
+// same way. Raw 32-byte (the original format) or 0x/0X hex text.
 func snLoadClientKey() (ed25519.PrivateKey, error) {
-	seed, err := readProviderClientKeySeed()
+	p, _ := providerStatePath(".provider.key")
+	raw, err := snReadSeedFile(p)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("provider client key not found at %s. Run `provider provide` once to generate the client identity key", p)
+		}
 		return nil, err
 	}
-	if len(seed) == 0 {
-		p, _ := providerStatePath(".provider.key")
-		return nil, fmt.Errorf("provider client key not found at %s. Run `provider provide` once to generate the client identity key", p)
+	if len(raw) != ed25519.SeedSize {
+		trimmed := strings.TrimSpace(string(raw))
+		decoded, decodeErr := hex.DecodeString(strings.TrimPrefix(strings.TrimPrefix(trimmed, "0x"), "0X"))
+		if decodeErr != nil || len(decoded) != ed25519.SeedSize {
+			return nil, fmt.Errorf("%s: expected raw or hex 32-byte Ed25519 seed", p)
+		}
+		raw = decoded
 	}
-	if len(seed) != ed25519.SeedSize {
-		return nil, fmt.Errorf("provider client key seed length %d; expected %d", len(seed), ed25519.SeedSize)
-	}
-	return ed25519.NewKeyFromSeed(seed), nil
+	return ed25519.NewKeyFromSeed(raw), nil
 }
 
-// snReadHeadBindDigest reads the exact 32-byte headBindDigest from the
-// contract via eth_call, trying each rpc endpoint in order until one
-// answers both eth_chainId and eth_call (failover, like `provider
-// claim`). Per-endpoint failures are printed; the digest binds
-// block.chainid and the contract address internally, so no chain id
-// needs to be supplied. The read calldata is packed by the caller with
-// sn/stabi (headBindDigest).
-func snReadHeadBindDigest(ctx context.Context, rpcUrls []string, contractHex string, calldata []byte) (digest [32]byte, chainId uint64, rpcUrl string, err error) {
-	for _, url := range rpcUrls {
-		chainIdHex, rpcErr := ethRpcHexResult(ctx, url, "eth_chainId", []any{})
-		if rpcErr != nil {
-			fmt.Printf("rpc %s: %s\n", url, rpcErr)
-			continue
-		}
-		cid, rpcErr := parseEthHexQuantity(chainIdHex)
-		if rpcErr != nil {
-			fmt.Printf("rpc %s: bad eth_chainId %q\n", url, chainIdHex)
-			continue
-		}
-		callHex, rpcErr := ethRpcHexResult(ctx, url, "eth_call", []any{
-			map[string]any{
-				"to":   contractHex,
-				"data": fmt.Sprintf("0x%x", calldata),
-			},
-			"latest",
-		})
-		if rpcErr != nil {
-			fmt.Printf("rpc %s: %s\n", url, rpcErr)
-			continue
-		}
-		returnData, rpcErr := parseEthHexBytes(callHex)
-		if rpcErr != nil || len(returnData) < 32 {
-			fmt.Printf("rpc %s: headBindDigest returned %d bytes; expected >= 32 (wrong contract address?)\n", url, len(returnData))
-			continue
-		}
-		copy(digest[:], returnData[:32])
-		return digest, cid, url, nil
-	}
-	return digest, 0, "", fmt.Errorf("no --rpc endpoint answered headBindDigest")
-}
-
-// parseBytes32Arg parses a 0x-optional 32-byte hex argument (hotkey or
-// client_id).
-func parseBytes32Arg(field string, s string) ([32]byte, error) {
-	var out [32]byte
-	h := strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(s), "0x"), "0X")
-	b, err := hex.DecodeString(h)
-	if err != nil {
-		return out, fmt.Errorf("%s: %s", field, err)
-	}
-	if len(b) != 32 {
-		return out, fmt.Errorf("%s: %d hex bytes; expected 32", field, len(b))
-	}
-	copy(out[:], b)
-	return out, nil
-}
-
-// parseEvmAddressArg parses a 0x-optional 20-byte hex EVM address.
-func parseEvmAddressArg(field string, s string) ([20]byte, error) {
-	var out [20]byte
-	h := strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(s), "0x"), "0X")
-	b, err := hex.DecodeString(h)
-	if err != nil {
-		return out, fmt.Errorf("%s: %s", field, err)
-	}
-	if len(b) != 20 {
-		return out, fmt.Errorf("%s: %d hex bytes; expected a 20-byte EVM address", field, len(b))
-	}
-	copy(out[:], b)
-	return out, nil
-}
-
-// bindHead implements `provider bind-head --hotkey=<hex>
-// --registrant=<0xEVMaddr> --contract=<addr> [--rpc=<rpc_url>]...
-// [--key_file=<key_file>] [--dry-run]`. It signs the on-chain
-// headBindDigest with the provider's client key, packs bindHead with
-// sn/stabi, and either submits it via sn/miner/onchain (when --key_file
-// is given) or prints the ready-to-submit calldata for snclaim.
+// bindHead implements `provider bind-head --manifest=<file>
+// --hotkey_seed_file=<file> --valid_from_epoch=<n> --valid_to_epoch=<n>
+// [--client_id=<hex16>] [--client_seed_file=<file>]
+// [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]`. The upstream
+// fleet model replaced the per-head bind: this builds the many-to-one
+// dual-signed fleet binding for this provider's client (sn/miner/fleet.go
+// is the reference flow), prints the intent, and - with --key_file -
+// submits it through sn/miner/onchain as the relayer; without one it
+// prints the calldata for the offline path.
 func bindHead(opts docopt.Opts) {
 	fail := func(err error) {
 		fmt.Printf("bind-head failed: %s\n", err)
 		os.Exit(1)
 	}
 
-	hotkeyStr, _ := opts.String("--hotkey")
-	hotkey, err := parseBytes32Arg("--hotkey", hotkeyStr)
+	manifest, err := snLoadFleetManifestOpt(opts)
 	if err != nil {
 		fail(err)
 	}
-	registrantStr, _ := opts.String("--registrant")
-	registrantBytes, err := parseEvmAddressArg("--registrant", registrantStr)
+	clientID, err := snClientIdOpt(opts)
 	if err != nil {
 		fail(err)
 	}
-	registrant := common.Address(registrantBytes)
-	contractStr, _ := opts.String("--contract")
-	contractBytes, err := parseEvmAddressArg("--contract", contractStr)
+	member, err := snFleetMember(manifest, clientID)
 	if err != nil {
 		fail(err)
 	}
-	contract := common.Address(contractBytes)
-	var rpcUrls []string
-	if rpcAny, ok := opts["--rpc"]; ok && rpcAny != nil {
-		rpcUrls = append(rpcUrls, rpcAny.([]string)...)
+	if commitment, commitmentErr := manifest.CommitmentHash(); commitmentErr == nil {
+		fmt.Printf("manifest commitment hash: 0x%x (verify against the finalized Subtensor commitment before trusting this manifest)\n", commitment)
 	}
-	if len(rpcUrls) == 0 {
-		fail(fmt.Errorf("--rpc: at least one endpoint required to read headBindDigest"))
+	from, err := snUint64Opt(opts, "--valid_from_epoch")
+	if err != nil {
+		fail(err)
 	}
+	to, err := snUint64Opt(opts, "--valid_to_epoch")
+	if err != nil {
+		fail(err)
+	}
+	clientKey, err := snClientKeyOpt(opts)
+	if err != nil {
+		fail(err)
+	}
+	hotkeySeedFile, _ := opts.String("--hotkey_seed_file")
+	if strings.TrimSpace(hotkeySeedFile) == "" {
+		fail(fmt.Errorf("--hotkey_seed_file: the fleet binding is dual-signed; the hotkey (sr25519) seed file is required"))
+	}
+	hotkeySeed, err := snLoadHotkeySeed(hotkeySeedFile)
+	if err != nil {
+		fail(fmt.Errorf("--hotkey_seed_file: %s", err))
+	}
+
+	binding, clientSignature, hotkeySignature, err := snFleetBindingAndSign(manifest, member, from, to, clientKey, hotkeySeed)
+	if err != nil {
+		fail(err)
+	}
+	digest, err := binding.Digest()
+	if err != nil {
+		fail(err)
+	}
+	calldata, err := onchain.BuildFleetBindingCalldata(binding, clientSignature, hotkeySignature)
+	if err != nil {
+		fail(fmt.Errorf("pack bindFleetMember: %s", err))
+	}
+
+	fmt.Printf("fleet binding intent (bindFleetMember)\n")
+	fmt.Printf("client_id: 0x%x\n", binding.ClientID)
+	fmt.Printf("client_key (ckey): 0x%x\n", binding.ClientKey)
+	fmt.Printf("hotkey: 0x%x\n", binding.Hotkey)
+	fmt.Printf("fleet_id: 0x%x generation=%d epochs=[%d,%d]\n", binding.FleetID, binding.Generation, binding.ValidFromEpoch, binding.ValidToEpoch)
+	fmt.Printf("coordinator: %s (chain id %d, netuid %d)\n", common.Address(binding.Coordinator).Hex(), binding.ChainID, binding.Netuid)
+	fmt.Printf("digest: 0x%x (fleet-binding-v1, dual-signed by client_key and hotkey)\n", digest)
+
 	dryRun, _ := opts.Bool("--dry-run")
 	keyFile, _ := opts.String("--key_file")
-
-	privateKey, err := snLoadClientKey()
-	if err != nil {
-		fail(err)
+	if dryRun && keyFile == "" {
+		fmt.Printf("note: --dry-run has no effect without --key_file; printing the calldata for offline broadcast\n")
 	}
-	var clientId [32]byte
-	copy(clientId[:], privateKey.Public().(ed25519.PublicKey))
-
-	// If we will submit, the EVM key must be the registrant the digest is
-	// bound to — catch a mismatch locally before signing/spending gas.
-	var key *ecdsa.PrivateKey
 	if keyFile != "" {
-		key, err = onchain.LoadKeyFile(keyFile)
-		if err != nil {
-			fail(err)
+		var rpcUrls []string
+		if rpcAny, ok := opts["--rpc"]; ok && rpcAny != nil {
+			rpcUrls = append(rpcUrls, rpcAny.([]string)...)
 		}
-		if from := crypto.PubkeyToAddress(key.PublicKey); from != registrant {
-			fail(fmt.Errorf("--key_file address %s does not equal --registrant %s (the head-bind digest is bound to the registrant)", from.Hex(), registrant.Hex()))
+		if len(rpcUrls) == 0 {
+			fail(fmt.Errorf("--rpc: at least one endpoint required to submit"))
 		}
-	}
+		event := connect.NewEventWithContext(context.Background())
+		event.SetOnSignals(syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
+		ctx, cancel := context.WithCancel(event.Ctx())
+		defer cancel()
 
-	event := connect.NewEventWithContext(context.Background())
-	event.SetOnSignals(syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
-	ctx, cancel := context.WithCancel(event.Ctx())
-	defer cancel()
-
-	contractHex := contract.Hex()
-	digestCalldata := stSubnet.PackHeadBindDigest(registrant, hotkey, clientId)
-	digest, chainId, rpcUrl, err := snReadHeadBindDigest(ctx, rpcUrls, contractHex, digestCalldata)
-	if err != nil {
-		fail(err)
-	}
-
-	intent := snSignBindHead(privateKey, registrant, hotkey, digest)
-
-	bindCalldata, err := onchain.BuildBindHeadCalldata(intent.hotkey, intent.clientId, intent.clientIdSig)
-	if err != nil {
-		fail(fmt.Errorf("pack bindHead: %s", err))
-	}
-
-	fmt.Printf("head binding intent (bindHead)\n")
-	fmt.Printf("hotkey: 0x%x\n", intent.hotkey)
-	fmt.Printf("client_id (ckey): 0x%x\n", intent.clientId)
-	fmt.Printf("client_id_sig: 0x%x (64-byte Ed25519 R‖S by client_id over the digest)\n", intent.clientIdSig)
-	fmt.Printf("digest: 0x%x (headBindDigest, via %s, chain id %d)\n", intent.digest, rpcUrl, chainId)
-	fmt.Printf("registrant: %s\n", intent.registrant.Hex())
-	fmt.Printf("contract: %s (chain id %d)\n", contractHex, chainId)
-
-	if key != nil {
-		receipt, err := onchain.Submit(ctx, onchain.SubmitParams{
-			Contract: contract,
-			Rpcs:     rpcUrls,
-			Key:      key,
-			Calldata: bindCalldata,
-			ChainID:  new(big.Int).SetUint64(chainId),
-			DryRun:   dryRun,
-		})
+		receipt, err := snFleetSubmit(ctx, manifest, rpcUrls, keyFile, calldata, dryRun)
 		if err != nil {
 			fail(err)
 		}
 		if receipt == nil {
 			return // dry run
 		}
-		printHeadBound(receipt, contract)
+		decoded := false
+		for _, lg := range receipt.Logs {
+			if bound, unpackErr := stCoordinator.UnpackFleetBoundEvent(lg); unpackErr == nil {
+				fmt.Printf("FleetMemberBound: client=0x%x fleet=0x%x hotkey=0x%x uid=%d generation=%d epochs=[%d,%d]\n", bound.ClientId, bound.FleetId, bound.Hotkey, bound.Uid, bound.Generation, bound.ValidFromEpoch, bound.ValidToEpoch)
+				decoded = true
+			}
+		}
+		if !decoded {
+			fmt.Printf("warning: no FleetMemberBound event decoded from the receipt\n")
+		}
 		return
 	}
 
-	fmt.Printf("note: registrant MUST equal the snclaim EVM sender. The digest is bound to it, and bindHead reverts unless mirror(sender) equals the hotkey's on-chain coldkey (mirror-gated, like registerValidator).\n")
-	fmt.Printf("bindHead calldata:\n0x%x\n", bindCalldata)
-	fmt.Printf("submit with: snclaim bind-head --hotkey=0x%x --client_id=0x%x --sig=0x%x --contract=%s --rpc=%s --key_file=<evm_key_file>\n",
-		intent.hotkey, intent.clientId, intent.clientIdSig, contractHex, rpcUrl)
+	fmt.Printf("bindFleetMember calldata:\n0x%x\n", calldata)
+	fmt.Printf("submit with: provider bind-head --manifest=<file> --hotkey_seed_file=<file> --valid_from_epoch=%d --valid_to_epoch=%d --client_id=0x%x --rpc=<rpc_url> --key_file=<evm_key_file>\n", binding.ValidFromEpoch, binding.ValidToEpoch, binding.ClientID)
 }
 
-// printHeadBound decodes and prints the HeadBound event(s) from a bind receipt.
-func printHeadBound(receipt *types.Receipt, contract common.Address) {
-	decoded := false
-	for _, lg := range receipt.Logs {
-		if lg.Address != contract {
-			continue
-		}
-		ev, err := stSubnet.UnpackHeadBoundEvent(lg)
-		if err != nil {
-			continue
-		}
-		fmt.Printf("HeadBound: uid %d, registrant %s\n", ev.Uid, ev.Registrant.Hex())
-		fmt.Printf("  hotkey:    0x%x\n", ev.Hotkey)
-		fmt.Printf("  client_id: 0x%x\n", ev.ClientId)
-		decoded = true
-	}
-	if !decoded {
-		fmt.Printf("warning: no HeadBound event decoded from the receipt\n")
-	}
-}
-
-// unbindHead implements `provider unbind-head --hotkey=<hex>
-// [--contract=<addr>] [--rpc=<rpc_url>]... [--key_file=<key_file>]
-// [--dry-run]`. Unbind is mirror-gated only (no client signature), so this
-// packs unbindHead with sn/stabi and either submits it via sn/miner/onchain
-// (when --key_file is given) or prints the calldata for snclaim.
+// unbindHead implements `provider unbind-head --manifest=<file>
+// --effective_epoch=<n> [--client_id=<hex16>] [--client_seed_file=<file>]
+// [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]`. Upstream
+// replaced unbindHead with the client-signed fleet revoke: this reads the
+// coordinator's canonical revoke digest, verifies it against the local
+// signing domain, signs it with the client key, and - with --key_file -
+// submits; without one it prints the calldata.
 func unbindHead(opts docopt.Opts) {
 	fail := func(err error) {
 		fmt.Printf("unbind-head failed: %s\n", err)
 		os.Exit(1)
 	}
 
-	hotkeyStr, _ := opts.String("--hotkey")
-	hotkey, err := parseBytes32Arg("--hotkey", hotkeyStr)
+	manifest, err := snLoadFleetManifestOpt(opts)
 	if err != nil {
 		fail(err)
 	}
+	clientID, err := snClientIdOpt(opts)
+	if err != nil {
+		fail(err)
+	}
+	member, err := snFleetMember(manifest, clientID)
+	if err != nil {
+		fail(err)
+	}
+	effective, err := snUint64Opt(opts, "--effective_epoch")
+	if err != nil {
+		fail(err)
+	}
+
 	var rpcUrls []string
 	if rpcAny, ok := opts["--rpc"]; ok && rpcAny != nil {
 		rpcUrls = append(rpcUrls, rpcAny.([]string)...)
 	}
-	dryRun, _ := opts.Bool("--dry-run")
+	offline, _ := opts.Bool("--offline")
 	keyFile, _ := opts.String("--key_file")
 
-	// contract is optional for the offline print, required to submit
-	var contract common.Address
-	haveContract := false
-	if contractStr, _ := opts.String("--contract"); strings.TrimSpace(contractStr) != "" {
-		contractBytes, err := parseEvmAddressArg("--contract", contractStr)
+	event := connect.NewEventWithContext(context.Background())
+	event.SetOnSignals(syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
+	ctx, cancel := context.WithCancel(event.Ctx())
+	defer cancel()
+
+	dryRun, _ := opts.Bool("--dry-run")
+	if dryRun && keyFile == "" {
+		fmt.Printf("note: --dry-run has no effect without --key_file; printing the calldata for offline broadcast\n")
+	}
+
+	coordinatorHex := common.Address(manifest.Coordinator).Hex()
+	want, err := (protocol.FleetRevoke{ChainID: manifest.ChainID, Netuid: manifest.Netuid, Coordinator: manifest.Coordinator, ClientID: clientID, Generation: manifest.Generation, EffectiveEpoch: effective}).Digest()
+	if err != nil {
+		fail(err)
+	}
+
+	// With --rpc, the digest read is a cross-check against the coordinator:
+	// it validates the manifest's chain id, netuid and coordinator — the
+	// three fields the contract substitutes — against the local signing
+	// domain. It CANNOT validate the generation or the effective epoch (both
+	// are caller-supplied ABI arguments the contract just echoes), and a
+	// hostile endpoint passes by echoing the local digest back. The offline
+	// path (below, gated behind --offline) drops even the manifest-field
+	// check, which is why it requires the explicit flag and prints the
+	// unverified-assertion warning.
+	var digest [32]byte
+	var rpcUrl string
+	if 0 < len(rpcUrls) {
+		readCalldata := stCoordinator.PackFleetRevokeDigest(clientID, manifest.Generation, effective)
+		digest, rpcUrl, err = snReadFleetRevokeDigest(ctx, manifest.ChainID, rpcUrls, coordinatorHex, readCalldata)
 		if err != nil {
 			fail(err)
 		}
-		contract = common.Address(contractBytes)
-		haveContract = true
+		if digest != want {
+			fail(errors.New("fleet revoke digest differs from the local signing domain"))
+		}
+	} else if keyFile != "" {
+		fail(fmt.Errorf("--rpc: at least one endpoint required to submit"))
+	} else if !offline {
+		fail(fmt.Errorf("--offline: signing without an on-chain cross-check requires the explicit --offline flag (air-gapped mode)"))
+	} else {
+		digest = want
+		rpcUrl = "offline (local domain)"
+		fmt.Printf("WARNING: offline mode — generation %d and effective epoch %d were NOT verified against any coordinator; verify the manifest commitment hash before broadcasting\n", manifest.Generation, effective)
 	}
 
-	calldata, err := onchain.BuildUnbindHeadCalldata(hotkey)
+	clientKey, err := snClientKeyOpt(opts)
 	if err != nil {
-		fail(fmt.Errorf("pack unbindHead: %s", err))
+		fail(err)
+	}
+	if !bytesEqualConst(clientKey.Public().(ed25519.PublicKey), member.ClientKey[:]) {
+		fail(errors.New("client key does not match the manifest member"))
+	}
+	if commitment, commitmentErr := manifest.CommitmentHash(); commitmentErr == nil {
+		fmt.Printf("manifest commitment hash: 0x%x (verify against the finalized Subtensor commitment before trusting this manifest)\n", commitment)
+	}
+	signature := ed25519.Sign(clientKey, digest[:])
+
+	if 0 < len(rpcUrls) && rpcUrl != "" {
+		// Pin the submit to the endpoint that answered the digest read, the
+		// way the reference narrows its rpc list — do not broadcast to a
+		// different node than the one the cross-check validated.
+		rpcUrls = []string{rpcUrl}
+	}
+	calldata, err := stCoordinator.TryPackRevokeFleetBinding(clientID, manifest.Generation, effective, signature)
+	if err != nil {
+		fail(fmt.Errorf("pack revokeFleetBinding: %s", err))
 	}
 
-	fmt.Printf("head unbind intent (unbindHead)\n")
-	fmt.Printf("hotkey: 0x%x\n", hotkey)
-	fmt.Printf("note: unbind needs no signature — it is mirror-gated only. The snclaim EVM sender's mirror must equal the hotkey's on-chain coldkey.\n")
-	fmt.Printf("unbindHead calldata:\n0x%x\n", calldata)
+	fmt.Printf("fleet revoke intent (revokeFleetBinding)\n")
+	fmt.Printf("client_id: 0x%x generation=%d effective_epoch=%d\n", clientID, manifest.Generation, effective)
+	fmt.Printf("coordinator: %s (chain id %d, netuid %d)\n", coordinatorHex, manifest.ChainID, manifest.Netuid)
+	fmt.Printf("digest: 0x%x (fleet-revoke-v1, via %s)\n", digest, rpcUrl)
 
 	if keyFile != "" {
-		if !haveContract {
-			fail(fmt.Errorf("--contract required to submit"))
-		}
-		if len(rpcUrls) == 0 {
-			fail(fmt.Errorf("--rpc required to submit"))
-		}
-		key, err := onchain.LoadKeyFile(keyFile)
-		if err != nil {
-			fail(err)
-		}
-
-		event := connect.NewEventWithContext(context.Background())
-		event.SetOnSignals(syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
-		ctx, cancel := context.WithCancel(event.Ctx())
-		defer cancel()
-
-		receipt, err := onchain.Submit(ctx, onchain.SubmitParams{
-			Contract: contract,
-			Rpcs:     rpcUrls,
-			Key:      key,
-			Calldata: calldata,
-			DryRun:   dryRun,
-		})
+		receipt, err := snFleetSubmit(ctx, manifest, rpcUrls, keyFile, calldata, dryRun)
 		if err != nil {
 			fail(err)
 		}
 		if receipt == nil {
 			return // dry run
 		}
-		printHeadUnbound(receipt, contract)
+		fmt.Printf("fleet revoke submitted: tx %s\n", receipt.TxHash.Hex())
 		return
 	}
 
-	contractHint := "<contract>"
-	if haveContract {
-		contractHint = contract.Hex()
-	}
-	fmt.Printf("submit with: snclaim unbind-head --hotkey=0x%x --contract=%s --rpc=<rpc_url> --key_file=<evm_key_file>\n", hotkey, contractHint)
-}
-
-// printHeadUnbound decodes and prints the HeadUnbound event(s) from an unbind
-// receipt.
-func printHeadUnbound(receipt *types.Receipt, contract common.Address) {
-	decoded := false
-	for _, lg := range receipt.Logs {
-		if lg.Address != contract {
-			continue
-		}
-		ev, err := stSubnet.UnpackHeadUnboundEvent(lg)
-		if err != nil {
-			continue
-		}
-		fmt.Printf("HeadUnbound: uid %d, registrant %s\n", ev.Uid, ev.Registrant.Hex())
-		fmt.Printf("  hotkey:    0x%x\n", ev.Hotkey)
-		fmt.Printf("  client_id: 0x%x\n", ev.ClientId)
-		decoded = true
-	}
-	if !decoded {
-		fmt.Printf("warning: no HeadUnbound event decoded from the receipt\n")
+	fmt.Printf("revokeFleetBinding calldata:\n0x%x\n", calldata)
+	if seedFile, _ := opts.String("--client_seed_file"); strings.TrimSpace(seedFile) != "" {
+		fmt.Printf("submit with: provider unbind-head --manifest=<file> --effective_epoch=%d --client_id=0x%x --rpc=<rpc_url> --key_file=<evm_key_file> --client_seed_file=%s\n", effective, clientID, seedFile)
+	} else {
+		fmt.Printf("submit with: provider unbind-head --manifest=<file> --effective_epoch=%d --client_id=0x%x --rpc=<rpc_url> --key_file=<evm_key_file>\n", effective, clientID)
 	}
 }
 

@@ -130,7 +130,7 @@ func (self Id) String() string {
 
 // MarshalJSON encodes the id as a JSON string containing the dashed
 // lowercase UUID form of String.
-func (self *Id) MarshalJSON() ([]byte, error) {
+func (self Id) MarshalJSON() ([]byte, error) {
 	var buf [16]byte
 	copy(buf[0:16], self[0:16])
 	var buff bytes.Buffer
@@ -159,6 +159,12 @@ func (self *Id) UnmarshalJSON(src []byte) error {
 func parseUuid(src string) (dst [16]byte, err error) {
 	switch len(src) {
 	case 36:
+		// the four dropped characters must be dashes: three distinct
+		// 36-char strings otherwise parse to the same Id, and the JSON
+		// wire has no canonical string form for ids.
+		if src[8] != '-' || src[13] != '-' || src[18] != '-' || src[23] != '-' {
+			return dst, fmt.Errorf("cannot parse UUID %v: expected dashes at positions 9, 14, 19, 24", src)
+		}
 		src = src[0:8] + src[9:13] + src[14:18] + src[19:23] + src[24:]
 	case 32:
 		// dashes already stripped, assume valid
