@@ -3578,3 +3578,14 @@ Brings meso-miner level with the 3.23-fix provider line for the fixes merged the
 - **Test helpers shared, smoke runs serialized and docs staged** (PR #128, #132, #148, #149, #161): the untagged TTL tests move their TLS helpers to an untagged file so `GOOS=windows go vet .` type-checks; the smoke workflow's concurrency group becomes repo-wide so six open PRs cannot trip the shared account's sign-in limit; the capacity, dialer, baseline and memory work is documented; and the content-filtering blocklist is refreshed from upstream twice.
 
 **Status**: merged on `main`, unreleased.
+
+---
+
+## 171. Combined TCP-Segment + TLS-Record Fragmentation Dialer (PR #183)
+
+Parity port of the `fragment+segment` dialer from `full-bars/urnetwork-3.23-fix` (PR #792; upstream `urnetwork/connect` commit `3fd67304`). `net_resilient.go` and `net_http.go` are sha256-identical to the 3.23-fix port; the combined test file matches it except the build-tag split below, which follows each repo's own test conventions.
+
+- **The combined fragmentation dialer** (PR #183): the new `fragment+segment` dialer (priority 50, minimumWeight 0.25) cuts every fragmented ClientHello record a second time, across two TCP segments at an interior byte, so a reassembling middlebox that defeats either single method cannot stitch the hello (FOCI 2025). No raw sockets needed, so it works where the ttl technique cannot (non-root Android, iOS network extension, non-Linux). It registers beside the other resilient dialers behind `ExposeServerHostNames && ExposeServerIps`, fails closed exactly like the fragment path, and changes no existing dialer's behavior. The smart dialer picks it up generically.
+- **Windows test coverage kept** (PR #183): unlike 3.23-fix, whose whole resilient test suite is `//go:build unix`, the combined tests here are split so the pure userspace tests stay untagged for windows CI (matching a270e78d) and only the socket-option checks carry the unix tag. `LOG_REFERENCE.md` documents the new strategy tag.
+
+**Status**: merged on `main`, unreleased.
