@@ -54,11 +54,10 @@ func parseClientID16Arg(field string, value string) ([16]byte, error) {
 // store ("direct" = the native connection's identity).
 func providerClientId16() ([16]byte, error) {
 	var out [16]byte
-	store := globalClientJWTStore
-	store.mu.Lock()
-	store.loadLocked()
-	entry, ok := store.entries["direct"]
-	store.mu.Unlock()
+	if globalClientJWTStore == nil {
+		return out, fmt.Errorf("client JWT store uninitialized; pass --client_id=<hex16>")
+	}
+	entry, ok := globalClientJWTStore.Get("direct")
 	if !ok || strings.TrimSpace(entry.ClientID) == "" {
 		return out, fmt.Errorf("no provider client_id in the client JWT store; pass --client_id=<hex16>")
 	}
@@ -136,7 +135,7 @@ func snLoadHotkeySeed(path string) ([]byte, error) {
 	}
 	if len(raw) != 32 {
 		trimmed := strings.TrimSpace(string(raw))
-		decoded, decodeErr := hex.DecodeString(strings.TrimPrefix(trimmed, "0x"))
+		decoded, decodeErr := hex.DecodeString(strings.TrimPrefix(strings.TrimPrefix(trimmed, "0x"), "0X"))
 		if decodeErr != nil || len(decoded) != 32 {
 			return nil, fmt.Errorf("%s: expected raw or hex 32-byte sr25519 seed", path)
 		}
@@ -154,7 +153,7 @@ func snLoadClientSeedOverride(path string) (ed25519.PrivateKey, error) {
 	}
 	if len(raw) != ed25519.SeedSize {
 		trimmed := strings.TrimSpace(string(raw))
-		decoded, decodeErr := hex.DecodeString(strings.TrimPrefix(trimmed, "0x"))
+		decoded, decodeErr := hex.DecodeString(strings.TrimPrefix(strings.TrimPrefix(trimmed, "0x"), "0X"))
 		if decodeErr != nil || len(decoded) != ed25519.SeedSize {
 			return nil, fmt.Errorf("%s: expected raw or hex 32-byte Ed25519 seed", path)
 		}
