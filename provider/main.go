@@ -3736,12 +3736,7 @@ func provide(opts docopt.Opts) {
 
 		fmt.Printf("instance_id: %s\n", instanceId)
 
-		auth := &connect.ClientAuth{
-			ByJwt: byClientJwt,
-			// ClientId: clientId,
-			InstanceId: instanceId,
-			AppVersion: RequireVersion(),
-		}
+		auth := newProviderClientAuth(byClientJwt, instanceId)
 		// The bandwidth record has to exist before the transport starts. With
 		// URNETWORK_H3 the transport launches runH3 in its own goroutine, and
 		// runH3 wraps the host UDP socket through the identity's bandwidth
@@ -3758,6 +3753,7 @@ func provide(opts docopt.Opts) {
 			tlog("[t]h3 eligible for the direct identity, currently %s (urnet-tools set h3 on|off or URNETWORK_H3): H3 runs beside H1 and falls back to H1 quietly\n",
 				onOff(resolveH3(globalControlState)))
 		}
+		platformSettings.ClientLimitBackoff = clientLimitHoldFor(clientId, time.Now())
 		platformTransport := connect.NewPlatformTransport(proxyCtx, clientStrategy, connectClient.RouteManager(), connectUrl, auth, platformSettings)
 		// Register coordinator closer so HotSwap yields the coordinator session cleanly during handoff.
 		// Defer unregister so proxy reloads or shutdowns don't leak stale closers (F-5).
@@ -4899,9 +4895,10 @@ func fetchPublicIP() string {
 // SourceClientId stays nil: proxies remain independent top-level clients.
 func newProviderAuthClientArgsForRenewal(description string, clientId connect.Id) *connect.AuthNetworkClientArgs {
 	return &connect.AuthNetworkClientArgs{
-		ClientId:    &clientId,
-		Description: description,
-		DeviceSpec:  "",
+		ClientId:      &clientId,
+		Description:   description,
+		DeviceSpec:    "",
+		ProvideIntent: provideIntentEnabled(),
 	}
 }
 
@@ -5115,8 +5112,9 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	// the same string; the server UPDATEs the row's description on renewal.
 
 	authClientArgs := &connect.AuthNetworkClientArgs{
-		Description: description,
-		DeviceSpec:  "",
+		Description:   description,
+		DeviceSpec:    "",
+		ProvideIntent: provideIntentEnabled(),
 	}
 
 	api.AuthNetworkClient(authClientArgs, authClientCallback)
