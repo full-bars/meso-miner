@@ -103,10 +103,29 @@ func TestFetchReleaseByTagUsesMesoRepo(t *testing.T) {
 // TestNoForeignReleaseSlugInSource guards against a hardcoded release URL
 // for another fork creeping back into the tool's non-test sources.
 func TestNoForeignReleaseSlugInSource(t *testing.T) {
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
+	// Go sources, the installer scripts AND the workflows: the FreeBSD
+	// installer was once copied verbatim from the sibling fork, so it fetched
+	// that fork's tarball, tool asset and shell-wrapper, cross-contaminating
+	// every FreeBSD install in this repo. Checking only *.go could not see it.
+	patterns := []string{
+		"*.go",
+		"../../scripts/*.sh",
+		"../../scripts/*.ps1",
+		"../../.github/workflows/*.yml",
 	}
+	var files []string
+	for _, pat := range patterns {
+		matches, err := filepath.Glob(pat)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, matches...)
+	}
+	if len(files) == 0 {
+		t.Fatal("no files matched; the glob is wrong and this test would pass vacuously")
+	}
+	// A file that legitimately mentions the sibling fork is not the target
+	// (there is none today); the rule is that no shipped artifact may fetch it.
 	for _, f := range files {
 		if strings.HasSuffix(f, "_test.go") {
 			continue
@@ -116,7 +135,7 @@ func TestNoForeignReleaseSlugInSource(t *testing.T) {
 			t.Fatal(err)
 		}
 		if strings.Contains(string(b), "full-bars/urnetwork-3.23-fix") {
-			t.Errorf("%s references full-bars/urnetwork-3.23-fix; use releaseRepo", f)
+			t.Errorf("%s references full-bars/urnetwork-3.23-fix; this repo must only fetch full-bars/meso-miner", f)
 		}
 	}
 }
