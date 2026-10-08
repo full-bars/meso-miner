@@ -616,9 +616,7 @@ func unbindHead(opts docopt.Opts) {
 	if rpcAny, ok := opts["--rpc"]; ok && rpcAny != nil {
 		rpcUrls = append(rpcUrls, rpcAny.([]string)...)
 	}
-	if len(rpcUrls) == 0 {
-		fail(fmt.Errorf("--rpc: at least one endpoint required to read the fleet revoke digest"))
-	}
+	keyFile, _ := opts.String("--key_file")
 
 	event := connect.NewEventWithContext(context.Background())
 	event.SetOnSignals(syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
@@ -626,17 +624,32 @@ func unbindHead(opts docopt.Opts) {
 	defer cancel()
 
 	coordinatorHex := common.Address(manifest.Coordinator).Hex()
-	readCalldata := stCoordinator.PackFleetRevokeDigest(clientID, manifest.Generation, effective)
-	digest, rpcUrl, err := snReadFleetRevokeDigest(ctx, rpcUrls, coordinatorHex, readCalldata)
-	if err != nil {
-		fail(err)
-	}
 	want, err := (protocol.FleetRevoke{ChainID: manifest.ChainID, Netuid: manifest.Netuid, Coordinator: manifest.Coordinator, ClientID: clientID, Generation: manifest.Generation, EffectiveEpoch: effective}).Digest()
 	if err != nil {
 		fail(err)
 	}
-	if digest != want {
-		fail(errors.New("fleet revoke digest differs from the local signing domain"))
+
+	// The rpc read is a cross-check: the coordinator's canonical revoke
+	// digest must equal the local signing domain before anything is signed.
+	// It needs an endpoint; the offline path (no --key_file, calldata printed
+	// for a later broadcast) does not, so an air-gapped machine holding the
+	// client seed can produce the calldata without one.
+	var digest [32]byte
+	var rpcUrl string
+	if 0 < len(rpcUrls) {
+		readCalldata := stCoordinator.PackFleetRevokeDigest(clientID, manifest.Generation, effective)
+		digest, rpcUrl, err = snReadFleetRevokeDigest(ctx, rpcUrls, coordinatorHex, readCalldata)
+		if err != nil {
+			fail(err)
+		}
+		if digest != want {
+			fail(errors.New("fleet revoke digest differs from the local signing domain"))
+		}
+	} else if keyFile != "" {
+		fail(fmt.Errorf("--rpc: at least one endpoint required to submit"))
+	} else {
+		digest = want
+		rpcUrl = "offline (local domain)"
 	}
 
 	clientKey, err := snClientKeyOpt(opts)
@@ -659,7 +672,6 @@ func unbindHead(opts docopt.Opts) {
 	fmt.Printf("digest: 0x%x (fleet-revoke-v1, via %s)\n", digest, rpcUrl)
 
 	dryRun, _ := opts.Bool("--dry-run")
-	keyFile, _ := opts.String("--key_file")
 	if keyFile != "" {
 		receipt, err := snFleetSubmit(ctx, manifest, rpcUrls, keyFile, calldata, dryRun)
 		if err != nil {
