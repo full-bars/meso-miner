@@ -1506,7 +1506,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 					}
 				}
 			}
-			if self.h3Auxiliary() {
+			if self.h3Gated() {
 				// an auxiliary H3 that cannot connect is "unavailable", not an
 				// auth error: say so once, then only at verbose levels
 				if !h3UnavailableLogged {
@@ -1522,7 +1522,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 					self.log.Infof("[t]auth error %s = %s\n", clientId, err)
 				}
 			}
-			if self.h3Auxiliary() {
+			if self.h3Gated() {
 				authErrBackoff = nextH3Backoff(authErrBackoff, self.settings.ReconnectTimeout, h3AuxiliaryMaxBackoff)
 			} else if authErrBackoff == 0 {
 				authErrBackoff = self.settings.ReconnectTimeout
