@@ -928,7 +928,7 @@ Usage:
     provider sn-status [--json]
         [--api_url=<api_url>]
         [-v...]
-    provider claim [--epoch=<epoch>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
+    provider claim [--store-client=<key> | --provider-jwt=<path> | --legacy-coldkey=<coldkey_ss58>] [--epoch=<epoch>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
         [--api_url=<api_url>]
         [-v...]
     provider bind-head --manifest=<file> --hotkey_seed_file=<file> --valid_from_epoch=<n> --valid_to_epoch=<n> [--client_id=<hex16>] [--client_seed_file=<file>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
@@ -977,6 +977,11 @@ Options:
     --wallet=<coldkey_ss58>          Also set the subnet claim wallet at startup, same as provider wallet set.
                                      A failure is logged and does not block providing.
     <coldkey_ss58>                   Subnet claim wallet: an ss58 coldkey address (prefix 42).
+    --store-client=<key>             claim: use the client token of this identity from the store
+                                     (~/.urnetwork/.client_jwts.json; the key is a proxy address or "direct").
+                                     Pick a client that served traffic.
+    --provider-jwt=<path>            claim: use the client token in this file.
+    --legacy-coldkey=<coldkey_ss58>  claim: network token plus this coldkey, only for an epoch without a provider artifact.
     --epoch=<epoch>                  Epoch to fetch the subnet pool claim for. Defaults to the last
                                      finalized epoch, which is the epoch before the current one.
     --rpc=<rpc_url>                  EVM json-rpc endpoint used to check the payout root on-chain.
@@ -3736,12 +3741,7 @@ func provide(opts docopt.Opts) {
 
 		fmt.Printf("instance_id: %s\n", instanceId)
 
-		auth := &connect.ClientAuth{
-			ByJwt: byClientJwt,
-			// ClientId: clientId,
-			InstanceId: instanceId,
-			AppVersion: RequireVersion(),
-		}
+		auth := newProviderClientAuth(byClientJwt, instanceId)
 		// The bandwidth record has to exist before the transport starts. With
 		// URNETWORK_H3 the transport launches runH3 in its own goroutine, and
 		// runH3 wraps the host UDP socket through the identity's bandwidth
@@ -3758,6 +3758,7 @@ func provide(opts docopt.Opts) {
 			tlog("[t]h3 eligible for the direct identity, currently %s (urnet-tools set h3 on|off or URNETWORK_H3): H3 runs beside H1 and falls back to H1 quietly\n",
 				onOff(resolveH3(globalControlState)))
 		}
+		platformSettings.ClientLimitBackoff = clientLimitHoldWithContext(proxyCtx, clientId, time.Now())
 		platformTransport := connect.NewPlatformTransport(proxyCtx, clientStrategy, connectClient.RouteManager(), connectUrl, auth, platformSettings)
 		// Register coordinator closer so HotSwap yields the coordinator session cleanly during handoff.
 		// Defer unregister so proxy reloads or shutdowns don't leak stale closers (F-5).
@@ -4899,10 +4900,27 @@ func fetchPublicIP() string {
 // SourceClientId stays nil: proxies remain independent top-level clients.
 func newProviderAuthClientArgsForRenewal(description string, clientId connect.Id) *connect.AuthNetworkClientArgs {
 	return &connect.AuthNetworkClientArgs{
-		ClientId:    &clientId,
-		Description: description,
-		DeviceSpec:  "",
+		ClientId:      &clientId,
+		Description:   description,
+		DeviceSpec:    "",
+		ProvideIntent: provideIntentEnabled(),
 	}
+}
+
+// renewalTransientError marks a renewal that failed before the platform gave a
+// verdict on the identity: a dropped connection, a timeout, a 5xx/408/429 answer
+// or a cancelled context. It says nothing about whether the client still exists,
+// so the caller must retry rather than throw the identity away by minting a new
+// one. A verdict ("Client does not exist.", a refusal, a mismatched client id)
+// is a plain error and still falls through to a fresh mint.
+type renewalTransientError struct{ err error }
+
+func (e *renewalTransientError) Error() string { return e.err.Error() }
+func (e *renewalTransientError) Unwrap() error { return e.err }
+
+func isRenewalTransient(err error) bool {
+	var transient *renewalTransientError
+	return errors.As(err, &transient)
 }
 
 // renewClientJWT renews the per-proxy client JWT for an existing client
@@ -4927,11 +4945,17 @@ func renewClientJWT(ctx context.Context, apiUrl, byJwt string, clientId connect.
 	var result connect.ApiCallbackResult[*connect.AuthNetworkClientResult]
 	select {
 	case <-ctx.Done():
-		return "", ctx.Err()
+		return "", &renewalTransientError{ctx.Err()}
 	case result = <-channel:
 	}
 	if result.Error != nil {
-		return "", fmt.Errorf("auth-client renewal api error: %w", result.Error)
+		apiErr := fmt.Errorf("auth-client renewal api error: %w", result.Error)
+		if renewalHTTPRefusal(result.Error) {
+			// the platform answered with a permanent refusal (4xx other than
+			// 408/429): that is a verdict, not an outage
+			return "", apiErr
+		}
+		return "", &renewalTransientError{apiErr}
 	}
 	if result.Result == nil {
 		return "", fmt.Errorf("empty result from auth-client renewal API")
@@ -4953,6 +4977,23 @@ func renewClientJWT(ctx context.Context, apiUrl, byJwt string, clientId connect.
 		return "", fmt.Errorf("renewal returned client_id %q, want %q — refusing to swap", got, clientId.String())
 	}
 	return result.Result.ByClientJwt, nil
+}
+
+// renewalHTTPRefusal reports whether err is a non-200 HTTP answer that is a
+// permanent refusal: a 4xx other than 408 (request timeout) and 429 (rate
+// limited), which say "try again" rather than "no". Transport errors and 5xx
+// carry no verdict. The status is read from the "<code> <text>: <body>" prefix
+// that httpErrorFromResponse puts on every non-200 answer.
+func renewalHTTPRefusal(err error) bool {
+	msg := err.Error()
+	if len(msg) < 4 || msg[3] != ' ' {
+		return false
+	}
+	code, convErr := strconv.Atoi(msg[:3])
+	if convErr != nil {
+		return false
+	}
+	return 400 <= code && code < 500 && code != http.StatusRequestTimeout && code != http.StatusTooManyRequests
 }
 
 // renewClientJWTFn is the injectable renewal entry point. It defaults to the
@@ -5053,6 +5094,11 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 						}
 						return renewedJwt, parsedId, true, nil
 					}
+					if isRenewalTransient(renewErr) {
+						tlog("🔥 [hot-restart] %s: stored client JWT expired, renewal of identity %s failed without a verdict (%v); keeping the identity and retrying instead of minting a new one\n", identityKey, parsedId, renewErr)
+						returnErr = fmt.Errorf("renewal of %s deferred: %w", parsedId, renewErr)
+						return
+					}
 					tlog("🔥 [hot-restart] %s: stored client JWT expired, renewal attempt failed (%v), minting fresh\n", identityKey, renewErr)
 				} else {
 					tlog("🔥 [hot-restart] %s: stored client JWT expired, invalid client_id %q (%v), minting fresh\n", identityKey, entry.ClientID, parseErr)
@@ -5073,6 +5119,11 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 							tlog("⚠️ [jwt-store] failed to persist renewed client JWT for %s: %v\n", identityKey, putErr)
 						}
 						return renewedJwt, parsedId, true, nil
+					}
+					if isRenewalTransient(renewErr) {
+						tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, renewal of identity %s failed without a verdict (%v); keeping the identity and retrying instead of minting a new one\n", identityKey, parsedId, renewErr)
+						returnErr = fmt.Errorf("renewal of %s deferred: %w", parsedId, renewErr)
+						return
 					}
 					tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, renewal salvage failed (%v), minting fresh\n", identityKey, renewErr)
 				} else {
@@ -5115,8 +5166,9 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	// the same string; the server UPDATEs the row's description on renewal.
 
 	authClientArgs := &connect.AuthNetworkClientArgs{
-		Description: description,
-		DeviceSpec:  "",
+		Description:   description,
+		DeviceSpec:    "",
+		ProvideIntent: provideIntentEnabled(),
 	}
 
 	api.AuthNetworkClient(authClientArgs, authClientCallback)
