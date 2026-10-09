@@ -12,6 +12,10 @@
 - **The dropped bucket is labeled on its own, and the idle hint reads again** ([#169](https://github.com/full-bars/meso-miner/pull/169)): the live status and `top` view called the was-up-now-down bucket `down`, the same word the whole-pool figure uses for dead plus dropped. The breakdown bucket is `dropped` now, matching the proxy health report, so `down` has one meaning. The idle hint no longer calls every offline proxy dead. Labels and wording only; the reaper inputs are unchanged.
 - **The provider's operator logs are readable sentences** ([#180](https://github.com/full-bars/meso-miner/pull/180)): the pressure regime, pool target, trim receipt and apply, reload summary, health verdict, auth limiter and GC governor lines say what happened in plain words, with machine counters kept in a trailing `(...)` for grep. The new `[health] Verdict:` line summarizes state in one sentence. Dialer and connect lines are unchanged.
 
+### Fixed
+
+- **A failing auxiliary H3 no longer retries in lockstep or spins**: its failure wait is spread by 20% either way, has a one second floor so an unset reconnect timeout cannot make a tight dial loop, and is cut short when the H3 gate is switched, so turning H3 off parks the transport at once.
+
 ---
 
 ## [v2026.10.6-1064547980-meso] — 2026-10-06
