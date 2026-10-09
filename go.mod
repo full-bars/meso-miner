@@ -1,6 +1,6 @@
 module github.com/urnetwork/connect
 
-go 1.27.0
+go 1.27.1
 
 require (
 	github.com/Microsoft/go-winio v0.6.2
@@ -17,7 +17,7 @@ require (
 	github.com/pion/webrtc/v4 v4.2.18
 	github.com/quic-go/quic-go v0.61.0
 	github.com/spf13/cobra v1.10.2
-	github.com/urfoundation/sn v0.0.0-20261006032132-d2479943bbfe
+	github.com/urfoundation/sn v0.0.0-20261008141907-6c322bf6165f
 	github.com/urnetwork/glog v1.2.10-0.20260227220536-1de77fab89bd
 	github.com/vedhavyas/go-subkey/v2 v2.0.0
 	github.com/wlynxg/anet v0.0.5
