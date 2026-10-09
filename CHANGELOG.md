@@ -27,6 +27,10 @@
 - **`provider wallet set` and `provide --wallet` refuse the unsigned network wallet request** ([#192](https://github.com/full-bars/meso-miner/pull/192)): the platform is moving wallet binding to a signed consent, and whether it still accepts the unsigned request is a server-side policy the binary cannot see. Both now refuse unless `--legacy-network-wallet` is given, and the message names the app or web account route. `provide --wallet` still starts providing after printing the refusal. A running provider that does not pass `--wallet` is unaffected.
 - **The container start scripts treat exit 75 as a planned restart** ([#191](https://github.com/full-bars/meso-miner/pull/191)): `start_stable.sh`, `start_nightly.sh`, `start_jwt.sh` and the provider loop of `pelican_panel.sh` counted 75 as a crash, which counted toward the three-crash JWT clear and slept 60 seconds. It now restarts after 5 seconds and leaves the JWT alone. Every other status is unchanged.
 
+### Fixed
+
+- **A failing auxiliary H3 no longer retries in lockstep or spins**: its failure wait is spread by 20% either way, has a one second floor so an unset reconnect timeout cannot make a tight dial loop, and is cut short when the H3 gate is switched, so turning H3 off parks the transport at once.
+
 ---
 
 ## [v2026.10.6-1064547980-meso] — 2026-10-06
