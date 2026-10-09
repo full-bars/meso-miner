@@ -261,8 +261,8 @@ github.com/tklauser/numcpus v0.6.1 h1:ng9scYS7az0Bk4OZLvrNXNSAO2Pxr1XXRAPyjhIx+F
 github.com/tklauser/numcpus v0.6.1/go.mod h1:1XfjsgE2zo8GVw7POkMbHENHzVg3GzmoZ9fESEdAacY=
 github.com/urfave/cli/v2 v2.27.5 h1:WoHEJLdsXr6dDWoJgMq/CboDmyY/8HMMH1fTECbih+w=
 github.com/urfave/cli/v2 v2.27.5/go.mod h1:3Sevf16NykTbInEnD0yKkjDAeZDS0A6bzhBH5hrMvTQ=
-github.com/urfoundation/sn v0.0.0-20261006032132-d2479943bbfe h1:jopQ07QnddAyeWS7GsxlRfmzgb1oXjIp/FiwC6sEnsQ=
-github.com/urfoundation/sn v0.0.0-20261006032132-d2479943bbfe/go.mod h1:8CMCPDdR8MpzNGfze2XODeFgp0AgNlsljcvASkVWCpg=
+github.com/urfoundation/sn v0.0.0-20261008141907-6c322bf6165f h1:c+6oHoQMrd1oO8rhFSiWznmh81+9bOBXGm++AMQ4f2k=
+github.com/urfoundation/sn v0.0.0-20261008141907-6c322bf6165f/go.mod h1:PXKohIvltIWNq1CDUG9FgQgdh0GnTCwtVkXozXD/q8Y=
 github.com/urnetwork/glog v1.2.10-0.20260227220536-1de77fab89bd h1:nGoz3kF7FmCWvd1DFY8r26NwCpInCXNt8Pkqhzy0RWY=
 github.com/urnetwork/glog v1.2.10-0.20260227220536-1de77fab89bd/go.mod h1:fZ7xLDQBgRHFyzqKl0LvxlXJpmIn+fVkF6ihF/9rxns=
 github.com/vedhavyas/go-subkey/v2 v2.0.0 h1:LemDIsrVtRSOkp0FA8HxP6ynfKjeOj3BY2U9UNfeDMA=
