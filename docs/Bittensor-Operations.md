@@ -149,7 +149,7 @@ Subnet 25 uses cryptographic Merkle tree payout roots committed on-chain at the 
 | `--provider-jwt=<path>` | A client token in a file. |
 | `--legacy-coldkey=<coldkey_ss58>` | The network token plus this coldkey. Only for an epoch without a provider artifact. |
 
-The network token alone is refused, and so is an expired client token or (with `--legacy-coldkey`) an expired network token (start the provider so it renews, or pass a fresher file). A command with no credential flag exits 1 and names these options. The examples below show `--store-client=direct`; substitute your own credential flag.
+The network token alone is refused. An expired client token is also refused: start the provider so it renews, or pass a fresher file. An expired network token (`--legacy-coldkey`) is refused too, and a fresher file does not help there: run `provider auth` and retry. A command with no credential flag exits 1 and names these options. The examples below show `--store-client=direct`; substitute your own credential flag.
 
 ### Workflow 1: Air-Gapped / Offline Calldata (Recommended)
 Generates ABI-encoded calldata and cryptographic inclusion proofs without exposing private keys on the provider host:
