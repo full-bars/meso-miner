@@ -16,13 +16,13 @@ apk add --no-cache curl
 `adduser -D urnet` creates the `urnet` user with a home directory and no password. If the user does not exist when you install, the installer still downloads the files but does **not** install the service, and prints the commands to finish. To run the provider under a different account, set `URNET_OPENRC_USER=<name>` for the install command:
 
 ```sh
-URNET_OPENRC_USER=provider sh -c 'curl -fSsL https://dl.fullbars.xyz/install.sh | sh'
+URNET_OPENRC_USER=provider sh -c 'curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh'
 ```
 
 ## Install
 
 ```sh
-curl -fSsL https://dl.fullbars.xyz/install.sh | sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh
 ```
 
 ### What the installer does on Alpine, and why
@@ -178,7 +178,7 @@ The provider's [swap-thrash watchdog](Configuration.md#swap-thrash-watchdog) res
 As root:
 
 ```sh
-curl -fSsL https://dl.fullbars.xyz/uninstall.sh | sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Uninstall_Linux.sh | sh
 ```
 
 This stops the service, removes `/etc/init.d/urnetwork`, its `default` runlevel entry and any auto-update entry, and deletes the install directory. It also deletes `/home/urnet/.urnetwork`, which holds the login token, so you would need a new auth code to install again. It leaves two things behind: the `urnet` user and the log files. Remove them if you want a clean slate:
