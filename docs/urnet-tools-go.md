@@ -59,6 +59,7 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 
 On a host where OpenRC is the running init system, the lifecycle commands (`start`, `stop`, `restart`, `auto-start`, `auto-update`, `logs`, `status`, `uninstall`) act on the installer's `urnetwork` service. The command table, the multi-provider selector rules and the root requirement are on the [Alpine Linux (OpenRC)](OpenRC.md#urnet-tools-command-parity) page.
 
+<<<<<<< HEAD
 ### Wallet Consent Commands
 
 The network wallet consent is one signature from your coldkey that covers every provider client of your network, current and future. Release settlement pays only a consented wallet. The group delegates to the provider binary's own `wallet` subcommands, like `auth` and `choose-network`.
@@ -72,6 +73,8 @@ The network wallet consent is one signature from your coldkey that covers every 
 
 A later consent must start at a later epoch than the one before it. Use `--wallet-from-epoch`/`--wallet-through-epoch` with `wallet challenge` and `wallet set` for an explicit interval; the default is the next epoch through the full 65,536-epoch span.
 
+=======
+>>>>>>> 15dadc0e (docs: complete OpenRC and FreeBSD platform guides)
 ### Proxy Management Commands
 
 | Command | What it does |

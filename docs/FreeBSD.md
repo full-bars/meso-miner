@@ -4,6 +4,13 @@ This page is the complete guide to running the URnetwork provider on FreeBSD (am
 
 The provider runs as an `rc.d` service named `urnetwork` under an unprivileged user. There is no hosted one-line installer for FreeBSD: you fetch the installer script and run it, and it downloads the release for your architecture.
 
+> [!WARNING]
+> **Release artifacts on meso-miner:** as of `v2026.10.6-1064547980-meso`, meso-miner releases do
+> not yet ship the FreeBSD provider binary or the `urnet-tools-freebsd-*` assets. The installer,
+> the rc.d service and the tuning below are all real in this repo, but `install` cannot fetch
+> FreeBSD binaries until the release pipeline publishes them (tracked follow-up). Everything on
+> this page applies as soon as that lands.
+
 ## Before you start
 
 The base system has no `jq` and no `python3`. The installer works without them, but they change one thing: they are what lets it verify and install the Go `urnet-tools` binary (see [What the installer does](#what-the-installer-does)). Install `curl`, `sudo` and, recommended, `jq`:
@@ -17,17 +24,17 @@ Run the installer as the account the provider should run as, with `sudo`, or as 
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_FreeBSD.sh -o urnet-install.sh
+curl -fsSL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_FreeBSD.sh -o urnet-install.sh
 sudo sh urnet-install.sh install
 ```
 
 To install a specific release instead of the latest:
 
 ```sh
-sudo sh urnet-install.sh install v3.23.0-fix.32.7
+sudo sh urnet-install.sh install v2026.10.6-1064547980-meso
 ```
 
-The installer takes `latest` by default, resolves the tag through the GitHub API, and falls back to `https://dl.fullbars.xyz/latest-version` when the API is rate limited. It supports `amd64` and `arm64`; any other architecture stops the install.
+The installer takes `latest` by default, resolves the tag through the GitHub API, falling back to the `/releases/latest` redirect when the API is rate limited (the `dl.fullbars.xyz` mirror carries 3.23-fix builds, not meso-miner's). It supports `amd64` and `arm64`; any other architecture stops the install.
 
 ### Service user
 
