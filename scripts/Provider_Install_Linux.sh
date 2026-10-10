@@ -101,7 +101,11 @@ no_modify_bashrc=0
 update_timer_oncalendar="Sun *-*-* 00:00:00 UTC"
 
 api_base="${URNET_API_BASE:-https://api.github.com/repos/full-bars/meso-miner}"
-urnet_dl_base="${URNET_DL_BASE:-https://dl.fullbars.xyz}"
+# Releases for this fork are published on its own GitHub releases, so both
+# endpoints point there. A shared CDN across forks would let this installer
+# fetch another fork's assets, which is what test_provider_install.sh asserts
+# against.
+urnet_dl_base="${URNET_DL_BASE:-https://github.com/full-bars/meso-miner}"
 urnet_github_dl_base="${URNET_MIRROR_BASE:-https://github.com/full-bars/meso-miner/releases/download}"
 
 install_path="$HOME/.local/share/urnetwork-provider"
