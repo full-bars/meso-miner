@@ -885,7 +885,7 @@ Once the `✓ done` line is logged, the `paceMonitor` goroutine exits. No furthe
 
 ## 🩺 Liveness (`[liveness]`)
 
-Only on a unit that sets `WatchdogSec=` (see [Configuration](docs/Configuration.md#systemd-watchdog-stalled-provider)). These lines go to `~/.urnetwork/events.log`, not the ramlog, because the ramlog reader may be the thing that is starved.
+Under systemd this runs on a unit that sets `WatchdogSec=`; in a container there is no watchdog to withhold, so the same detection acts by exiting the provider instead (see [Configuration](docs/Configuration.md#systemd-watchdog-stalled-provider)). These lines go to `~/.urnetwork/events.log`, not the ramlog, because the ramlog reader may be the thing that is starved.
 
 ```text
 🚨 [liveness] no progress for 10m0s: withholding the systemd watchdog ping, so systemd will restart the provider
@@ -894,6 +894,10 @@ Only on a unit that sets `WatchdogSec=` (see [Configuration](docs/Configuration.
 [liveness] the lean start cap was removed again: progress resumed before systemd acted
 [liveness] no progress for 10m0s, but self-heal is off, so the systemd watchdog is still being fed (it would otherwise be withheld and systemd would restart the provider)
 ⚠️ [liveness] WATCHDOG_USEC is set but NOTIFY_SOCKET is not: the unit needs NotifyAccess=main or all, or systemd will restart the provider every 20m0s
+🚨 [liveness] no progress for 10m0s: exiting 75 so the supervisor restarts the provider
+[liveness] no progress for 10m0s, but self-heal is off, so the provider keeps running (it would otherwise exit 75 and be restarted)
+[liveness] no progress for 10m0s, but the state directory holding thrash_cap.json is not writable (read-only), so a self-exit would restart without its throttle record; not exiting
+[liveness] progress resumed; the restart was not taken
 ```
 
 | Message | Meaning |
