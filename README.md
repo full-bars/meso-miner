@@ -307,6 +307,7 @@ dashboard. See [Monitoring](docs/Monitoring.md).
 - **Base engine:** UrNetwork v3.23
 - **Language:** Go 1.27, compiled on Alpine
 - **Images:** Multi-arch `linux/amd64` + `linux/arm64`, `darwin/amd64` + `darwin/arm64` via GitHub Actions → GHCR
+- **Platforms:** Linux (systemd), macOS, Windows, FreeBSD (rc.d — [guide](docs/FreeBSD.md))
 - **Bridge-friendly:** runs on standard Docker bridge networks, no `--network host` required
 
 ---

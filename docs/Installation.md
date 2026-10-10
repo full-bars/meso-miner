@@ -269,3 +269,8 @@ After optimization, your Docker container should restart and report:
 
 > [!NOTE]
 > If you only run Docker and do not intend to use the systemd provider service, the installer still offers just the tools. Choose `n` when prompted to enable the systemd service.
+
+## Other platforms
+
+- **FreeBSD:** the provider runs as an rc.d service; see the [FreeBSD guide](FreeBSD.md).
+
