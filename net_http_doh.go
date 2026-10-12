@@ -40,8 +40,9 @@ func shouldLogDohErr() (bool, int64) { return dohErrThrottle.Allow(time.Now()) }
 
 func DefaultDohSettings() *DohSettings {
 	return &DohSettings{
-		ConnectSettings:          *DefaultConnectSettings(),
-		IpVersion:                4,
+		ConnectSettings: *DefaultConnectSettings(),
+		// both families when the host has global IPv6, else 4 (see defaultDohIpVersion)
+		IpVersion:                defaultDohIpVersion(),
 		MissExpiration:           300 * time.Second,
 		LocalExpiration:          300 * time.Second,
 		MinCacheTtl:              30 * time.Second,
@@ -76,6 +77,14 @@ func DefaultDnsResolverSettings() *DnsResolverSettings {
 			{Url: "https://9.9.9.9/dns-query", Format: DohFormatWire},        // Quad9 (RFC 8484)
 			{Url: "https://208.67.222.222/dns-query", Format: DohFormatWire}, // OpenDNS (RFC 8484)
 		},
+		// the same operators over IPv6. Used only when the host has global IPv6
+		// (IpVersion 0, see defaultDohIpVersion); each presents an IP-SAN cert.
+		RemoteDohServersIpv6: []DohServer{
+			{Url: "https://[2606:4700:4700::1111]/dns-query", Format: DohFormatJson}, // Cloudflare
+			{Url: "https://[2001:4860:4860::8888]/resolve", Format: DohFormatJson},   // Google
+			{Url: "https://[2620:fe::fe]/dns-query", Format: DohFormatWire},          // Quad9 (RFC 8484)
+			{Url: "https://[2620:119:35::35]/dns-query", Format: DohFormatWire},      // OpenDNS (RFC 8484)
+		},
 		// local plain-dns servers: host-side resolution, and the tunnel resolver
 		// when the local-dns toggle is enabled. Quad9 (9.9.9.9) leads so the OS does
 		// not auto-upgrade the tunnel resolver to encrypted DNS (which would bypass
@@ -83,6 +92,10 @@ func DefaultDnsResolverSettings() *DnsResolverSettings {
 		LocalDnsIpv4: []string{
 			"9.9.9.9", // Quad9
 			"1.1.1.1", // Cloudflare
+		},
+		LocalDnsIpv6: []string{
+			"2620:fe::fe",          // Quad9
+			"2606:4700:4700::1111", // Cloudflare
 		},
 	}
 }

@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -406,5 +408,206 @@ func TestRenewClientJWTContextCanceled(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("renewClientJWT did not return promptly on context cancellation")
+	}
+}
+
+// --- identity eviction: only an explicit rejection, never during an outage ---
+
+type rejectedAuthError struct{}
+
+func (rejectedAuthError) Error() string      { return "websocket: bad handshake (http 401)" }
+func (rejectedAuthError) AuthRejected() bool { return true }
+
+func shortRevocationCheck(t *testing.T) {
+	t.Helper()
+	prev := revocationCheckInterval
+	revocationCheckInterval = 10 * time.Millisecond
+	t.Cleanup(func() { revocationCheckInterval = prev })
+}
+
+func runRevocationWatcher(ctx context.Context, key string, index int) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		watchReusedIdentityForRevocation(ctx, key, index, nil)
+	}()
+	return done
+}
+
+func seedIdentity(t *testing.T, store *clientJWTStore, key string) {
+	t.Helper()
+	if err := store.Put(key, clientJWTEntry{ByClientJWT: "tok", ClientID: "client-" + key, NetworkID: "net", MintedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The incident: the backend is slow, every auth times out, nothing has come up
+// yet. That is not a revoked identity and the saved identity must survive.
+func TestRevocationWatcher_TimeoutsNeverEvictAnIdentity(t *testing.T) {
+	shortRevocationCheck(t)
+	store := withTestClientJWTStore(t)
+	connect.ResetProxyHealthForTesting()
+	connect.RegisterProxy(701, "to.example:1080", "to.example:1080")
+	seedIdentity(t, store, "to.example:1080")
+
+	for i := 0; i < 50; i++ {
+		connect.RecordProxyAuthFailure(701, errors.New("Timeout. 3 dial(s) failed over 1 round(s) in 15s, last: i/o timeout"))
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runRevocationWatcher(ctx, "to.example:1080", 701)
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	<-done
+
+	if _, ok := store.Get("to.example:1080"); !ok {
+		t.Fatal("an identity was evicted because the backend was slow")
+	}
+}
+
+func TestRevocationWatcher_StillEvictsAnIdentityThePlatformRejects(t *testing.T) {
+	shortRevocationCheck(t)
+	prev := identityEvictionBlocked
+	identityEvictionBlocked = func() bool { return false }
+	defer func() { identityEvictionBlocked = prev }()
+	prevOn := identityEvictionEnabled
+	identityEvictionEnabled = func() bool { return true } // the operator opted in
+	defer func() { identityEvictionEnabled = prevOn }()
+
+	store := withTestClientJWTStore(t)
+	connect.ResetProxyHealthForTesting()
+	connect.RegisterProxy(702, "rev.example:1080", "rev.example:1080")
+	seedIdentity(t, store, "rev.example:1080")
+
+	for i := 0; i < revokedIdentityAuthFailureThreshold; i++ {
+		connect.RecordProxyAuthFailure(702, rejectedAuthError{})
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := runRevocationWatcher(ctx, "rev.example:1080", 702)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("a genuinely rejected identity was never evicted")
+	}
+	if _, ok := store.Get("rev.example:1080"); ok {
+		t.Fatal("a rejected identity should be evicted so it can be re-minted")
+	}
+}
+
+// Even a real-looking rejection is held while the backend is degraded: during
+// an outage the platform's answers cannot be trusted to mean "revoked".
+func TestRevocationWatcher_NeverEvictsWhileTheBackendIsDegraded(t *testing.T) {
+	shortRevocationCheck(t)
+	var degraded atomic.Bool
+	degraded.Store(true)
+	prevOn := identityEvictionEnabled
+	identityEvictionEnabled = func() bool { return true }
+	defer func() { identityEvictionEnabled = prevOn }()
+	prev := identityEvictionBlocked
+	identityEvictionBlocked = func() bool { return degraded.Load() }
+	defer func() { identityEvictionBlocked = prev }()
+
+	store := withTestClientJWTStore(t)
+	connect.ResetProxyHealthForTesting()
+	connect.RegisterProxy(703, "deg.example:1080", "deg.example:1080")
+	seedIdentity(t, store, "deg.example:1080")
+	for i := 0; i < 20; i++ {
+		connect.RecordProxyAuthFailure(703, rejectedAuthError{})
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := runRevocationWatcher(ctx, "deg.example:1080", 703)
+
+	time.Sleep(250 * time.Millisecond)
+	if _, ok := store.Get("deg.example:1080"); !ok {
+		t.Fatal("an identity was evicted during a backend outage")
+	}
+
+	// once the backend is healthy again the rejection stands and the identity goes
+	degraded.Store(false)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the watcher never resumed after the outage ended")
+	}
+	if _, ok := store.Get("deg.example:1080"); ok {
+		t.Fatal("after the outage a persistent explicit rejection should still evict")
+	}
+}
+
+// Deleting a saved identity loses its history and mints a new one, and the cases
+// where the platform really refuses a revoked token cannot be told apart from a
+// WAF or a gateway saying no. So eviction is something an operator turns on, not
+// something a bad hour does to them.
+func TestRevocationWatcher_NeverEvictsByDefault(t *testing.T) {
+	shortRevocationCheck(t)
+	prev := identityEvictionBlocked
+	identityEvictionBlocked = func() bool { return false }
+	defer func() { identityEvictionBlocked = prev }()
+
+	store := withTestClientJWTStore(t)
+	connect.ResetProxyHealthForTesting()
+	connect.RegisterProxy(704, "dflt.example:1080", "dflt.example:1080")
+	seedIdentity(t, store, "dflt.example:1080")
+	for i := 0; i < 50; i++ {
+		connect.RecordProxyAuthFailure(704, rejectedAuthError{})
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runRevocationWatcher(ctx, "dflt.example:1080", 704)
+	time.Sleep(250 * time.Millisecond)
+	cancel()
+	<-done
+
+	if _, ok := store.Get("dflt.example:1080"); !ok {
+		t.Fatal("an identity was deleted although automatic eviction is off by default")
+	}
+}
+
+func TestIdentityEvictionEnabled_IsAnExplicitOptIn(t *testing.T) {
+	t.Setenv("URNETWORK_EVICT_REVOKED_IDENTITIES", "")
+	if identityEvictionEnabled() {
+		t.Fatal("eviction must be off unless asked for")
+	}
+	t.Setenv("URNETWORK_EVICT_REVOKED_IDENTITIES", "1")
+	if !identityEvictionEnabled() {
+		t.Fatal("URNETWORK_EVICT_REVOKED_IDENTITIES=1 turns it on")
+	}
+}
+
+func TestRenewalHTTPRefusal_OverloadAndGatewaysAreNotARefusal(t *testing.T) {
+	prev := renewalBackendDegraded
+	renewalBackendDegraded = func() bool { return false }
+	defer func() { renewalBackendDegraded = prev }()
+
+	cases := []struct {
+		msg  string
+		want bool
+	}{
+		{"401 Unauthorized: bad token", true},
+		{"403 Forbidden: nope", true},
+		{"404 Not Found: x", true},
+		{"408 Request Timeout: slow", false},
+		{"429 Too Many Requests: slow down", false},
+		{"499 Client Closed Request: load balancer", false}, // an nginx gateway, not an answer about the token
+		{"500 Internal Server Error: boom", false},
+		{"503 Service Unavailable: db", false},
+	}
+	for _, c := range cases {
+		if got := renewalHTTPRefusal(errors.New(c.msg)); got != c.want {
+			t.Errorf("%q: refusal=%v, want %v", c.msg, got, c.want)
+		}
+	}
+
+	// during an outage even a 401 or 403 is not trusted: minting a fresh identity
+	// off a refusal the degraded backend (or its gateway) produced loses the old one
+	renewalBackendDegraded = func() bool { return true }
+	for _, msg := range []string{"401 Unauthorized: x", "403 Forbidden: x", "404 Not Found: x"} {
+		if renewalHTTPRefusal(errors.New(msg)) {
+			t.Errorf("%q counted as a refusal while the backend is degraded", msg)
+		}
 	}
 }

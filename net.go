@@ -16,10 +16,20 @@ import (
 type DialContextFunction = func(ctx context.Context, network string, addr string) (net.Conn, error)
 type DialTlsContextFunction = func(ctx context.Context, network string, addr string) (net.Conn, error)
 
-// dnsCacheEntry holds a resolved IP plus its expiry time.
+// dnsCacheEntry holds the resolved IPs plus their expiry time. ip is the first
+// answer and the only one older entries carry; ips, when set, is the full set
+// the caller picks a healthy address from.
 type dnsCacheEntry struct {
 	ip     string
+	ips    []string
 	expiry time.Time
+}
+
+func (e dnsCacheEntry) all() []string {
+	if len(e.ips) > 0 {
+		return e.ips
+	}
+	return []string{e.ip}
 }
 
 // dnsCache caches hostname-to-IPv4 lookups for proxy SOCKS5 CONNECT
@@ -69,7 +79,11 @@ func lookupProxyTarget(ctx context.Context, host string) (string, bool) {
 	if c != nil {
 		addrs := c.Query(resolveCtx, "A", host)
 		if len(addrs) > 0 {
-			return addrs[0].String(), true
+			ips := make([]string, len(addrs))
+			for i, a := range addrs {
+				ips[i] = a.String()
+			}
+			return chooseTargetAddr(ctx, host, ips), true
 		}
 		// Cache returned empty — fall through to the local resolver + stale
 		// cache path below.
@@ -94,9 +108,9 @@ func lookupProxyTarget(ctx context.Context, host string) (string, bool) {
 	}
 	e, ok := dnsCache.m[host]
 	if ok && time.Now().Before(e.expiry) {
-		ip := e.ip
+		ips := e.all()
 		dnsCache.mu.Unlock()
-		return ip, true
+		return chooseTargetAddr(ctx, host, ips), true
 	}
 	dnsCache.mu.Unlock()
 
@@ -111,7 +125,11 @@ func lookupProxyTarget(ctx context.Context, host string) (string, bool) {
 		if len(ips) == 0 {
 			return nil, fmt.Errorf("dns: no addresses for %s", host)
 		}
-		return ips[0].String(), nil
+		all := make([]string, len(ips))
+		for i, a := range ips {
+			all[i] = a.String()
+		}
+		return all, nil
 	})
 
 	if err != nil {
@@ -120,9 +138,9 @@ func lookupProxyTarget(ctx context.Context, host string) (string, bool) {
 		stale, staleOK := dnsCache.m[host]
 		if staleOK && time.Now().Before(stale.expiry.Add(5*dnsCacheTTL)) {
 			// Serve stale even past expiry, bounded to 5x TTL (RFC 8767).
-			ip := stale.ip
+			ips := stale.all()
 			dnsCache.mu.Unlock()
-			return ip, true
+			return chooseTargetAddr(ctx, host, ips), true
 		}
 		// Cache the negative result for 10s to avoid hammering the resolver
 		// for the same nonexistent hostname (finding #4). Prune here too:
@@ -137,27 +155,27 @@ func lookupProxyTarget(ctx context.Context, host string) (string, bool) {
 		return "", false
 	}
 
-	ip := result.(string)
+	ips := result.([]string)
 
 	// Re-acquire to store the fresh result; re-check for a concurrent
 	// writer's fresher entry so we don't clobber it.
 	dnsCache.mu.Lock()
 	if e2, ok2 := dnsCache.m[host]; ok2 && time.Now().Before(e2.expiry) {
-		ip = e2.ip
+		ips = e2.all()
 		dnsCache.mu.Unlock()
-		return ip, true
+		return chooseTargetAddr(ctx, host, ips), true
 	}
 	// Clear negative cache entry on success.
 	if dnsCache.neg != nil {
 		delete(dnsCache.neg, host)
 	}
-	dnsCache.m[host] = dnsCacheEntry{ip: ip, expiry: time.Now().Add(dnsCacheTTL)}
+	dnsCache.m[host] = dnsCacheEntry{ip: ips[0], ips: ips, expiry: time.Now().Add(dnsCacheTTL)}
 	// Bound the map against unbounded client-requested hostname growth (#4).
 	// We hold dnsCache.mu here, so pruning under the same lock is safe and
 	// does not contend with concurrent readers.
 	pruneDNSCacheLocked(time.Now())
 	dnsCache.mu.Unlock()
-	return ip, true
+	return chooseTargetAddr(ctx, host, ips), true
 }
 
 // pruneDNSCacheLocked bounds the CONNECT-target DNS cache. Caller holds
@@ -436,11 +454,18 @@ const proxySOCKS5DialTimeout = 30 * time.Second
 // that counts bytes against this proxy's bandwidth index.
 func (self *ProxySettings) NewDialContext(ctx context.Context, forward proxy.Dialer) DialContextFunction {
 	return func(ctx context.Context, network string, addr string) (net.Conn, error) {
+		// one dial of the connect attempt that carries these stats, if any
+		attempt := attemptStatsFrom(ctx)
+		if attempt != nil {
+			attempt.dials.Add(1)
+		}
 		host, port, err := net.SplitHostPort(addr)
+		targetHost := ""
 		if err == nil {
 			if ip := net.ParseIP(host); ip == nil {
 				if resolved, ok := lookupProxyTarget(ctx, host); ok {
 					addr = net.JoinHostPort(resolved, port)
+					targetHost = host
 				}
 			}
 		}
@@ -471,10 +496,14 @@ func (self *ProxySettings) NewDialContext(ctx context.Context, forward proxy.Dia
 		if err != nil {
 			return nil, err
 		}
+		if attempt != nil && targetHost != "" {
+			// the proxy reached the address: a stall from here on is about it
+			attempt.noteDialedTarget(targetHost)
+		}
 
 		bw := RegisteredProxyBandwidth(self.Index)
-		if bw != nil {
-			tc := &trackedConn{Conn: conn, bw: bw}
+		if bw != nil || attempt != nil {
+			tc := &trackedConn{Conn: conn, bw: bw, attempt: attempt}
 			return tc, nil
 		}
 
@@ -498,8 +527,11 @@ func trackDirect(conn net.Conn, bw *ProxyBandwidth) net.Conn {
 
 type trackedConn struct {
 	net.Conn
-	bw   *ProxyBandwidth
-	once sync.Once
+	bw *ProxyBandwidth
+	// attempt, when set, also credits the bytes to the connect attempt that
+	// opened this connection (see attemptStats)
+	attempt *attemptStats
+	once    sync.Once
 }
 
 // Read reads from the underlying connection and, when bw is set, credits the
@@ -508,6 +540,9 @@ func (self *trackedConn) Read(b []byte) (n int, err error) {
 	n, err = self.Conn.Read(b)
 	if n > 0 && self.bw != nil {
 		self.bw.TotalRx.Add(uint64(n))
+	}
+	if n > 0 && self.attempt != nil {
+		self.attempt.rx.Add(int64(n))
 	}
 	return
 }
@@ -518,6 +553,9 @@ func (self *trackedConn) Write(b []byte) (n int, err error) {
 	n, err = self.Conn.Write(b)
 	if n > 0 && self.bw != nil {
 		self.bw.TotalTx.Add(uint64(n))
+	}
+	if n > 0 && self.attempt != nil {
+		self.attempt.tx.Add(int64(n))
 	}
 	return
 }

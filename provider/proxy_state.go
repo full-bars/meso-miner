@@ -281,4 +281,6 @@ func tagProxySourceIfUnset(state *ProxyState, address, source string) {
 		entry.Source = source
 	}
 	state.Proxies[address] = entry
+	// recovery scouts are ranked partly by provenance (see proxy_scout.go)
+	registerScoutSource(address, entry.Source)
 }
