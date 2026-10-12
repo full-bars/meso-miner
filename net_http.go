@@ -531,6 +531,21 @@ func (self *evalResult) Close() {
 }
 
 func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx context.Context, dialer *clientDialer) *evalResult) *evalResult {
+	result, _ := self.parallelEvalErr(ctx, eval, false)
+	return result
+}
+
+// parallelEvalErr is parallelEval that also says why it returned no result: a
+// *dialTimeoutError carrying the real dial errors, or a wrapped context error
+// for local teardown.
+//
+// singleRound lets the call give up after one pass over the dialers while the
+// backend is failing (see singleRoundWhenDegraded). Otherwise it keeps retrying
+// every dialer, round after round, until the request deadline: one failed
+// attempt then costs many dials, which is what multiplies a backend outage into
+// a flood. Only the platform transport dial opts in; API requests keep their
+// retries.
+func (self *ClientStrategy) parallelEvalErr(ctx context.Context, eval func(ctx context.Context, dialer *clientDialer) *evalResult, singleRound bool) (*evalResult, error) {
 	// in this order:
 	// 1. try all dialers that previously worked sequentially
 	// 2. try dialers that previously failed in parallel blocks
@@ -538,6 +553,33 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 
 	handleCtx, handleCancel := context.WithTimeout(ctx, self.settings.RequestTimeout)
 	defer handleCancel()
+
+	start := time.Now()
+	rec := &evalErrorRecorder{}
+	// noteFailed records a dial error unless the call is already over: a dial
+	// cancelled by the deadline is the deadline's doing, not a cause
+	noteFailed := func(result *evalResult) {
+		if result == nil || result.err == nil || handleCtx.Err() != nil {
+			return
+		}
+		// a dial's own deadline derives from the request deadline and can fire a
+		// moment before the context reports done; an error landing that close to
+		// the deadline is the deadline's doing, not a cause
+		if deadline, ok := handleCtx.Deadline(); ok && time.Until(deadline) < dialDeadlineNoise {
+			return
+		}
+		rec.note(result.err)
+	}
+	// finish is the error for a call that ends without a result
+	finish := func() error {
+		if err := self.ctx.Err(); err != nil {
+			return fmt.Errorf("dial canceled: %w", err)
+		}
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("dial canceled: %w", err)
+		}
+		return rec.timeoutError(time.Since(start))
+	}
 	// merge handleCtx with self.ctx
 	go HandleError(func() {
 		defer handleCancel()
@@ -562,6 +604,7 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 			}
 		}()
 		result := eval(handleCtx, dialer)
+		noteFailed(result)
 		if result == nil {
 			return
 		}
@@ -579,10 +622,11 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 	for {
 		select {
 		case <-handleCtx.Done():
-			return nil
+			return nil, finish()
 		default:
 		}
 
+		rec.round()
 		reconnect := NewReconnect(self.getBackoffTimeout())
 
 		self.collapseExtenderDialers()
@@ -620,15 +664,16 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 			for _, dialer := range serialDialers {
 				select {
 				case <-handleCtx.Done():
-					return nil
+					return nil, finish()
 				default:
 				}
 
 				result := eval(handleCtx, dialer)
+				noteFailed(result)
 				if result != nil {
 					if result.err == nil {
 						self.log.V(2).Infof("[net][p]select: %s\n", dialer.String())
-						return result
+						return result, nil
 					}
 					self.log.V(2).Infof("[net][p]select: %s = %s\n", dialer.String(), result.err)
 					result.Close()
@@ -647,12 +692,12 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 			for _, dialer := range parallelDialers[n:] {
 				select {
 				case <-handleCtx.Done():
-					return nil
+					return nil, finish()
 				case result := <-out:
 					if result != nil {
 						if result.err == nil {
 							self.log.V(2).Infof("[net][p]select: %s\n", result.dialer.String())
-							return result
+							return result, nil
 						}
 						self.log.V(2).Infof("[net][p]select: %s = %s\n", result.dialer.String(), result.err)
 						result.Close()
@@ -675,12 +720,12 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 			for _, dialer := range expandedDialers[n:] {
 				select {
 				case <-handleCtx.Done():
-					return nil
+					return nil, finish()
 				case result := <-out:
 					if result != nil {
 						if result.err == nil {
 							self.log.V(2).Infof("[net][p]select: %s\n", result.dialer.String())
-							return result
+							return result, nil
 						}
 						self.log.V(2).Infof("[net][p]select: %s = %s\n", result.dialer.String(), result.err)
 						result.Close()
@@ -695,11 +740,11 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 		for range p {
 			select {
 			case <-handleCtx.Done():
-				return nil
+				return nil, finish()
 			case result := <-out:
 				if result != nil {
 					if result.err == nil {
-						return result
+						return result, nil
 					}
 					result.Close()
 				}
@@ -711,9 +756,12 @@ func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx cont
 		self.mutex.Lock()
 		self.failureCount += 1
 		self.mutex.Unlock()
+		if singleRound && singleRoundCheck() {
+			return nil, finish()
+		}
 		select {
 		case <-handleCtx.Done():
-			return nil
+			return nil, finish()
 		case <-reconnect.After():
 		case <-Pulse():
 			self.ResetHealth()
@@ -862,9 +910,9 @@ func (self *ClientStrategy) HttpParallel(request *http.Request) (*httpResult, er
 		return newEvalResultFromHttpResponse(response, err)
 	}
 
-	result := self.parallelEval(request.Context(), eval)
+	result, evalErr := self.parallelEvalErr(request.Context(), eval, false)
 	if result == nil {
-		return nil, fmt.Errorf("Timeout.")
+		return nil, evalErr
 	}
 	return &result.httpResult, result.err
 }
@@ -961,9 +1009,17 @@ func (self *ClientStrategy) WsDialContext(ctx context.Context, url string, reque
 			dialer.observeConnect(establishTime)
 		}
 
+		// keep the platform's answer: "bad handshake" alone cannot tell a refused
+		// token from an overloaded backend. The dialer's own health bookkeeping
+		// above saw the original error and is unaffected.
+		resultErr := err
+		if err != nil && response != nil {
+			resultErr = &wsStatusError{status: response.StatusCode, err: err}
+		}
+
 		return &evalResult{
 			wsConn: wsConn,
-			err:    err,
+			err:    resultErr,
 			httpResult: httpResult{
 				// status: response.Status,
 				// statusCode: response.StatusCode,
@@ -973,9 +1029,9 @@ func (self *ClientStrategy) WsDialContext(ctx context.Context, url string, reque
 		}
 	}
 
-	result := self.parallelEval(ctx, eval)
+	result, evalErr := self.parallelEvalErr(ctx, eval, true)
 	if result == nil {
-		return nil, nil, fmt.Errorf("Timeout.")
+		return nil, nil, evalErr
 	}
 	return result.wsConn, result.response, result.err
 }

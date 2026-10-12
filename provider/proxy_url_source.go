@@ -1062,6 +1062,14 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 		// important buffer into a per-proxy stream.
 		refreshedGrades := 0
 		tierChanges := 0
+		frozen := degradedReaperFrozen()
+		liveHealth := liveProxyHealthByKey()
+		heldBack := 0
+		defer func() {
+			if 0 < heldBack {
+				outageEvictionHoldLog(fmt.Sprintf("url reaper (%d probe results ignored)", heldBack))
+			}
+		}()
 		for _, r := range results {
 			entry, ok := state.Cache[r.addr]
 			if !ok {
@@ -1069,6 +1077,16 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			}
 			if entry.LastProbe.After(r.lastProbe) {
 				continue // updated by a concurrent fetch or another reaper cycle
+			}
+			// A failed API probe means nothing while the backend is failing (the
+			// API stage fails through every proxy), and nothing for a proxy that is
+			// still connecting or parked waiting its turn under the attempt budget.
+			// Demoting or blacklisting then, with a 24h cooldown, would empty the
+			// pool just when it is needed. A hostile TLS result is still acted on.
+			if (r.result == probeSocks5Only || r.result == probeDead) &&
+				(frozen || proxyHeldOrConnecting(entry, r.addr, liveHealth)) {
+				heldBack++
+				continue
 			}
 			if r.wasProbeOK {
 				// Stale re-probe of a once-good entry: demote on failure,
@@ -1147,7 +1165,6 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 
 			entry.LastProbe = time.Now()
 
-			liveHealth := connect.ProxyHealthByKey()
 			// liveHealth is keyed by proxy IDENTITY (address+user for a
 			// credentialed entry), while r.addr is the URL cache's bare
 			// address. Look the entry up under its real identity key or a
@@ -1436,6 +1453,14 @@ func runProxyURLCleanupOnce(scope string) (removed int) {
 		return 0
 	}
 
+	// While the backend is failing every proxy reads dead or offline, so nothing
+	// in the persisted health says anything about the proxy itself: removing
+	// then would empty the pool of good proxies. Hold off until it heals.
+	if degradedReaperFrozen() {
+		outageEvictionHoldLog("url cleanup")
+		return 0
+	}
+
 	state, err := readProxyState()
 	if err != nil {
 		tlog("[proxy][cleanup] warning: could not read proxy.state: %v\n", err)
@@ -1547,3 +1572,51 @@ func runProxyURLCleanup(ctx context.Context, scope string, interval time.Duratio
 		}
 	}
 }
+
+// liveProxyHealthByKey is the live per-proxy health, a variable so tests can
+// supply their own.
+var liveProxyHealthByKey = connect.ProxyHealthByKey
+
+// proxyHeldOrConnecting reports whether the proxy is still connecting or parked
+// waiting its turn under the reconnect attempt budget, so a failed probe says
+// nothing about it. A credentialed entry is looked up under its real identity key.
+func proxyHeldOrConnecting(entry ProxyURLEntry, addr string, liveHealth map[string]connect.ProxyHealthStatus) bool {
+	key := addr
+	if entry.User != "" {
+		key = (&connect.ProxySettings{Network: "tcp", Address: addr, Auth: &proxy.Auth{User: entry.User}}).Key()
+	}
+	h, ok := liveHealth[key]
+	return ok && h.Health == "connecting"
+}
+
+type holdLogGate struct {
+	mu    sync.Mutex
+	every time.Duration
+	last  time.Time
+}
+
+// Allow reports whether enough time has passed since the last allowed call.
+func (g *holdLogGate) Allow(now time.Time) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.last.IsZero() && now.Sub(g.last) < g.every {
+		return false
+	}
+	g.last = now
+	return true
+}
+
+var outageEvictionHoldLogThrottle = &holdLogGate{every: 10 * time.Minute}
+
+// outageEvictionHoldLog says, at most every ten minutes, that an automatic
+// eviction pass held off because the backend is failing.
+func outageEvictionHoldLog(what string) {
+	if outageEvictionHoldLogThrottle.Allow(time.Now()) {
+		importantLogf("[proxy][outage] %s held off: the backend is degraded, so proxy failures are not evidence; no proxy will be removed or blacklisted until it heals\n", what)
+	}
+}
+
+// proxyGiveUpMayCount reports whether a failed authentication counts toward
+// evicting the proxy. During an outage every proxy fails to authenticate, so it
+// must not.
+func proxyGiveUpMayCount() bool { return !degradedReaperFrozen() }

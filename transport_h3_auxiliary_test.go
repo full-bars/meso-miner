@@ -638,6 +638,11 @@ func TestPulseDoesNotResetAuxiliaryH3Backoff(t *testing.T) {
 // This guards the explicit H3 mode against regression; it also passes without the
 // pulse change, so it does not pin the reported bug.
 func TestPulseResetsNonAuxiliaryH3Backoff(t *testing.T) {
+	// this test asserts the pulse wakes the transport at once; the production
+	// pulse spreads that wake over a random slice of pulseSpread
+	prevSpread := pulseSpread
+	pulseSpread = 0
+	t.Cleanup(func() { pulseSpread = prevSpread })
 	// the explicit mode records its failures as real backend failures: leave
 	// that process-wide state clean for the tests that run after this one
 	resetBackendDegraded()

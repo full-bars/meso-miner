@@ -280,6 +280,7 @@ func (self *PlatformTransport) noteClientLimitClose(
 	provideIntent bool,
 	resetGeneration uint64,
 ) {
+	self.clientLimitCloseCount.Add(1)
 	if self.clientLimitBackoff == nil {
 		return
 	}

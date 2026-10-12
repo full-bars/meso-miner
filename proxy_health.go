@@ -111,6 +111,10 @@ type ProxyFailureCounters struct {
 	AuthFailures    atomic.Int64
 	TimeoutFailures atomic.Int64
 	TransportDrops  atomic.Int64
+	// Rejections counts transport auth failures where the platform explicitly
+	// refused the identity (HTTP 401/403) while the backend was healthy. It is
+	// the only evidence that justifies treating a reused identity as revoked.
+	Rejections atomic.Int64
 }
 
 // proxyHealth tracks one proxy's platform-transport liveness for the
@@ -121,6 +125,7 @@ type proxyHealth struct {
 	currentlyUp     bool
 	everUp          bool
 	connecting      bool      // registered and still trying to establish first WebSocket
+	parked          bool      // waiting its turn under the reconnect attempt budget: not broken
 	connectingSince time.Time // when connecting was last set true (bounds stale connecting)
 	downSince       time.Time // when currentlyUp last went false (for recovery latency)
 	lastSeenUp      bool      // currentlyUp as of the previous heartbeat (baseline)
@@ -153,6 +158,12 @@ const connectingStaleAfter = 65 * time.Minute
 // window (true) or its connecting state has gone stale (false). A stale
 // connecting proxy is treated as degraded rather than "connecting".
 func (h *proxyHealth) connectingActive(now time.Time) bool {
+	// a proxy waiting its turn under the reconnect attempt budget is neither
+	// degraded nor dead, whatever its history: reading it as connecting keeps the
+	// reaper, the dead-proxy cleanup and the URL-cache eviction away from it
+	if h.parked {
+		return true
+	}
 	if !h.connecting {
 		return false
 	}
@@ -295,6 +306,17 @@ func ProxyBandwidthByKey(key string) *ProxyBandwidth {
 	return nil
 }
 
+// markProxyParked records that the proxy is waiting its turn under the reconnect
+// attempt budget (parked) or has been released from it. Unknown indices are
+// ignored.
+func markProxyParked(index int, parked bool) {
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	if h, ok := proxyHealthByIndex[index]; ok {
+		h.parked = parked
+	}
+}
+
 // markProxyDown records that the proxy's platform transport went down, stamping
 // downSince when it was previously up (for recovery-latency reporting).
 func markProxyDown(index int) {
@@ -329,7 +351,15 @@ func RecordProxyAuthFailure(index int, err error) {
 		errStr := ""
 		if err != nil {
 			errStr = err.Error()
-			if isTimeoutError(err) {
+			rejected := explicitRejection(err)
+			// A refusal that arrives while the backend is failing is not trusted:
+			// an overloaded gateway or a half-broken auth path can say no to a
+			// perfectly good token. Only a refusal from a healthy backend counts
+			// toward treating the identity as revoked.
+			if rejected && !backendDegradedNow() {
+				h.failures.Rejections.Add(1)
+			}
+			if isTimeoutError(err) && !rejected {
 				h.failures.TimeoutFailures.Add(1)
 			} else {
 				h.failures.AuthFailures.Add(1)
@@ -360,6 +390,18 @@ func ProxyAuthFailureCount(index int) int64 {
 	defer proxyHealthMu.Unlock()
 	if h, ok := proxyHealthByIndex[index]; ok {
 		return h.failures.AuthFailures.Load()
+	}
+	return 0
+}
+
+// ProxyAuthRejectionCount returns how many times the platform explicitly refused
+// this proxy's identity while the backend was healthy. Timeouts, overload and
+// refusals during an outage do not count.
+func ProxyAuthRejectionCount(index int) int64 {
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	if h, ok := proxyHealthByIndex[index]; ok {
+		return h.failures.Rejections.Load()
 	}
 	return 0
 }

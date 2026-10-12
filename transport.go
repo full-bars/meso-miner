@@ -31,6 +31,7 @@ var (
 	authErrThrottle   = newLogThrottle(time.Minute)
 	selectErrThrottle = newLogThrottle(time.Minute)
 	writeErrThrottle  = newLogThrottle(time.Minute)
+	flapErrThrottle   = newLogThrottle(time.Minute)
 )
 
 // backendFailState is the backend health signal: a count of consecutive
@@ -275,6 +276,12 @@ type PlatformTransportSettings struct {
 	PingTimeout          time.Duration
 	WriteTimeout         time.Duration
 	ReadTimeout          time.Duration
+
+	// FlapStableAfter is how long a platform session must live before the next
+	// reconnect is treated as ordinary. Sessions that die sooner extend the wait
+	// before the next connect (see flapGuard). Zero uses the default, negative
+	// disables the guard.
+	FlapStableAfter      time.Duration
 	TransportGenerator   func() (sendTransport Transport, receiveTransport Transport)
 	TransportBufferSize  int
 	InactiveDrainTimeout time.Duration
@@ -386,6 +393,9 @@ type PlatformTransport struct {
 	mode *MonitorValue[TransportMode]
 
 	clientLimitBackoff *ClientLimitBackoff
+	// clientLimitCloseCount counts closes the platform made for the client limit,
+	// so a session that ended that way is not taken for the backend failing
+	clientLimitCloseCount atomic.Int64
 }
 
 func NewPlatformTransportWithDefaults(
@@ -763,6 +773,8 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 	}
 
 	var authErrBackoff time.Duration
+	flaps := newFlapGuard(self.settings.FlapStableAfter, self.settings.ReconnectTimeout)
+	startGovernorLoop()
 
 	for {
 		// stand down while a strictly better mode is active
@@ -787,6 +799,9 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 		clientLimitResetGeneration := self.clientLimitResetGeneration()
 
 		reconnect := NewReconnect(self.settings.ReconnectTimeout)
+		// what this one attempt costs: dials opened and bytes moved
+		attemptStats := &attemptStats{}
+
 		connect := func() (*websocket.Conn, error) {
 			header := http.Header{}
 			if self.settings.V2H1Auth {
@@ -797,7 +812,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 				applyProvideIntentHeader(header, *auth)
 			}
 
-			ws, _, err := self.clientStrategy.WsDialContext(self.ctx, self.platformUrl, header)
+			ws, _, err := self.clientStrategy.WsDialContext(withAttemptStats(self.ctx, attemptStats), self.platformUrl, header)
 			if err != nil {
 				return nil, err
 			}
@@ -861,6 +876,15 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 			}
 		}
 
+		// while the backend is failing, a disconnected proxy waits its turn
+		// under the shared attempt budget; the direct path never waits
+		{
+			proxyIndex, proxied := self.proxyIndex()
+			if !admitConnect(self.ctx, !proxied || proxyIndex == 0, proxyIndex) {
+				return
+			}
+		}
+
 		var ws *websocket.Conn
 		var err error
 		if self.log.V(2).Enabled() {
@@ -868,6 +892,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 		} else {
 			ws, err = connect()
 		}
+		connectGov.recordAttempt(classifyConnectError(err, attemptStats), attemptStats)
 		if err != nil {
 			if isClientLimitCloseError(err) {
 				self.noteClientLimitClose(TransportModeH1, auth.ProvideIntent, clientLimitResetGeneration)
@@ -904,6 +929,11 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 			case <-time.After(authErrBackoff):
 				continue
 			case <-Pulse():
+				// every backing-off transport hears the pulse at the same instant;
+				// spread the retries so the hour does not begin with a herd
+				if !waitPulseJitter(self.ctx) {
+					return
+				}
 				authErrBackoff = 0
 				self.clientStrategy.ResetHealth()
 				continue
@@ -1193,6 +1223,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 								switch message[0] {
 								case TransportControlSpeedStart:
 									speedTest = true
+									recordSpeedTestStart()
 									// echo
 									select {
 									case <-self.ctx.Done():
@@ -1230,7 +1261,9 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 							continue
 						}
 						if speedTest {
-							// speed test echo
+							// Always echo in full: a test that never comes back is retried by
+							// the server, many times over (see transport_speed_echo.go).
+							recordSpeedEchoBytes(len(message))
 							select {
 							case <-self.ctx.Done():
 								MessagePoolReturn(message)
@@ -1279,16 +1312,31 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 		}
 
 		reconnect = NewReconnect(self.settings.ReconnectTimeout)
+		sessionStart := time.Now()
+		limitClosesBefore := self.clientLimitCloseCount.Load()
 		if self.log.V(2).Enabled() {
 			Trace(fmt.Sprintf("[t]connect run %s", clientId), c)
 		} else {
 			c()
 		}
 
-		select {
-		case <-self.ctx.Done():
-			return
-		case <-reconnect.After():
+		// a session that dies young is not a success: the connect that began it
+		// already reset the failed-connect backoff and the shared failure
+		// streak, so without this wait a slow backend that accepts the websocket
+		// and then drops it makes every proxy reconnect again immediately
+		lived := time.Since(sessionStart)
+		if flapWait := sessionEndWait(self.ctx, flaps, lived, self.clientLimitCloseCount.Load() != limitClosesBefore, clientId.String(), self.log, true); 0 < flapWait {
+			select {
+			case <-self.ctx.Done():
+				return
+			case <-time.After(flapWait):
+			}
+		} else {
+			select {
+			case <-self.ctx.Done():
+				return
+			case <-reconnect.After():
+			}
 		}
 	}
 }
@@ -1315,6 +1363,31 @@ func (self *h3ConnStream) close() {
 	self.packetConn.Close()
 }
 
+// sessionEndWait applies the end-of-session rules shared by the H1 and H3 loops
+// and returns the extra wait before the next connect, 0 for none.
+//
+// A session that dies young is evidence about the platform, but only if it was not
+// cut short by our own teardown (a reload, the reaper, shutdown) and was not the
+// platform enforcing the client limit. countsAsHealth is false for an auxiliary
+// transport beside H1, which is never a health signal; it is still held back so it
+// cannot redial in a tight loop.
+func sessionEndWait(ctx context.Context, flaps *flapGuard, lived time.Duration, clientLimitClosed bool, clientId string, log Logger, countsAsHealth bool) time.Duration {
+	if countsAsHealth && flaps.isYoung(lived) && ctx.Err() == nil && !clientLimitClosed {
+		if flaps.everStable {
+			connectGov.recordProvenEarlyDeath()
+		} else {
+			connectGov.recordEarlyDeath()
+		}
+	}
+	flapWait := flaps.sessionEnded(lived)
+	if 0 < flapWait && ctx.Err() == nil {
+		if ok, suppressed := flapErrThrottle.Allow(time.Now()); ok {
+			log.Infof("[t]flap %s session lived %s, holding reconnect %s (%d suppressed)\n", clientId, lived.Round(time.Millisecond), flapWait.Round(time.Millisecond), suppressed)
+		}
+	}
+	return flapWait
+}
+
 func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.Duration, slowMultiple int) {
 	// connect and update route manager for this transport
 	defer self.cancel()
@@ -1339,6 +1412,9 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 
 	var authErrBackoff time.Duration
 	h3UnavailableLogged := false
+	// the same flap guard the H1 loop has: a platform that accepts the connection and
+	// then drops it must not make this transport redial the moment it ends
+	flaps := newFlapGuard(self.settings.FlapStableAfter, self.settings.ReconnectTimeout)
 
 	for {
 		// an eligible identity with the runtime gate off opens no socket and
@@ -1578,6 +1654,12 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 		} else {
 			connStream, err = connect()
 		}
+		// the governor reads the platform's health from every transport's connects; an
+		// auxiliary H3 beside H1 is never a health signal. (H3 is UDP, so it never
+		// goes through a proxy and the attempt budget would exempt it as direct.)
+		if !self.h3Gated() {
+			connectGov.recordAttempt(classifyConnectError(err, nil), nil)
+		}
 		if err != nil {
 			if isClientLimitCloseError(err) {
 				self.noteClientLimitClose(ptMode, auth.ProvideIntent, clientLimitResetGeneration)
@@ -1650,6 +1732,9 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 				authErrBackoff = 0
 				continue
 			case <-pulse:
+				if !waitPulseJitter(self.ctx) {
+					return
+				}
 				authErrBackoff = 0
 				self.clientStrategy.ResetHealth()
 				continue
@@ -2233,16 +2318,27 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			}
 		}
 		reconnect = NewReconnect(self.settings.ReconnectTimeout)
+		sessionStart := time.Now()
+		limitClosesBefore := self.clientLimitCloseCount.Load()
 		if self.log.V(2).Enabled() {
 			Trace(fmt.Sprintf("[t]connect run %s", clientId), c)
 		} else {
 			c()
 		}
 
-		select {
-		case <-self.ctx.Done():
-			return
-		case <-reconnect.After():
+		lived := time.Since(sessionStart)
+		if flapWait := sessionEndWait(self.ctx, flaps, lived, self.clientLimitCloseCount.Load() != limitClosesBefore, clientId.String(), self.log, !self.h3Gated()); 0 < flapWait {
+			select {
+			case <-self.ctx.Done():
+				return
+			case <-time.After(flapWait):
+			}
+		} else {
+			select {
+			case <-self.ctx.Done():
+				return
+			case <-reconnect.After():
+			}
 		}
 	}
 }

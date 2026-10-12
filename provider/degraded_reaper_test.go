@@ -523,3 +523,56 @@ func TestDegradedReaper_CredentialedProxyReapedByIdentityKey(t *testing.T) {
 		t.Fatal("expected credentialed proxy's cancel-map entry to be deleted after reaping")
 	}
 }
+
+func reaperFixture(n int) ([]connect.DegradedProxyEntry, map[string]context.CancelFunc, *int, *sync.Mutex) {
+	var cancels int
+	entries := make([]connect.DegradedProxyEntry, 0, n)
+	cancelMap := map[string]context.CancelFunc{}
+	for i := 0; i < n; i++ {
+		key := fmt.Sprintf("10.0.0.%d:1080", i)
+		entries = append(entries, connect.DegradedProxyEntry{
+			Index: i, Address: key, Key: key,
+			DownFor:      time.Hour,
+			TotalRxBytes: uint64(i) * 1000,
+		})
+		cancelMap[key] = func() { cancels++ }
+	}
+	return entries, cancelMap, &cancels, &sync.Mutex{}
+}
+
+// An outage is why thousands of proxies are down at once. Reaping half the
+// fleet then, only to relaunch it with fresh auth when the backend returns, is
+// the opposite of what a degraded backend needs.
+func TestDegradedReaperPass_FrozenWhileAnOutageCouldExplainTheDowntime(t *testing.T) {
+	entries, cancelMap, cancels, mu := reaperFixture(10)
+
+	reaped, frozen := degradedReaperPass(
+		func() []connect.DegradedProxyEntry { return entries },
+		func() bool { return true },
+		func(string) bool { return true },
+		cancelMap, mu,
+	)
+	if !frozen || reaped != 0 || *cancels != 0 {
+		t.Fatalf("frozen=%v reaped=%d cancels=%d, want frozen and untouched", frozen, reaped, *cancels)
+	}
+	if len(cancelMap) != 10 {
+		t.Fatal("a frozen reaper must not drop cancel handles")
+	}
+}
+
+func TestDegradedReaperPass_StillCullsDeadProxiesWhenTheBackendIsFine(t *testing.T) {
+	entries, cancelMap, cancels, mu := reaperFixture(10)
+
+	reaped, frozen := degradedReaperPass(
+		func() []connect.DegradedProxyEntry { return entries },
+		func() bool { return false },
+		func(string) bool { return true },
+		cancelMap, mu,
+	)
+	if frozen {
+		t.Fatal("not frozen")
+	}
+	if want := 10 - degradedReaperKeepCount(10); int(reaped) != want || *cancels != want {
+		t.Fatalf("reaped=%d cancels=%d, want %d: the reaper's real job must survive", reaped, *cancels, want)
+	}
+}

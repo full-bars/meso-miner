@@ -2037,6 +2037,7 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			report.Up, down, len(report.Dead), len(report.Degraded),
 			len(report.Recovered), len(report.NewlyDegraded),
 			report.LifetimeRecovered, report.LifetimeLost)
+		tlog("%s\n", governHealthLine(connect.GovernorStatusNow()))
 		// Feed the persistent all-time store: this loop is the exclusive
 		// consumer of the heartbeat report, so transition deltas are
 		// captured exactly once, here. Lost = up->down EVENTS only:
@@ -2786,10 +2787,56 @@ func reapProxies(toReap []connect.DegradedProxyEntry, proxyCancelMap map[string]
 	return reaped
 }
 
+// degradedReaperFrozen reports whether the reaper must hold off. While a
+// backend outage is under way, or ended within the minimum down time, a proxy
+// that has been down since the outage is down because of it. Culling half the
+// fleet then only forces a relaunch with fresh auth the moment the backend
+// returns. Variable so tests can force either answer.
+var degradedReaperFrozen = func() bool {
+	return connect.OutageRecent(degradedReaperMinDownTime)
+}
+
+// degradedReaperPass is one tick of the degraded-proxy reaper. It returns how
+// many proxies it cancelled and whether it held off because of an outage.
+func degradedReaperPass(
+	degradedProxies func() []connect.DegradedProxyEntry,
+	frozen func() bool,
+	isStillDegraded stillDegradedFunc,
+	proxyCancelMap map[string]context.CancelFunc,
+	proxyCancelMu *sync.Mutex,
+) (int64, bool) {
+	if frozen() {
+		return 0, true
+	}
+
+	degraded := degradedProxies()
+	if len(degraded) <= 1 {
+		return 0, false
+	}
+
+	cancellable := onlyCancellableProxies(degraded, proxyCancelMap, proxyCancelMu)
+	if len(cancellable) <= 1 {
+		return 0, false
+	}
+
+	scored := scoreDegradedProxies(cancellable, liveContractsAcquired)
+	keep := degradedReaperKeepCount(len(scored))
+	toReap := selectProxiesToReap(scored, keep, degradedReaperMinDownTime)
+
+	reaped := reapProxies(toReap, proxyCancelMap, proxyCancelMu, isStillDegraded)
+
+	if 0 < reaped {
+		tlog("[proxy-quality] dropped %d under-performing proxies (kept best %d of %d)\n",
+			reaped, keep, len(scored))
+	}
+	return int64(reaped), false
+}
+
 func runDegradedProxyReaper(ctx context.Context, proxyCancelMap map[string]context.CancelFunc, proxyCancelMu *sync.Mutex) {
 	ticker := time.NewTicker(degradedReaperTicker)
 	defer ticker.Stop()
 
+	held := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -2797,31 +2844,30 @@ func runDegradedProxyReaper(ctx context.Context, proxyCancelMap map[string]conte
 		case <-ticker.C:
 		}
 
-		degraded := connect.DegradedProxies()
-		if len(degraded) <= 1 {
-			continue
-		}
-
-		cancellable := onlyCancellableProxies(degraded, proxyCancelMap, proxyCancelMu)
-		if len(cancellable) <= 1 {
-			continue
-		}
-
-		scored := scoreDegradedProxies(cancellable, liveContractsAcquired)
-		keep := degradedReaperKeepCount(len(scored))
-		toReap := selectProxiesToReap(scored, keep, degradedReaperMinDownTime)
-
-		reaped := reapProxies(toReap, proxyCancelMap, proxyCancelMu, liveIsDegraded)
-
-		if reaped > 0 {
-			tlog("[proxy-quality] dropped %d under-performing proxies (kept best %d of %d)\n",
-				reaped, keep, len(scored))
+		_, frozen := degradedReaperPass(connect.DegradedProxies, degradedReaperFrozen, liveIsDegraded, proxyCancelMap, proxyCancelMu)
+		if frozen != held {
+			held = frozen
+			if frozen {
+				tlog("[proxy-quality] reaper held off: a backend outage is under way or ended within %s, so downed proxies are not culled yet\n", degradedReaperMinDownTime)
+			} else {
+				tlog("[proxy-quality] reaper resumed: no backend outage in the last %s\n", degradedReaperMinDownTime)
+			}
 		}
 	}
 }
 
 func provide(opts docopt.Opts) {
 	connect.CritLogger = critLog
+	installScoutScorer()
+	if home, err := os.UserHomeDir(); err == nil {
+		// a restart in the middle of a backend outage starts throttled
+		connect.InitGovernState(filepath.Join(home, ".urnetwork", "govern_outage"))
+		// and so does the third start in ten minutes (a crash loop shorter than
+		// the startup grace); a hot-swap successor is a planned handoff, not a start
+		if os.Getenv(EnvHotSwap) != "1" && os.Getenv(EnvHotSwapExec) != "1" {
+			connect.NoteGovernStart(filepath.Join(home, ".urnetwork", "govern_outage"))
+		}
+	}
 
 	port, _ := opts.Int("--port")
 
@@ -2922,6 +2968,9 @@ func provide(opts docopt.Opts) {
 		rawCancel()
 	}
 	defer cancel()
+
+	// observation-only reading of the external backend-health feed (off by default)
+	startVerdictFeed(ctx)
 
 	// Listen for SIGUSR2 to initiate in-process HotSwap handoff (Unix).
 	// Only arm listener if running as live provider, not while acting as candidate.
@@ -3065,22 +3114,7 @@ func provide(opts docopt.Opts) {
 
 	// Hourly pulse: wakes all stalled transports and proxies so they retry
 	// connections without needing a provider restart.
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(1 * time.Hour):
-				if connect.ProxyHealthCount() > 0 {
-					_, dead, degraded, _, connecting := connect.ProxyHealthSnapshot()
-					down := len(dead) + len(degraded)
-					tlog("[hourly-maintenance] reconnecting stalled transports: down=%d dead=%d degraded=%d connecting=%d\n",
-						down, len(dead), len(degraded), len(connecting))
-				}
-				connect.TriggerPulse()
-			}
-		}
-	}()
+	go hourlyPulseLoop(ctx, time.Hour, hourlyPulseRetry)
 
 	nodeName := strings.TrimSpace(os.Getenv("URNETWORK_NODE_NAME"))
 
@@ -3647,6 +3681,21 @@ func provide(opts docopt.Opts) {
 						// evict a healthy proxy after enough operational cycles.
 						tlog("[proxy][init] proxy[%d] (%s) cancelled (not a give-up): %v\n",
 							proxySettings.Index, proxySettings.Address, err)
+					} else if !proxyGiveUpMayCount() {
+						// The backend is failing, so this proxy failing to authenticate
+						// is not evidence about the proxy: no give-up accounting and no
+						// eviction, just a backoff and another try.
+						tlog("[proxy][init] proxy[%d] (%s) auth failed while the backend is degraded; not a give-up, requeue with backoff: %v\n",
+							proxySettings.Index, proxySettings.Address, err)
+						delay := proxyURLGiveUpRetryDelay(proxyURLGiveUpEvictAfterCycles - 1)
+						globalProxyFailureHistory.SetBackoffUntil(proxySettings.Key(), time.Now().Add(delay))
+						if reloadPath, pathErr := proxyReloadPath(); pathErr == nil {
+							time.AfterFunc(delay, func() {
+								if err := writeReloadTrigger(reloadPath); err != nil {
+									tlog("[proxy] warn: failed to signal proxy reload after outage backoff (write .reload): %v\n", err)
+								}
+							})
+						}
 					} else if errors.Is(err, errProxyURLSlowCutShort) {
 						// Slow, not broken: the ladder ended on deadline-cut
 						// attempts, not genuine failures. Back off and requeue
@@ -4468,6 +4517,10 @@ func provide(opts docopt.Opts) {
 		metricsServer.Shutdown(ctx)
 	}
 	markCleanShutdown()
+	if home, err := os.UserHomeDir(); err == nil {
+		// a planned stop: the next start must not count toward a crash loop
+		connect.NoteGovernCleanExit(filepath.Join(home, ".urnetwork", "govern_outage"))
+	}
 	// Explicitly clean up the control socket before os.Exit(0) since
 	// Go defers do not run on os.Exit. Without this, provider.sock is
 	// permanently orphaned on disk across every restart.
@@ -5006,6 +5059,12 @@ func renewClientJWT(ctx context.Context, apiUrl, byJwt string, clientId connect.
 // carry no verdict. The status is read from the "<code> <text>: <body>" prefix
 // that httpErrorFromResponse puts on every non-200 answer.
 func renewalHTTPRefusal(err error) bool {
+	// During an outage a 4xx cannot be trusted: a degraded backend or the gateway
+	// in front of it says no to good tokens, and minting a fresh identity off that
+	// answer loses the old one.
+	if renewalBackendDegraded() {
+		return false
+	}
 	msg := err.Error()
 	if len(msg) < 4 || msg[3] != ' ' {
 		return false
@@ -5014,8 +5073,13 @@ func renewalHTTPRefusal(err error) bool {
 	if convErr != nil {
 		return false
 	}
-	return 400 <= code && code < 500 && code != http.StatusRequestTimeout && code != http.StatusTooManyRequests
+	// 499 is a load balancer's "client closed request", not an answer about the token
+	return 400 <= code && code < 500 && code != http.StatusRequestTimeout && code != http.StatusTooManyRequests && code != 499
 }
+
+// renewalBackendDegraded reports whether the backend is failing right now. A
+// variable so tests can force either answer.
+var renewalBackendDegraded = connect.BackendDegraded
 
 // renewClientJWTFn is the injectable renewal entry point. It defaults to the
 // real network-backed renewClientJWT but can be overridden in tests to exercise
@@ -5272,6 +5336,26 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 // merely unlucky (network blip, transient API error).
 const revokedIdentityAuthFailureThreshold = 5
 
+// revocationCheckInterval is how often the revocation watcher looks. A variable
+// so tests need not wait minutes.
+var revocationCheckInterval = 2 * time.Minute
+
+// identityEvictionEnabled reports whether the revocation watcher may delete a
+// saved client identity at all. Off unless an operator sets
+// URNETWORK_EVICT_REVOKED_IDENTITIES=1: deleting an identity loses its history
+// and mints a new one, and the platform answers a revoked token by closing the
+// socket after the upgrade rather than with a 401, so the only 401s and 403s the
+// watcher can see are from gateways and WAFs. A proxy whose identity is truly
+// dead just keeps retrying under the backoff, which is far cheaper than losing a
+// good identity. A variable so tests can force either answer.
+var identityEvictionEnabled = func() bool {
+	return os.Getenv("URNETWORK_EVICT_REVOKED_IDENTITIES") == "1"
+}
+
+// identityEvictionBlocked reports whether evicting a saved client identity must
+// wait because the backend is failing. A variable so tests can force either answer.
+var identityEvictionBlocked = connect.BackendDegraded
+
 // watchReusedIdentityForRevocation polls proxyIndex's transport health and
 // evicts identityKey from the client JWT store if the reused identity keeps
 // failing to authenticate and never once comes up. See the call site for
@@ -5283,7 +5367,7 @@ const revokedIdentityAuthFailureThreshold = 5
 // just re-signed it), so this watcher stops before it evicts the fresh entry
 // while the transport is still reconnecting.
 func watchReusedIdentityForRevocation(ctx context.Context, identityKey string, proxyIndex int, revocationDone <-chan struct{}) {
-	ticker := time.NewTicker(2 * time.Minute)
+	ticker := time.NewTicker(revocationCheckInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -5298,7 +5382,16 @@ func watchReusedIdentityForRevocation(ctx context.Context, identityKey string, p
 			// Authenticated successfully at least once — the identity is good.
 			return
 		}
-		if connect.ProxyAuthFailureCount(proxyIndex) >= revokedIdentityAuthFailureThreshold {
+		// Only the platform explicitly refusing this identity counts. A timeout, an
+		// overloaded gateway or a flapping connection is not a revocation, and
+		// treating it as one deletes a good identity (and its earnings history) the
+		// moment the backend has a bad hour. Never decide this during an outage.
+		if connect.ProxyAuthRejectionCount(proxyIndex) >= revokedIdentityAuthFailureThreshold && !identityEvictionBlocked() {
+			if !identityEvictionEnabled() {
+				tlog("⚠️ [jwt-store] identity for %s was refused %d times; NOT evicting it (automatic eviction is off, set URNETWORK_EVICT_REVOKED_IDENTITIES=1 to enable)\n",
+					identityKey, revokedIdentityAuthFailureThreshold)
+				return
+			}
 			// Re-check the renewal signal AFTER the failure-count check: the
 			// renewal watcher may have closed revocationDone while this
 			// goroutine was between its select and this eviction decision

@@ -304,6 +304,8 @@ func providerExtraMetrics() string {
 	// own metrics (urnet_uptime_seconds, urnet_proxy_pool_size); as labels
 	// they changed on every scrape and created a new series each time.
 	proxyVersion := RequireVersion()
+	writeGovernMetrics(&b)
+
 	fmt.Fprintf(&b, "# HELP urnet_info Provider identity: the version label, value always 1.\n")
 	fmt.Fprintf(&b, "# TYPE urnet_info gauge\n")
 	fmt.Fprintf(&b, "urnet_info{version=%s} 1\n", connect.PrometheusLabelValue(proxyVersion))

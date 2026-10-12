@@ -23,6 +23,11 @@ var importantLogMarkers = []string{
 	"instance_id",
 	"Permanently removed",
 	"[proxy][authrate]",
+	// The reconnect governor's once-a-minute verdict (shadow mode: observing
+	// only) is the record of how the platform transport behaved through a
+	// backend episode: attempts per second, classes, bytes per attempt, and
+	// what a shared budget would have held. Low volume, high value.
+	"[govern]",
 	// Probe-grade lines are low-volume and high-value: the per-cycle grade
 	// breakdown, what got admitted by tier, cap evictions, and reaper grade
 	// refreshes happen at most a few times a day and are the only record of

@@ -46,6 +46,7 @@ Quick jump:
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `URNETWORK_PROFILE` | - | Advanced provider profile: `auto`, `lowmem`, `eco`, `turbo-v4`, or `turbo-v8`. For turbo, prefer `TURBO`. On systemd/native, set this with `urnet-tools turbo/eco/lowmode/auto` rather than a drop-in (v31+). |
+| `URNETWORK_GOVERN` | `shadow` | Backend-outage protection for the platform transport and the transfer retry budget. On this line the default is **shadow**: it observes and logs `[govern]` lines but never delays a connect or a resend. Set `enforce` to act, and `off` to disable it. Watch the `[govern]` lines (and the `urnet_govern_*` and `urnet_transfer_*` metrics) on a canary before enforcing. See [Backend outage protection](#backend-outage-protection). |
 | `TURBO` | - | Set to `v4` or `v8` to enable turbo mode. Prefer this variable for Docker turbo mode. |
 | `URNETWORK_RAMLOGS` | `0` | Set to `1` to redirect provider logs to RAM instead of stdout. Cannot be used with Docker `--log-opt`. On systemd/native, set this with `urnet-tools ramlogs on\|off` (v31+). |
 | `URNETWORK_MESSAGE_POOL_SHARD_COUNT` | `16` | Number of internal mutex shards per message-pool size class. Higher values reduce lock contention at high packet rates. Must be a power of two, 1–256. Set to `1` to disable sharding (pre-v24.35 behavior). Sane values: `8` (moderate), `16` (default), `32` (high-pps tier3+). |
@@ -280,3 +281,24 @@ Where to look:
 - `urnet-tools status`'s live block prints the current reading as one sentence (the `summary` field the provider persists to `~/.urnetwork/pressure_status`).
 - `~/.urnetwork/thrash_status` carries the machine-readable state for tooling.
 - Log lines start with `[proxy][thrash]`.
+
+## Backend outage protection
+
+When the URnetwork backend is up but slow (the API answers, the auth step times out or answers `HTTP 200` instead of upgrading), every proxy used to retry the platform transport on its own. With thousands of proxies that is a flood of control traffic with nothing billable behind it. The governor watches every connect attempt and, in `enforce` mode, keeps that flood bounded.
+
+What it does while the backend is failing:
+
+- **Shared attempt budget.** Platform connects are admitted under one rate: 200/s when healthy (effectively open), cut 4x every 5 s to a floor of 2/s while recent attempts mostly fail, then doubled back to open as attempts connect. Waiting proxies hold no socket and are shown as connecting, not dead. The direct path never waits and proxies that are already connected are never touched.
+- **Best proxies first.** While the budget is throttled, two of every three released slots go to the proxy with the best record (earnings history, with file-listed and operator-configured proxies ahead of URL-scraped ones) and every third goes to a random waiter.
+- **One dial round.** A failed platform dial gives up after one pass over the dialers instead of retrying them until the 15 s deadline.
+- **Byte breaker.** If failed attempts burn more than 256 KiB/s (about 22 GB/day) the budget is cut whatever the verdict says.
+- **Flap guard.** A session that dies in under 60 s makes that proxy wait (5 s doubling to 60 s, jittered) before it reconnects.
+- **Identities are protected.** A saved client identity is evicted only after 5 explicit refusals (HTTP 401 or 403) from a healthy backend, never on timeouts and never during an outage. The degraded-proxy reaper also holds off while an outage is under way and for 30 minutes after.
+- **Restart during an outage.** A throttled budget keeps a marker file at `~/.urnetwork/govern_outage`. A restart that finds one under 10 minutes old starts at the floor and ramps on evidence; a healthy restart or hot swap pays nothing.
+
+What to look at:
+
+- `[govern]` lines (also in the important log) every minute while degraded and every 5 minutes as a heartbeat: attempts per second, connected, `died_young`, the failure classes, dials and KB per attempt, `would_hold`, and the mode, budget rate and number of proxies waiting.
+- `[health][govern]` in the heartbeat and the `urnet_govern_*` metrics (`mode`, `degraded`, `budget_rate`, `waiting`, `attempts`, `died_young`, `flap_backoffs_total`).
+
+The protection observes by default on this line and needs no setup. Set `URNETWORK_GOVERN=enforce` to let it act, `URNETWORK_GOVERN=off` to disable it; both need a restart.
