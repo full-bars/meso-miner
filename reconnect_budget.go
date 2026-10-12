@@ -131,8 +131,8 @@ const (
 	// for debugging and rollback, not a default.
 	governShadow
 	// governEnforce: the budget gates connects and a failing backend gets one
-	// dial round per attempt. This is the default: the protection is on for
-	// every provider unless an operator turns it down.
+	// dial round per attempt. An explicit opt-in on this line; shadow is the
+	// default until the protection has been watched on a canary.
 	governEnforce
 )
 
@@ -140,17 +140,19 @@ var governModeValue atomic.Int32
 
 func init() { governModeValue.Store(int32(parseGovernMode(os.Getenv("URNETWORK_GOVERN")))) }
 
-// parseGovernMode reads URNETWORK_GOVERN. Unset, empty and unrecognised values
-// all mean enforce: a typo must never silently disable the protection. Only an
-// explicit off or shadow turns it down.
+// parseGovernMode reads URNETWORK_GOVERN. On this line the shipped default is
+// shadow: unset, empty and unrecognised values observe and log without ever
+// delaying a connect, so the protection can be watched on a fleet that has never
+// run it before it acts. Only an explicit enforce acts, and an explicit off
+// disables it. (The line this was ported from defaults to enforce.)
 func parseGovernMode(raw string) governMode {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "enforce", "on", "1", "true", "yes":
+		return governEnforce
 	case "off", "0", "false", "no":
 		return governOff
-	case "shadow":
-		return governShadow
 	}
-	return governEnforce
+	return governShadow
 }
 
 func currentGovernMode() governMode { return governMode(governModeValue.Load()) }
