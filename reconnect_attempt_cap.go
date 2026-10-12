@@ -2,6 +2,7 @@ package connect
 
 import (
 	"fmt"
+	"time"
 )
 
 // The per-host attempt cap.
@@ -31,8 +32,17 @@ const (
 	// attemptCapFailShare: a minute is a storm minute when more than this share
 	// of its attempts failed, in any class
 	attemptCapFailShare = 0.8
+	// attemptCapPoolShare: a storm minute also needs at least this share of the
+	// proxy pool to have attempted in it. A healthy node still has a dead
+	// minority retrying about once a minute, and that minority fails nearly every
+	// attempt without anything being wrong; a real storm has most of the pool
+	// cycling at once.
+	attemptCapPoolShare = 0.5
 	// attemptCapStormMinutes is how many consecutive storm minutes engage the cap
 	attemptCapStormMinutes = 2
+	// attemptCapCooldown: after the cap releases it does not engage again for this
+	// long, so a borderline node cannot flap on and off
+	attemptCapCooldown = 10 * time.Minute
 	// attemptCapMinAttempts: a minute with fewer attempts says nothing
 	attemptCapMinAttempts = govMinAttempts
 	// attemptCapReleaseShare: a recent window with at least this share of
@@ -49,6 +59,8 @@ type attemptCapState struct {
 	// storm counts consecutive storm minutes; lastMinute is the unix minute last judged
 	storm      int
 	lastMinute int64
+	// releasedAt is when the cap last released, zero if it never has
+	releasedAt time.Time
 	// proxyCount reads how many proxies the node runs; replaceable so tests are exact
 	proxyCount func() int
 }
@@ -70,12 +82,16 @@ func attemptCapRateFor(proxies int) float64 {
 	return max(float64(proxies)/attemptCapProxiesPerToken, budgetFloorRate)
 }
 
-// stormMinute reports whether a minute's attempts were almost all failures.
-// Canceled attempts are never recorded, so every recorded attempt that is not a
-// connect counts as a failure, whatever its class.
-func stormMinute(s govSnapshot) (bool, float64) {
+// stormMinute reports whether a minute's attempts were almost all failures AND
+// came from a large share of the pool. Canceled attempts are never recorded, so
+// every recorded attempt that is not a connect counts as a failure, whatever its
+// class.
+func stormMinute(s govSnapshot, proxies int) (bool, float64) {
 	if s.Attempts < attemptCapMinAttempts {
 		return false, 0
+	}
+	if float64(s.Attempts) < attemptCapPoolShare*float64(proxies) {
+		return false, float64(s.Attempts-s.OK) / float64(s.Attempts)
 	}
 	failShare := float64(s.Attempts-s.OK) / float64(s.Attempts)
 	return attemptCapFailShare < failShare, failShare
@@ -107,6 +123,7 @@ func (self *reconnectBudget) updateCapLocked(recent, minute govSnapshot, proxies
 	release := func(why string) {
 		if 0 < c.rate {
 			c.rate = 0
+			c.releasedAt = self.now()
 			events = append(events, "[govern] attempt cap off: "+why)
 		}
 	}
@@ -115,7 +132,7 @@ func (self *reconnectBudget) updateCapLocked(recent, minute govSnapshot, proxies
 	if c.lastMinute != m {
 		consecutive := c.lastMinute == m-1
 		c.lastMinute = m
-		storm, failShare := stormMinute(minute)
+		storm, failShare := stormMinute(minute, proxies)
 		switch {
 		case !storm:
 			c.storm = 0
@@ -125,7 +142,8 @@ func (self *reconnectBudget) updateCapLocked(recent, minute govSnapshot, proxies
 		default:
 			c.storm = 1
 		}
-		if c.rate == 0 && attemptCapStormMinutes <= c.storm {
+		if c.rate == 0 && attemptCapStormMinutes <= c.storm &&
+			(c.releasedAt.IsZero() || attemptCapCooldown <= self.now().Sub(c.releasedAt)) {
 			c.rate = attemptCapRateFor(proxies)
 			events = append(events, fmt.Sprintf(
 				"[govern] attempt cap on: more than %.0f%% of attempts failed in each of the last %d minutes (last minute attempts=%d failed=%.0f%%, any class), holding connects to %s for %d proxies until %.0f%% succeed",

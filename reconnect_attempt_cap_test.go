@@ -36,7 +36,8 @@ func TestAttemptCap_EngagesOnlyOnSustainedFailureOfLargeNodes(t *testing.T) {
 		class      connectClass
 		failed, ok int
 	}
-	storm := func(class connectClass) minute { return minute{class, 90, 10} }
+	// 4000 proxies: a storm needs at least half the pool to have attempted in the minute
+	storm := func(class connectClass) minute { return minute{class, 1800, 200} }
 	cases := []struct {
 		name    string
 		proxies int
@@ -51,9 +52,12 @@ func TestAttemptCap_EngagesOnlyOnSustainedFailureOfLargeNodes(t *testing.T) {
 		{"other storm", 4000, []minute{storm(connectOtherFail), storm(connectOtherFail)}, 4000.0 / attemptCapProxiesPerToken},
 		{"refused storm", 4000, []minute{storm(connectRefused), storm(connectRefused)}, 4000.0 / attemptCapProxiesPerToken},
 		{"cap never below the floor", attemptCapMinProxies, []minute{storm(connectSocksFail), storm(connectSocksFail)}, budgetFloorRate},
-		{"exactly 80% failing is not a storm", 4000, []minute{{connectSocksFail, 80, 20}, {connectSocksFail, 80, 20}}, 0},
-		{"a healthy minute between storms resets", 4000, []minute{storm(connectSocksFail), {connectSocksFail, 10, 90}, storm(connectSocksFail)}, 0},
+		{"exactly 80% failing is not a storm", 4000, []minute{{connectSocksFail, 1600, 400}, {connectSocksFail, 1600, 400}}, 0},
+		{"a healthy minute between storms resets", 4000, []minute{storm(connectSocksFail), {connectSocksFail, 200, 1800}, storm(connectSocksFail)}, 0},
 		{"too few attempts say nothing", 4000, []minute{{connectSocksFail, 19, 0}, {connectSocksFail, 19, 0}}, 0},
+		// 300 dead proxies out of 4000 retrying once a minute fail 90% of a 330-attempt minute
+		{"a dead minority on a healthy node is not a storm", 4000, []minute{{connectSocksFail, 300, 30}, {connectSocksFail, 300, 30}, {connectSocksFail, 300, 30}}, 0},
+		{"a third of the pool failing is not a storm", 4000, []minute{{connectSocksFail, 1200, 100}, {connectSocksFail, 1200, 100}}, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -92,17 +96,17 @@ func TestAttemptCap_ReleasesWhenAttemptsSucceed(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h, lines := newCapHarness(4000)
-			h.capMinute(connectTimeoutNoReply, 90, 10)
-			h.capMinute(connectTimeoutNoReply, 90, 10)
+			h.capMinute(connectTimeoutNoReply, 1800, 200)
+			h.capMinute(connectTimeoutNoReply, 1800, 200)
 			if h.budget.currentCap() == 0 {
 				t.Fatal("setup: cap should be on")
 			}
 			// the next minute is still a storm, judged before the recent window
-			h.attempts(connectTimeoutNoReply, 90)
+			h.attempts(connectTimeoutNoReply, 2100)
 			h.advance(budgetRecentWindow + time.Second)
 			h.budget.control()
 			if h.budget.currentCap() == 0 {
-				t.Fatal("setup: a third storm minute keeps the cap on")
+				t.Fatalf("setup: a third storm minute keeps the cap on: %q", *lines)
 			}
 			// a recent window, inside the same minute
 			h.attempts(connectTimeoutNoReply, tc.failed)
@@ -120,17 +124,17 @@ func TestAttemptCap_NeverAppliesInsideTheStartupGrace(t *testing.T) {
 	h, _ := newCapHarness(4000)
 	h.gov.started = *h.now
 	// judged 30 s in: inside the grace, so it must not count
-	h.capMinute(connectSocksFail, 90, 10)
+	h.capMinute(connectSocksFail, 1800, 200)
 	if h.budget.currentCap() != 0 {
 		t.Fatal("the cap must not engage inside the startup grace")
 	}
 	// judged 90 s in: the grace has just ended, and this is the first storm
 	// minute that counts, so it alone must not engage the cap
-	h.capMinute(connectSocksFail, 90, 10)
+	h.capMinute(connectSocksFail, 1800, 200)
 	if h.budget.currentCap() != 0 {
 		t.Fatal("a storm minute inside the grace must not count toward the cap")
 	}
-	h.capMinute(connectSocksFail, 90, 10)
+	h.capMinute(connectSocksFail, 1800, 200)
 	if h.budget.currentCap() == 0 {
 		t.Fatal("two storm minutes after the grace engage the cap")
 	}
@@ -138,12 +142,12 @@ func TestAttemptCap_NeverAppliesInsideTheStartupGrace(t *testing.T) {
 
 func TestAttemptCap_LogsTransitionsAndShowsInTheGovernLine(t *testing.T) {
 	h, lines := newCapHarness(4000)
-	h.capMinute(connectSocksFail, 90, 10)
+	h.capMinute(connectSocksFail, 1800, 200)
 	if len(*lines) != 0 {
 		t.Fatalf("nothing to say before the cap engages: %q", *lines)
 	}
-	h.capMinute(connectSocksFail, 90, 10)
-	h.capMinute(connectSocksFail, 90, 10)
+	h.capMinute(connectSocksFail, 1800, 200)
+	h.capMinute(connectSocksFail, 1800, 200)
 	on := 0
 	for _, line := range *lines {
 		if strings.HasPrefix(line, "[govern] attempt cap on:") {
@@ -159,7 +163,7 @@ func TestAttemptCap_LogsTransitionsAndShowsInTheGovernLine(t *testing.T) {
 		t.Fatalf("the [govern] line must show the cap, got %q", fields)
 	}
 
-	h.capMinute(connectSocksFail, 10, 90)
+	h.capMinute(connectSocksFail, 200, 1800)
 	if h.budget.currentCap() != 0 {
 		t.Fatal("a healthy minute releases the cap")
 	}
@@ -174,8 +178,8 @@ func TestAttemptCap_LogsTransitionsAndShowsInTheGovernLine(t *testing.T) {
 // A capped budget really holds connects: a proxied connect waits for a token.
 func TestAttemptCap_ProxiedConnectsQueue(t *testing.T) {
 	h, _ := newCapHarness(4000)
-	h.capMinute(connectSocksFail, 90, 10)
-	h.capMinute(connectSocksFail, 90, 10)
+	h.capMinute(connectSocksFail, 1800, 200)
+	h.capMinute(connectSocksFail, 1800, 200)
 	if !h.budget.admit(t.Context(), true) {
 		t.Fatal("the direct path never waits")
 	}
@@ -194,5 +198,35 @@ func TestProxiedCount_LeavesOutTheDirectPath(t *testing.T) {
 	}
 	if got := proxiedCount(); got != 3 {
 		t.Fatalf("proxiedCount = %d, want 3", got)
+	}
+}
+
+// A borderline node must not flap: after the cap releases it stays off for the
+// cooldown even if two more storm minutes follow at once.
+func TestAttemptCap_DoesNotReengageInsideTheCooldown(t *testing.T) {
+	h, lines := newCapHarness(4000)
+	h.capMinute(connectSocksFail, 1800, 200)
+	h.capMinute(connectSocksFail, 1800, 200)
+	if h.budget.currentCap() == 0 {
+		t.Fatal("setup: cap should be on")
+	}
+	// a healthy recent window releases it
+	h.attempts(connectOK, 400)
+	h.advance(time.Second)
+	h.budget.control()
+	if h.budget.currentCap() != 0 {
+		t.Fatalf("setup: cap should be off: %q", *lines)
+	}
+	h.capMinute(connectSocksFail, 1800, 200)
+	h.capMinute(connectSocksFail, 1800, 200)
+	h.capMinute(connectSocksFail, 1800, 200)
+	if h.budget.currentCap() != 0 {
+		t.Fatalf("the cap re-engaged inside its cooldown: %q", *lines)
+	}
+	h.advance(attemptCapCooldown)
+	h.capMinute(connectSocksFail, 1800, 200)
+	h.capMinute(connectSocksFail, 1800, 200)
+	if h.budget.currentCap() == 0 {
+		t.Fatalf("the cap should engage again after the cooldown: %q", *lines)
 	}
 }

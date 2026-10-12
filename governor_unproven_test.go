@@ -122,3 +122,34 @@ func TestGovernor_ProvenEarlyDeathsStillCountAtOnce(t *testing.T) {
 		t.Fatalf("proven early deaths are hard failures immediately: %+v", s)
 	}
 }
+
+// A host whose poor proxy list normally sees a quarter of its attempts end in an
+// early death has learned that as normal: a 35% minute is not an incident for
+// it, while the same minute is for a host that normally sees almost none.
+func TestGovernor_UnprovenShareIsRelativeToWhatTheHostUsuallySees(t *testing.T) {
+	run := func(usualEarly int) bool {
+		g, now := newTestGovernor()
+		g.baseline = 0.6
+		step := func(ok, silent, early int) govSnapshot {
+			*now = now.Add(time.Minute)
+			record(g, connectOK, ok)
+			record(g, connectTimeoutNoReply, silent)
+			for i := 0; i < early; i++ {
+				g.recordEarlyDeath()
+			}
+			*now = now.Add(time.Second)
+			return g.snapshot()
+		}
+		for i := 0; i < govUnprovenLearnMinutes+1; i++ {
+			step(25, 75, usualEarly) // ordinary minutes
+		}
+		step(35, 65, 35)
+		return step(35, 65, 35).Degraded
+	}
+	if run(25) {
+		t.Fatal("a host that usually sees 25% early deaths was flagged by 35%")
+	}
+	if !run(2) {
+		t.Fatal("a host that usually sees about 2% early deaths was not flagged by 35% for two minutes")
+	}
+}
