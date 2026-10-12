@@ -322,6 +322,11 @@ func dnsResolverAddrs(settings *DohSettings, remote bool, network string) []stri
 		ipv4 = settings.DnsResolverSettings.LocalDnsIpv4
 		ipv6 = settings.DnsResolverSettings.LocalDnsIpv6
 	}
+	if !hostHasGlobalIpv6() {
+		// without working IPv6 the v6 resolvers are only timeouts, whichever
+		// family was asked for
+		ipv6 = nil
+	}
 
 	switch {
 	case strings.HasSuffix(network, "6") || settings.IpVersion == 6:

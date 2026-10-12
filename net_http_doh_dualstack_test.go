@@ -87,3 +87,29 @@ func TestDualStackSettingsConsultBothFamilies(t *testing.T) {
 func TestDetectGlobalIpv6DoesNotPanicOrBlock(t *testing.T) {
 	_ = detectGlobalIpv6() // result depends on the host; it must return promptly
 }
+
+// Without working IPv6 the v6 resolvers must never be offered, in any mode.
+func TestDnsResolverAddrsOmitIpv6WithoutHostIpv6(t *testing.T) {
+	settings := DefaultDohSettings()
+	for _, remote := range []bool{false, true} {
+		withHostIpv6(t, false)
+		for _, network := range []string{"", "udp", "udp6", "tcp6"} {
+			for _, addr := range dnsResolverAddrs(settings, remote, network) {
+				if ip := net.ParseIP(addr); ip != nil && ip.To4() == nil {
+					t.Fatalf("remote=%v network=%q offered the IPv6 resolver %s on an IPv4-only host", remote, network, addr)
+				}
+			}
+		}
+	}
+	withHostIpv6(t, true)
+	settings = DefaultDohSettings() // IpVersion 0 on a dual-stack host
+	found := false
+	for _, addr := range dnsResolverAddrs(settings, false, "") {
+		if ip := net.ParseIP(addr); ip != nil && ip.To4() == nil {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("a dual-stack host must be offered IPv6 resolvers")
+	}
+}
