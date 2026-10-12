@@ -1038,26 +1038,6 @@ The happy path of a hot swap is shown in [HotSwap](docs/HotSwap.md#what-you-will
 
 ---
 
-## 🛡️ Payload Inspection (`[security][dpi]`)
-
-The egress policy inspects flows and decides each once. These lines report it without ever logging an address: only reasons, protocols and ports. The application-standard admits (WireGuard, OpenVPN, RTMP, WhatsApp, Ethereum, RakNet and similar) are on by default; `URNETWORK_DPI_ADMITS=off` restores the older verdicts, and `URNETWORK_DPI_PRIVILEGED_BT=1` adds BitTorrent signature drops on privileged ports.
-
-```text
-[security] dpi configuration URNETWORK_DPI_ADMITS="" (admits=true) URNETWORK_DPI_PRIVILEGED_BT="" (privileged_bt=false)
-[security][dpi] first admit reason=allow-app-standard:wireguard proto=udp dst_port=51820
-[security][dpi] dropped flow reason=drop-encrypted proto=tcp dst_port=8443 (12 more since the last sample)
-[security][dpi] since start (1h4m0s) flows decided: allow-app-standard:wireguard=31 drop-encrypted=212 | packets: allow-privileged=45056 allow-web-standard:tls=9800
-```
-
-| Message | Meaning |
-|---|---|
-| `[security] dpi configuration` | Once at start: the two switches as given and as applied. |
-| `first admit reason=...` | The first flow admitted under each application-standard reason, once per process. It proves that admit rule fired. |
-| `dropped flow reason=... (N more since the last sample)` | A sample of dropped flows (`drop-encrypted` or `bittorrent`), at most one a minute; N counts the ones not shown. |
-| `since start (...) flows decided: ... \| packets: ...` | A cumulative summary, at most every five minutes. The five-minute throttle is checked every 4096 inspected packets, and again whenever a flow is counted, so a node with no traffic at all stays quiet but a flow that is still undecided can trigger the line. `flows decided` counts a flow once under the reason that settled it. `packets` counts every inspected packet under the reason it was handled with, including flows still undecided. `allow-privileged` is traffic to a privileged port (below 1024) that was allowed without signature inspection (BitTorrent checks on those ports are opt-in). `flows decided: none` with only `allow-privileged` packets means every inspected packet went to such a port, so the app-standard admits had nothing to do. |
-
-Reason names you will see: `allow-privileged`, `allow-gaming`, `allow-web-standard:tls\|dtls\|quic\|stun\|turn\|rtcp`, `allow-rtp`, `allow-http`, `allow-plaintext`, `allow-budget`, `allow-uninspected`, `allow-messaging`, `allow-app-standard:wireguard\|openvpn\|rtmp\|levin\|raknet\|ethereum-discv4\|ethereum-rlpx\|whatsapp`, `drop-encrypted`, `bittorrent`, `inspecting` (not decided yet), plus the address-policy reasons `network`, `not-public`, `cfaa-drop-ip`, `cfaa-drop-port` and `cfaa-allow`.
-
 ---
 
 ## 🔍 Proxy Audit (`[proxy][audit]`)

@@ -260,6 +260,20 @@ func (self *reconnectBudget) setRate(rate float64) {
 	self.rate = min(max(rate, budgetFloorRate), budgetCeilingRate)
 }
 
+// setPick replaces the random slot's chooser and returns a restore func. For
+// tests that need the dispatcher to be deterministic.
+func (self *reconnectBudget) setPick(fn func(n int) int) func() {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	prev := self.pick
+	self.pick = fn
+	return func() {
+		self.mu.Lock()
+		defer self.mu.Unlock()
+		self.pick = prev
+	}
+}
+
 func (self *reconnectBudget) queued() int {
 	self.mu.Lock()
 	defer self.mu.Unlock()

@@ -283,38 +283,6 @@ Where to look:
 - `~/.urnetwork/thrash_status` carries the machine-readable state for tooling.
 - Log lines start with `[proxy][thrash]`.
 
-### Proxy audit
-
-The paid and file proxies you supply are graded A to F by a probe from this box. With proxy audit **on**, the audit engine uses that grade to rest proxies that are proven junk, so their slots are not wasted. With proxy audit **off** it only watches and logs what it would have done, so you can see its judgement before you let it act. It also stays in observe mode when hot restart is off, because every relaunch would then mint a new client identity.
-
-A proxy is **parked** (stopped, and not relaunched until its backoff ends) only when all of these hold:
-
-- Its last two grades, from separate probe passes taken after the provider started, both scored 0.4 or lower. Tier F is anything under 0.6, but only 0.4 or lower counts as proven junk, and any grade above 0.4 in between resets the count.
-- It is running, has no active clients, and has not earned recently. **Idle alone never parks a proxy.** A well-graded idle proxy is simply not being assigned traffic and is left alone; idle and earnings can only protect a proxy, never condemn it.
-- The pass can be trusted: at least half of your proxies could be graded from this box, and there was no sudden mass failure (more than 40% of fresh grades bad at once, or twice the recent norm), which points at the box or its network rather than at the proxies.
-
-Limits: at most 3 parks per 5-minute pass, at most 15% of your paid set per 24 hours (rounded up, so always at least 1), and proxy audit never parks a box down to fewer than `max(10, half)` running paid proxies. **A box with 10 or fewer running paid proxies therefore never parks anything.**
-
-Backoff grows each time the same proxy is parked again: 6h, 12h, 24h, 48h, then 7 days, each varied by up to 25% so a batch does not return at once. A parked proxy returns early when it regrades to 0.6 or better after at least an hour. Turning proxy audit off returns everything it parked: it is released within one 5-minute pass, and the proxy is relaunched by the next reload, within about an hour (a reload is forced hourly). A regrade-based restore has the same lag. Parks are held in memory, so a provider restart returns them all and the evidence starts again.
-
-A parked proxy is marked `parked` in `proxy.state`. It stays in your proxy file. Dead-proxy cleanup and `proxy remove-dead` never collect it in any category (dead, inactive, degraded or auth-failing, including the auth-failure check that `--degraded` turns on by default).
-
-`urnet-tools proxy audit status` shows whether audit is observing or acting (and, when observing, whether proxy audit or hot restart is the switch that is off), what is parked and for how long, and why a pass parked nothing. On Linux, `urnet-tools status` shows the count in the unit's status line (`3 parked by proxy audit`); parked proxies do not make it read `partial`.
-
-Proxy audit **pauses** when your paid proxy list cannot be read or is empty, since that list is what proves a proxy is yours to park. That is usually one skipped 5-minute pass while the file is being edited, but a missing or unreadable file keeps it paused until fixed. It logs `[proxy][audit] paused` and `resumed`, shows `proxy audit: PAUSED` in `proxy audit status`, and adds `proxy audit paused` to the unit's status line. Turning proxy audit off still releases parks while paused. The same is exported as `urnet_proxy_audit_*` gauges (see [Monitoring](Monitoring.md)). Log lines start with `[proxy][audit]`.
-
-Toggle or inspect at runtime:
-```sh
-urnet-tools proxy audit on
-urnet-tools proxy audit off
-urnet-tools proxy audit status
-urnet-tools proxy audit release <addr>
-urnet-tools proxy audit release --all
-```
-
-> [!NOTE]
-> The ramp anchors (PSI 10%/60%, MemAvailable 25%/5%, load 1.0/3.0 per core, etc.) are properties of what each metric means — e.g. "a box stalled on memory 60% of the time is exhausted" holds regardless of core count or RAM size. They are not per-server capacity tuning knobs.
-
 ## Backend outage protection
 
 When the URnetwork backend is up but slow (the API answers, the auth step times out or answers `HTTP 200` instead of upgrading), every proxy used to retry the platform transport on its own. With thousands of proxies that is a flood of control traffic with nothing billable behind it. The governor watches every connect attempt and, in `enforce` mode, keeps that flood bounded.
