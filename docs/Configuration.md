@@ -46,6 +46,7 @@ Quick jump:
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `URNETWORK_PROFILE` | - | Advanced provider profile: `auto`, `lowmem`, `eco`, `turbo-v4`, or `turbo-v8`. For turbo, prefer `TURBO`. On systemd/native, set this with `urnet-tools turbo/eco/lowmode/auto` rather than a drop-in (v31+). |
+| `URNETWORK_GOVERN` | `enforce` | Backend-outage protection for the platform transport, **on by default**. Leave it unset. `shadow` observes and logs `[govern]` lines but never delays a connect, and `off` does nothing; both are emergency overrides for rollback or debugging, and an unrecognised value counts as `enforce`. See [Backend outage protection](#backend-outage-protection). |
 | `TURBO` | - | Set to `v4` or `v8` to enable turbo mode. Prefer this variable for Docker turbo mode. |
 | `URNETWORK_RAMLOGS` | `0` | Set to `1` to redirect provider logs to RAM instead of stdout. Cannot be used with Docker `--log-opt`. On systemd/native, set this with `urnet-tools ramlogs on\|off` (v31+). |
 | `URNETWORK_MESSAGE_POOL_SHARD_COUNT` | `16` | Number of internal mutex shards per message-pool size class. Higher values reduce lock contention at high packet rates. Must be a power of two, 1–256. Set to `1` to disable sharding (pre-v24.35 behavior). Sane values: `8` (moderate), `16` (default), `32` (high-pps tier3+). |
@@ -281,3 +282,56 @@ Where to look:
 - `urnet-tools status`'s live block prints the current reading as one sentence (the `summary` field the provider persists to `~/.urnetwork/pressure_status`).
 - `~/.urnetwork/thrash_status` carries the machine-readable state for tooling.
 - Log lines start with `[proxy][thrash]`.
+
+### Proxy audit
+
+The paid and file proxies you supply are graded A to F by a probe from this box. With proxy audit **on**, the audit engine uses that grade to rest proxies that are proven junk, so their slots are not wasted. With proxy audit **off** it only watches and logs what it would have done, so you can see its judgement before you let it act. It also stays in observe mode when hot restart is off, because every relaunch would then mint a new client identity.
+
+A proxy is **parked** (stopped, and not relaunched until its backoff ends) only when all of these hold:
+
+- Its last two grades, from separate probe passes taken after the provider started, both scored 0.4 or lower. Tier F is anything under 0.6, but only 0.4 or lower counts as proven junk, and any grade above 0.4 in between resets the count.
+- It is running, has no active clients, and has not earned recently. **Idle alone never parks a proxy.** A well-graded idle proxy is simply not being assigned traffic and is left alone; idle and earnings can only protect a proxy, never condemn it.
+- The pass can be trusted: at least half of your proxies could be graded from this box, and there was no sudden mass failure (more than 40% of fresh grades bad at once, or twice the recent norm), which points at the box or its network rather than at the proxies.
+
+Limits: at most 3 parks per 5-minute pass, at most 15% of your paid set per 24 hours (rounded up, so always at least 1), and proxy audit never parks a box down to fewer than `max(10, half)` running paid proxies. **A box with 10 or fewer running paid proxies therefore never parks anything.**
+
+Backoff grows each time the same proxy is parked again: 6h, 12h, 24h, 48h, then 7 days, each varied by up to 25% so a batch does not return at once. A parked proxy returns early when it regrades to 0.6 or better after at least an hour. Turning proxy audit off returns everything it parked: it is released within one 5-minute pass, and the proxy is relaunched by the next reload, within about an hour (a reload is forced hourly). A regrade-based restore has the same lag. Parks are held in memory, so a provider restart returns them all and the evidence starts again.
+
+A parked proxy is marked `parked` in `proxy.state`. It stays in your proxy file. Dead-proxy cleanup and `proxy remove-dead` never collect it in any category (dead, inactive, degraded or auth-failing, including the auth-failure check that `--degraded` turns on by default).
+
+`urnet-tools proxy audit status` shows whether audit is observing or acting (and, when observing, whether proxy audit or hot restart is the switch that is off), what is parked and for how long, and why a pass parked nothing. On Linux, `urnet-tools status` shows the count in the unit's status line (`3 parked by proxy audit`); parked proxies do not make it read `partial`.
+
+Proxy audit **pauses** when your paid proxy list cannot be read or is empty, since that list is what proves a proxy is yours to park. That is usually one skipped 5-minute pass while the file is being edited, but a missing or unreadable file keeps it paused until fixed. It logs `[proxy][audit] paused` and `resumed`, shows `proxy audit: PAUSED` in `proxy audit status`, and adds `proxy audit paused` to the unit's status line. Turning proxy audit off still releases parks while paused. The same is exported as `urnet_proxy_audit_*` gauges (see [Monitoring](Monitoring.md)). Log lines start with `[proxy][audit]`.
+
+Toggle or inspect at runtime:
+```sh
+urnet-tools proxy audit on
+urnet-tools proxy audit off
+urnet-tools proxy audit status
+urnet-tools proxy audit release <addr>
+urnet-tools proxy audit release --all
+```
+
+> [!NOTE]
+> The ramp anchors (PSI 10%/60%, MemAvailable 25%/5%, load 1.0/3.0 per core, etc.) are properties of what each metric means — e.g. "a box stalled on memory 60% of the time is exhausted" holds regardless of core count or RAM size. They are not per-server capacity tuning knobs.
+
+## Backend outage protection
+
+When the URnetwork backend is up but slow (the API answers, the auth step times out or answers `HTTP 200` instead of upgrading), every proxy used to retry the platform transport on its own. With thousands of proxies that is a flood of control traffic with nothing billable behind it. The governor watches every connect attempt and, in `enforce` mode, keeps that flood bounded.
+
+What it does while the backend is failing:
+
+- **Shared attempt budget.** Platform connects are admitted under one rate: 200/s when healthy (effectively open), cut 4x every 5 s to a floor of 2/s while recent attempts mostly fail, then doubled back to open as attempts connect. Waiting proxies hold no socket and are shown as connecting, not dead. The direct path never waits and proxies that are already connected are never touched.
+- **Best proxies first.** While the budget is throttled, two of every three released slots go to the proxy with the best record (earnings history, with file-listed and operator-configured proxies ahead of URL-scraped ones) and every third goes to a random waiter.
+- **One dial round.** A failed platform dial gives up after one pass over the dialers instead of retrying them until the 15 s deadline.
+- **Byte breaker.** If failed attempts burn more than 256 KiB/s (about 22 GB/day) the budget is cut whatever the verdict says.
+- **Flap guard.** A session that dies in under 60 s makes that proxy wait (5 s doubling to 60 s, jittered) before it reconnects.
+- **Identities are protected.** A saved client identity is evicted only after 5 explicit refusals (HTTP 401 or 403) from a healthy backend, never on timeouts and never during an outage. The degraded-proxy reaper also holds off while an outage is under way and for 30 minutes after.
+- **Restart during an outage.** A throttled budget keeps a marker file at `~/.urnetwork/govern_outage`. A restart that finds one under 10 minutes old starts at the floor and ramps on evidence; a healthy restart or hot swap pays nothing.
+
+What to look at:
+
+- `[govern]` lines (also in the important log) every minute while degraded and every 5 minutes as a heartbeat: attempts per second, connected, `died_young`, the failure classes, dials and KB per attempt, `would_hold`, and the mode, budget rate and number of proxies waiting.
+- `[health][govern]` in the heartbeat and the `urnet_govern_*` metrics (`mode`, `degraded`, `budget_rate`, `waiting`, `attempts`, `died_young`, `flap_backoffs_total`).
+
+The protection is on by default and needs no setup. As an emergency override only, `URNETWORK_GOVERN=shadow` keeps the logs and metrics but never delays a connect, and `URNETWORK_GOVERN=off` disables it; both need a restart.
