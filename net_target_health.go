@@ -3,6 +3,7 @@ package connect
 import (
 	"context"
 	"math/rand/v2"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -40,9 +41,23 @@ const (
 	addrGoodFor = 30 * time.Minute
 	// addrGoodPerHost bounds the remembered-good set per hostname.
 	addrGoodPerHost = 16
+	// addrFailMinProxies: the failures that mark an address bad must come from
+	// at least this many different proxies. A free proxy that accepts the CONNECT
+	// and then stalls is routine; one proxy's stalls say nothing about the address.
+	addrFailMinProxies = 3
+	// addrSiblingFresh: and another address of the same host must have answered
+	// within this long. If nothing answers anywhere the proxies, or the platform,
+	// are the problem, and skipping addresses would only concentrate the load.
+	addrSiblingFresh = 2 * time.Minute
 )
 
+// targetHealthEnabled is the kill switch: URNETWORK_TARGET_HEALTH=off restores
+// the previous behaviour (the first resolved address, no health table).
+var targetHealthEnabled = os.Getenv("URNETWORK_TARGET_HEALTH") != "off"
+
 type addrState struct {
+	// proxies are the distinct proxies behind the counted failures
+	proxies   map[int]struct{}
 	fails     int
 	firstFail time.Time
 	badUntil  time.Time
@@ -67,7 +82,10 @@ func addrIsBad(host, ip string, now time.Time) bool {
 
 // noteAddrOutcome records the result of an attempt that used ip for host.
 // ok clears the address; a failure counts toward marking it bad.
-func noteAddrOutcome(host, ip string, ok bool, now time.Time) {
+func noteAddrOutcome(host, ip string, proxyId int, ok bool, now time.Time) {
+	if !targetHealthEnabled {
+		return
+	}
 	addrHealth.mu.Lock()
 	defer addrHealth.mu.Unlock()
 	if addrHealth.m == nil {
@@ -96,12 +114,28 @@ func noteAddrOutcome(host, ip string, ok bool, now time.Time) {
 	s.touched = now
 	if s.fails == 0 || addrFailWindow < now.Sub(s.firstFail) {
 		s.fails, s.firstFail = 0, now
+		s.proxies = map[int]struct{}{}
 	}
 	s.fails++
-	if addrFailThreshold <= s.fails && !now.Before(s.badUntil) {
+	if len(s.proxies) < 8 {
+		s.proxies[proxyId] = struct{}{}
+	}
+	if addrFailThreshold <= s.fails && addrFailMinProxies <= len(s.proxies) &&
+		siblingAnsweredLocked(host, ip, now) && !now.Before(s.badUntil) {
 		s.badUntil = now.Add(addrBadFor)
 		glog.Infof("[net][target] %s %s stalled %d times in %s, skipping it for %s", host, ip, s.fails, now.Sub(s.firstFail).Round(time.Second), addrBadFor)
 	}
+}
+
+// siblingAnsweredLocked reports whether another address of host answered
+// recently: the evidence that this address, not everything, is what is failing.
+func siblingAnsweredLocked(host, ip string, now time.Time) bool {
+	for other, t := range addrHealth.good[host] {
+		if other != ip && now.Sub(t) <= addrSiblingFresh {
+			return true
+		}
+	}
+	return false
 }
 
 func rememberGoodLocked(host, ip string, now time.Time) {
@@ -166,6 +200,9 @@ func chooseTargetAddr(ctx context.Context, host string, ips []string) string {
 	if len(ips) == 0 {
 		return ""
 	}
+	if !targetHealthEnabled {
+		return ips[0]
+	}
 	stats := attemptStatsFrom(ctx)
 	now := time.Now()
 	if stats != nil {
@@ -213,9 +250,10 @@ func chooseTargetAddr(ctx context.Context, host string, ips []string) string {
 // attemptTargets is the per-attempt record of which address each host resolved
 // to. Hung off attemptStats.
 type attemptTargets struct {
-	mu       sync.Mutex
-	pinned   map[string]string
-	lastHost string
+	mu        sync.Mutex
+	pinned    map[string]string
+	lastHost  string
+	lastProxy int
 }
 
 func (self *attemptStats) pinnedTarget(host string) (string, bool) {
@@ -237,10 +275,11 @@ func (self *attemptStats) pinTarget(host string, ip string) {
 // noteDialedTarget marks host as the most recent target a dial got through the
 // proxy to (SOCKS CONNECT succeeded). A later failure at the TLS or upgrade layer
 // is then evidence about that address, not about the proxy.
-func (self *attemptStats) noteDialedTarget(host string) {
+func (self *attemptStats) noteDialedTarget(host string, proxyId int) {
 	self.targets.mu.Lock()
 	defer self.targets.mu.Unlock()
 	self.targets.lastHost = host
+	self.targets.lastProxy = proxyId
 }
 
 // recordTargetOutcome turns a finished attempt's class into address health.
@@ -255,6 +294,7 @@ func (self *attemptStats) recordTargetOutcome(class connectClass) {
 	self.targets.mu.Lock()
 	last := self.targets.lastHost
 	lastIp := self.targets.pinned[last]
+	lastProxy := self.targets.lastProxy
 	pinned := make(map[string]string, len(self.targets.pinned))
 	for h, ip := range self.targets.pinned {
 		pinned[h] = ip
@@ -264,11 +304,11 @@ func (self *attemptStats) recordTargetOutcome(class connectClass) {
 	switch class {
 	case connectOK:
 		for h, ip := range pinned {
-			noteAddrOutcome(h, ip, true, now)
+			noteAddrOutcome(h, ip, 0, true, now)
 		}
 	case connectTimeoutNoReply, connectTlsFail:
 		if last != "" && lastIp != "" {
-			noteAddrOutcome(last, lastIp, false, now)
+			noteAddrOutcome(last, lastIp, lastProxy, false, now)
 		}
 	}
 }

@@ -498,7 +498,7 @@ func (self *ProxySettings) NewDialContext(ctx context.Context, forward proxy.Dia
 		}
 		if attempt != nil && targetHost != "" {
 			// the proxy reached the address: a stall from here on is about it
-			attempt.noteDialedTarget(targetHost)
+			attempt.noteDialedTarget(targetHost, self.Index)
 		}
 
 		bw := RegisteredProxyBandwidth(self.Index)
