@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 )
@@ -150,5 +151,53 @@ func TestKeyRotationAcceptsEitherKey(t *testing.T) {
 	rotating := &Client{URL: srv.URL, Pub: oldPub, Pubs: []ed25519.PublicKey{newPub}, Mode: ModeAdvisory, Now: func() time.Time { return now }}
 	if err := rotating.PollOnce(context.Background()); err != nil {
 		t.Fatalf("rotation key not accepted: %v", err)
+	}
+}
+
+// Each signing key has its own replay counter: a rotated key that starts at 1
+// again is not locked out by the old key's higher seq, a key's own replays are
+// still refused, and the older single-counter file still works as a floor.
+func TestReplayCounterIsPerKey(t *testing.T) {
+	oldPub, oldPriv, _ := GenerateKey()
+	newPub, newPriv, _ := GenerateKey()
+	now := time.Unix(2_000_000, 0)
+	serve := func(env Envelope) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { json.NewEncoder(w).Encode(env) }))
+	}
+	sign := func(priv ed25519.PrivateKey, seq uint64) Envelope {
+		env, _ := Sign(priv, Verdict{State: StateOK, Confidence: 1, IssuedAt: now.Unix(), ValidUntil: now.Add(2 * time.Minute).Unix(), Seq: seq})
+		return env
+	}
+	path := t.TempDir() + "/seq"
+	mk := func(url string) *Client {
+		return &Client{URL: url, Pub: oldPub, Pubs: []ed25519.PublicKey{newPub}, Mode: ModeShadow, StatePath: path, Now: func() time.Time { return now }}
+	}
+	oldSrv := serve(sign(oldPriv, 500))
+	defer oldSrv.Close()
+	if err := mk(oldSrv.URL).PollOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// the new key starts at 1 and must be accepted by a restarted consumer
+	newSrv := serve(sign(newPriv, 1))
+	defer newSrv.Close()
+	c := mk(newSrv.URL)
+	if err := c.PollOnce(context.Background()); err != nil {
+		t.Fatalf("a rotated key starting at seq 1 was locked out by the old key's counter: %v", err)
+	}
+	// each key's own replay is still refused after a restart
+	if err := mk(oldSrv.URL).PollOnce(context.Background()); err != ErrReplay {
+		t.Fatalf("the old key's replay: want ErrReplay, got %v", err)
+	}
+	if err := mk(newSrv.URL).PollOnce(context.Background()); err != ErrReplay {
+		t.Fatalf("the new key's replay: want ErrReplay, got %v", err)
+	}
+	// the older single-counter file is a floor for a key with no history
+	legacy := t.TempDir() + "/seq"
+	os.WriteFile(legacy, []byte("77\n"), 0o600)
+	srv := serve(sign(oldPriv, 77))
+	defer srv.Close()
+	lc := &Client{URL: srv.URL, Pub: oldPub, Mode: ModeShadow, StatePath: legacy, Now: func() time.Time { return now }}
+	if err := lc.PollOnce(context.Background()); err != ErrReplay {
+		t.Fatalf("legacy floor: want ErrReplay, got %v", err)
 	}
 }

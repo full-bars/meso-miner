@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"time"
+
 	"github.com/urnetwork/connect"
 )
 
@@ -11,11 +14,14 @@ var (
 	hourlyPulseTrigger         = connect.TriggerPulse
 )
 
+// hourlyPulseRetry is how long a skipped pulse waits before trying again.
+const hourlyPulseRetry = 5 * time.Minute
+
 // hourlyPulse runs one hourly maintenance pulse, which wakes every stalled
 // transport and proxy and restarts their backoff ladders. While the backend is
 // degraded, or the connect budget was throttled within the last few minutes,
 // that reset only sends every failing proxy back into the outage at once, so
-// the pulse is skipped and the next hour tries again. It reports whether the
+// the pulse is skipped and the caller tries again every hourlyPulseRetry until it can fire. It reports whether the
 // pulse fired.
 func hourlyPulse() bool {
 	if hourlyPulseBackendDegraded() {
@@ -30,4 +36,25 @@ func hourlyPulse() bool {
 	}
 	hourlyPulseTrigger()
 	return true
+}
+
+// hourlyPulseLoop runs the pulse every interval. A pulse that is skipped (the
+// backend is degraded) is retried every retry until it fires, so a node that
+// happens to be degraded at the hour mark is not starved of its pulse for
+// another whole hour.
+func hourlyPulseLoop(ctx context.Context, interval, retry time.Duration) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(interval):
+		}
+		for !hourlyPulse() {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(retry):
+			}
+		}
+	}
 }

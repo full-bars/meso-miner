@@ -56,11 +56,16 @@ type Client struct {
 	Logf func(format string, args ...any)
 	Now  func() time.Time
 
-	mu      sync.Mutex
-	lastSeq uint64
-	cur     Verdict
-	have    bool
-	loaded  bool
+	mu sync.Mutex
+	// lastSeq is the highest accepted seq per signing key (by KeyID), so a key
+	// that starts counting from 1 again, or a rotation, cannot be locked out by
+	// another key's higher counter. legacySeq is the single counter older
+	// versions persisted; it is a floor for keys with no history of their own.
+	lastSeq   map[string]uint64
+	legacySeq uint64
+	cur       Verdict
+	have      bool
+	loaded    bool
 }
 
 // Latest returns the most recent verified verdict that is still within its
@@ -76,12 +81,16 @@ func (c *Client) Latest() (Verdict, bool) {
 	return c.cur, true
 }
 
-// loadSeqLocked reads the persisted seq once.
+// loadSeqLocked reads the persisted seqs once. The file holds one "<key id> <seq>"
+// line per key; a bare number is the older single-counter format.
 func (c *Client) loadSeqLocked() {
 	if c.loaded {
 		return
 	}
 	c.loaded = true
+	if c.lastSeq == nil {
+		c.lastSeq = map[string]uint64{}
+	}
 	if c.StatePath == "" {
 		return
 	}
@@ -89,18 +98,41 @@ func (c *Client) loadSeqLocked() {
 	if err != nil {
 		return
 	}
-	if n, err := strconv.ParseUint(strings.TrimSpace(string(b)), 10, 64); err == nil && n > c.lastSeq {
-		c.lastSeq = n
+	for _, line := range strings.Split(string(b), "\n") {
+		fields := strings.Fields(line)
+		switch len(fields) {
+		case 1:
+			if n, err := strconv.ParseUint(fields[0], 10, 64); err == nil && n > c.legacySeq {
+				c.legacySeq = n
+			}
+		case 2:
+			if n, err := strconv.ParseUint(fields[1], 10, 64); err == nil && n > c.lastSeq[fields[0]] {
+				c.lastSeq[fields[0]] = n
+			}
+		}
 	}
 }
 
-// saveSeq persists seq best-effort (a read-only directory must never break polling).
-func (c *Client) saveSeq(seq uint64) {
+// seqForLocked is the highest seq accepted from the key with this id.
+func (c *Client) seqForLocked(keyId string) uint64 {
+	if n, ok := c.lastSeq[keyId]; ok {
+		return n
+	}
+	return c.legacySeq
+}
+
+// saveSeqsLocked persists the per-key seqs best-effort (a read-only directory
+// must never break polling).
+func (c *Client) saveSeqsLocked() {
 	if c.StatePath == "" {
 		return
 	}
+	var b strings.Builder
+	for keyId, seq := range c.lastSeq {
+		b.WriteString(keyId + " " + strconv.FormatUint(seq, 10) + "\n")
+	}
 	tmp := c.StatePath + ".tmp"
-	if err := os.WriteFile(tmp, []byte(strconv.FormatUint(seq, 10)+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(tmp, []byte(b.String()), 0o600); err != nil {
 		c.logf("verdict: cannot persist seq: %v", err)
 		return
 	}
@@ -110,13 +142,16 @@ func (c *Client) saveSeq(seq uint64) {
 }
 
 // verifyAny accepts a verdict signed by any configured key.
-func (c *Client) verifyAny(env Envelope, last uint64) (Verdict, error) {
+func (c *Client) verifyAny(env Envelope) (Verdict, error) {
 	keys := append([]ed25519.PublicKey{c.Pub}, c.Pubs...)
 	var firstErr error
 	for _, k := range keys {
 		if len(k) != ed25519.PublicKeySize {
 			continue
 		}
+		c.mu.Lock()
+		last := c.seqForLocked(KeyID(k))
+		c.mu.Unlock()
 		v, err := Verify(k, env, c.now(), last)
 		if err == nil {
 			return v, nil
@@ -195,17 +230,17 @@ func (c *Client) PollOnce(ctx context.Context) error {
 	}
 	c.mu.Lock()
 	c.loadSeqLocked()
-	last := c.lastSeq
 	c.mu.Unlock()
-	v, err := c.verifyAny(env, last)
+	v, err := c.verifyAny(env)
 	if err != nil {
 		c.logf("verdict: rejected: %v", err)
 		return err
 	}
 	c.mu.Lock()
-	c.lastSeq, c.cur, c.have = v.Seq, v, true
+	c.lastSeq[v.KeyID] = v.Seq
+	c.cur, c.have = v, true
+	c.saveSeqsLocked()
 	c.mu.Unlock()
-	c.saveSeq(v.Seq)
 	c.logf("verdict: accepted state=%s conf=%.2f seq=%d mode=%d reasons=%v", v.State, v.Confidence, v.Seq, c.Mode, v.Reasons)
 	return nil
 }

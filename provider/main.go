@@ -3122,17 +3122,7 @@ func provide(opts docopt.Opts) {
 
 	// Hourly pulse: wakes all stalled transports and proxies so they retry
 	// connections without needing a provider restart.
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(1 * time.Hour):
-				// skipped while the backend is degraded (see hourlyPulse)
-				hourlyPulse()
-			}
-		}
-	}()
+	go hourlyPulseLoop(ctx, time.Hour, hourlyPulseRetry)
 
 	nodeName := strings.TrimSpace(os.Getenv("URNETWORK_NODE_NAME"))
 
@@ -4535,6 +4525,10 @@ func provide(opts docopt.Opts) {
 		metricsServer.Shutdown(ctx)
 	}
 	markCleanShutdown()
+	if home, err := os.UserHomeDir(); err == nil {
+		// a planned stop: the next start must not count toward a crash loop
+		connect.NoteGovernCleanExit(filepath.Join(home, ".urnetwork", "govern_outage"))
+	}
 	// Explicitly clean up the control socket before os.Exit(0) since
 	// Go defers do not run on os.Exit. Without this, provider.sock is
 	// permanently orphaned on disk across every restart.

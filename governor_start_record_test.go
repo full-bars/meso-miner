@@ -143,3 +143,35 @@ func TestNoteStart_ThirdStartInTenMinutesIsGoverned(t *testing.T) {
 		})
 	}
 }
+
+// Planned restarts, however close together, are not a crash loop; a crash
+// between them (no clean-exit marker) still counts.
+func TestNoteStart_RoutineRestartsAreNotACrashLoop(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "govern_outage")
+	h := newBudgetHarness()
+	var lines []string
+	h.budget.emit = func(line string) { lines = append(lines, line) }
+	h.gov.started = *h.now
+
+	for i := 0; i < 6; i++ { // six updates or toggles in six minutes
+		NoteGovernCleanExit(marker)
+		noteStart(h.gov, h.budget, dir, h.now.Add(time.Duration(i)*time.Minute))
+	}
+	if len(lines) != 0 || h.budget.currentRate() == budgetFloorRate {
+		t.Fatalf("routine restarts were treated as a crash loop: %q", lines)
+	}
+	// now it crashes twice without a clean exit: two more starts after the last
+	// routine one make three in ten minutes
+	noteStart(h.gov, h.budget, dir, h.now.Add(7*time.Minute))
+	noteStart(h.gov, h.budget, dir, h.now.Add(8*time.Minute))
+	if len(lines) != 1 || !strings.HasPrefix(lines[0], "[govern] crash loop: 3 starts") {
+		t.Fatalf("crashes after routine restarts must still count: %q", lines)
+	}
+	// the marker is consumed by the start that reads it
+	NoteGovernCleanExit(marker)
+	noteStart(h.gov, h.budget, dir, h.now.Add(9*time.Minute))
+	if consumeCleanExit(dir) {
+		t.Fatal("the clean-exit marker must be consumed by the next start")
+	}
+}

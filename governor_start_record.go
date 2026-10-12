@@ -22,6 +22,13 @@ import (
 // outage: no startup grace, and the budget begins at the floor and ramps on
 // evidence, exactly as after a fresh outage marker.
 //
+// A routine restart (an update, an urnet-tools toggle, systemctl restart) is not
+// a crash. The provider leaves a clean-exit marker beside the record when it
+// shuts down on a signal; a start that finds and consumes one begins a fresh
+// record instead of adding to the old, so any number of planned restarts, however
+// close together, never read as a crash loop. A crash, a kill and an exit on a
+// config error never write the marker and still count.
+//
 // The record is a courtesy, never a dependency: an unreadable or unwritable file
 // is treated as no history, garbage lines are dropped, and old starts age out.
 
@@ -34,9 +41,22 @@ const (
 	govCrashLoopStarts = 3
 	// govStartsKeep bounds the file however often the process starts
 	govStartsKeep = 16
+	// govCleanExitFileName is the marker a clean shutdown leaves beside the record
+	govCleanExitFileName = "govern_clean_exit"
 	// govStartsMaxRead bounds what is read, so a corrupted file costs nothing
 	govStartsMaxRead = 4 << 10
 )
+
+// consumeCleanExit reports whether the previous process shut down cleanly, and
+// removes the marker so a later crash can never be mistaken for a clean exit.
+func consumeCleanExit(dir string) bool {
+	path := filepath.Join(dir, govCleanExitFileName)
+	if _, err := os.Stat(path); err != nil {
+		return false
+	}
+	_ = os.Remove(path)
+	return true
+}
 
 // recordStart appends now to the start record at path and returns how many
 // starts, this one included, fall within govCrashLoopWindow. File errors are
@@ -122,6 +142,11 @@ func (self *reconnectBudget) startCrashLoopThrottled(starts int) {
 // noteStart records this start beside the other govern state and, on a crash
 // loop, starts governed. dir is the govern state directory.
 func noteStart(gov *connectGovernor, budget *reconnectBudget, dir string, now time.Time) {
+	if consumeCleanExit(dir) {
+		// the last run ended on purpose: this start is routine and begins a fresh record
+		writeStarts(filepath.Join(dir, govStartsFileName), []int64{now.Unix()})
+		return
+	}
 	starts := recordStart(filepath.Join(dir, govStartsFileName), now)
 	if starts < govCrashLoopStarts {
 		return
@@ -140,4 +165,13 @@ func NoteGovernStart(markerPath string) {
 		return
 	}
 	noteStart(connectGov, connectBudget, filepath.Dir(markerPath), time.Now())
+}
+
+// NoteGovernCleanExit marks that this process is shutting down on purpose, so
+// the next start is not counted toward a crash loop. Call it from the clean exit
+// path with the same markerPath as InitGovernState.
+func NoteGovernCleanExit(markerPath string) {
+	dir := filepath.Dir(markerPath)
+	_ = os.MkdirAll(dir, 0o700)
+	_ = os.WriteFile(filepath.Join(dir, govCleanExitFileName), []byte(strconv.FormatInt(time.Now().Unix(), 10)+"\n"), 0o600)
 }
