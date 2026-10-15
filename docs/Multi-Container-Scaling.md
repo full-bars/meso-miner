@@ -30,7 +30,7 @@ Each service needs a unique service name, container name, host port, and vnStat 
 services:
   # Node 1: Handles the initial authentication for the whole stack
   node-1:
-    image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
+    image: ghcr.io/full-bars/meso-miner:latest
     container_name: urfix-1
     restart: unless-stopped
     pull_policy: always
