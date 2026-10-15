@@ -72,7 +72,7 @@ test_do_install_rate_limit() {
 
     local output=$(
         tag="latest"
-        api_base="https://api.github.com/repos/full-bars/urnetwork-3.23-fix"
+        api_base="https://api.github.com/repos/full-bars/meso-miner"
         api_url="$api_base/releases/latest"
 
         release="$(network_fetch "$api_url" 2>/dev/null || true)"
@@ -80,7 +80,7 @@ test_do_install_rate_limit() {
 
         if [ "$tag" = "latest" ] && [ -z "$version_to_install" ]; then
             if command -v curl > /dev/null; then
-                tag_url=$(curl -Ls -o /dev/null -w %{url_effective} "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest" 2>/dev/null || true)
+                tag_url=$(curl -Ls -o /dev/null -w %{url_effective} "https://github.com/full-bars/meso-miner/releases/latest" 2>/dev/null || true)
                 # Extract version from URL: /tag/v3.23.0-fix.18.1 -> v3.23.0-fix.18.1
                 if [ -n "$tag_url" ]; then
                     case "$tag_url" in
@@ -95,7 +95,7 @@ test_do_install_rate_limit() {
 
     # Check if fallback grabbed the latest release correctly
     case "$output" in
-        v3.23.0-fix*)
+        v3.23.0-fix*|v2026.*-meso*)
             assert_eq "$output" "$output" "Rate limit fallback successfully scraped web redirect ($output)"
             ;;
         *)
@@ -1092,3 +1092,13 @@ else
     echo "🚨 $FAILS test(s) failed."
     exit 1
 fi
+
+# --- do_install must contain exactly one install body ---
+# A pasted second copy of the body once re-ran the whole download against
+# another fork's URLs after a successful first pass.
+test_do_install_body_not_duplicated() {
+    local script="scripts/Provider_Install_Linux.sh"
+    assert_eq "1" "$(grep -c 'Fetching release information' "$script")" "do_install fetches release information exactly once"
+    assert_eq "0" "$(grep -cE 'urnetwork-3\.23-fix|dl\.fullbars\.xyz' "$script")" "installer never downloads from another fork or its mirror"
+}
+test_do_install_body_not_duplicated
