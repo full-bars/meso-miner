@@ -26,11 +26,12 @@ func TestParseEthHexQuantity(t *testing.T) {
 		{name: "0x0", input: "0x0", want: 0},
 		{name: "0xff", input: "0xff", want: 255},
 		{name: "mixed case hex", input: "0xAbCd", want: 0xabcd},
-		// Allowed: parseEthHexQuantity only TrimPrefix's the literal "0x"
-		// and leaves bare hex untouched, so ParseUint then accepts it. This
-		// is the actual current behaviour; a bare quantity is out of the
-		// json-rpc spec but the leniency is intentional in the code today.
-		{name: "no 0x prefix succeeds", input: "ff", want: 255},
+		// The 0x prefix is REQUIRED (matching the reference's
+		// ErrMissingPrefix): a bare quantity is out of the json-rpc spec,
+		// and accepting one would let a sloppy or hostile endpoint feed
+		// unprefixed data through. This test previously pinned the leniency;
+		// it now pins the strictness.
+		{name: "no 0x prefix errors", input: "ff", wantErr: true},
 		// parseEthHexQuantity only TrimPrefixes the lowercase "0x", so an
 		// uppercase "0X" prefix is NOT stripped and must error, unlike
 		// parseBytes32Arg/parseEvmAddressArg which strip both. eth_chainId always
@@ -71,11 +72,13 @@ func TestParseEthHexBytes(t *testing.T) {
 		{name: "two bytes", input: "0x0102", want: []byte{1, 2}},
 		{name: "single byte", input: "0x41", want: []byte{0x41}},
 		{name: "mixed case", input: "0xAb", want: []byte{0xab}},
-		// Both "0x" and "" decode to an empty, error-free slice: the
-		// TrimPrefix is a no-op for "", and hex.DecodeString("") yields an
-		// empty slice with no error. Assert that actual behaviour.
+		// "0x" decodes to an empty, error-free slice (the prefix is valid,
+		// the payload is empty). An EMPTY STRING is no longer accepted: the
+		// 0x prefix is required, matching the reference's ErrMissingPrefix -
+		// a missing prefix would let a sloppy or hostile endpoint smuggle
+		// data past prefix-aware checks.
 		{name: "bare 0x yields empty slice", input: "0x", want: []byte{}},
-		{name: "empty string yields empty slice", input: "", want: []byte{}},
+		{name: "empty string errors (missing 0x prefix)", input: "", wantErr: true},
 		{name: "odd length errors", input: "0x010", wantErr: true},
 		{name: "non-hex errors", input: "0xzz", wantErr: true},
 	}

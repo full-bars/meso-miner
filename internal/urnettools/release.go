@@ -49,6 +49,31 @@ type releaseJSON struct {
 	Assets  []releaseAsset `json:"assets"`
 }
 
+// releaseRepo is the GitHub owner/repo that publishes this fork's releases.
+// Every release API and download URL the update path builds goes through it,
+// so the auto-update timer can never pull another fork's tags or assets.
+const releaseRepo = "full-bars/meso-miner"
+
+// releaseLatestAPIURL is the GitHub API endpoint for the newest release.
+func releaseLatestAPIURL() string {
+	return "https://api.github.com/repos/" + releaseRepo + "/releases/latest"
+}
+
+// releaseTagAPIURL is the GitHub API endpoint for one tagged release.
+func releaseTagAPIURL(tag string) string {
+	return fmt.Sprintf("https://api.github.com/repos/%s/releases/tags/%s", releaseRepo, url.PathEscape(tag))
+}
+
+// releaseDownloadURL is the download URL for one asset of a tagged release.
+func releaseDownloadURL(tag, asset string) string {
+	return fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", releaseRepo, url.PathEscape(tag), asset)
+}
+
+// providerTarballURL is the download URL for a release's provider tarball.
+func providerTarballURL(tag string) string {
+	return releaseDownloadURL(tag, "urnetwork-provider-"+tag+".tar.gz")
+}
+
 // githubAuthHeader returns an Authorization header value when GITHUB_TOKEN
 // is set; otherwise ("", ""). Used to raise the unauthenticated rate limit
 // from 60 to 5000 requests/hour so auto-update timers on a fleet don't hit 403.
@@ -62,7 +87,7 @@ func githubAuthHeader() (string, string) {
 // fetchLatestRelease queries the fork's GitHub releases/latest endpoint and
 // returns the tag + tarball sha256 digest for the provider asset.
 func fetchLatestRelease() (*releaseInfo, error) {
-	const api = "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/latest"
+	api := releaseLatestAPIURL()
 	client := &http.Client{Timeout: 30 * time.Second}
 	req, err := http.NewRequest("GET", api, nil)
 	if err != nil {
@@ -91,7 +116,7 @@ func fetchLatestRelease() (*releaseInfo, error) {
 	}
 	info := &releaseInfo{
 		Tag:    rj.TagName,
-		URL:    fmt.Sprintf("https://github.com/full-bars/urnetwork-3.23-fix/releases/download/%s/urnetwork-provider-%s.tar.gz", rj.TagName, rj.TagName),
+		URL:    providerTarballURL(rj.TagName),
 		Assets: rj.Assets,
 	}
 	// The release API digest field is "sha256:<hex>"; strip the prefix and
@@ -127,7 +152,7 @@ func fetchReleaseByTag(tag string) (*releaseInfo, error) {
 	if err := validateTag(tag); err != nil {
 		return nil, err
 	}
-	api := fmt.Sprintf("https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/tags/%s", url.PathEscape(tag))
+	api := releaseTagAPIURL(tag)
 	client := &http.Client{Timeout: 30 * time.Second}
 	req, err := http.NewRequest("GET", api, nil)
 	if err != nil {
@@ -153,7 +178,7 @@ func fetchReleaseByTag(tag string) (*releaseInfo, error) {
 	}
 	info := &releaseInfo{
 		Tag:    tag,
-		URL:    fmt.Sprintf("https://github.com/full-bars/urnetwork-3.23-fix/releases/download/%s/urnetwork-provider-%s.tar.gz", tag, tag),
+		URL:    providerTarballURL(tag),
 		Assets: rj.Assets,
 	}
 	wantName := "urnetwork-provider-" + tag + ".tar.gz"

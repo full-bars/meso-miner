@@ -303,7 +303,7 @@ func newUpdateCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdUpdate(rest, force, dryRun)
 		})
-	}), "Download and install the latest provider release, verify its sha256 digest, swap the binary, and restart the owning unit. With no target and multiple providers it prompts interactively; use --all to update every provider, or --include/--exclude to pick a subset. Pin a release with --tag, or an exact asset with --digest and --url. This also refreshes the urnet-tools binary itself from the same release.", "  urnet-tools update\n  urnet-tools update --unit urnetwork-native.service\n  urnet-tools update --all --force\n  urnet-tools update --tag v3.23.0-fix.30.5")
+	}), "Download and install the latest provider release, verify its sha256 digest, swap the binary, and restart the owning unit. With no target and multiple providers it prompts interactively; use --all to update every provider, or --include/--exclude to pick a subset. Pin a release with --tag, or an exact asset with --digest and --url. This also refreshes the urnet-tools binary itself from the same release.", "  urnet-tools update\n  urnet-tools update --unit urnetwork-native.service\n  urnet-tools update --all --force\n  urnet-tools update --tag v2026.9.22-1052862940-meso")
 }
 
 func newIdleUpdateCmd() *cobra.Command {
@@ -322,7 +322,7 @@ Flags:
   --threshold <bytes/s>   Max billable throughput to be considered idle (default: 5120 = 5 KiB/s)
   --window <duration>     Duration traffic must stay quiet (default: 5m; e.g. 300, 5m, 10m; 0 = immediate)
   --timeout <duration>    Maximum wait time before forcing the update (default: 30m; e.g. 1800, 30m, 1h; 0 = infinite)
-  --tag <version>         Pin to a specific release tag (e.g. v3.23.0-fix.30.9)
+  --tag <version>         Pin to a specific release tag (e.g. v2026.9.22-1052862940-meso)
   -f, --force             Skip interactive confirmation prompts
   -n, --dry-run           Print the traffic wait plan and release target without modifying anything`
 
@@ -350,7 +350,7 @@ func newSelfUpdateCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdSelfUpdate(rest, force, dryRun)
 		})
-	}), "Update only the urnet-tools binary itself to the latest release, verifying its sha256 digest before swapping it in. No provider is touched or restarted. Pin a version with --tag, or point at an exact asset with --digest and --url.", "  urnet-tools self-update\n  urnet-tools self-update --tag v3.23.0-fix.30.5\n  urnet-tools self-update --force")
+	}), "Update only the urnet-tools binary itself to the latest release, verifying its sha256 digest before swapping it in. No provider is touched or restarted. Pin a version with --tag, or point at an exact asset with --digest and --url.", "  urnet-tools self-update\n  urnet-tools self-update --tag v2026.9.22-1052862940-meso\n  urnet-tools self-update --force")
 }
 
 func newLogsCmd() *cobra.Command {
