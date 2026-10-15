@@ -60,7 +60,7 @@ jobs:
           cat > /tmp/docker-compose.yml << 'EOF'
           services:
             urfix-turbo:
-              image: ghcr.io/full-bars/urnetwork-3.23-fix:main
+              image: ghcr.io/full-bars/meso-miner:main
               container_name: urfix-turbo
               restart: unless-stopped
               cap_add: [NET_ADMIN, NET_RAW]

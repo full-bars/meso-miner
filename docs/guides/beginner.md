@@ -23,17 +23,17 @@ That's it.
 
 **Linux:**
 ```sh
-curl -fSsL https://dl.fullbars.xyz/install.sh | sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh
 ```
 
 **macOS:**
 ```sh
-curl -fSsL https://dl.fullbars.xyz/install-mac.sh | sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh
 ```
 
 **Windows (PowerShell, no admin required):**
 ```powershell
-irm https://dl.fullbars.xyz/install-win.ps1 | iex
+irm https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Win32.ps1 | iex
 ```
 
 Windows Defender may flag this one-liner. See the note below.
@@ -48,7 +48,7 @@ Windows Defender may flag this one-liner. See the note below.
 > go in PowerShell:
 >
 > ```powershell
-> irm https://dl.fullbars.xyz/install-win.ps1 -OutFile "$env:TEMP\install-win.ps1"
+> irm https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Win32.ps1 -OutFile "$env:TEMP\install-win.ps1"
 > powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\install-win.ps1"
 > ```
 

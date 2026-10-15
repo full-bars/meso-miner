@@ -1,6 +1,6 @@
 # 🚀 High-Volume Performance Tuning
 
-This guide covers the architectural tuning applied in the `urnetwork-3.23-fix` fork, how to choose the right profile for your server, and how to use the operational features added for fleet management.
+This guide covers the architectural tuning applied in this fork, how to choose the right profile for your server, and how to use the operational features added for fleet management.
 
 ---
 

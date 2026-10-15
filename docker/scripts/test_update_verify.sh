@@ -224,7 +224,7 @@ t "unparenthesized select+and stays rejected (would abort under set -e)" test "$
 
 # Nightly asset mapping: URL->name match-back finds the API name even when
 # the URL layout changes above the filename segment.
-URL_V9="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9/urnetwork-provider-v9.tar.gz"
+URL_V9="https://github.com/full-bars/meso-miner/releases/download/v9/urnetwork-provider-v9.tar.gz"
 matched=""
 for upd_candidate in $(printf '%s\n' "$JSON_MULTI" | grep -oE '"name": *"[^"]+"' | sed -E 's/"name": *"([^"]+)"/\1/'); do
     case "$URL_V9" in
