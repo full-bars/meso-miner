@@ -300,7 +300,7 @@ func TestSnReadFleetRevokeDigest_FirstEndpointSucceeds(t *testing.T) {
 	server := snRPCServer("0x1", "0x"+hex.EncodeToString(want[:]))
 	defer server.Close()
 
-	digest, rpcUrl, err := snReadFleetRevokeDigest(context.Background(),
+	digest, rpcUrl, err := snReadFleetRevokeDigest(context.Background(), 1,
 		[]string{server.URL}, "0x1234", []byte{1, 2, 3})
 	if err != nil {
 		t.Fatalf("snReadFleetRevokeDigest unexpected error: %s", err)
@@ -324,7 +324,7 @@ func TestSnReadFleetRevokeDigest_FailoverToSecondEndpoint(t *testing.T) {
 	good := snRPCServer("0x1", "0x"+hex.EncodeToString(want[:]))
 	defer good.Close()
 
-	digest, rpcUrl, err := snReadFleetRevokeDigest(context.Background(),
+	digest, rpcUrl, err := snReadFleetRevokeDigest(context.Background(), 1,
 		[]string{bad.URL, good.URL}, "0x1234", []byte{1, 2, 3})
 	if err != nil {
 		t.Fatalf("snReadFleetRevokeDigest should fail over to the second endpoint, got error: %s", err)
@@ -338,25 +338,13 @@ func TestSnReadFleetRevokeDigest_FailoverToSecondEndpoint(t *testing.T) {
 }
 
 func TestSnReadFleetRevokeDigest_ShortReturnData(t *testing.T) {
-	// eth_call returns valid hex but only 4 bytes (< 32): that endpoint must
-	// be treated as unusable (printed as "expected >= 32"), not trusted.
+	// eth_call returns valid hex but only 4 bytes (< 32): the unpack fails,
+	// that endpoint is treated as unusable, and the read fails over silently.
 	server := snRPCServer("0x1", "0x1234")
 	defer server.Close()
 
-	old := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("os.Pipe: %s", err)
-	}
-	os.Stdout = w
-	defer func() { os.Stdout = old }()
-
-	_, _, callErr := snReadFleetRevokeDigest(context.Background(),
+	_, _, callErr := snReadFleetRevokeDigest(context.Background(), 1,
 		[]string{server.URL}, "0x1234", []byte{1, 2, 3})
-
-	w.Close()
-	out, _ := io.ReadAll(r)
-	// os.Stdout is restored by the deferred func() { os.Stdout = old } above.
 
 	if callErr == nil {
 		t.Fatal("short headBindDigest data must fail when it is the only endpoint")
@@ -364,9 +352,8 @@ func TestSnReadFleetRevokeDigest_ShortReturnData(t *testing.T) {
 	if callErr.Error() != "no --rpc endpoint answered the fleet revoke digest" {
 		t.Errorf("error = %q; want %q", callErr, "no --rpc endpoint answered the fleet revoke digest")
 	}
-	if !strings.Contains(string(out), "expected >= 32") {
-		t.Errorf("stdout %q does not mention %q", out, "expected >= 32")
-	}
+	// The ABI-decode round: a short return fails UnpackFleetRevokeDigest and
+	// fails over silently (the old raw-copy path printed a stdout warning).
 }
 
 func TestSnReadFleetRevokeDigest_AllEndpointsFail(t *testing.T) {
@@ -379,7 +366,7 @@ func TestSnReadFleetRevokeDigest_AllEndpointsFail(t *testing.T) {
 	}))
 	defer bad2.Close()
 
-	_, _, err := snReadFleetRevokeDigest(context.Background(),
+	_, _, err := snReadFleetRevokeDigest(context.Background(), 1,
 		[]string{bad1.URL, bad2.URL}, "0x1234", []byte{1, 2, 3})
 	if err == nil {
 		t.Fatal("expected an error when every endpoint fails")
