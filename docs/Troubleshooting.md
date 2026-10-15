@@ -23,7 +23,7 @@
 | Update restarts instead of hotswapping, `low_memory` outcome | The box cannot hold two providers at once | Expected on a small box. See [HotSwap](HotSwap.md). |
 
 > [!NOTE]
-> **Discovery dedup fix (v3.23.0-fix.31.2):** Previous versions could list duplicate providers when the same binary was registered under multiple paths or when `urnet-tools providers` scanned overlapping install locations. As of v31.2, provider discovery deduplicates entries by `(binary_path, uid)`, so `urnet-tools providers` and `urnet-tools providers --all` no longer show phantom duplicates. If you still see duplicates after upgrading, re-install the provider with `curl -fSsL https://dl.fullbars.xyz/install.sh | sh` to refresh the registration.
+> **Discovery dedup fix (v3.23.0-fix.31.2):** Previous versions could list duplicate providers when the same binary was registered under multiple paths or when `urnet-tools providers` scanned overlapping install locations. As of v31.2, provider discovery deduplicates entries by `(binary_path, uid)`, so `urnet-tools providers` and `urnet-tools providers --all` no longer show phantom duplicates. If you still see duplicates after upgrading, re-install the provider with `curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh` to refresh the registration.
 
 ---
 

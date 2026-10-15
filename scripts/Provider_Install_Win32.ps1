@@ -2,7 +2,7 @@
 # Author: full-bars (GitHub), onlyinthe707 / "mesocyclone" (Discord)
 # Based on: Ar Rakin, Ryan Mello (original)
 # urnet-tools -- URnetwork provider manager (also acts as an installation script)
-# GitHub: <https://github.com/full-bars/urnetwork-3.23-fix>
+# GitHub: <https://github.com/full-bars/meso-miner>
 
 param(
     [String]$Version = "latest",
@@ -124,7 +124,7 @@ function Set-Path {
 
 Print-Settings
 
-$GithubURLBase = "https://api.github.com/repos/full-bars/urnetwork-3.23-fix"
+$GithubURLBase = "https://api.github.com/repos/full-bars/meso-miner"
 
 if ($Version -eq "latest") {
     $GithubURL = "$GithubURLBase/releases/latest"
@@ -158,25 +158,27 @@ if ($ReleaseInfo) {
     if ($ReleaseAsset) {
         $MirrorURL = $ReleaseAsset.browser_download_url
         $FileName = $ReleaseAsset.name
-        $DownloadURL = "https://dl.fullbars.xyz/releases/download/$ReleaseVersion/$FileName"
+        $DownloadURL = "https://github.com/full-bars/meso-miner/releases/download/$ReleaseVersion/$FileName"
     }
 }
 
 # GitHub API failed, was rate-limited, or the release has no matching asset:
 # for an explicit version we already know the tag; for "latest" fall back to
-# the dl.fullbars.xyz Worker, which mirrors GitHub's latest-release tag at
-# the edge. Either way, construct the download URL directly — the release
-# tarball layout is fixed (urnetwork-provider-<tag>.tar.gz).
+# the GitHub latest-release redirect, which mirrors the latest-release tag.
+# Either way, construct the download URL directly — the release tarball
+# layout is fixed (urnetwork-provider-<tag>.tar.gz).
 if (-not $DownloadURL) {
     if ($Version -ne "latest") {
         $ReleaseVersion = $Version
     }
     else {
-        Write-Warning "GitHub API unavailable, trying dl.fullbars.xyz fallback..."
+        Write-Warning "GitHub API unavailable, trying GitHub latest-release redirect..."
         try {
-            $ReleaseVersion = (Invoke-RestMethod -Uri "https://dl.fullbars.xyz/latest-version").Trim()
+            $resp = Invoke-WebRequest -Uri "https://github.com/full-bars/meso-miner/releases/latest" -MaximumRedirection 0 -ErrorAction Stop
+        } catch {
+            $loc = $_.Exception.Response.Headers["Location"]
+            if ($loc) { $ReleaseVersion = ([Uri]$loc).Segments[-1] }
         }
-        catch {}
     }
 
     if (-not $ReleaseVersion) {
@@ -185,8 +187,8 @@ if (-not $DownloadURL) {
     }
 
     $FileName = "urnetwork-provider-$ReleaseVersion.tar.gz"
-    $DownloadURL = "https://dl.fullbars.xyz/releases/download/$ReleaseVersion/$FileName"
-    $MirrorURL = "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$ReleaseVersion/$FileName"
+    $DownloadURL = "https://github.com/full-bars/meso-miner/releases/download/$ReleaseVersion/$FileName"
+    $MirrorURL = "https://github.com/full-bars/meso-miner/releases/download/$ReleaseVersion/$FileName"
 }
 
 $FilePath = Join-Path -Path $env:TEMP -ChildPath ([string]$FileName)
@@ -329,10 +331,10 @@ if (Test-Path $ExtractedTool) {
 }
 
 # STEP 2: Fallback — download standalone urnet-tools asset from
-# dl.fullbars.xyz with GitHub releases mirror.
+# GitHub releases (no CDN mirror).
 if (-not $ToolGoInstalled -and $ToolAsset -and $ToolDigest) {
-    $ToolDownloadURL = "https://dl.fullbars.xyz/releases/download/$ReleaseVersion/$ToolAssetName"
-    $ToolMirrorURL = "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$ReleaseVersion/$ToolAssetName"
+    $ToolDownloadURL = "https://github.com/full-bars/meso-miner/releases/download/$ReleaseVersion/$ToolAssetName"
+    $ToolMirrorURL = "https://github.com/full-bars/meso-miner/releases/download/$ReleaseVersion/$ToolAssetName"
     $ToolTemp = Join-Path $env:TEMP $ToolAssetName
     Write-Host "Installing Go urnet-tools binary ($ToolAssetName) via download..."
     try {

@@ -27,6 +27,15 @@ const ethRpcTimeout = 15 * time.Second
 // ethRpcHexResult performs one json-rpc 2.0 request against an EVM endpoint
 // over http and returns the string-typed result. Both methods used here
 // (eth_chainId, eth_call) return 0x-hex strings.
+// rpcHTTPClient refuses redirects: a configured endpoint is read authority,
+// and a redirect must not substitute another node even when it returns a
+// plausible chain id and result (mirrors the reference's CheckRedirect).
+var rpcHTTPClient = &http.Client{
+	CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+}
+
 func ethRpcHexResult(ctx context.Context, rpcUrl string, method string, params []any) (string, error) {
 	requestBodyBytes, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
@@ -44,7 +53,7 @@ func ethRpcHexResult(ctx context.Context, rpcUrl string, method string, params [
 		return "", err
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := http.DefaultClient.Do(request)
+	response, err := rpcHTTPClient.Do(request)
 	if err != nil {
 		return "", err
 	}
@@ -77,9 +86,14 @@ func ethRpcHexResult(ctx context.Context, rpcUrl string, method string, params [
 }
 
 // parseEthHexQuantity parses a 0x-prefixed json-rpc quantity such as the
-// eth_chainId result.
+// eth_chainId result. The 0x prefix is required: an unprefixed value is not
+// a valid json-rpc quantity and accepting one would let a sloppy or hostile
+// endpoint smuggle data past prefix-aware checks.
 func parseEthHexQuantity(hexQuantity string) (uint64, error) {
-	s := strings.TrimPrefix(hexQuantity, "0x")
+	if !strings.HasPrefix(hexQuantity, "0x") {
+		return 0, fmt.Errorf("hex quantity lacks the 0x prefix: %q", hexQuantity)
+	}
+	s := hexQuantity[2:]
 	if s == "" {
 		return 0, fmt.Errorf("empty hex quantity")
 	}
@@ -87,7 +101,10 @@ func parseEthHexQuantity(hexQuantity string) (uint64, error) {
 }
 
 // parseEthHexBytes parses 0x-prefixed hex data such as the eth_call return
-// data.
+// data. The 0x prefix is required (see parseEthHexQuantity).
 func parseEthHexBytes(hexData string) ([]byte, error) {
-	return hex.DecodeString(strings.TrimPrefix(hexData, "0x"))
+	if !strings.HasPrefix(hexData, "0x") {
+		return nil, fmt.Errorf("hex data lacks the 0x prefix: %q", hexData)
+	}
+	return hex.DecodeString(hexData[2:])
 }

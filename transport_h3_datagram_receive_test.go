@@ -34,6 +34,10 @@ type h3TestSession struct {
 type h3TestServer struct {
 	port     int
 	sessions chan h3TestSession
+	// beforeAuthReply, when set, runs after the auth frame is read and before the
+	// reply is written, so a test can hold the dial in flight. Set it before the
+	// client dials; it is read once per connection.
+	beforeAuthReply func()
 }
 
 // startH3TestServer listens on loopback. accept says whether it takes a
@@ -100,6 +104,9 @@ func startH3TestServer(
 			responseBytes, err := EncodeFrame(response, DefaultProtocolVersion)
 			if err != nil {
 				return
+			}
+			if server.beforeAuthReply != nil {
+				server.beforeAuthReply()
 			}
 			err = framer.Write(stream, responseBytes)
 			MessagePoolReturn(responseBytes)

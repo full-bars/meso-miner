@@ -1,5 +1,3 @@
-//go:build unix
-
 package connect
 
 // net_resilient_combined_test.go — the combined TCP-segment + TLS-record
@@ -7,6 +5,9 @@ package connect
 // reassembling-middlebox model that blocks a hello fragmented by a single
 // method (record OR segment) but is slipped by the combined pair, matching the
 // foci 2025 finding that only the combination beats russia's tspu reassembly.
+// The socket-option checks live in net_resilient_combined_unix_test.go; this
+// file is untagged so the pure userspace tests run on windows too (the
+// helpers they use were made windows-clean in a270e78d).
 
 import (
 	"bytes"
@@ -14,7 +15,6 @@ import (
 	"io"
 	"net"
 	"slices"
-	"syscall"
 	"testing"
 	"time"
 )
