@@ -2,7 +2,7 @@
 # urnet-tools: URnetwork provider manager (FreeBSD)
 # Author: full-bars (GitHub), onlyinthe707 / "mesocyclone" (Discord)
 # Based on: Ar Rakin, Ryan Mello (original)
-# https://github.com/full-bars/urnetwork-3.23-fix
+# https://github.com/full-bars/meso-miner
 
 me="$(basename "$0")"
 
@@ -36,7 +36,7 @@ show_help() {
     echo "  -v, --version             Show version"
     echo "  -f, --force               Skip confirmation prompts"
     echo ""
-    echo "https://github.com/full-bars/urnetwork-3.23-fix"
+    echo "https://github.com/full-bars/meso-miner"
 }
 
 # --- helpers ---
@@ -118,8 +118,8 @@ service_home="$(user_home "$service_user")"
 install_path="$service_home/.local/share/urnetwork-provider"
 provider_bin="$install_path/bin/urnetwork"
 state_dir="$service_home/.urnetwork"
-github_api="https://api.github.com/repos/full-bars/urnetwork-3.23-fix"
-github_raw="https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main"
+github_api="https://api.github.com/repos/full-bars/meso-miner"
+github_raw="https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main"
 
 # --- rc.d ---
 
@@ -348,14 +348,19 @@ do_install() {
     tag="$(echo "$release_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])' 2>/dev/null)"
 
     # GitHub API failed or rate-limited: for an explicit version we can trust
-    # the caller's tag directly; for "latest" fall back to the dl.fullbars.xyz
-    # Worker, which mirrors GitHub's latest-release tag at the edge.
+    # the caller's tag directly; for "latest" resolve the fork's latest release
+    # tag from GitHub's redirect (the old dl.fullbars.xyz mirror carries the
+    # 3.23-fix fork's builds, not meso-miner's).
     if [ -z "$tag" ]; then
         if [ "$version" != "latest" ]; then
             tag="$version"
         else
-            pr_warn "Trying dl.fullbars.xyz fallback..."
-            tag="$(curl -fsSL "https://dl.fullbars.xyz/latest-version" 2>/dev/null | tr -d '[:space:]')"
+            pr_warn "Resolving the latest meso-miner release tag..."
+            _tag_url="$(curl -Ls -o /dev/null -w '%{url_effective}' \
+                "https://github.com/full-bars/meso-miner/releases/latest" 2>/dev/null)"
+            case "$_tag_url" in
+                */tag/*) tag="${_tag_url##*/tag/}" ;;
+            esac
         fi
     fi
 
@@ -371,8 +376,8 @@ do_install() {
         *)             pr_err "Unsupported architecture: %s" "$arch"; exit 1 ;;
     esac
 
-    tarball_url="https://dl.fullbars.xyz/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
-    mirror_url="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
+    tarball_url="https://github.com/full-bars/meso-miner/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
+    mirror_url="https://github.com/full-bars/meso-miner/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
     pr_info "Downloading %s..." "$tarball_url"
 
     tmpdir="$(mktemp -d)"
@@ -447,7 +452,7 @@ print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
     fi
 
     if [ -n "$tool_digest" ]; then
-        if curl -fsSL "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$tag/$tool_asset" -o "$tmpdir/$tool_asset" 2>/dev/null; then
+        if curl -fsSL "https://github.com/full-bars/meso-miner/releases/download/$tag/$tool_asset" -o "$tmpdir/$tool_asset" 2>/dev/null; then
             # FreeBSD ships sha256(1); fall back to openssl where it is absent.
             if command -v sha256 > /dev/null 2>&1; then
                 actual="$(sha256 -q "$tmpdir/$tool_asset")"

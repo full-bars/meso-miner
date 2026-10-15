@@ -88,7 +88,7 @@ Docker deployments pass the coldkey the same way:
 ```yaml
 services:
   provider:
-    image: ghcr.io/full-bars/urnetwork-3.23-fix:v3.23.0-fix.33.0
+    image: ghcr.io/full-bars/meso-miner:latest
     command: ["provide", "--wallet=5FjfHgd4K3H5Vge2igPtBYyWRbRKdgH84roTCnWwwtNgAhU5", "--legacy-network-wallet"]
     volumes:
       - ur_config_1:/home/urnet/.urnetwork
@@ -200,26 +200,28 @@ Head nodes aggregate proofs from client nodes for on-chain batch verification.
 
 ```bash
 provider bind-head \
-  --manifest=/path/to/fleet-manifest.json \
-  --hotkey_seed_file=/path/to/hotkey.seed \
-  --valid_from_epoch=<n> \
-  --valid_to_epoch=<n> \
-  --rpc=<rpc_url> \
-  --key_file=/path/to/evm.key
+  --manifest=<fleet_manifest_file> \
+  --hotkey_seed_file=<sr25519_seed_file> \
+  --valid_from_epoch=<n> --valid_to_epoch=<n> \
+  [--client_id=<hex16>] [--client_seed_file=<file>] \
+  [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
 ```
 The manifest is the single source for the fleet identity. Without `--key_file` the command prints the ready-to-submit calldata for the offline path; with it, the signed binding is submitted through `--rpc`. `--client_id` and `--client_seed_file` override the provider's own client identity for the binding signature; `--dry-run` signs but sends nothing.
 
 > [!IMPORTANT]
-> The fleet binding is dual-signed: the sr25519 hotkey seed must match the manifest hotkey, and the Ed25519 client side signs with the provider's own client key. Both signatures are checked against the same digest.
+> The fleet binding is dual-signed: the sr25519 hotkey seed must match the manifest hotkey, and the Ed25519 client side signs with the provider's own client key. Both signatures are checked against the same digest. The retired `--hotkey` / `--registrant` / `--contract` flags are gone: the binding reads the fleet manifest (coordinator, chain id, netuid, members), and seed files must be regular files readable only by their owner.
 
 ```bash
 provider unbind-head \
-  --manifest=/path/to/fleet-manifest.json \
+  --manifest=<fleet_manifest_file> \
   --effective_epoch=<n> \
-  --rpc=<rpc_url> \
-  --key_file=/path/to/evm.key
+  [--client_id=<hex16>] [--client_seed_file=<file>] \
+  [--offline] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
 ```
 `--effective_epoch` is the future epoch at which the revocation takes effect.
+
+> [!TIP]
+> The command is air-gapped-friendly, but signing without an on-chain cross-check is explicit: without `--rpc` pass `--offline`, and the output warns that the generation and effective epoch were not verified against any coordinator (labelled `offline (local domain)`). Re-run with `--rpc` to cross-check the coordinator's canonical digest before broadcasting, and pass `--key_file` to submit.
 
 ---
 

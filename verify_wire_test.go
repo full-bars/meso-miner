@@ -485,8 +485,8 @@ func TestVerifyWireJsonRoundTrip(t *testing.T) {
 				M:           2,
 			},
 			Hops: []VerifyProofHop{
-				{ClientId: testVerifyHexId(t, testVerifyClientId1Hex), TimeMs: 0x1122334455667788},
-				{ClientId: testVerifyHexId(t, testVerifyClientId2Hex), TimeMs: 0x99aabbccddeeff00},
+				{ClientId: testVerifyHexId(t, testVerifyClientId1Hex), TimeMs: 0x1122334455667788, EgressIpHash: testVerifyFill32(0xaa)},
+				{ClientId: testVerifyHexId(t, testVerifyClientId2Hex), TimeMs: 0x99aabbccddeeff00, EgressIpHash: testVerifyFill32(0xbb)},
 			},
 			ServerKeyId: 7,
 			FinalSig:    testVerifyHexBytes(t, testVerifyClientNonceHex),
@@ -500,4 +500,26 @@ func TestVerifyWireJsonRoundTrip(t *testing.T) {
 	AssertEqual(t, nil, err)
 	AssertEqual(t, VerifyStatusComplete, parsedFinalResult.Status)
 	AssertEqual(t, *finalResult.Proof, *parsedFinalResult.Proof)
+}
+
+// TestVerifyWireJsonIdsByValue pins the value-receiver contract on Id:
+// marshalling these bodies BY VALUE (not through a *Id field) must still emit
+// dashed uuid strings for every Id field. A pointer-receiver MarshalJSON
+// would silently fall back to reflection and emit 16-integer arrays here.
+func TestVerifyWireJsonIdsByValue(t *testing.T) {
+	seedArgs := VerifySeedArgs{M: 8}
+	seedJson, err := json.Marshal(seedArgs)
+	AssertEqual(t, nil, err)
+	AssertEqual(t, true, strings.Contains(string(seedJson), `"client_id":"00000000-0000-0000-0000-000000000000"`))
+
+	assignResult := VerifyAssignResult{M: 8, ServerKeyId: 7}
+	assignJson, err := json.Marshal(assignResult)
+	AssertEqual(t, nil, err)
+	AssertEqual(t, true, strings.Contains(string(assignJson), `"trail_id":"00000000-0000-0000-0000-000000000000"`))
+	AssertEqual(t, true, strings.Contains(string(assignJson), `"next_hop":"00000000-0000-0000-0000-000000000000"`))
+
+	finalResult := VerifyFinalResult{Status: VerifyStatusComplete, Proof: &VerifyProof{Header: VerifyProofHeader{M: 2}}}
+	finalJson, err := json.Marshal(finalResult)
+	AssertEqual(t, nil, err)
+	AssertEqual(t, true, strings.Contains(string(finalJson), `"trail_id":"00000000-0000-0000-0000-000000000000"`))
 }
