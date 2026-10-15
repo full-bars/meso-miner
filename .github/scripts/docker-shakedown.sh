@@ -55,7 +55,7 @@ run_check() {
   return "$rc"
 }
 
-IMAGE="ghcr.io/full-bars/urnetwork-3.23-fix"
+IMAGE="ghcr.io/full-bars/meso-miner"
 DSK_TMP="/tmp/dsk-work"
 mkdir -p "$DSK_TMP"
 
@@ -123,7 +123,7 @@ EOF
 stage_hotswap_binary() {
   local c="$1" tag="$2"
   local rel_json dl_url tb
-  rel_json=$(curl -fsSL "https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/tags/${tag}" 2>/dev/null)
+  rel_json=$(curl -fsSL "https://api.github.com/repos/full-bars/meso-miner/releases/tags/${tag}" 2>/dev/null)
   [ -z "$rel_json" ] && { echo "stage_hotswap_binary: could not fetch release JSON for $tag"; return 1; }
   dl_url=$(echo "$rel_json" | python3 -c "
 import sys, json
@@ -164,9 +164,9 @@ if [ -z "${EXPECTED_VERSION:-}" ]; then
   echo "FAIL: EXPECTED_VERSION not set (workflow must pass it)" | tee -a "$REPORT"
   exit 75
 fi
-EXPECTED_BASE=$(echo "$EXPECTED_VERSION" | grep -oE "v3\.23\.0-fix\.[0-9]+" | head -1)
+EXPECTED_BASE=$(echo "$EXPECTED_VERSION" | grep -oE '^v[0-9]+(\.[0-9]+)*(-[0-9]+)?-meso$' | head -1)
 if [ -z "$EXPECTED_BASE" ]; then
-  echo "FAIL: EXPECTED_VERSION $EXPECTED_VERSION does not match v3.23.0-fix.N pattern" | tee -a "$REPORT"
+  echo "FAIL: EXPECTED_VERSION $EXPECTED_VERSION does not match the meso tag format (e.g. v2026.8.24-102938475-meso)" | tee -a "$REPORT"
   exit 75
 fi
 echo "EXPECTED_VERSION: $EXPECTED_VERSION" >> "$REPORT"
@@ -180,8 +180,11 @@ echo "IMAGE: $IMAGE" >> "$REPORT"
 # spec time. If either has since been deleted/expired, the hotswap-specific
 # checks (X1, X2, Z1, Z2) SKIP with a clear ENV_BLOCKER-style reason rather
 # than failing the release for an unrelated tag-retention decision.
-OLD_HOTSWAP_TAG="v3.23.0-fix.31.0-rc1"
-NEW_HOTSWAP_TAG="v3.23.0-fix.31.1-rc1"
+OLD_HOTSWAP_TAG="${OLD_HOTSWAP_TAG:-v2025.8.28-meso}"  # TODO: pin two real meso-miner tags once hotswap-capable releases exist
+NEW_HOTSWAP_TAG="${NEW_HOTSWAP_TAG:-v2025.8.29-meso}"
+# On tag-triggered runs the hotswap pair MUST exist - skips silently passing
+# is worse than a hard failure. Track whether we're tag-triggered.
+IS_TAG_TRIGGER="${IS_TAG_TRIGGER:-0}"
 
 # ---------- 0. Image pull ----------
 section "0. Image pull (EXPECTED_VERSION)"
@@ -200,6 +203,8 @@ if ! timeout 300 docker pull "${IMAGE}:${NEW_HOTSWAP_TAG}" >/tmp/dsk-pull-new.lo
 fi
 if [ "$HOTSWAP_IMAGES_OK" = "1" ]; then
   ok "hotswap image pair pulled ($OLD_HOTSWAP_TAG, $NEW_HOTSWAP_TAG)"
+elif [ "$IS_TAG_TRIGGER" = "1" ]; then
+  t1bad "hotswap image pair incomplete on TAG-TRIGGERED run - hard blocker ($OLD_HOTSWAP_TAG, $NEW_HOTSWAP_TAG)"
 else
   echo "WARN: hotswap image pair incomplete — X1/X2/Z1/Z2 will SKIP (ENV_BLOCKER, tag retention)" | tee -a "$REPORT"
 fi
@@ -533,7 +538,7 @@ else
         done
         RUNNING_NOW=$(docker inspect -f '{{.State.Status}}' dsk-x1 2>/dev/null)
         PID1_COMM_AFTER=$(docker exec dsk-x1 sh -c 'cat /proc/1/comm' 2>/dev/null || echo "(exec failed — container may be gone)")
-        VER_AFTER=$(docker exec dsk-x1 sh -c "provider --version" 2>/dev/null | grep -m1 -oE "v3\.23\.0-fix\.[0-9.a-z-]+" || echo "")
+        VER_AFTER=$(docker exec dsk-x1 sh -c "provider --version" 2>/dev/null | grep -m1 -oE "v[0-9]+(\.[0-9]+)*(-[0-9]+)?-meso" || echo "")
         echo "  X1 post-SIGUSR2: running=$RUNNING_NOW pid1_after='$PID1_COMM_AFTER' provider_version='$VER_AFTER'" | tee -a "$REPORT"
         if [ "$RUNNING_NOW" = "running" ]; then
           ok "X1 container SURVIVED the SIGUSR2 in-place execve attempt under --init (mechanism test — see reachability note above)"
@@ -615,7 +620,7 @@ else
       RUNNING_NOW=$(docker inspect -f '{{.State.Status}}' dsk-x2z2 2>/dev/null)
       RC_AFTER=$(docker inspect -f '{{.RestartCount}}' dsk-x2z2 2>/dev/null)
       OSPID_AFTER=$(docker inspect -f '{{.State.Pid}}' dsk-x2z2 2>/dev/null)
-      VER_AFTER=$(docker exec dsk-x2z2 sh -c "provider --version" 2>/dev/null | grep -m1 -oE "v3\.23\.0-fix\.[0-9.a-z-]+" || echo "")
+      VER_AFTER=$(docker exec dsk-x2z2 sh -c "provider --version" 2>/dev/null | grep -m1 -oE "v[0-9]+(\.[0-9]+)*(-[0-9]+)?-meso" || echo "")
       echo "  X2+Z2 after: status=$RUNNING_NOW RestartCount=$RC_AFTER host_pid=$OSPID_AFTER version=$VER_AFTER" | tee -a "$REPORT"
       if [ "$RUNNING_NOW" != "running" ]; then
         t1bad "X2+Z2 container is not running after the hotswap attempt (status=$RUNNING_NOW)"
@@ -815,7 +820,7 @@ EOF
 CID=$(wait_cid_docker dsk-y3 120)
 if [ -n "$CID" ]; then
   ok "Y3 compose pull && up -d landed a live provider (${CID:0:12}…)"
-  Y3_VER=$(docker exec dsk-y3 sh -c "provider --version" 2>/dev/null | grep -m1 -oE "v3\.23\.0-fix\.[0-9.a-z-]+" || echo "")
+  Y3_VER=$(docker exec dsk-y3 sh -c "provider --version" 2>/dev/null | grep -m1 -oE "v[0-9]+(\.[0-9]+)*(-[0-9]+)?-meso" || echo "")
   echo "  Y3 :latest resolved to version: $Y3_VER" | tee -a "$REPORT"
   if echo "$Y3_VER" | grep -qE '\-rc[0-9]*$|\-alpha|\-beta'; then
     bad "Y3 compose pull of :latest landed a PRE-RELEASE ($Y3_VER) — fleet-safety guarantee broken"
@@ -960,7 +965,7 @@ else
     echo "$UPD_OUT" | tail -10 | sed 's/^/    | /' | tee -a "$REPORT"
     [ "$UPD_RC" -eq 0 ] && ok "Z1 shell-wrapper update --tag exited 0" || bad "Z1 shell-wrapper update --tag exited $UPD_RC"
     sleep 10
-    VER_AFTER=$(docker exec dsk-z1 sh -c "provider --version" 2>/dev/null | grep -m1 -oE "v3\.23\.0-fix\.[0-9.a-z-]+" || echo "")
+    VER_AFTER=$(docker exec dsk-z1 sh -c "provider --version" 2>/dev/null | grep -m1 -oE "v[0-9]+(\.[0-9]+)*(-[0-9]+)?-meso" || echo "")
     TARGET_SUB=$(echo "$PIN_TARGET" | grep -oE "31\.[0-9]+")
     if echo "$VER_AFTER" | grep -q "$TARGET_SUB"; then
       ok "Z1 download/verify/swap (shell wrapper, restart-based) landed the pinned version ($VER_AFTER)"
@@ -987,7 +992,7 @@ if [ -n "$CID" ]; then
   echo "$UPD_OUT" | tail -10 | sed 's/^/    | /' | tee -a "$REPORT"
   [ "$UPD_RC" -eq 0 ] && ok "Z3 bare urnet-tools update exited 0" || bad "Z3 bare urnet-tools update exited $UPD_RC"
   sleep 10
-  VER_AFTER=$(docker exec dsk-z3 sh -c "provider --version" 2>/dev/null | grep -m1 -oE "v3\.23\.0-fix\.[0-9.a-z-]+" || echo "")
+  VER_AFTER=$(docker exec dsk-z3 sh -c "provider --version" 2>/dev/null | grep -m1 -oE "v[0-9]+(\.[0-9]+)*(-[0-9]+)?-meso" || echo "")
   echo "  Z3 bare-update resolved version: $VER_AFTER" | tee -a "$REPORT"
   if echo "$VER_AFTER" | grep -qE '\-rc[0-9]*$|\-alpha|\-beta'; then
     bad "Z3 bare update picked up a PRE-RELEASE ($VER_AFTER) — /releases/latest exclusion broken in the Docker leg"
