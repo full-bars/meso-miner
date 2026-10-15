@@ -120,7 +120,7 @@ def main():
     os.makedirs(dest_dir)
 
     # Determine the repository URL for WDSI text
-    repo = os.environ.get("GITHUB_REPOSITORY", "full-bars/urnetwork-3.23-fix")
+    repo = os.environ.get("GITHUB_REPOSITORY", "full-bars/meso-miner")
     repo_url = f"https://github.com/{repo}"
 
     # First pass: gather detection details from VT for each flagged file

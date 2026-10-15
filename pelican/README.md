@@ -5,7 +5,7 @@ Pelican panel support for the hardened provider image.
 ## Import
 
 1. Panel admin → **Nests → Create** → import `pelican/egg-urnetwork-323fix.json`.
-2. The egg pulls `ghcr.io/full-bars/urnetwork-3.23-fix:latest` (multi-arch amd64/arm64).
+2. The egg pulls `ghcr.io/full-bars/meso-miner:latest` (multi-arch amd64/arm64).
 3. Assign to a node, create a server, fill the admin-only variables.
 
 ## Variables
