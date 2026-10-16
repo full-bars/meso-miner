@@ -57,7 +57,6 @@ FOR MAJOR RELEASES: Copy/paste these categories into "What's New" as needed:
 
 ### 🧠 Core Networking Stability
 ### ⚡ Performance
-### 🏗️ Hub — Self-Hosted Dashboard
 ### 🌐 Proxy Management
 ### 📊 Observability
 ### 🔒 Security

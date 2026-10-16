@@ -12,15 +12,16 @@ FORK_V6="$5"
 TARGET_BRANCH="${6:-main}"
 UPSTREAM_FILE="ip_security_cfaa_block.go"
 
-git config user.name "full-bars"
-git config user.email "45684698+full-bars@users.noreply.github.com"
+git config user.name "github-actions[bot]"
+git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-# Use stable branch name with branch suffix so main and dev/hub PRs are isolated.
-# If the branch already exists (from a prior run), reset to origin/<target> first.
+# Use a stable branch name with the target suffix so concurrent syncs against
+# different targets do not collide. If the branch already exists (from a prior
+# run), reset to origin/<target> first.
 if [ "$TARGET_BRANCH" = "main" ]; then
   BRANCH_NAME="chore/cfaa-blocklist-sync"
 else
-  BRANCH_NAME="chore/cfaa-blocklist-sync-devhub"
+  BRANCH_NAME="chore/cfaa-blocklist-sync-$TARGET_BRANCH"
 fi
 
 git reset --hard "origin/$TARGET_BRANCH" --quiet
