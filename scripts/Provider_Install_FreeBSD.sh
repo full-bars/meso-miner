@@ -377,17 +377,14 @@ do_install() {
     esac
 
     tarball_url="https://github.com/full-bars/meso-miner/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
-    mirror_url="https://github.com/full-bars/meso-miner/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
     pr_info "Downloading %s..." "$tarball_url"
 
     tmpdir="$(mktemp -d)"
-    if ! curl -fsSL "$tarball_url" -o "$tmpdir/provider.tar.gz"; then
-        pr_warn "Primary download failed, trying GitHub mirror..."
-        if ! curl -fsSL "$mirror_url" -o "$tmpdir/provider.tar.gz"; then
-            pr_err "Failed to download from both primary and mirror"
-            rm -rf "$tmpdir"
-            exit 1
-        fi
+    # GitHub is the only source; a transient failure gets curl's own retries
+    if ! curl -fsSL --retry 2 --retry-delay 2 "$tarball_url" -o "$tmpdir/provider.tar.gz"; then
+        pr_err "Failed to download %s" "$tarball_url"
+        rm -rf "$tmpdir"
+        exit 1
     fi
 
     tar -xzf "$tmpdir/provider.tar.gz" -C "$tmpdir" || {
