@@ -2,6 +2,8 @@ package urnettools
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -144,8 +146,22 @@ func TestWaitForIdleTimeout(t *testing.T) {
 
 func TestIdleUpdateDryRun(t *testing.T) {
 	err := Run([]string{"idle-update", "--dry-run", "--unit=urnetwork.service"})
+	if err != nil && errors.Is(err, ErrNoReleaseYet) {
+		t.Skip("the configured release repository has no published release yet; this test activates with the first release")
+	}
 	if err != nil && err.Error() != "no providers found on this box" && !strings.Contains(err.Error(), "matches no provider") {
 		t.Fatalf("unexpected idle-update dry-run error: %v", err)
+	}
+}
+
+// The 404 classifies as the no-release-yet sentinel; other statuses stay
+// plain fetch failures. This is the skip path the dry-run test relies on.
+func TestNoReleaseYetErrorClassifier(t *testing.T) {
+	if err := noReleaseYetError(http.StatusNotFound); !errors.Is(err, ErrNoReleaseYet) {
+		t.Fatalf("404 classified as %v, want ErrNoReleaseYet", err)
+	}
+	if err := noReleaseYetError(http.StatusInternalServerError); errors.Is(err, ErrNoReleaseYet) || err == nil {
+		t.Fatalf("500 classified as %v, want a plain fetch error", err)
 	}
 }
 

@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -11,6 +12,22 @@ import (
 	"sync"
 	"time"
 )
+
+// ErrNoReleaseYet is returned when the configured release repository has no
+// published release at all (HTTP 404 from the latest-release endpoint). It is
+// distinct from a transport or rate-limit failure so callers may treat the
+// empty-repository state as expected until the first release is published.
+var ErrNoReleaseYet = errors.New("the release repository has no published release yet")
+
+// noReleaseYetError classifies a non-200 latest-release response: a 404 means
+// the repository carries no release yet, which callers may treat as expected;
+// anything else is a fetch failure.
+func noReleaseYetError(status int) error {
+	if status == http.StatusNotFound {
+		return ErrNoReleaseYet
+	}
+	return fmt.Errorf("fetch latest release: status %d", status)
+}
 
 // validateTag checks that a release tag contains only safe characters.
 // Prevents path-traversal attacks via crafted --tag values like
@@ -52,7 +69,7 @@ type releaseJSON struct {
 // releaseRepo is the GitHub owner/repo that publishes this fork's releases.
 // Every release API and download URL the update path builds goes through it,
 // so the auto-update timer can never pull another fork's tags or assets.
-const releaseRepo = "full-bars/meso-miner"
+const releaseRepo = "urfoundation/meso-miner"
 
 // releaseLatestAPIURL is the GitHub API endpoint for the newest release.
 func releaseLatestAPIURL() string {
@@ -105,7 +122,7 @@ func fetchLatestRelease() (*releaseInfo, error) {
 		return nil, fmt.Errorf("fetch latest release: rate-limited (status %d); set GITHUB_TOKEN for 5000 req/h quota", resp.StatusCode)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch latest release: status %d", resp.StatusCode)
+		return nil, noReleaseYetError(resp.StatusCode)
 	}
 	var rj releaseJSON
 	if err := json.NewDecoder(resp.Body).Decode(&rj); err != nil {
