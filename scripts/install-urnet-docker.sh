@@ -23,7 +23,7 @@
 set -e
 
 API_BASE="https://api.github.com/repos/urfoundation/meso-miner"
-REPO="full-bars/meso-miner"
+REPO="urfoundation/meso-miner"
 
 no_modify_bashrc=0
 TOOL=""
