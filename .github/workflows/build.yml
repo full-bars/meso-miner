@@ -227,11 +227,11 @@ jobs:
           chmod +x scripts/test_fallback_logic.sh
           ./scripts/test_fallback_logic.sh
 
-      - name: Docker update-source guard (fork-only release fetches)
+      - name: Docker update-source guard (release fetches from this repo only)
         run: |
           # The docker self-update scripts must ONLY ever fetch provider
-          # releases from this fork. Any api.github.com/repos/<org>/<repo>
-          # URL in docker/scripts that is NOT full-bars/* is a silent
+          # releases from this repo. Any api.github.com/repos/<org>/<repo>
+          # URL in docker/scripts that is NOT urfoundation/* is a silent
           # upstream-replace of the hardened binary, so the guard fails the
           # build. shellcheck separately covers syntax (errors only; the
           # pre-existing SC2071/SC2155 warnings live on untouched lines).
