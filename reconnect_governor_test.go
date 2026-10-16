@@ -369,9 +369,9 @@ func TestClassify_SocksHandshakeTimeoutsAreProxyFailuresNotPlatformOnes(t *testi
 	stats := &attemptStats{}
 	stats.rx.Store(6000) // earlier dials in the same attempt moved plenty
 	for _, msg := range []string{
-		"socks connect tcp 45.74.31.41:10062->65.49.70.70:443: read tcp 66.187.7.83:4806->45.74.31.41:10062: i/o timeout",
-		"socks connect tcp 156.225.20.83:1080->65.49.70.70:443: read tcp 66.187.7.83:4806->156.225.20.83:1080: i/o timeout",
-		"read tcp 66.187.7.83:4806->156.225.20.83:1080: i/o timeout (proxy 156.225.20.83:1080 unreachable)",
+		"socks connect tcp 198.51.100.41:10062->203.0.113.70:443: read tcp 203.0.113.10:4806->198.51.100.41:10062: i/o timeout",
+		"socks connect tcp 198.51.100.83:1080->203.0.113.70:443: read tcp 203.0.113.10:4806->198.51.100.83:1080: i/o timeout",
+		"read tcp 203.0.113.10:4806->198.51.100.83:1080: i/o timeout (proxy 198.51.100.83:1080 unreachable)",
 	} {
 		err := &dialTimeoutError{failures: 2, rounds: 1, last: errors.New(msg)}
 		if got := classifyConnectError(err, stats); got != connectSocksFail {
@@ -379,7 +379,7 @@ func TestClassify_SocksHandshakeTimeoutsAreProxyFailuresNotPlatformOnes(t *testi
 		}
 	}
 	// a timeout waiting on the platform itself, through an established tunnel, still counts
-	err := &dialTimeoutError{failures: 1, rounds: 1, last: errors.New("read tcp 66.187.7.83:4806->45.74.31.41:10062: i/o timeout")}
+	err := &dialTimeoutError{failures: 1, rounds: 1, last: errors.New("read tcp 203.0.113.10:4806->198.51.100.41:10062: i/o timeout")}
 	if got := classifyConnectError(err, stats); got != connectTimeoutPlatform {
 		t.Errorf("a post-handshake timeout classified %v, want timeout_platform", got)
 	}
@@ -518,8 +518,8 @@ func TestClassify_AnEarlierPlatformFailureSurvivesALaterSocksTimeout(t *testing.
 	stats := &attemptStats{}
 	stats.rx.Store(6000)
 	rec := &evalErrorRecorder{}
-	rec.note(errors.New("read tcp 66.187.7.83:4806->45.74.31.41:10062: i/o timeout")) // through the tunnel
-	rec.note(errors.New("socks connect tcp 45.74.31.41:10062->65.49.70.70:443: read tcp 66.187.7.83:4806->45.74.31.41:10062: i/o timeout"))
+	rec.note(errors.New("read tcp 203.0.113.10:4806->198.51.100.41:10062: i/o timeout")) // through the tunnel
+	rec.note(errors.New("socks connect tcp 198.51.100.41:10062->203.0.113.70:443: read tcp 203.0.113.10:4806->198.51.100.41:10062: i/o timeout"))
 	err := rec.timeoutError(15 * time.Second)
 	if got := classifyConnectError(err, stats); got != connectTimeoutPlatform {
 		t.Fatalf("classified %v, want timeout_platform: a later socks timeout hid an earlier platform failure", got)
