@@ -112,9 +112,12 @@ t "proxy-traffic.sh resolves state dir under \$HOME (no override)" \
     test_state_dir_resolution proxy-traffic.sh health_dir
 
 # ---------------------------------------------------------------------------
-# 4) Egg JSON: rules-array validity + uniqueness invariants
+# 4) Egg JSON: rules-array validity + uniqueness invariants (skipped when this
+#    tree ships no pelican egg, as the official tree does not)
 # ---------------------------------------------------------------------------
 egg="$REPO/pelican/egg-urnetwork-323fix.json"
+
+if [ -f "$egg" ]; then
 
 t "egg: every variable has a non-empty rules array" \
     jq -e '[.variables[] | select((.rules|type)!="array" or (.rules|length)==0)] | length==0' "$egg" >/dev/null
@@ -127,6 +130,10 @@ t "egg: env_variable names are unique" \
 
 t "egg: sort values are unique" \
     jq -e '[.variables[].sort] | (length == (unique | length))' "$egg" >/dev/null
+
+else
+    echo "skip: no pelican egg in this tree"
+fi
 
 echo
 echo "Results: $pass passed, $fail failed"

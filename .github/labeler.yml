@@ -29,11 +29,6 @@
       - any-glob-to-any-file:
           - ".github/**"
 
-"area:workers":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "workers/**"
-
 "area:scripts":
   - changed-files:
       - any-glob-to-any-file:
