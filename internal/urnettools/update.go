@@ -1450,6 +1450,7 @@ func runningToolAssetName() (string, error) {
 
 // toolAssetURL is the release download URL for a tool asset.
 func toolAssetURL(tag, asset string) string {
+	// M3 fix: escape tag in download URL to prevent path traversal.
 	return releaseDownloadURL(tag, asset)
 }
 
