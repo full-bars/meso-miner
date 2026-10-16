@@ -224,7 +224,7 @@ t "unparenthesized select+and stays rejected (would abort under set -e)" test "$
 
 # Nightly asset mapping: URL->name match-back finds the API name even when
 # the URL layout changes above the filename segment.
-URL_V9="https://github.com/full-bars/meso-miner/releases/download/v9/urnetwork-provider-v9.tar.gz"
+URL_V9="https://github.com/urfoundation/meso-miner/releases/download/v9/urnetwork-provider-v9.tar.gz"
 matched=""
 for upd_candidate in $(printf '%s\n' "$JSON_MULTI" | grep -oE '"name": *"[^"]+"' | sed -E 's/"name": *"([^"]+)"/\1/'); do
     case "$URL_V9" in
@@ -245,11 +245,11 @@ for f in "$HERE"/start_update.sh "$HERE"/start_nightly.sh "$HERE"/start_stable.s
          "$HERE"/start_jwt.sh "$HERE"/urnet-tools.sh "$HERE"/pelican_panel.sh \
          "$HERE"/test_exit75_restart.sh; do
     [ -f "$f" ] || continue
-    # Any api.github.com/repos/<org>/<repo> that is NOT full-bars is a violation.
+    # Any api.github.com/repos/<org>/<repo> that is NOT urfoundation is a violation.
     while read -r url; do
         org_repo="$(printf '%s' "$url" | sed -E 's#.*/repos/([^/"]+/[^/"]+).*#\1#')"
         case "$org_repo" in
-            full-bars/*) ;;
+            urfoundation/*) ;;
             *) violations="$violations\n$(basename "$f"): $url" ;;
         esac
     done < <(grep -oE 'https://api\.github\.com/repos/[^"]+' "$f" || true)

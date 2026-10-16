@@ -12,13 +12,13 @@ The provider is designed to run as a **non-privileged user service** for maximum
 Install:
 
 ```bash
-curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh
+curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh
 ```
 
 Uninstall:
 
 ```bash
-curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Uninstall_Linux.sh | sh
+curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Uninstall_Linux.sh | sh
 ```
 
 ### 🔑 Post-Install Authentication
@@ -40,15 +40,15 @@ urnet-tools proxy refresh
 
 ## 🧭 Other Platforms (Quick install)
 
-- **Alpine Linux (OpenRC):** the same install command, run from a root shell, installs a system service under `supervise-daemon`. See the [Alpine Linux (OpenRC) guide](https://github.com/full-bars/meso-miner/wiki/OpenRC).
-- **FreeBSD:** installs an `rc.d` service from the FreeBSD installer script. See the [FreeBSD guide](https://github.com/full-bars/meso-miner/wiki/FreeBSD).
+- **Alpine Linux (OpenRC):** the same install command, run from a root shell, installs a system service under `supervise-daemon`. See the [Alpine Linux (OpenRC) guide](https://github.com/urfoundation/meso-miner/wiki/OpenRC).
+- **FreeBSD:** installs an `rc.d` service from the FreeBSD installer script. See the [FreeBSD guide](https://github.com/urfoundation/meso-miner/wiki/FreeBSD).
 
 ## 🍎 macOS Installation
 
 The macOS installer is the equivalent of the Linux installer but uses `launchd` instead of `systemd`:
 
 ```bash
-curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh
+curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh
 ```
 
 Uninstall (manual — macOS uninstall script not yet available):
@@ -131,7 +131,7 @@ The installation includes the `urnet-tools` suite for management. Since v3.23.0-
 Install via PowerShell (no admin required):
 
 ```powershell
-irm https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Win32.ps1 | iex
+irm https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_Win32.ps1 | iex
 ```
 
 Windows Defender may flag this one-liner. See the note below.
@@ -146,7 +146,7 @@ Windows Defender may flag this one-liner. See the note below.
 > go in PowerShell:
 >
 > ```powershell
-> irm https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Win32.ps1 -OutFile "$env:TEMP\install-win.ps1"
+> irm https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_Win32.ps1 -OutFile "$env:TEMP\install-win.ps1"
 > powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\install-win.ps1"
 > ```
 
@@ -163,7 +163,7 @@ Windows Defender may flag this one-liner. See the note below.
 Uninstall via PowerShell (no admin required):
 
 ```powershell
-irm https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Uninstall_Win32.ps1 | iex
+irm https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Uninstall_Win32.ps1 | iex
 ```
 
 ### What gets installed
@@ -218,7 +218,7 @@ urnet-tools update
 
 Starting with v3.23.0-fix.31.2, the Windows release tarball includes `urnet-tools` alongside the provider binary. If you prefer a manual or offline install:
 
-1. Download the release tarball from [GitHub Releases](https://github.com/full-bars/meso-miner/releases).
+1. Download the release tarball from [GitHub Releases](https://github.com/urfoundation/meso-miner/releases).
 2. Extract the archive to your desired location (e.g. `%LOCALAPPDATA%\urnetwork`).
 3. Open **PowerShell** and run the included install script:
 
@@ -246,7 +246,7 @@ When the provider starts, it logs a **System Auditor** report that checks kernel
 For Docker-only users who do not want the systemd provider service, run the installer on the host to install the tools:
 
 ```bash
-curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh
+curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh
 ```
 
 Then optimize the host:

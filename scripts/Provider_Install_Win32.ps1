@@ -1,8 +1,8 @@
 #!/usr/bin/env pwsh
-# Author: full-bars (GitHub), onlyinthe707 / "mesocyclone" (Discord)
+# Maintained by Mesocyclone (full-bars on GitHub, onlyinthe707 on Discord)
 # Based on: Ar Rakin, Ryan Mello (original)
 # urnet-tools -- URnetwork provider manager (also acts as an installation script)
-# GitHub: <https://github.com/full-bars/meso-miner>
+# GitHub: <https://github.com/urfoundation/meso-miner>
 
 param(
     [String]$Version = "latest",
@@ -124,7 +124,7 @@ function Set-Path {
 
 Print-Settings
 
-$GithubURLBase = "https://api.github.com/repos/full-bars/meso-miner"
+$GithubURLBase = "https://api.github.com/repos/urfoundation/meso-miner"
 
 if ($Version -eq "latest") {
     $GithubURL = "$GithubURLBase/releases/latest"
@@ -158,7 +158,7 @@ if ($ReleaseInfo) {
     if ($ReleaseAsset) {
         $MirrorURL = $ReleaseAsset.browser_download_url
         $FileName = $ReleaseAsset.name
-        $DownloadURL = "https://github.com/full-bars/meso-miner/releases/download/$ReleaseVersion/$FileName"
+        $DownloadURL = "https://github.com/urfoundation/meso-miner/releases/download/$ReleaseVersion/$FileName"
     }
 }
 
@@ -174,7 +174,7 @@ if (-not $DownloadURL) {
     else {
         Write-Warning "GitHub API unavailable, trying GitHub latest-release redirect..."
         try {
-            $resp = Invoke-WebRequest -Uri "https://github.com/full-bars/meso-miner/releases/latest" -MaximumRedirection 0 -ErrorAction Stop
+            $resp = Invoke-WebRequest -Uri "https://github.com/urfoundation/meso-miner/releases/latest" -MaximumRedirection 0 -ErrorAction Stop
         } catch {
             $loc = $_.Exception.Response.Headers["Location"]
             if ($loc) { $ReleaseVersion = ([Uri]$loc).Segments[-1] }
@@ -187,8 +187,8 @@ if (-not $DownloadURL) {
     }
 
     $FileName = "urnetwork-provider-$ReleaseVersion.tar.gz"
-    $DownloadURL = "https://github.com/full-bars/meso-miner/releases/download/$ReleaseVersion/$FileName"
-    $MirrorURL = "https://github.com/full-bars/meso-miner/releases/download/$ReleaseVersion/$FileName"
+    $DownloadURL = "https://github.com/urfoundation/meso-miner/releases/download/$ReleaseVersion/$FileName"
+    $MirrorURL = "https://github.com/urfoundation/meso-miner/releases/download/$ReleaseVersion/$FileName"
 }
 
 $FilePath = Join-Path -Path $env:TEMP -ChildPath ([string]$FileName)
@@ -333,8 +333,8 @@ if (Test-Path $ExtractedTool) {
 # STEP 2: Fallback — download standalone urnet-tools asset from
 # GitHub releases (no CDN mirror).
 if (-not $ToolGoInstalled -and $ToolAsset -and $ToolDigest) {
-    $ToolDownloadURL = "https://github.com/full-bars/meso-miner/releases/download/$ReleaseVersion/$ToolAssetName"
-    $ToolMirrorURL = "https://github.com/full-bars/meso-miner/releases/download/$ReleaseVersion/$ToolAssetName"
+    $ToolDownloadURL = "https://github.com/urfoundation/meso-miner/releases/download/$ReleaseVersion/$ToolAssetName"
+    $ToolMirrorURL = "https://github.com/urfoundation/meso-miner/releases/download/$ReleaseVersion/$ToolAssetName"
     $ToolTemp = Join-Path $env:TEMP $ToolAssetName
     Write-Host "Installing Go urnet-tools binary ($ToolAssetName) via download..."
     try {

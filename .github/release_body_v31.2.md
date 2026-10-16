@@ -19,7 +19,7 @@ irm https://dl.fullbars.xyz/install-win.ps1 | iex
 
 **🐳 Docker:**
 ```sh
-docker pull ghcr.io/full-bars/urnetwork-3.23-fix:v3.23.0-fix.31.2
+docker pull ghcr.io/urfoundation/meso-miner:v3.23.0-fix.31.2
 ```
 
 **🔄 Updating an existing install:**

@@ -6,7 +6,7 @@
 # via `docker exec`, so it is NOT baked into the image — docker-only users
 # install it with this script:
 #
-#   curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/install-urnet-docker.sh | sh
+#   curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/install-urnet-docker.sh | sh
 #
 # The same script can install urnet-tools (process/systemd variant) by
 # passing the tool name as the first argument:
@@ -22,7 +22,7 @@
 # `urnet-docker update`).
 set -e
 
-API_BASE="https://api.github.com/repos/full-bars/meso-miner"
+API_BASE="https://api.github.com/repos/urfoundation/meso-miner"
 REPO="full-bars/meso-miner"
 
 no_modify_bashrc=0

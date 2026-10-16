@@ -9,22 +9,22 @@
 
 **🐧 Linux:**
 ```sh
-curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh
+curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh
 ```
 
 **🍎 macOS:**
 ```sh
-curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh
+curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh
 ```
 
 **🪟 Windows (PowerShell):**
 ```powershell
-irm https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Win32.ps1 | iex
+irm https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_Win32.ps1 | iex
 ```
 
 **🐳 Docker:**
 ```sh
-docker pull ghcr.io/full-bars/meso-miner:{Version}
+docker pull ghcr.io/urfoundation/meso-miner:{Version}
 ```
 
 **🔄 Updating an existing install:**

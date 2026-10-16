@@ -443,7 +443,7 @@ section "A. Fresh install"
 # refs/heads/main, not the tag being cut. Tag-side installer regressions are
 # invisible to the shakedown, and a main-side installer break blocks an
 # unrelated release. Accepted tradeoff: the installer is rarely tag-specific.
-curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_Linux.sh -o /tmp/install.sh
+curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh -o /tmp/install.sh
 bash -n /tmp/install.sh && ok "installer syntax" || bad "installer syntax"
 # PTY install: root prompt -> option 1 (create user) -> default name urnet.
 # Grep the FULL transcript, not tail -3 (installer prints after "complete").
@@ -468,7 +468,7 @@ if timeout 15 curl -fsS -o /dev/null -w "%{http_code}" https://api.bringyour.com
 else
   bad "api.bringyour.com NOT reachable (non-starter)"; NON_STARTER=1
 fi
-if timeout 10 curl -fsS -o /dev/null https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/README.md 2>/dev/null; then
+if timeout 10 curl -fsS -o /dev/null https://raw.githubusercontent.com/urfoundation/meso-miner/main/README.md 2>/dev/null; then
   ok "github reachable"
 else
   bad "github NOT reachable (non-starter)"; NON_STARTER=1
@@ -714,15 +714,15 @@ else
     bad "docker daemon not responding after install"
   fi
 fi
-curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh -o /tmp/install-docker.sh
+curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/install-urnet-docker.sh -o /tmp/install-docker.sh
 sh /tmp/install-docker.sh 2>&1 | grep -q "sha256 verified" && ok "install-urnet-docker.sh verified" || bad "docker installer"
 run_check "urnet-docker version" /usr/local/bin/urnet-docker version 2>&1
 mkdir -p /tmp/docker-state && cp /home/urnet/.urnetwork/jwt /tmp/docker-state/jwt && cp /home/urnet/.urnetwork/network.json /tmp/docker-state/network.json
 # MUST-FIX 10: pull the EXPECTED image tag, not :latest (which lags a tag
 # push). The image tag follows the release tag.
-run_check "image pulled" timeout 300 docker pull "ghcr.io/full-bars/urnetwork-3.23-fix:${EXPECTED_VERSION}" 2>&1
+run_check "image pulled" timeout 300 docker pull "ghcr.io/urfoundation/meso-miner:${EXPECTED_VERSION}" 2>&1
 # MUST-FIX 6 (docker): pass the cap into the container via env var.
-docker run -d --name urnetwork-test -v /tmp/docker-state:/root/.urnetwork -e PROXY_URL_MAX=200 -e BUILD=jwt "ghcr.io/full-bars/urnetwork-3.23-fix:${EXPECTED_VERSION}" >/dev/null 2>&1
+docker run -d --name urnetwork-test -v /tmp/docker-state:/root/.urnetwork -e PROXY_URL_MAX=200 -e BUILD=jwt "ghcr.io/urfoundation/meso-miner:${EXPECTED_VERSION}" >/dev/null 2>&1
 sleep 8
 docker ps --format "{{.Names}}" | grep -q urnetwork-test && ok "container up" || bad "container"
 run_check "urnet-docker providers" /usr/local/bin/urnet-docker providers 2>&1
@@ -1413,7 +1413,7 @@ V_TYPE=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) system
 # ALONE to $V_TAG_A, as an operator does before updating a pre-31 node, and
 # run the update with it.
 V1_TOOL_DST=/home/urnet/.local/share/urnetwork-provider/bin/urnet-tools
-if curl -fsSL "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/${V_TAG_A}/urnet-tools-linux-amd64" -o /tmp/urnet-tools-v1 \
+if curl -fsSL "https://github.com/urfoundation/meso-miner/releases/download/${V_TAG_A}/urnet-tools-linux-amd64" -o /tmp/urnet-tools-v1 \
    && install -o urnet -g urnet -m 0755 /tmp/urnet-tools-v1 "$V1_TOOL_DST"; then
   ok "V1: refreshed urnet-tools alone to $V_TAG_A ahead of the migration test"
 else

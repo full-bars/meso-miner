@@ -158,7 +158,7 @@ func TestIsDockerCandidateNarrow(t *testing.T) {
 	if isDockerCandidate("some/monitoring:1.0", "metrics") {
 		t.Error("unrelated monitoring container must not be a candidate")
 	}
-	if !isDockerCandidate("ghcr.io/full-bars/urnetwork-3.23-fix:26.4", "ps") {
+	if !isDockerCandidate("ghcr.io/urfoundation/meso-miner:26.4", "ps") {
 		t.Error("urnetwork image must be a candidate")
 	}
 	if !isDockerCandidate("registry/whatever", "my-urnet-node") {

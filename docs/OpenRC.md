@@ -16,13 +16,13 @@ apk add --no-cache curl
 `adduser -D urnet` creates the `urnet` user with a home directory and no password. If the user does not exist when you install, the installer still downloads the files but does **not** install the service, and prints the commands to finish. To run the provider under a different account, set `URNET_OPENRC_USER=<name>` for the install command:
 
 ```sh
-URNET_OPENRC_USER=provider sh -c 'curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh'
+URNET_OPENRC_USER=provider sh -c 'curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh'
 ```
 
 ## Install
 
 ```sh
-curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh
+curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh
 ```
 
 ### What the installer does on Alpine, and why
@@ -178,7 +178,7 @@ The provider's [swap-thrash watchdog](Configuration.md#swap-thrash-watchdog) res
 As root:
 
 ```sh
-curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh -s -- uninstall
+curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh -s -- uninstall
 ```
 
 This stops the service, removes it from the runlevels (`rc-update del`), removes `/etc/init.d/urnetwork`, removes every periodic auto-update entry (including a paused `.installer-paused` one), deletes the install tree at `/usr/local/lib/urnetwork-provider`, deletes the state directory in the service user's home (`/home/urnet/.urnetwork`), and removes the tool links (including the staged copy in `/usr/local/libexec/urnetwork`). It also deletes the login token in the state directory, so you would need a new auth code to install again. It leaves two things behind: the `urnet` user and the log files. Remove them if you want a clean slate:

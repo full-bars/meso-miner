@@ -1,8 +1,8 @@
 #!/bin/sh
 # urnet-tools: URnetwork provider manager (FreeBSD)
-# Author: full-bars (GitHub), onlyinthe707 / "mesocyclone" (Discord)
+# Maintained by Mesocyclone (full-bars on GitHub, onlyinthe707 on Discord)
 # Based on: Ar Rakin, Ryan Mello (original)
-# https://github.com/full-bars/meso-miner
+# https://github.com/urfoundation/meso-miner
 
 me="$(basename "$0")"
 
@@ -36,7 +36,7 @@ show_help() {
     echo "  -v, --version             Show version"
     echo "  -f, --force               Skip confirmation prompts"
     echo ""
-    echo "https://github.com/full-bars/meso-miner"
+    echo "https://github.com/urfoundation/meso-miner"
 }
 
 # --- helpers ---
@@ -118,8 +118,8 @@ service_home="$(user_home "$service_user")"
 install_path="$service_home/.local/share/urnetwork-provider"
 provider_bin="$install_path/bin/urnetwork"
 state_dir="$service_home/.urnetwork"
-github_api="https://api.github.com/repos/full-bars/meso-miner"
-github_raw="https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main"
+github_api="https://api.github.com/repos/urfoundation/meso-miner"
+github_raw="https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main"
 
 # --- rc.d ---
 
@@ -357,7 +357,7 @@ do_install() {
         else
             pr_warn "Resolving the latest meso-miner release tag..."
             _tag_url="$(curl -Ls -o /dev/null -w '%{url_effective}' \
-                "https://github.com/full-bars/meso-miner/releases/latest" 2>/dev/null)"
+                "https://github.com/urfoundation/meso-miner/releases/latest" 2>/dev/null)"
             case "$_tag_url" in
                 */tag/*) tag="${_tag_url##*/tag/}" ;;
             esac
@@ -376,8 +376,8 @@ do_install() {
         *)             pr_err "Unsupported architecture: %s" "$arch"; exit 1 ;;
     esac
 
-    tarball_url="https://github.com/full-bars/meso-miner/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
-    mirror_url="https://github.com/full-bars/meso-miner/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
+    tarball_url="https://github.com/urfoundation/meso-miner/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
+    mirror_url="https://github.com/urfoundation/meso-miner/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
     pr_info "Downloading %s..." "$tarball_url"
 
     tmpdir="$(mktemp -d)"
@@ -452,7 +452,7 @@ print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
     fi
 
     if [ -n "$tool_digest" ]; then
-        if curl -fsSL "https://github.com/full-bars/meso-miner/releases/download/$tag/$tool_asset" -o "$tmpdir/$tool_asset" 2>/dev/null; then
+        if curl -fsSL "https://github.com/urfoundation/meso-miner/releases/download/$tag/$tool_asset" -o "$tmpdir/$tool_asset" 2>/dev/null; then
             # FreeBSD ships sha256(1); fall back to openssl where it is absent.
             if command -v sha256 > /dev/null 2>&1; then
                 actual="$(sha256 -q "$tmpdir/$tool_asset")"

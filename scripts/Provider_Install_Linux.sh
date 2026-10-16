@@ -1,8 +1,8 @@
 #!/bin/sh
 # urnet-tools: URnetwork provider manager
-# Author: full-bars (GitHub), onlyinthe707 / "mesocyclone" (Discord)
+# Maintained by Mesocyclone (full-bars on GitHub, onlyinthe707 on Discord)
 # Based on: Ar Rakin, Ryan Mello (original)
-# https://github.com/full-bars/meso-miner
+# https://github.com/urfoundation/meso-miner
 
 me="$0"
 script_rundir="$(pwd)"
@@ -65,7 +65,7 @@ show_help ()
     echo "  -f, --force             Skip confirmation prompts"
     echo "  -B, --no-modify-bashrc  Do not modify ~/.bashrc"
     echo ""
-    echo "Need help? Email support@fullbars.xyz or visit <https://github.com/full-bars/meso-miner>"
+    echo "Need help? Email support@fullbars.xyz or visit <https://github.com/urfoundation/meso-miner>"
 }
 
 get_arch ()
@@ -110,13 +110,13 @@ update_timer_oncalendar="Sun *-*-* 00:00:00 UTC"
 # URNET_INSTALL_URL above. A hostile environment can therefore make the install
 # succeed against attacker-chosen binaries. This is a testing/CI seam, not a
 # user-facing feature; do not document it.
-api_base="${URNET_API_BASE:-https://api.github.com/repos/full-bars/meso-miner}"
+api_base="${URNET_API_BASE:-https://api.github.com/repos/urfoundation/meso-miner}"
 # Releases for this fork are published on its own GitHub releases, so both
 # endpoints point there. A shared CDN across forks would let this installer
 # fetch another fork's assets, which is what test_provider_install.sh asserts
 # against.
-urnet_dl_base="${URNET_DL_BASE:-https://github.com/full-bars/meso-miner}"
-urnet_github_dl_base="${URNET_MIRROR_BASE:-https://github.com/full-bars/meso-miner/releases/download}"
+urnet_dl_base="${URNET_DL_BASE:-https://github.com/urfoundation/meso-miner}"
+urnet_github_dl_base="${URNET_MIRROR_BASE:-https://github.com/urfoundation/meso-miner/releases/download}"
 
 install_path="$HOME/.local/share/urnetwork-provider"
 install_path_explicit=0
@@ -124,7 +124,7 @@ version_file="$install_path/.version"
 
 # Canonical URL for re-running this installer in a freshly created user's context.
 # Overridable via URNET_INSTALL_URL (e.g. to test a branch before it lands on main).
-urnet_install_url="${URNET_INSTALL_URL:-https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh}"
+urnet_install_url="${URNET_INSTALL_URL:-https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh}"
 
 # If no operation is specified and running as a one-off pipe (curl | sh),
 # default to install. The installed urnet-tools binary is handled later
@@ -785,8 +785,8 @@ show_version ()
 
     if [ -z "$latest_version" ]; then
         if command -v curl > /dev/null; then
-            tag_url=$(curl -Ls -o /dev/null -w %{url_effective} "https://github.com/full-bars/meso-miner/releases/latest")
-            if [ -n "$tag_url" ] && [ "$tag_url" != "https://github.com/full-bars/meso-miner/releases/latest" ]; then
+            tag_url=$(curl -Ls -o /dev/null -w %{url_effective} "https://github.com/urfoundation/meso-miner/releases/latest")
+            if [ -n "$tag_url" ] && [ "$tag_url" != "https://github.com/urfoundation/meso-miner/releases/latest" ]; then
                 latest_version="${tag_url##*/}"
             fi
         fi
@@ -2337,8 +2337,8 @@ do_install ()
     # If tag was "latest" and API failed to provide a version, try the redirect trick
     if [ "$tag" = "latest" ] && [ -z "$version_to_install" ]; then
         if command -v curl > /dev/null; then
-            tag_url=$(curl -Ls -o /dev/null -w %{url_effective} "https://github.com/full-bars/meso-miner/releases/latest")
-            if [ -n "$tag_url" ] && [ "$tag_url" != "https://github.com/full-bars/meso-miner/releases/latest" ]; then
+            tag_url=$(curl -Ls -o /dev/null -w %{url_effective} "https://github.com/urfoundation/meso-miner/releases/latest")
+            if [ -n "$tag_url" ] && [ "$tag_url" != "https://github.com/urfoundation/meso-miner/releases/latest" ]; then
                 version_to_install="${tag_url##*/}"
             fi
         fi

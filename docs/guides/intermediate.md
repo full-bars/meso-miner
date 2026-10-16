@@ -32,7 +32,7 @@ You need:
 ### 1. Install
 
 ```sh
-curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh
+curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh
 ```
 
 This creates:
@@ -87,7 +87,7 @@ The summary displays proxy source breakdown (file/URL/internal), health state co
 ### 1. Install
 
 ```sh
-curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh
+curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh
 ```
 
 This is the same installer as Linux but uses `launchd` instead of `systemd`. It creates:
@@ -133,7 +133,7 @@ Logs live at `~/Library/Logs/com.urnetwork.provider/stdout.log` and `stderr.log`
 ### 1. Install
 
 ```powershell
-irm https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Win32.ps1 | iex
+irm https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_Win32.ps1 | iex
 ```
 
 Windows Defender may flag this one-liner. See the note below.
@@ -148,7 +148,7 @@ Windows Defender may flag this one-liner. See the note below.
 > go in PowerShell:
 >
 > ```powershell
-> irm https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Win32.ps1 -OutFile "$env:TEMP\install-win.ps1"
+> irm https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_Win32.ps1 -OutFile "$env:TEMP\install-win.ps1"
 > powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\install-win.ps1"
 > ```
 
@@ -206,7 +206,7 @@ Works the same way on Linux, macOS, and Windows — anywhere Docker runs.
 ### 1. Run the container
 
 ```sh
-docker pull ghcr.io/full-bars/meso-miner:latest
+docker pull ghcr.io/urfoundation/meso-miner:latest
 ```
 
 **Linux/macOS:**
@@ -227,7 +227,7 @@ docker run -d \
   -v ~/proxies.txt:/app/proxies.txt \
   -e BUILD=jwt \
   -e URNETWORK_AUTH_CODE="<your-auth-code>" \
-  ghcr.io/full-bars/meso-miner:latest
+  ghcr.io/urfoundation/meso-miner:latest
 ```
 
 **Windows (PowerShell):**
@@ -248,7 +248,7 @@ docker run -d `
   -v "$env:USERPROFILE\proxies.txt:/app/proxies.txt" `
   -e BUILD=jwt `
   -e URNETWORK_AUTH_CODE="<your-auth-code>" `
-  ghcr.io/full-bars/meso-miner:latest
+  ghcr.io/urfoundation/meso-miner:latest
 ```
 
 The provider will find and load the proxy file automatically on startup. If you need to add proxies after the container is already running, use:

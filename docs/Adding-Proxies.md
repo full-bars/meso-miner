@@ -44,7 +44,7 @@ outside the containers, and delegates into them via `docker exec`.
 The clean one-liner, served from the GitHub raw source:
 
 ```bash
-curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/install-urnet-docker.sh | sh
+curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/install-urnet-docker.sh | sh
 ```
 
 Both install only the `urnet-docker` CLI on the Docker host. They resolve the
@@ -57,7 +57,7 @@ The installer supports Linux and macOS hosts. On a **Windows** Docker host,
 download the matching release asset directly instead:
 
 ```powershell
-Invoke-WebRequest -Uri "https://github.com/full-bars/meso-miner/releases/latest/download/urnet-docker-windows-amd64" -OutFile "urnet-docker.exe"
+Invoke-WebRequest -Uri "https://github.com/urfoundation/meso-miner/releases/latest/download/urnet-docker-windows-amd64" -OutFile "urnet-docker.exe"
 ```
 
 #### Install `urnet-tools` (process/systemd users)
@@ -65,7 +65,7 @@ Invoke-WebRequest -Uri "https://github.com/full-bars/meso-miner/releases/latest/
 Same installer, passing the tool name:
 
 ```bash
-curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/install-urnet-docker.sh | sh -s -- urnet-tools
+curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/install-urnet-docker.sh | sh -s -- urnet-tools
 ```
 
 ## Per-OS details

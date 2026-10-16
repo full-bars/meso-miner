@@ -79,7 +79,7 @@ Batch / safety flags:
   -n, --dry-run               show what would happen without doing it
   -h, --help                  show help (never executes)
 
-Need help? Email support@fullbars.xyz or visit https://github.com/full-bars/meso-miner
+Need help? Email support@fullbars.xyz or visit https://github.com/urfoundation/meso-miner
 `
 
 func buildDockerRootCmd() *cobra.Command {

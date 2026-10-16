@@ -113,7 +113,7 @@ Batch / safety flags:
   -n, --dry-run               print the plan, change nothing
   -h, --help                  show help (never executes)
 
-Need help? Email support@fullbars.xyz or visit https://github.com/full-bars/urnetwork-3.23-fix
+Need help? Email support@fullbars.xyz or visit https://github.com/urfoundation/meso-miner
 `
 
 // buildRootCmd creates the root Cobra command for urnet-tools.

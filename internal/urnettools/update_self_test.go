@@ -217,7 +217,7 @@ func TestSelfUpdateToolSkipsWhenAlreadyCurrent(t *testing.T) {
 // its own asset — installers and docs must match it exactly.
 func TestToolSelfUpdateURLShape(t *testing.T) {
 	got := toolAssetURL("v3.23.0-fix.28.0", "urnet-tools-linux-amd64")
-	want := "https://github.com/full-bars/meso-miner/releases/download/v3.23.0-fix.28.0/urnet-tools-linux-amd64"
+	want := "https://github.com/urfoundation/meso-miner/releases/download/v3.23.0-fix.28.0/urnet-tools-linux-amd64"
 	if got != want {
 		t.Errorf("toolAssetURL = %q, want %q", got, want)
 	}

@@ -41,9 +41,9 @@ do_update() {
     echo "Checking for provider updates..."
 
     if [ -n "$requested_tag" ]; then
-        release_url="https://api.github.com/repos/full-bars/meso-miner/releases/tags/$requested_tag"
+        release_url="https://api.github.com/repos/urfoundation/meso-miner/releases/tags/$requested_tag"
     else
-        release_url="https://api.github.com/repos/full-bars/urnetwork-3.23-fix/releases/latest"
+        release_url="https://api.github.com/repos/urfoundation/meso-miner/releases/latest"
     fi
 
     release_json="$(curl -s --connect-timeout 10 "$release_url")" || {

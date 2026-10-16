@@ -323,7 +323,7 @@ test_primary_success() {
     before="$(snapshot_tmp_artifacts)"
 
     MOCK_VERSION="v9.9.9-mock-1"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-1/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/urfoundation/meso-miner/releases/download/v9.9.9-mock-1/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=0
     unset ec
     run_update
@@ -362,7 +362,7 @@ test_mirror_fallback_success() {
     before="$(snapshot_tmp_artifacts)"
 
     MOCK_VERSION="v9.9.9-mock-2"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-2/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/urfoundation/meso-miner/releases/download/v9.9.9-mock-2/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=1
     MOCK_MIRROR_FAIL=0
     unset ec
@@ -403,7 +403,7 @@ test_both_downloads_fail() {
     before="$(snapshot_tmp_artifacts)"
 
     MOCK_VERSION="v9.9.9-mock-3"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-3/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/urfoundation/meso-miner/releases/download/v9.9.9-mock-3/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=1
     MOCK_MIRROR_FAIL=1
     unset ec
@@ -434,7 +434,7 @@ test_extraction_fails() {
     before="$(snapshot_tmp_artifacts)"
 
     MOCK_VERSION="v9.9.9-mock-4"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-4/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/urfoundation/meso-miner/releases/download/v9.9.9-mock-4/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=0
     MOCK_TAR_FAIL=1
     unset ec
@@ -461,7 +461,7 @@ test_provider_missing_in_tarball() {
     before="$(snapshot_tmp_artifacts)"
 
     MOCK_VERSION="v9.9.9-mock-5"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-5/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/urfoundation/meso-miner/releases/download/v9.9.9-mock-5/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=0
     MOCK_TAR_NO_PROVIDER=1
     unset ec
@@ -489,7 +489,7 @@ echo "=== SECTION 6: Tarball filename is unique per run (not the old fixed name)
 test_tarball_name_is_unpredictable() {
     reset_fixture
     MOCK_VERSION="v9.9.9-mock-6a"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-6a/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/urfoundation/meso-miner/releases/download/v9.9.9-mock-6a/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=1
     MOCK_MIRROR_FAIL=1
     unset ec
@@ -498,7 +498,7 @@ test_tarball_name_is_unpredictable() {
 
     reset_fixture
     MOCK_VERSION="v9.9.9-mock-6b"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-6b/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/urfoundation/meso-miner/releases/download/v9.9.9-mock-6b/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=1
     MOCK_MIRROR_FAIL=1
     unset ec
@@ -543,7 +543,7 @@ run_idle_update() {
 test_idle_update_window_zero() {
     reset_fixture
     MOCK_VERSION="v9.9.9-idle-1"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-idle-1/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/urfoundation/meso-miner/releases/download/v9.9.9-idle-1/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=0
     unset ec
     run_idle_update
@@ -577,7 +577,7 @@ test_idle_update_custom_threshold() {
     printf '50\n' > "$HEALTH_DIR/billable_rate"
 
     MOCK_VERSION="v9.9.9-idle-2"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-idle-2/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/urfoundation/meso-miner/releases/download/v9.9.9-idle-2/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=0
     unset ec
     out="$(
@@ -615,7 +615,7 @@ test_zero_byte_tarball_fails_cleanly() {
     before="$(snapshot_tmp_artifacts)"
 
     MOCK_VERSION="v9.9.9-mock-9"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-9/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/urfoundation/meso-miner/releases/download/v9.9.9-mock-9/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=0
     MOCK_TARBALL_CONTENT=""
     # A 0-byte/truncated archive is exactly what a real tar would reject;
@@ -646,7 +646,7 @@ test_partial_primary_overwritten_by_mirror() {
     before="$(snapshot_tmp_artifacts)"
 
     MOCK_VERSION="v9.9.9-mock-9b"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-9b/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/urfoundation/meso-miner/releases/download/v9.9.9-mock-9b/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=1
     MOCK_MIRROR_FAIL=0
     # Primary writes a short garbage prefix to the shared tarball path
@@ -689,7 +689,7 @@ test_marker_created_on_success() {
     reset_fixture
 
     MOCK_VERSION="v9.9.9-mock-10"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-10/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/urfoundation/meso-miner/releases/download/v9.9.9-mock-10/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=0
     unset ec
     run_update
@@ -714,7 +714,7 @@ test_marker_removed_on_mv_failure() {
     before="$(snapshot_tmp_artifacts)"
 
     MOCK_VERSION="v9.9.9-mock-10b"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-10b/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/urfoundation/meso-miner/releases/download/v9.9.9-mock-10b/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=0
 
     # Force `mv -f "$staged_provider" "$provider_bin"` to fail by removing
@@ -749,7 +749,7 @@ test_marker_dir_respects_custom_home() {
     MOCK_HOME="$CUSTOM_HOME"
 
     MOCK_VERSION="v9.9.9-mock-10c"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-10c/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/urfoundation/meso-miner/releases/download/v9.9.9-mock-10c/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=0
     unset ec
     run_update
@@ -781,7 +781,7 @@ test_arch_x86_64_maps_to_amd64() {
     reset_fixture
     MOCK_ARCH=x86_64
     MOCK_VERSION="v9.9.9-mock-11a"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-11a/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/urfoundation/meso-miner/releases/download/v9.9.9-mock-11a/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=0
     unset ec
     run_update
@@ -801,7 +801,7 @@ test_arch_aarch64_maps_to_arm64() {
     reset_fixture
     MOCK_ARCH=aarch64
     MOCK_VERSION="v9.9.9-mock-11b"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-11b/urnetwork-linux-arm64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/urfoundation/meso-miner/releases/download/v9.9.9-mock-11b/urnetwork-linux-arm64.tar.gz"
     MOCK_PRIMARY_FAIL=0
     unset ec
     run_update
@@ -825,7 +825,7 @@ test_arch_unsupported_exits_before_side_effects() {
     before="$(snapshot_tmp_artifacts)"
     MOCK_ARCH="riscv64"
     MOCK_VERSION="v9.9.9-mock-11c"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-11c/urnetwork-linux-riscv64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/urfoundation/meso-miner/releases/download/v9.9.9-mock-11c/urnetwork-linux-riscv64.tar.gz"
     unset ec
     run_update
 
@@ -855,7 +855,7 @@ test_mktemp_stub_catches_staged_provider_regression() {
     before="$(snapshot_tmp_artifacts)"
 
     MOCK_VERSION="v9.9.9-mock-12"
-    MOCK_DOWNLOAD_URL="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/v9.9.9-mock-12/urnetwork-linux-amd64.tar.gz"
+    MOCK_DOWNLOAD_URL="https://github.com/urfoundation/meso-miner/releases/download/v9.9.9-mock-12/urnetwork-linux-amd64.tar.gz"
     MOCK_PRIMARY_FAIL=0
     unset ec
     RUN_SCRIPT="$REGRESSED_STAGED_SCRIPT" run_update

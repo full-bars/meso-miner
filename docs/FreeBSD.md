@@ -24,7 +24,7 @@ Run the installer as the account the provider should run as, with `sudo`, or as 
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_FreeBSD.sh -o urnet-install.sh
+curl -fsSL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_FreeBSD.sh -o urnet-install.sh
 sudo sh urnet-install.sh install
 ```
 
