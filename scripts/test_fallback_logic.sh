@@ -39,7 +39,7 @@ if [ -z "$latest_version" ]; then
         # Hit github.com directly (no unauthenticated rate limits)
         tag_url=$(curl -Ls -o /dev/null -w %{url_effective} "https://github.com/full-bars/meso-miner/releases/latest")
         echo "--> tag_url resolved to: $tag_url"
-        if [ -n "$tag_url" ] && [ "$tag_url" != "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest" ]; then
+        if [ -n "$tag_url" ] && [ "$tag_url" != "https://github.com/full-bars/meso-miner/releases/latest" ]; then
             latest_version="${tag_url##*/}"
         fi
     fi

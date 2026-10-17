@@ -22,7 +22,7 @@ type dockerContainer struct {
 	ID string
 	// Name is the container name (e.g. "urnet").
 	Name string
-	// Image is the image reference (e.g. "ghcr.io/full-bars/urnetwork-3.23-fix:latest").
+	// Image is the image reference (e.g. "ghcr.io/full-bars/meso-miner:latest").
 	Image string
 	// State is docker's container state ("running", "exited", ...).
 	State string

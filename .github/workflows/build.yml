@@ -265,7 +265,7 @@ jobs:
 
           jq -e '.meta.version == "PLCN_v3"
                  and (.docker_images | length == 1)
-                 and ([.docker_images[]][0] | test("^ghcr\\.io/full-bars/urnetwork-3.23-fix:latest$"))
+                 and ([.docker_images[]][0] | test("^ghcr\\.io/full-bars/meso-miner:latest$"))
                  and .startup_commands.Default == "sh /app/entrypoint.sh"
                  and (.config.startup | fromjson | .done == "Provider")' "$egg" >/dev/null \
             || { echo "FAIL: egg JSON structure invalid"; exit 1; }
@@ -441,7 +441,7 @@ jobs:
         if: ${{ github.event_name != 'pull_request' && startsWith(github.ref, 'refs/tags/') && (contains(github.ref, '-rc') || contains(github.ref, '-alpha') || contains(github.ref, '-beta')) }}
         run: |
           set -euo pipefail
-          REPO="full-bars/urnetwork-3.23-fix"
+          REPO="full-bars/meso-miner"
           TAG="${GITHUB_REF_NAME}"
           TOK=$(curl -sf "https://ghcr.io/token?scope=repository:${REPO}:pull&service=ghcr.io" \
                 | grep -o '"token":"[^"]*' | cut -d'"' -f4)
@@ -482,7 +482,7 @@ jobs:
           '{
             "embeds": [{
               "title": ("🐳 Docker Image Published — " + $version),
-              "description": ("**Platforms:** linux/amd64, linux/arm64\n\n**Pull:**\n```\ndocker pull ghcr.io/full-bars/urnetwork-3.23-fix:" + $version + "\n```\n```\ndocker pull 3cape/urnetwork-3.23-fix:" + $version + "\n```\n\n[View build run](" + $runUrl + ")"),
+              "description": ("**Platforms:** linux/amd64, linux/arm64\n\n**Pull:**\n```\ndocker pull ghcr.io/full-bars/meso-miner:" + $version + "\n```\n```\ndocker pull 3cape/urnetwork-3.23-fix:" + $version + "\n```\n\n[View build run](" + $runUrl + ")"),
               "color": 2406797,
               "footer": { "text": "URNetwork Release Monitor • Docker" }
             }]
