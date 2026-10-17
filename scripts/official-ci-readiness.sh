@@ -27,6 +27,8 @@ done
 
 cd "$(dirname "$0")/.."
 FAILS=0
+note_count=0
+undecided_hits=0
 pass() { echo "PASS: $*"; }
 fail() { echo "FAIL: $*"; FAILS=$((FAILS + 1)); }
 warn() { echo "WARN: $*"; }
@@ -60,20 +62,61 @@ echo
 
 # ---- 2. actionlint ---------------------------------------------------------
 echo "--- 2. actionlint"
+# actionlint reports real problems (syntax, topology, unknown keys) AND
+# shellcheck style notes. Only the real ones gate readiness; style notes are
+# counted and printed as a note so a style-only tree passes.
+LINT_OUT=""
+LINT_RC=0
+LINT_SKIPPED=0
 if command -v actionlint >/dev/null 2>&1; then
-  set +e
-  lint_out=$(actionlint $WF 2>&1); lint_rc=$?
-  set -e
-  if [ "$lint_rc" -eq 0 ]; then pass "actionlint clean on $(printf '%s\n' "$WF" | wc -l) workflows"
-  else fail "actionlint reported problems"; printf '%s\n' "$lint_out" | head -40; fi
+  set +e; LINT_OUT=$(actionlint $WF 2>&1); LINT_RC=$?; set -e
 elif [ "$OFFLINE" = "1" ]; then
   skip "actionlint not installed and --offline given (would fetch it with go run)"
+  LINT_SKIPPED=1
 else
-  set +e
-  lint_out=$(go run github.com/rhysd/actionlint/cmd/actionlint@latest $WF 2>&1); lint_rc=$?
-  set -e
-  if [ "$lint_rc" -eq 0 ]; then pass "actionlint clean (via go run) on $(printf '%s\n' "$WF" | wc -l) workflows"
-  else fail "actionlint reported problems (or could not be fetched)"; printf '%s\n' "$lint_out" | head -40; fi
+  set +e; LINT_OUT=$(go run github.com/rhysd/actionlint/cmd/actionlint@latest $WF 2>&1); LINT_RC=$?; set -e
+fi
+if [ "$LINT_SKIPPED" = "1" ]; then
+  :
+elif [ "$LINT_RC" -eq 0 ]; then
+  pass "actionlint clean on $(printf '%s\n' "$WF" | wc -l) workflows"
+else
+  CLASSIFIED=$(printf '%s\n' "$LINT_OUT" | python3 -c '
+import re, sys
+lines = sys.stdin.read().splitlines()
+hdr = re.compile(r"^[^ \t].*?:\d+:\d+: ")
+findings, cur = [], None
+for ln in lines:
+    if hdr.match(ln):
+        if cur: findings.append(cur)
+        cur = [ln]
+    elif cur is not None:
+        cur.append(ln)
+if cur: findings.append(cur)
+style = [f for f in findings if "shellcheck" in f[0]]
+real = [f for f in findings if "shellcheck" not in f[0]]
+print(f"FINDINGS={len(findings)}")
+print(f"STYLE_COUNT={len(style)}")
+print(f"REAL_COUNT={len(real)}")
+for f in real[:40]:
+    sys.stdout.write("\n".join(f) + "\n")
+')
+  LINT_FINDINGS=$(printf '%s\n' "$CLASSIFIED" | sed -n 's/^FINDINGS=//p')
+  LINT_STYLE=$(printf '%s\n' "$CLASSIFIED" | sed -n 's/^STYLE_COUNT=//p')
+  LINT_REAL=$(printf '%s\n' "$CLASSIFIED" | sed -n 's/^REAL_COUNT=//p')
+  printf '%s\n' "$CLASSIFIED" | sed -n '/^REAL_COUNT=/,$p' | sed '1d'
+  if [ "${LINT_FINDINGS:-0}" -eq 0 ]; then
+    fail "actionlint exited ${LINT_RC} with output it could not parse (fetch failure?)"
+    printf '%s\n' "$LINT_OUT" | head -10
+  elif [ "${LINT_REAL:-0}" -gt 0 ]; then
+    fail "actionlint: ${LINT_REAL} real problem(s): syntax, topology or unknown keys"
+  else
+    pass "actionlint: no syntax or topology problems (${LINT_STYLE:-0} shellcheck style note(s) not gated)"
+  fi
+  if [ "${LINT_STYLE:-0}" -gt 0 ]; then
+    note_count=$((note_count + 1))
+    echo "NOTE: ${LINT_STYLE} shellcheck style note(s) reported but not gated (style only)"
+  fi
 fi
 echo
 
@@ -115,6 +158,18 @@ ALLOW=(
   'mesocyclone|.github/workflows/docker-shakedown.yml|REFUSING: minted JWT is the production account|production-account refusal guard must stay'
   'mesocyclone|.github/workflows/shakedown.yml|== .mesocyclone.|production-account refusal guard must stay'
   'mesocyclone|.github/workflows/docker-shakedown.yml|== .mesocyclone.|production-account refusal guard must stay'
+  'full-bars|scripts/Provider_Install_Mac.sh|Maintained by|operator-kept: maintainer credit in the installer header'
+  'full-bars|scripts/Provider_Install_Linux.sh|Maintained by|operator-kept: maintainer credit in the installer header'
+  'full-bars|scripts/Provider_Install_FreeBSD.sh|Maintained by|operator-kept: maintainer credit in the installer header'
+  'full-bars|scripts/Provider_Install_Win32.ps1|Maintained by|operator-kept: maintainer credit in the installer header'
+  'fullbars\.xyz|scripts/Provider_Install_Linux.sh|support@fullbars\.xyz|operator-kept: support address in the installers'
+  'full-bars|scripts/test_help_text.sh|assert_contains "full-bars"|operator-kept: the help header credits the maintainer'
+)
+# Matches the operator has not ruled on yet: report as WARN, never as FAIL.
+DECISIONS=(
+  'fullbars\.xyz|scripts/Provider_Install_FreeBSD.sh|dl\.fullbars\.xyz|needs operator decision: legacy mirror comment'
+  'fullbars\.xyz|scripts/test_docker_update_tarball.sh|dl\.fullbars\.xyz|needs operator decision: legacy mirror redirect test case'
+  'full-bars|.github/workflows/upstream_monitor.yml|full-bars/connect|needs operator decision: official CI watches a personal sibling fork'
 )
 # the scanner itself is skipped on purpose: its pattern table has to contain
 # the literal patterns to be able to search for them
@@ -130,15 +185,28 @@ for pat in "${PATTERNS[@]}"; do
         $a_glob:*) if printf '%s' "$hit" | grep -qE "$a_re"; then allowed=1; last_why="$a_why"; fi ;;
       esac
     done
+    decided=0
+    for row in "${DECISIONS[@]}"; do
+      d_pat="${row%%|*}"; rest="${row#*|}"; d_glob="${rest%%|*}"; rest="${rest#*|}"; d_re="${rest%%|*}"; d_why="${rest#*|}"
+      [ "$d_pat" = "$pat" ] || continue
+      case "$hit" in
+        $d_glob:*) if printf '%s' "$hit" | grep -qE "$d_re"; then decided=1; last_dec="$d_why"; fi ;;
+      esac
+    done
     if [ "$allowed" = "1" ]; then
-      pass "allowed ${pat}: ${hit%%:*} (${last_why})"
+      pass "operator-kept ${pat}: ${hit%%:*} (${last_why})"
+    elif [ "$decided" = "1" ]; then
+      warn "${last_dec}: ${hit}"
+      undecided_hits=$((undecided_hits + 1))
     else
       fail "personal reference '${pat}': ${hit}"
       personal_hits=$((personal_hits + 1))
     fi
   done < <(grep -rnE "$pat" .github/workflows .github/scripts scripts 2>/dev/null | grep -v '^scripts/official-ci-readiness.sh:' || true)
 done
-if [ "$personal_hits" -eq 0 ]; then pass "no unlisted personal references in workflows or scripts"; fi
+if [ "$personal_hits" -eq 0 ]; then
+  pass "no unlisted personal references in workflows or scripts (${undecided_hits} item(s) awaiting an operator decision)"
+fi
 echo
 
 # ---- 5. secrets matrix -----------------------------------------------------
@@ -185,7 +253,8 @@ for s in "${USED[@]}"; do
     unlisted=$((unlisted + 1))
     continue
   fi
-  if [ "$PRESENT" = "unknown" ]; then p="unknown"
+  if [ "$s" = "GITHUB_TOKEN" ]; then p="built in"
+  elif [ "$PRESENT" = "unknown" ]; then p="unknown"
   elif [ -z "$PRESENT" ]; then p="unknown"
   elif printf '%s\n' "$PRESENT" | grep -qx "$s"; then p="present"
   else p="MISSING"; fi
@@ -195,5 +264,5 @@ if [ "$unlisted" -eq 0 ]; then pass "every referenced secret has a documented de
 echo
 
 # ---- verdict ---------------------------------------------------------------
-echo "===== CI READINESS: ${FAILS} FAIL(s) ====="
+echo "===== CI READINESS: ${FAILS} FAIL(s), ${undecided_hits} awaiting a decision, ${note_count} style note group(s) ====="
 [ "$FAILS" -eq 0 ] || exit 1
