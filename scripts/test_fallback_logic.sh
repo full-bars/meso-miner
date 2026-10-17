@@ -46,7 +46,7 @@ if [ -z "$latest_version" ]; then
 fi
 
 echo "Final latest_version: '$latest_version'"
-if case "$latest_version" in v3.23.0-fix*) true ;; *) false ;; esac; then
+if case "$latest_version" in v*-*-meso) true ;; *) false ;; esac; then
     echo "✅ TEST 1 PASSED: Resiliently extracted version!"
 else
     echo "❌ TEST 1 FAILED"
@@ -58,7 +58,7 @@ echo "    TEST 2: Normal API Response           "
 echo "=========================================="
 # Simulate normal API response
 network_fetch_success() {
-    echo '{"tag_name": "v3.23.0-fix.17"}'
+    echo '{"tag_name": "v2026.10.6-1064547980-meso"}'
 }
 
 release="$(network_fetch_success "$api_url" 2>/dev/null || true)"
@@ -66,7 +66,7 @@ latest_version="$(get_version_from_api_response "$release" 2>/dev/null)"
 
 echo "Version extracted from API response: '$latest_version'"
 
-if [ "$latest_version" = "v3.23.0-fix.17" ]; then
+if [ "$latest_version" = "v2026.10.6-1064547980-meso" ]; then
     echo "✅ TEST 2 PASSED: Extracted cleanly without fallback."
 else
     echo "❌ TEST 2 FAILED"

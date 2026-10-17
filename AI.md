@@ -150,7 +150,7 @@ Key variables:
 
 ## Release & Versioning
 
-- **Provider releases** tagged `v3.23.0-fix.X.Y` — includes provider tarball + `urnet-tools` binary
+- **Provider releases** tagged `vYYYY.M.D-<code>-meso` (see `scripts/compute-meso-tag.sh`) — includes provider tarball + `urnet-tools` binary
 - `urnet-tools update` and `urnet-tools self-update` resolve "latest" to the newest `v*` tag
 - Release notes in `releases/` directory
 
