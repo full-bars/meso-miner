@@ -44,20 +44,20 @@ const livenessStartupGrace = 30 * time.Minute
 
 // livenessProgress records when the process last proved it can make progress.
 type livenessProgress struct {
-	nowFn  func() time.Time
+	clock  func() time.Time
 	nano   atomic.Int64
 	ticked atomic.Bool
 }
 
-func newLivenessProgress(nowFn func() time.Time) *livenessProgress {
-	l := &livenessProgress{nowFn: nowFn}
+func newLivenessProgress(clock func() time.Time) *livenessProgress {
+	l := &livenessProgress{clock: clock}
 	l.note() // starting up is progress
 	return l
 }
 
 // note records progress now without claiming the progress loop has ticked.
 func (self *livenessProgress) note() {
-	self.nano.Store(self.nowFn().UnixNano())
+	self.nano.Store(self.clock().UnixNano())
 }
 
 // tick records a tick of the progress loop. After the first one the strict
@@ -74,7 +74,7 @@ func (self *livenessProgress) fresh(staleAfter time.Duration) bool {
 	if !self.ticked.Load() {
 		limit = max(limit, livenessStartupGrace)
 	}
-	return self.nowFn().Sub(time.Unix(0, self.nano.Load())) <= limit
+	return self.clock().Sub(time.Unix(0, self.nano.Load())) <= limit
 }
 
 // processLiveness is the one the pressure monitor feeds.
@@ -155,8 +155,9 @@ var livenessStartOnce sync.Once
 // startLivenessWatchdog starts the stall defense once, as early as the provider
 // is ready (not after the proxy list is loaded): systemd's watchdog timer runs
 // from the start, and the loop has to be feeding it through the whole of
-// startup. Where there is no timer to feed (a container's start script) the same
-// detection runs with a self-exit as its action (see runSelfExitLivenessWatchdog).
+// startup. Where there is no timer to feed (OpenRC's supervise-daemon, a
+// container's start script) the same detection runs with a self-exit as its
+// action (see runSelfExitLivenessWatchdog).
 func startLivenessWatchdog(ctx context.Context) {
 	if !livenessApplies() {
 		return
@@ -169,7 +170,8 @@ func startLivenessWatchdog(ctx context.Context) {
 // livenessApplies reports whether this process runs the stall detection at all:
 // under systemd when the unit sets WatchdogSec= (there is a ping to withhold),
 // or under a supervisor with no watchdog of its own, which can only be asked
-// for a restart by the provider exiting (a container's start script).
+// for a restart by the provider exiting (OpenRC's supervise-daemon, a
+// container's start script).
 func livenessApplies() bool {
 	if _, enabled := sdWatchdogInterval(os.Getenv); enabled {
 		return true
@@ -200,9 +202,9 @@ func runSdWatchdog(ctx context.Context, gate func(episodeStart bool) (bool, stri
 	interval, ok := sdWatchdogInterval(os.Getenv)
 	if !ok {
 		// No systemd watchdog. Under a supervisor that restarts on exit 75 but
-		// has no watchdog of its own (a container's start script), the same
-		// stall detection still protects the box: its action is a self-exit
-		// instead of a withheld ping.
+		// has no watchdog of its own (OpenRC's supervise-daemon, a container's
+		// start script), the same stall detection still protects the box: its
+		// action is a self-exit instead of a withheld ping.
 		if livenessApplies() {
 			runSelfExitLivenessWatchdog(ctx, gate)
 		}

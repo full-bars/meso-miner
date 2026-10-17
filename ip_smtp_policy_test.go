@@ -406,7 +406,7 @@ func smtpTestTcp4PacketToPort(destinationPort int, flags byte, sequence uint32, 
 	sourceIp := net.IPv4(10, 0, 0, 2).To4()
 	destinationIp := net.IPv4(203, 0, 113, 10).To4()
 	packet := make([]byte, Ipv4HeaderSizeWithoutExtensions+TcpHeaderSizeWithoutExtensions+len(payload))
-	writeIpv4Header(packet, IP_PROTOCOL_TCP, sourceIp, destinationIp)
+	writeIpv4Header(packet, ipProtocolNumberTcp, sourceIp, destinationIp)
 	tcp := packet[Ipv4HeaderSizeWithoutExtensions:]
 	binary.BigEndian.PutUint16(tcp[0:2], 47001)
 	binary.BigEndian.PutUint16(tcp[2:4], uint16(destinationPort))
@@ -417,7 +417,7 @@ func smtpTestTcp4PacketToPort(destinationPort int, flags byte, sequence uint32, 
 	binary.BigEndian.PutUint16(tcp[14:16], 65535)
 	copy(tcp[TcpHeaderSizeWithoutExtensions:], payload)
 	binary.BigEndian.PutUint16(tcp[16:18], transportChecksum(
-		IP_PROTOCOL_TCP,
+		ipProtocolNumberTcp,
 		sourceIp,
 		destinationIp,
 		tcp,
@@ -434,7 +434,7 @@ func TestTcpRstForSmtpPolicyReject(t *testing.T) {
 	defer MessagePoolReturn(reset)
 
 	ipProtocol, sourceIp, destinationIp, transport, ok := parseIpv4(reset)
-	if !ok || ipProtocol != IP_PROTOCOL_TCP {
+	if !ok || ipProtocol != ipProtocolNumberTcp {
 		t.Fatal("SMTP policy reset is not valid IPv4/TCP")
 	}
 	var tcp parsedTcp
@@ -450,7 +450,7 @@ func TestTcpRstForSmtpPolicyReject(t *testing.T) {
 	if tcp.sourcePort != smtpImplicitTlsPort || tcp.destinationPort != 47001 {
 		t.Fatalf("reset ports = %d -> %d", tcp.sourcePort, tcp.destinationPort)
 	}
-	if checksum := transportChecksum(IP_PROTOCOL_TCP, sourceIp, destinationIp, transport); checksum != 0 {
+	if checksum := transportChecksum(ipProtocolNumberTcp, sourceIp, destinationIp, transport); checksum != 0 {
 		t.Fatalf("reset TCP checksum verification = %#x, want 0", checksum)
 	}
 
@@ -465,7 +465,7 @@ func smtpTestTcp6PacketToPort(destinationPort int, flags byte, sequence uint32, 
 	sourceIp := net.ParseIP("2001:db8::2")
 	destinationIp := net.ParseIP("2001:db8::10")
 	packet := make([]byte, Ipv6HeaderSize+TcpHeaderSizeWithoutExtensions+len(payload))
-	writeIpv6Header(packet, IP_PROTOCOL_TCP, sourceIp, destinationIp)
+	writeIpv6Header(packet, ipProtocolNumberTcp, sourceIp, destinationIp)
 	tcp := packet[Ipv6HeaderSize:]
 	binary.BigEndian.PutUint16(tcp[0:2], 47001)
 	binary.BigEndian.PutUint16(tcp[2:4], uint16(destinationPort))
@@ -476,7 +476,7 @@ func smtpTestTcp6PacketToPort(destinationPort int, flags byte, sequence uint32, 
 	binary.BigEndian.PutUint16(tcp[14:16], 65535)
 	copy(tcp[TcpHeaderSizeWithoutExtensions:], payload)
 	binary.BigEndian.PutUint16(tcp[16:18], transportChecksum(
-		IP_PROTOCOL_TCP,
+		ipProtocolNumberTcp,
 		sourceIp,
 		destinationIp,
 		tcp,
@@ -496,7 +496,7 @@ func TestTcpRstForSmtpPolicyRejectIpv6(t *testing.T) {
 	defer MessagePoolReturn(reset)
 
 	ipProtocol, sourceIp, destinationIp, transport, ok := parseIpv6(reset)
-	if !ok || ipProtocol != IP_PROTOCOL_TCP {
+	if !ok || ipProtocol != ipProtocolNumberTcp {
 		t.Fatal("SMTP policy reset is not valid IPv6/TCP")
 	}
 	var tcp parsedTcp

@@ -1,0 +1,844 @@
+--- a/gethrpc/client.go
++++ b/gethrpc/client.go
+@@ -79,6 +79,8 @@
+ 	services *serviceRegistry
+ 
+ 	idCounter uint32
++	// Copies made by the compatibility client share transport custody.
++	transportGeneration *atomic.Uint64
+ 
+ 	// This function, if non-nil, is called when the connection is lost.
+ 	reconnectFunc reconnectFunc
+@@ -143,8 +145,13 @@
+ 			}
+ 		}
+ 		return nil, ctx.Err()
+-	case resp := <-op.resp:
+-		return resp, op.err
++	case resp, ok := <-op.resp:
++		if !ok {
++			// Closing resp publishes the terminal error. Buffered batch replies
++			// can arrive before that write and must not read it concurrently.
++			return nil, op.err
++		}
++		return resp, nil
+ 	}
+ }
+ 
+@@ -205,20 +212,22 @@
+ func initClient(conn ServerCodec, idgen func() ID, services *serviceRegistry) *Client {
+ 	_, isHTTP := conn.(*httpConn)
+ 	c := &Client{
+-		idgen:       idgen,
+-		isHTTP:      isHTTP,
+-		services:    services,
+-		writeConn:   conn,
+-		close:       make(chan struct{}),
+-		closing:     make(chan struct{}),
+-		didClose:    make(chan struct{}),
+-		reconnected: make(chan ServerCodec),
+-		readOp:      make(chan readOp),
+-		readErr:     make(chan error),
+-		reqInit:     make(chan *requestOp),
+-		reqSent:     make(chan error, 1),
+-		reqTimeout:  make(chan *requestOp),
++		idgen:               idgen,
++		isHTTP:              isHTTP,
++		services:            services,
++		writeConn:           conn,
++		transportGeneration: new(atomic.Uint64),
++		close:               make(chan struct{}),
++		closing:             make(chan struct{}),
++		didClose:            make(chan struct{}),
++		reconnected:         make(chan ServerCodec),
++		readOp:              make(chan readOp),
++		readErr:             make(chan error),
++		reqInit:             make(chan *requestOp),
++		reqSent:             make(chan error, 1),
++		reqTimeout:          make(chan *requestOp),
+ 	}
++	c.transportGeneration.Store(1)
+ 	if !isHTTP {
+ 		go c.dispatch(conn)
+ 	}
+@@ -250,6 +259,9 @@
+ 
+ // Close closes the client, aborting any in-flight requests.
+ func (c *Client) Close() {
++	if c.transportGeneration != nil {
++		c.transportGeneration.Store(0)
++	}
+ 	if c.isHTTP {
+ 		return
+ 	}
+@@ -524,6 +536,7 @@
+ 		log.Trace("RPC client reconnect failed", "err", err)
+ 		return err
+ 	}
++	c.advanceTransportGeneration()
+ 	select {
+ 	case c.reconnected <- newconn:
+ 		c.writeConn = newconn
+@@ -543,11 +556,13 @@
+ 		reqInitLock = c.reqInit // nil while the send lock is held
+ 		conn        = c.newClientConn(codec)
+ 		reading     = true
++		readErr     error
+ 	)
+ 	defer func() {
+ 		close(c.closing)
++		// A stopped reader can still own the exempt in-flight send.
++		conn.close(ErrClientQuit, nil)
+ 		if reading {
+-			conn.close(ErrClientQuit, nil)
+ 			c.drainRead()
+ 		}
+ 		close(c.didClose)
+@@ -570,9 +585,11 @@
+ 			}
+ 
+ 		case err := <-c.readErr:
++			c.advanceTransportGeneration()
+ 			conn.handler.log.Debug("RPC connection read error", "err", err)
+ 			conn.close(err, lastOp)
+ 			reading = false
++			readErr = err
+ 
+ 		// Reconnect:
+ 		case newcodec := <-c.reconnected:
+@@ -586,8 +603,12 @@
+ 				conn.close(errClientReconnected, lastOp)
+ 				c.drainRead()
+ 			}
++			if lastOp != nil {
++				conn.handler.removeRequestOp(lastOp)
++			}
+ 			go c.read(newcodec)
+ 			reading = true
++			readErr = nil
+ 			conn = c.newClientConn(newcodec)
+ 			// Re-register the in-flight request on the new handler
+ 			// because that's where it will be sent.
+@@ -605,6 +626,10 @@
+ 				// Remove response handlers for the last send. When the read loop
+ 				// goes down, it will signal all other current operations.
+ 				conn.handler.removeRequestOp(lastOp)
++			} else if !reading {
++				// The accepted write did not reconnect after the reader failed.
++				// Deliver that uncertain outcome instead of losing its waiter.
++				conn.handler.cancelAllRequests(readErr, nil)
+ 			}
+ 			// Let the next request in.
+ 			reqInitLock = c.reqInit
+--- /dev/null
++++ b/gethrpc/client_generation.go
+@@ -0,0 +1,25 @@
++// Transport generations revoke observations across socket replacement without
++// changing RPC requests, retained signed bytes, or reconnect ownership.
++package rpc
++
++// Zero means closed or uninitialized. It never reappears as a valid owner.
++func (self *Client) TransportGeneration() uint64 {
++	if self == nil || self.transportGeneration == nil {
++		return 0
++	}
++	return self.transportGeneration.Load()
++}
++
++// Called at real disconnect/reconnect boundaries. Saturation refuses future
++// authority instead of wrapping into an earlier issued generation.
++func (self *Client) advanceTransportGeneration() {
++	if self == nil || self.transportGeneration == nil {
++		return
++	}
++	for {
++		before := self.transportGeneration.Load()
++		if before == 0 || self.transportGeneration.CompareAndSwap(before, before+1) {
++			return
++		}
++	}
++}
+--- a/gethrpc/handler.go
++++ b/gethrpc/handler.go
+@@ -173,11 +173,13 @@
+ // cancelAllRequests unblocks and removes pending requests and active subscriptions.
+ func (h *handler) cancelAllRequests(err error, inflightReq *requestOp) {
+ 	didClose := make(map[*requestOp]bool)
+-	if inflightReq != nil {
+-		didClose[inflightReq] = true
+-	}
+ 
+ 	for id, op := range h.respWait {
++		// Retain the send owner until it completes or transfers on reconnect.
++		// A read failure can precede successful write completion.
++		if op == inflightReq {
++			continue
++		}
+ 		// Remove the op so that later calls will not close op.resp again.
+ 		delete(h.respWait, id)
+ 
+diff --git a/scale/codec.go b/scale/codec.go
+index 18324921..4cf9a4ad 100644
+--- a/scale/codec.go
++++ b/scale/codec.go
+@@ -66,10 +66,12 @@ func (pe Encoder) PushByte(b byte) error {
+ // A typical usage is storing the length of a collection.
+ // Definition of compact encoding:
+ // 0b00 00 00 00 / 00 00 00 00 / 00 00 00 00 / 00 00 00 00
+-//   xx xx xx 00															(0 ... 2**6 - 1)		(u8)
+-//   yL yL yL 01 / yH yH yH yL												(2**6 ... 2**14 - 1)	(u8, u16)  low LH high
+-//   zL zL zL 10 / zM zM zM zL / zM zM zM zM / zH zH zH zM					(2**14 ... 2**30 - 1)	(u16, u32)  low LMMH high
+-//   nn nn nn 11 [ / zz zz zz zz ]{4 + n}									(2**30 ... 2**536 - 1)	(u32, u64, u128, U256, U512, U520) straight LE-encoded
++//
++//	xx xx xx 00															(0 ... 2**6 - 1)		(u8)
++//	yL yL yL 01 / yH yH yH yL												(2**6 ... 2**14 - 1)	(u8, u16)  low LH high
++//	zL zL zL 10 / zM zM zM zL / zM zM zM zM / zH zH zH zM					(2**14 ... 2**30 - 1)	(u16, u32)  low LMMH high
++//	nn nn nn 11 [ / zz zz zz zz ]{4 + n}									(2**30 ... 2**536 - 1)	(u32, u64, u128, U256, U512, U520) straight LE-encoded
++//
+ // Rust implementation: see impl<'a> Encode for CompactRef<'a, u64>
+ func (pe Encoder) EncodeUintCompact(v big.Int) error {
+ 	if v.Sign() == -1 {
+@@ -283,6 +285,7 @@ func (pe Encoder) EncodeOption(hasValue bool, value interface{}) error {
+ // Decoder is a wraper around a Reader that allows decoding data items from a stream.
+ type Decoder struct {
+ 	reader io.Reader
++	budget *decodeBudget
+ }
+ 
+ func NewDecoder(reader io.Reader) *Decoder {
+@@ -291,6 +294,9 @@ func NewDecoder(reader io.Reader) *Decoder {
+ 
+ // Read reads bytes from a stream into a buffer
+ func (pd Decoder) Read(bytes []byte) error {
++	if pd.budget != nil && pd.budget.err != nil {
++		return pd.budget.err
++	}
+ 	c, err := pd.reader.Read(bytes)
+ 	if err != nil {
+ 		return err
+@@ -322,11 +328,23 @@ func (pd Decoder) Decode(target interface{}) error {
+ 	if val.IsNil() {
+ 		return errors.New("Target is a nil pointer")
+ 	}
+-	return pd.DecodeIntoReflectValue(val.Elem())
++	if err := pd.DecodeIntoReflectValue(val.Elem()); err != nil {
++		return err
++	}
++	if pd.budget != nil {
++		return pd.budget.err
++	}
++	return nil
+ }
+ 
+ // DecodeIntoReflectValue populates a writable reflect.Value from the stream
+ func (pd Decoder) DecodeIntoReflectValue(target reflect.Value) error {
++	if pd.budget != nil {
++		if err := pd.budget.enter(); err != nil {
++			return err
++		}
++		defer func() { pd.budget.depth-- }()
++	}
+ 	t := target.Type()
+ 	if !target.CanSet() {
+ 		return fmt.Errorf("Unsettable value %v", t)
+@@ -336,8 +354,17 @@ func (pd Decoder) DecodeIntoReflectValue(target reflect.Value) error {
+ 	decodeable := reflect.TypeOf((*Decodeable)(nil)).Elem()
+ 	ptrType := reflect.PtrTo(t)
+ 	if ptrType.Implements(decodeable) {
++		if err := pd.ReserveAllocation(1, uint64(t.Size())); err != nil {
++			return err
++		}
+ 		var holder reflect.Value
+-		if t.Kind() == reflect.Slice || t.Kind() == reflect.Array {
++		if t.Kind() == reflect.Slice {
++			if err := pd.admitCollection(uint64(target.Len())); err != nil {
++				return err
++			}
++			if err := pd.ReserveAllocation(uint64(target.Len()), uint64(t.Elem().Size())); err != nil {
++				return err
++			}
+ 			slice := reflect.MakeSlice(t, target.Len(), target.Len())
+ 			holder = reflect.New(t)
+ 			holder.Elem().Set(slice)
+@@ -385,6 +412,9 @@ func (pd Decoder) DecodeIntoReflectValue(target reflect.Value) error {
+ 	case reflect.Float32:
+ 		fallthrough
+ 	case reflect.Float64:
++		if err := pd.ReserveAllocation(1, uint64(t.Size())); err != nil {
++			return err
++		}
+ 		intHolder := reflect.New(t)
+ 		intPointer := intHolder.Interface()
+ 		err := binary.Read(pd.reader, binary.LittleEndian, intPointer)
+@@ -422,17 +452,26 @@ func (pd Decoder) DecodeIntoReflectValue(target reflect.Value) error {
+ 
+ 	// Slices: first compact-encode length, then each item individually
+ 	case reflect.Slice:
+-		codedLen64, _ := pd.DecodeUintCompact()
+-		if codedLen64.Uint64() > math.MaxUint32 {
++		codedLen64, err := pd.DecodeUintCompact()
++		if err != nil {
++			return err
++		}
++		if !codedLen64.IsUint64() || codedLen64.Uint64() > math.MaxUint32 {
+ 			return errors.New("Encoded array length is higher than allowed by the protocol (32-bit unsigned integer)")
+ 		}
+ 		if codedLen64.Uint64() > uint64(maxInt) {
+ 			return errors.New("Encoded array length is higher than allowed by the platform")
+ 		}
+ 		codedLen := int(codedLen64.Uint64())
++		if err := pd.admitCollection(uint64(codedLen)); err != nil {
++			return err
++		}
+ 		targetLen := target.Len()
+ 		if codedLen != targetLen {
+ 			if int(codedLen) > target.Cap() {
++				if err := pd.ReserveAllocation(uint64(codedLen), uint64(t.Elem().Size())); err != nil {
++					return err
++				}
+ 				newSlice := reflect.MakeSlice(t, int(codedLen), int(codedLen))
+ 				target.Set(newSlice)
+ 			} else {
+@@ -453,6 +492,9 @@ func (pd Decoder) DecodeIntoReflectValue(target reflect.Value) error {
+ 		if err != nil {
+ 			return err
+ 		}
++		if err := pd.ReserveAllocation(uint64(len(b)), 1); err != nil {
++			return err
++		}
+ 		target.SetString(string(b))
+ 
+ 	case reflect.Struct:
+@@ -465,7 +507,7 @@ func (pd Decoder) DecodeIntoReflectValue(target reflect.Value) error {
+ 			err := pd.DecodeIntoReflectValue(target.Field(i))
+ 			if err != nil {
+ 				return fmt.Errorf("type %s does not support Decodeable interface and could not be "+
+-					"decoded field by field, error: %v", ptrType, err)
++					"decoded field by field, error: %w", ptrType, err)
+ 			}
+ 		}
+ 
+@@ -492,6 +534,11 @@ func (pd Decoder) DecodeIntoReflectValue(target reflect.Value) error {
+ 
+ // DecodeUintCompact decodes a compact-encoded integer. See EncodeUintCompact method.
+ func (pd Decoder) DecodeUintCompact() (*big.Int, error) {
++	// Compact integers have at most 67 payload bytes. Include the temporary
++	// buffer, big integer and backing words in the bounded storage reservation.
++	if err := pd.ReserveAllocation(1, 256); err != nil {
++		return nil, err
++	}
+ 	b, err := pd.ReadOneByte()
+ 
+ 	if err != nil {
+@@ -555,7 +602,10 @@ func Reverse(b []byte) {
+ 
+ // DecodeOption decodes a optionally available value into a boolean presence field and a value.
+ func (pd Decoder) DecodeOption(hasValue *bool, valuePointer interface{}) error {
+-	b, _ := pd.ReadOneByte()
++	b, err := pd.ReadOneByte()
++	if err != nil {
++		return err
++	}
+ 	switch b {
+ 	case 0:
+ 		*hasValue = false
+diff --git a/types/metadataV14.go b/types/metadataV14.go
+index 2faba579..38d270ef 100644
+--- a/types/metadataV14.go
++++ b/types/metadataV14.go
+@@ -20,6 +20,7 @@ import (
+ 	"errors"
+ 	"fmt"
+ 	"hash"
++	"reflect"
+ 	"strings"
+ 
+ 	"github.com/centrifuge/go-substrate-rpc-client/v4/scale"
+@@ -49,6 +50,11 @@ func (m *MetadataV14) Decode(decoder scale.Decoder) error {
+ 		return err
+ 	}
+ 
++	// The lookup duplicates each admitted type and allocates map storage. Its
++	// bound shares the same owner as the wire collections, before any map copy.
++	if err := decoder.ReserveAllocation(uint64(len(m.Lookup.Types))+1, uint64(reflect.TypeOf(PortableTypeV14{}).Size())+128); err != nil {
++		return err
++	}
+ 	m.EfficientLookup = m.Lookup.toMap()
+ 
+ 	err = decoder.Decode(&m.Pallets)
+diff --git a/scale/limits.go b/scale/limits.go
+new file mode 100644
+index 00000000..f7dc0a19
+--- /dev/null
++++ b/scale/limits.go
+@@ -0,0 +1,95 @@
++package scale
++
++import (
++	"errors"
++	"fmt"
++	"io"
++)
++
++// ErrDecodeResourceLimit identifies exhausted local decoding capacity, not a
++// claim that otherwise well-formed bytes are independently trusted.
++var ErrDecodeResourceLimit = errors.New("scale decoding resource limit exceeded")
++
++// DecoderLimits bounds reflected storage, collection sizes and recursive work.
++// Custom decoders must reserve their own derived allocations as well. These
++// count requested storage; allocator overhead is not a process memory limit.
++type DecoderLimits struct {
++	MaxCollectionElements uint64
++	MaxAllocationBytes    uint64
++	MaxDecodedValues      uint64
++	MaxDepth              uint32
++}
++
++// One decode owns this state. Decoder's value copies share it; independent
++// decoders never share counters. A failed budget cannot be reused or refunded.
++type decodeBudget struct {
++	limits                   DecoderLimits
++	allocationBytesRemaining uint64
++	decodedValuesRemaining   uint64
++	depth                    uint32
++	err                      error
++}
++
++// NewDecoderWithLimits opts one reader into finite, strictly positive limits.
++// Existing NewDecoder callers retain their compatibility behavior.
++func NewDecoderWithLimits(reader io.Reader, limits DecoderLimits) (*Decoder, error) {
++	if reader == nil || limits.MaxCollectionElements == 0 || limits.MaxAllocationBytes == 0 || limits.MaxDecodedValues == 0 || limits.MaxDepth == 0 {
++		return nil, errors.New("scale bounded decoder requires a reader and positive finite limits")
++	}
++	return &Decoder{reader: reader, budget: &decodeBudget{
++		limits: limits, allocationBytesRemaining: limits.MaxAllocationBytes,
++		decodedValuesRemaining: limits.MaxDecodedValues,
++	}}, nil
++}
++
++func (self *decodeBudget) refuse(reason string) error {
++	if self.err == nil {
++		self.err = fmt.Errorf("%w: %s", ErrDecodeResourceLimit, reason)
++	}
++	return self.err
++}
++
++func (self *decodeBudget) enter() error {
++	if self.err != nil {
++		return self.err
++	}
++	if self.depth >= self.limits.MaxDepth {
++		return self.refuse("depth")
++	}
++	if self.decodedValuesRemaining == 0 {
++		return self.refuse("decoded values")
++	}
++	self.decodedValuesRemaining--
++	self.depth++
++	return nil
++}
++
++// ReserveAllocation admits requested backing storage before allocation. Custom
++// decoders use it for storage derived from already admitted collections. It is
++// a no-op for an unbounded decoder; multiplication never overflows the budget.
++func (self Decoder) ReserveAllocation(count, elementBytes uint64) error {
++	if self.budget == nil {
++		return nil
++	}
++	if self.budget.err != nil {
++		return self.budget.err
++	}
++	if elementBytes != 0 && count > self.budget.allocationBytesRemaining/elementBytes {
++		return self.budget.refuse("allocation bytes")
++	}
++	self.budget.allocationBytesRemaining -= count * elementBytes
++	return nil
++}
++
++func (self Decoder) admitCollection(count uint64) error {
++	if self.budget == nil {
++		return nil
++	}
++	if self.budget.err != nil {
++		return self.budget.err
++	}
++	if count > self.budget.limits.MaxCollectionElements {
++		return self.budget.refuse("collection elements")
++	}
++	return nil
++}
+diff --git a/gethrpc/http.go b/gethrpc/http.go
+index 2c0cb5ed..59b8cc4d 100644
+--- a/gethrpc/http.go
++++ b/gethrpc/http.go
+@@ -127,46 +127,76 @@ func DialHTTP(endpoint string) (*Client, error) {
+ 
+ func (c *Client) sendHTTP(ctx context.Context, op *requestOp, msg interface{}) error {
+ 	hc := c.writeConn.(*httpConn)
+-	respBody, err := hc.doRequest(ctx, msg)
+-	if respBody != nil {
+-		defer respBody.Close()
+-	}
+-
++	body, err := hc.doRequest(ctx, msg)
+ 	if err != nil {
+-		if respBody != nil {
+-			buf := new(bytes.Buffer)
+-			if _, err2 := buf.ReadFrom(respBody); err2 == nil {
+-				return fmt.Errorf("%v %v", err, buf.String())
+-			}
+-		}
+ 		return err
+ 	}
++	// Notifications have no response channel. Their bounded HTTP completion
++	// must not block publishing a reply that no caller can receive.
++	if len(op.ids) == 0 {
++		return nil
++	}
+ 	var respmsg jsonrpcMessage
+-	if err := json.NewDecoder(respBody).Decode(&respmsg); err != nil {
++	if err := json.Unmarshal(body, &respmsg); err != nil {
+ 		return err
+ 	}
++	if !validHttpResponseEnvelope(&respmsg) || !bytes.Equal(respmsg.ID, op.ids[0]) {
++		return errors.New("HTTP RPC response does not match request")
++	}
++	if respmsg.Result == nil && respmsg.Error == nil {
++		return ErrNoResult
++	}
+ 	op.resp <- &respmsg
+ 	return nil
+ }
+ 
+ func (c *Client) sendBatchHTTP(ctx context.Context, op *requestOp, msgs []*jsonrpcMessage) error {
+ 	hc := c.writeConn.(*httpConn)
+-	respBody, err := hc.doRequest(ctx, msgs)
++	body, err := hc.doRequest(ctx, msgs)
+ 	if err != nil {
+ 		return err
+ 	}
+-	defer respBody.Close()
+ 	var respmsgs []jsonrpcMessage
+-	if err := json.NewDecoder(respBody).Decode(&respmsgs); err != nil {
++	if err := json.Unmarshal(body, &respmsgs); err != nil {
+ 		return err
+ 	}
++	// Validate the complete batch before publishing any result. Extra replies
++	// cannot fill the caller-sized channel, and foreign ids cannot reach its
++	// unchecked element lookup. Missing and duplicate replies are framing errors.
++	if len(respmsgs) != len(op.ids) {
++		return errors.New("HTTP RPC batch response count differs from request")
++	}
++	pending := make(map[string]bool, len(op.ids))
++	for _, id := range op.ids {
++		pending[string(id)] = true
++	}
++	for _, response := range respmsgs {
++		if !validHttpResponseEnvelope(&response) || !pending[string(response.ID)] {
++			return errors.New("HTTP RPC batch response does not match request")
++		}
++		delete(pending, string(response.ID))
++	}
++	// Omission retains its public failure identity only after every envelope
++	// matches. No sibling result is published from an incomplete batch.
++	for _, response := range respmsgs {
++		if response.Result == nil && response.Error == nil {
++			return ErrNoResult
++		}
++	}
+ 	for i := 0; i < len(respmsgs); i++ {
+ 		op.resp <- &respmsgs[i]
+ 	}
+ 	return nil
+ }
+ 
++// Envelope admission is separate from the result/error requirement so an
++// exact omitted result remains ErrNoResult without admitting foreign replies.
++func validHttpResponseEnvelope(response *jsonrpcMessage) bool {
++	return response.Version == vsn && response.hasValidID() && response.Method == "" && response.Params == nil &&
++		(response.Result == nil || response.Error == nil)
++}
++
+-func (hc *httpConn) doRequest(ctx context.Context, msg interface{}) (io.ReadCloser, error) {
++func (hc *httpConn) doRequest(ctx context.Context, msg interface{}) ([]byte, error) {
+ 	body, err := json.Marshal(msg)
+ 	if err != nil {
+ 		return nil, err
+@@ -179,10 +209,7 @@ func (hc *httpConn) doRequest(ctx context.Context, msg interface{}) (io.ReadClos
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+-		return resp.Body, errors.New(resp.Status)
+-	}
+-	return resp.Body, nil
++	return readHttpResponse(ctx, resp, maximumHttpResponseBytes)
+ }
+ 
+ // httpServerConn turns a HTTP connection into a Conn.
+diff --git a/gethrpc/http_response.go b/gethrpc/http_response.go
+new file mode 100644
+index 00000000..1967949c
+--- /dev/null
++++ b/gethrpc/http_response.go
+@@ -0,0 +1,54 @@
++// HTTP response admission is shared by ordinary calls, notifications and
++// batches, independently of a caller's higher-level native read/retry policy.
++package rpc
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"io"
++	"net/http"
++)
++
++// Preserve the native event ceiling: 16 MiB raw bytes use twice that on the
++// JSON hex wire, plus 0x and a finite envelope. Metadata's 8 MiB raw ceiling
++// and the existing bounded native read adapter fit within this response bound.
++// The cap covers an aggregate batch response too; it never scales with batch
++// cardinality. An owner must split larger read batches before issuing them.
++const maximumHttpResponseBytes int64 = (32 * 1024 * 1024) + (64 * 1024) + 2
++
++// This is local response admission, never proof of a transient RPC failure.
++var ErrHttpResponseLimit = errors.New("HTTP RPC response exceeds byte limit")
++
++// Own and close the physical body exactly once before any JSON result can be
++// published. Read at most one byte beyond the ceiling, including automatic
++// HTTP decompression and unknown/chunked lengths. A valid prefix cannot hide
++// a late body, close or cancellation failure. Status errors do not read bodies.
++func readHttpResponse(ctx context.Context, response *http.Response, maximumBytes int64) (body []byte, err error) {
++	if response == nil || response.Body == nil {
++		return nil, errors.New("HTTP RPC response has no body")
++	}
++	defer func() {
++		err = errors.Join(err, response.Body.Close(), ctx.Err())
++		if err != nil {
++			body = nil
++		}
++	}()
++	if maximumBytes <= 0 || maximumBytes > maximumHttpResponseBytes {
++		return nil, errors.New("invalid HTTP RPC response byte limit")
++	}
++	if err := ctx.Err(); err != nil {
++		return nil, err
++	}
++	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
++		return nil, fmt.Errorf("HTTP RPC status %d", response.StatusCode)
++	}
++	if response.ContentLength > maximumBytes {
++		return nil, ErrHttpResponseLimit
++	}
++	body, err = io.ReadAll(io.LimitReader(response.Body, maximumBytes+1))
++	if int64(len(body)) > maximumBytes {
++		err = errors.Join(err, ErrHttpResponseLimit)
++	}
++	return body, err
++}
+diff --git a/gethrpc/subscription.go b/gethrpc/subscription.go
+index d972244d..3a313311 100644
+--- a/gethrpc/subscription.go
++++ b/gethrpc/subscription.go
+@@ -26,6 +26,7 @@ import (
+ 	"errors"
+ 	"math/rand"
+ 	"reflect"
++	"strconv"
+ 	"sync"
+ 	"time"
+ )
+@@ -42,6 +43,35 @@ var globalGen = randomIDGenerator()
+ // ID defines a pseudo random number that is used to identify RPC subscriptions.
+ type ID uint32
+ 
++// Subscription replies and notifications use canonical decimal strings.
++// Preserve legacy numeric unsubscribe input while admitting that same string;
++// malformed, null and out-of-range input cannot change the selected owner.
++func (self *ID) UnmarshalJSON(raw []byte) error {
++	var value uint32
++	if len(raw) > 0 && raw[0] == '"' {
++		var text string
++		if err := json.Unmarshal(raw, &text); err != nil {
++			return err
++		}
++		parsed, err := strconv.ParseUint(text, 10, 32)
++		if err != nil || strconv.FormatUint(parsed, 10) != text {
++			return errors.New("invalid decimal subscription id")
++		}
++		value = uint32(parsed)
++	} else {
++		var number *uint32
++		if err := json.Unmarshal(raw, &number); err != nil {
++			return err
++		}
++		if number == nil {
++			return errors.New("null subscription id")
++		}
++		value = *number
++	}
++	*self = ID(value)
++	return nil
++}
++
+ // NewID returns a new, random ID.
+ func NewID() ID {
+ 	return globalGen()
+@@ -168,7 +198,7 @@ func (n *Notifier) activate() error {
+ }
+ 
+ func (n *Notifier) send(sub *Subscription, data json.RawMessage) error {
+-	params, _ := json.Marshal(&subscriptionResult{ID: string(sub.ID), Result: data})
++	params, _ := json.Marshal(&subscriptionResult{ID: strconv.FormatUint(uint64(sub.ID), 10), Result: data})
+ 	ctx := context.Background()
+ 	return n.h.conn.Write(ctx, &jsonrpcMessage{
+ 		Version: vsn,
+@@ -195,7 +225,7 @@ func (s *Subscription) Err() <-chan error {
+ 
+ // MarshalJSON marshals a subscription as its ID.
+ func (s *Subscription) MarshalJSON() ([]byte, error) {
+-	return json.Marshal(s.ID)
++	return json.Marshal(strconv.FormatUint(uint64(s.ID), 10))
+ }
+ 
+ // ClientSubscription is a subscription established through the Client's Subscribe or
+diff --git a/go.mod b/go.mod
+index 6abb578d..71a589b7 100644
+--- a/go.mod
++++ b/go.mod
+@@ -3,8 +3,6 @@ module github.com/centrifuge/go-substrate-rpc-client/v4
+ go 1.21
+ 
+ require (
+-	github.com/btcsuite/btcutil v1.0.3-0.20201208143702-a53e38424cce
+-	github.com/davecgh/go-spew v1.1.1
+ 	github.com/deckarep/golang-set v1.8.0
+ 	github.com/ethereum/go-ethereum v1.10.20
+ 	github.com/google/gofuzz v1.1.1-0.20200604201612-c04b05f3adfa
+@@ -19,20 +17,16 @@ require (
+ 
+ require (
+ 	github.com/ChainSafe/go-schnorrkel v1.0.0 // indirect
+-	github.com/StackExchange/wmi v0.0.0-20180116203802-5d049714c4a6 // indirect
+ 	github.com/cosmos/go-bip39 v1.0.0 // indirect
++	github.com/davecgh/go-spew v1.1.1 // indirect
+ 	github.com/decred/base58 v1.0.4 // indirect
+ 	github.com/decred/dcrd/crypto/blake256 v1.0.0 // indirect
+-	github.com/go-ole/go-ole v1.2.1 // indirect
+ 	github.com/go-stack/stack v1.8.1 // indirect
+ 	github.com/gtank/merlin v0.1.1 // indirect
+ 	github.com/gtank/ristretto255 v0.1.2 // indirect
+ 	github.com/mimoo/StrobeGo v0.0.0-20220103164710-9a04d6ca976b // indirect
+ 	github.com/pmezard/go-difflib v1.0.0 // indirect
+-	github.com/shirou/gopsutil v3.21.4-0.20210419000835-c7a38de76ee5+incompatible // indirect
+ 	github.com/stretchr/objx v0.1.1 // indirect
+-	github.com/tklauser/go-sysconf v0.3.5 // indirect
+-	github.com/tklauser/numcpus v0.2.2 // indirect
+ 	golang.org/x/sys v0.6.0 // indirect
+ 	gopkg.in/yaml.v3 v3.0.1 // indirect
+ )
+diff --git a/go.sum b/go.sum
+index 6158fbf4..2b182a66 100644
+--- a/go.sum
++++ b/go.sum
+@@ -1,25 +1,10 @@
+ github.com/ChainSafe/go-schnorrkel v1.0.0 h1:3aDA67lAykLaG1y3AOjs88dMxC88PgUuHRrLeDnvGIM=
+ github.com/ChainSafe/go-schnorrkel v1.0.0/go.mod h1:dpzHYVxLZcp8pjlV+O+UR8K0Hp/z7vcchBSbMBEhCw4=
+-github.com/StackExchange/wmi v0.0.0-20180116203802-5d049714c4a6 h1:fLjPD/aNc3UIOA6tDi6QXUemppXK3P9BI7mr2hd6gx8=
+-github.com/StackExchange/wmi v0.0.0-20180116203802-5d049714c4a6/go.mod h1:3eOhrUMpNV+6aFIbp5/iudMxNCF27Vw2OZgy4xEx0Fg=
+-github.com/aead/siphash v1.0.1/go.mod h1:Nywa3cDsYNNK3gaciGTWPwHt0wlpNV15vwmswBAUSII=
+-github.com/btcsuite/btcd v0.20.1-beta h1:Ik4hyJqN8Jfyv3S4AGBOmyouMsYE3EdYODkMbQjwPGw=
+-github.com/btcsuite/btcd v0.20.1-beta/go.mod h1:wVuoA8VJLEcwgqHBwHmzLRazpKxTv13Px/pDuV7OomQ=
+ github.com/btcsuite/btcd/btcec/v2 v2.2.0 h1:fzn1qaOt32TuLjFlkzYSsBC35Q3KUjT1SwPxiMSCF5k=
+ github.com/btcsuite/btcd/btcec/v2 v2.2.0/go.mod h1:U7MHm051Al6XmscBQ0BoNydpOTsFAn707034b5nY8zU=
+-github.com/btcsuite/btclog v0.0.0-20170628155309-84c8d2346e9f/go.mod h1:TdznJufoqS23FtqVCzL0ZqgP5MqXbb4fg/WgDys70nA=
+-github.com/btcsuite/btcutil v0.0.0-20190425235716-9e5f4b9a998d/go.mod h1:+5NJ2+qvTyV9exUAL/rxXi3DcLg2Ts+ymUAY5y4NvMg=
+-github.com/btcsuite/btcutil v1.0.3-0.20201208143702-a53e38424cce h1:YtWJF7RHm2pYCvA5t0RPmAaLUhREsKuKd+SLhxFbFeQ=
+-github.com/btcsuite/btcutil v1.0.3-0.20201208143702-a53e38424cce/go.mod h1:0DVlHczLPewLcPGEIeUEzfOJhqGPQ0mJJRDBtD307+o=
+-github.com/btcsuite/go-socks v0.0.0-20170105172521-4720035b7bfd/go.mod h1:HHNXQzUsZCxOoE+CPiyCTO6x34Zs86zZUiwtpXoGdtg=
+-github.com/btcsuite/goleveldb v0.0.0-20160330041536-7834afc9e8cd/go.mod h1:F+uVaaLLH7j4eDXPRvw78tMflu7Ie2bzYOH4Y8rRKBY=
+-github.com/btcsuite/snappy-go v0.0.0-20151229074030-0bdef8d06723/go.mod h1:8woku9dyThutzjeg+3xrA5iCpBRH8XEEg3lh6TiUghc=
+-github.com/btcsuite/websocket v0.0.0-20150119174127-31079b680792/go.mod h1:ghJtEyQwv5/p4Mg4C0fgbePVuGr935/5ddU9Z3TmDRY=
+-github.com/btcsuite/winsvc v1.0.0/go.mod h1:jsenWakMcC0zFBFurPLEAyrnc/teJEM1O46fmI40EZs=
+ github.com/cosmos/go-bip39 v0.0.0-20180819234021-555e2067c45d/go.mod h1:tSxLoYXyBmiFeKpvmq4dzayMdCjCnu8uqmCysIGBT2Y=
+ github.com/cosmos/go-bip39 v1.0.0 h1:pcomnQdrdH22njcAatO0yWojsUnCO3y2tNoV1cb6hHY=
+ github.com/cosmos/go-bip39 v1.0.0/go.mod h1:RNJv0H/pOIVgxw6KS7QeX2a0Uo0aKUlfhZ4xuwvCdJw=
+-github.com/davecgh/go-spew v0.0.0-20171005155431-ecdeabc65495/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+ github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+ github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
+ github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+@@ -33,12 +18,8 @@ github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.1 h1:YLtO71vCjJRCBcrPMtQ9nqBsqpA1
+ github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.1/go.mod h1:hyedUtir6IdtD/7lIxGeCxkaw7y45JueMRL4DIyJDKs=
+ github.com/ethereum/go-ethereum v1.10.20 h1:75IW830ClSS40yrQC1ZCMZCt5I+zU16oqId2SiQwdQ4=
+ github.com/ethereum/go-ethereum v1.10.20/go.mod h1:LWUN82TCHGpxB3En5HVmLLzPD7YSrEUFmFfN1nKkVN0=
+-github.com/fsnotify/fsnotify v1.4.7/go.mod h1:jwhsz4b93w/PPRr/qN1Yymfu8t87LnFCMoQvtojpjFo=
+-github.com/go-ole/go-ole v1.2.1 h1:2lOsA72HgjxAuMlKpFiCbHTvu44PIVkZ5hqm3RSdI/E=
+-github.com/go-ole/go-ole v1.2.1/go.mod h1:7FAglXiTm7HKlQRDeOQ6ZNUHidzCWXuZWq/1dTyBNF8=
+ github.com/go-stack/stack v1.8.1 h1:ntEHSVwIt7PNXNpgPmVfMrNhLtgjlmnZha2kOpuRiDw=
+ github.com/go-stack/stack v1.8.1/go.mod h1:dcoOX6HbPZSZptuspn9bctJ+N/CnF5gGygcUP3XYfe4=
+-github.com/golang/protobuf v1.2.0/go.mod h1:6lQm79b+lXiMfvg/cZm0SGofjICqVBUtrP5yJMmIC1U=
+ github.com/google/gofuzz v1.1.1-0.20200604201612-c04b05f3adfa h1:Q75Upo5UN4JbPFURXZ8nLKYUvF85dyFRop/vQ0Rv+64=
+ github.com/google/gofuzz v1.1.1-0.20200604201612-c04b05f3adfa/go.mod h1:dBl0BpW6vV/+mYPU4Po3pmUjxk6FQPldtuIdl/M65Eg=
+ github.com/gorilla/websocket v1.5.0 h1:PPwGk2jz7EePpoHN/+ClbZu8SPxiqlu12wZP/3sWmnc=
+@@ -48,24 +29,15 @@ github.com/gtank/merlin v0.1.1 h1:eQ90iG7K9pOhtereWsmyRJ6RAwcP4tHTDBHXNg+u5is=
+ github.com/gtank/merlin v0.1.1/go.mod h1:T86dnYJhcGOh5BjZFCJWTDeTK7XW8uE+E21Cy/bIQ+s=
+ github.com/gtank/ristretto255 v0.1.2 h1:JEqUCPA1NvLq5DwYtuzigd7ss8fwbYay9fi4/5uMzcc=
+ github.com/gtank/ristretto255 v0.1.2/go.mod h1:Ph5OpO6c7xKUGROZfWVLiJf9icMDwUeIvY4OmlYW69o=
+-github.com/hpcloud/tail v1.0.0/go.mod h1:ab1qPbhIpdTxEkNHXyeSf5vhxWSCs/tWer42PpOxQnU=
+-github.com/jessevdk/go-flags v0.0.0-20141203071132-1679536dcc89/go.mod h1:4FA24M0QyGHXBuZZK/XkWh8h0e1EYbRYJSGM75WSRxI=
+-github.com/jrick/logrotate v1.0.0/go.mod h1:LNinyqDIJnpAur+b8yyulnQw/wDuN1+BYKlTRt3OuAQ=
+-github.com/kkdai/bstream v0.0.0-20161212061736-f391b8402d23/go.mod h1:J+Gs4SYgM6CZQHDETBtE9HaSEkGmuNXF86RwHhHUvq4=
+ github.com/mimoo/StrobeGo v0.0.0-20181016162300-f8f6d4d2b643/go.mod h1:43+3pMjjKimDBf5Kr4ZFNGbLql1zKkbImw+fZbw3geM=
+ github.com/mimoo/StrobeGo v0.0.0-20220103164710-9a04d6ca976b h1:QrHweqAtyJ9EwCaGHBu1fghwxIPiopAHV06JlXrMHjk=
+ github.com/mimoo/StrobeGo v0.0.0-20220103164710-9a04d6ca976b/go.mod h1:xxLb2ip6sSUts3g1irPVHyk/DGslwQsNOo9I7smJfNU=
+-github.com/onsi/ginkgo v1.6.0/go.mod h1:lLunBs/Ym6LB5Z9jYTR76FiuTmxDTDusOGeTQH+WWjE=
+-github.com/onsi/ginkgo v1.7.0/go.mod h1:lLunBs/Ym6LB5Z9jYTR76FiuTmxDTDusOGeTQH+WWjE=
+-github.com/onsi/gomega v1.4.3/go.mod h1:ex+gbHU/CVuBBDIJjb2X0qEXbFg53c61hWP/1CpauHY=
+ github.com/pierrec/xxHash v0.1.5 h1:n/jBpwTHiER4xYvK3/CdPVnLDPchj8eTJFFLUb4QHBo=
+ github.com/pierrec/xxHash v0.1.5/go.mod h1:w2waW5Zoa/Wc4Yqe0wgrIYAGKqRMf7czn2HNKXmuL+I=
+ github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
+ github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+ github.com/rs/cors v1.8.2 h1:KCooALfAYGs415Cwu5ABvv9n9509fSiG5SQJn/AQo4U=
+ github.com/rs/cors v1.8.2/go.mod h1:XyqrcTp5zjWr1wsJ8PIRZssZ8b/WMcMf71DJnit4EMU=
+-github.com/shirou/gopsutil v3.21.4-0.20210419000835-c7a38de76ee5+incompatible h1:Bn1aCHHRnjv4Bl16T8rcaFjYSrGrIZvpiGO6P3Q4GpU=
+-github.com/shirou/gopsutil v3.21.4-0.20210419000835-c7a38de76ee5+incompatible/go.mod h1:5b4v6he4MtMOwMlS0TUMTu2PcXUg8+E1lC7eC3UO/RA=
+ github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
+ github.com/stretchr/objx v0.1.1 h1:2vfRuCMp5sSVIDSqO8oNnWJq7mPa6KVP3iPIwFBuy8A=
+ github.com/stretchr/objx v0.1.1/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
+@@ -73,36 +45,23 @@ github.com/stretchr/testify v1.4.0/go.mod h1:j7eGeouHqKxXV5pUuKE4zz7dFj8WfuZ+81P
+ github.com/stretchr/testify v1.6.1/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
+ github.com/stretchr/testify v1.7.2 h1:4jaiDzPyXQvSd7D0EjG45355tLlV3VOECpq10pLC+8s=
+ github.com/stretchr/testify v1.7.2/go.mod h1:R6va5+xMeoiuVRoj+gSkQ7d3FALtqAAGI1FQKckRals=
+-github.com/tklauser/go-sysconf v0.3.5 h1:uu3Xl4nkLzQfXNsWn15rPc/HQCJKObbt1dKJeWp3vU4=
+-github.com/tklauser/go-sysconf v0.3.5/go.mod h1:MkWzOF4RMCshBAMXuhXJs64Rte09mITnppBXY/rYEFI=
+-github.com/tklauser/numcpus v0.2.2 h1:oyhllyrScuYI6g+h/zUvNXNp1wy7x8qQy3t/piefldA=
+-github.com/tklauser/numcpus v0.2.2/go.mod h1:x3qojaO3uyYt0i56EW/VUYs7uBvdl2fkfZFu0T9wgjM=
+ github.com/vedhavyas/go-subkey/v2 v2.0.0 h1:LemDIsrVtRSOkp0FA8HxP6ynfKjeOj3BY2U9UNfeDMA=
+ github.com/vedhavyas/go-subkey/v2 v2.0.0/go.mod h1:95aZ+XDCWAUUynjlmi7BtPExjXgXxByE0WfBwbmIRH4=
+-golang.org/x/crypto v0.0.0-20170930174604-9419663f5a44/go.mod h1:6SG95UA2DQfeDnfUPMdvaQW0Q7yPrPDi9nlGo2tz2b4=
+ golang.org/x/crypto v0.0.0-20190308221718-c2843e01d9a2/go.mod h1:djNgcEr1/C05ACkg1iLfiJU5Ep61QUkGW8qpdssI0+w=
+ golang.org/x/crypto v0.0.0-20191206172530-e9b2fee46413/go.mod h1:LzIPMQfyMNhhGPhUkYOs5KpL4U8rLKemX1yGLhDgUto=
+-golang.org/x/crypto v0.0.0-20200115085410-6d4e4cb37c7d/go.mod h1:LzIPMQfyMNhhGPhUkYOs5KpL4U8rLKemX1yGLhDgUto=
+ golang.org/x/crypto v0.0.0-20200728195943-123391ffb6de/go.mod h1:LzIPMQfyMNhhGPhUkYOs5KpL4U8rLKemX1yGLhDgUto=
+ golang.org/x/crypto v0.7.0 h1:AvwMYaRytfdeVt3u6mLaxYtErKYjxA2OXjJ1HHq6t3A=
+ golang.org/x/crypto v0.7.0/go.mod h1:pYwdfH91IfpZVANVyUOhSIPZaFoJGxTFbZhFTx+dXZU=
+-golang.org/x/net v0.0.0-20180906233101-161cd47e91fd/go.mod h1:mL1N/T3taQHkDXs73rZJwtUhF3w3ftmwwsq0BUmARs4=
+ golang.org/x/net v0.0.0-20190404232315-eb5bcb51f2a3/go.mod h1:t9HGtf8HONx5eT2rtn7q6eTqICYqUVnKs3thJo3Qplg=
+-golang.org/x/sync v0.0.0-20180314180146-1d60e4601c6f/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
+-golang.org/x/sys v0.0.0-20180909124046-d0be0721c37e/go.mod h1:STP8DvDyc/dI5b8T5hshtkjS+E42TnysNCUPdjciGhY=
+ golang.org/x/sys v0.0.0-20190215142949-d0b11bdaac8a/go.mod h1:STP8DvDyc/dI5b8T5hshtkjS+E42TnysNCUPdjciGhY=
+ golang.org/x/sys v0.0.0-20190412213103-97732733099d/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+-golang.org/x/sys v0.0.0-20210316164454-77fc1eacc6aa/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+ golang.org/x/sys v0.6.0 h1:MVltZSvRTcU2ljQOhs94SXPftV6DCNnZViHeQps87pQ=
+ golang.org/x/sys v0.6.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+ golang.org/x/text v0.3.0/go.mod h1:NqM8EUOU14njkJ3fqMW+pc6Ldnwhi/IjpwHt7yyuwOQ=
+ gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405 h1:yhCVgyC4o1eVCa2tZl7eS0r+SDo693bJlVdllGtEeKM=
+ gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+-gopkg.in/fsnotify.v1 v1.4.7/go.mod h1:Tz8NjZHkW78fSQdbUxIjBTcgA1z1m8ZHf0WmKUhAMys=
+ gopkg.in/natefinch/npipe.v2 v2.0.0-20160621034901-c1b8fa8bdcce h1:+JknDZhAj8YMt7GC73Ei8pv4MzjDUNPHgQWJdtMAaDU=
+ gopkg.in/natefinch/npipe.v2 v2.0.0-20160621034901-c1b8fa8bdcce/go.mod h1:5AcXVHNjg+BDxry382+8OKon8SEWiKktQR07RKPsv1c=
+-gopkg.in/tomb.v1 v1.0.0-20141024135613-dd632973f1e7/go.mod h1:dt/ZhP58zS4L8KSrWDmTeBkI65Dw0HsyUHuEVlX15mw=
+-gopkg.in/yaml.v2 v2.2.1/go.mod h1:hI93XBmqTisBFMUTm0b8Fm+jr3Dg1NNxqwp+5A1VGuI=
+ gopkg.in/yaml.v2 v2.2.2/go.mod h1:hI93XBmqTisBFMUTm0b8Fm+jr3Dg1NNxqwp+5A1VGuI=
+ gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+ gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=

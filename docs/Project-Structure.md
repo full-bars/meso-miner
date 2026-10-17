@@ -1,8 +1,35 @@
 # Project Structure
 
 ```
-meso-miner/
+urnetwork-3.23-fix/
 ├── *.go                          # Core network stack (root package)
+│   ├── transport_family.go                               # Family-pinned platform transports and the group that runs them
+│   ├── transport_family_stats.go                         # Per-family counters and logs for the dual-stack transports
+│   ├── transport_h1plus.go                               # H1+ authenticated custom carrier upgrade
+│   ├── transport_h1_stats.go / transport_h1_progress.go  # Live H1 connection stats and opt-in progress metadata
+│   ├── transport_authorization.go                        # Authorization close reasons shared by the transports
+│   ├── transport_credential_refusal.go                   # Hold on dials after the platform refuses a credential
+│   ├── framed_message_conn.go                            # Binary-message surface shared by H1 and H1+
+│   ├── http_upgrade*.go                                  # H1+ upgrade policy, error causes and handshake close
+│   ├── stage3_adapter.go / net_http_stage3.go            # Adapter surface the swapped-in upstream transport expects
+│   ├── net_http_leaf.go / net_http_internal_doh.go / net_http_doh_control.go# Upstream HTTP and DoH leaves, ported
+│   ├── net_http_exhaustion.go                            # HTTP operation owners that retain failure causes
+│   ├── net_doh_family_leaf.go                            # DoH family pairing
+│   ├── net_dial_race.go                                  # Shared dual-stack dial race
+│   ├── net_dial_udp_candidates.go                        # Progressive UDP dial candidates
+│   ├── net_extender_memory.go / net_extender_quic_send.go# Extender carrier memory and QUIC send lease
+│   ├── net_strategy_delivery.go                          # Delivery observation hook on dialed connections
+│   ├── control_family.go                                 # Address-family policy for control-plane dials
+│   ├── egress_dial.go / egress_resolver_*.go             # Control-dial escape and egress-bound resolver
+│   ├── platform_h3_gate.go                               # One H3-family socket generation per platform gate
+│   ├── tun_dial_observation.go                           # Request-local dial progress observation
+│   ├── transfer_key_type.go / transfer_progress_trace.go # Transfer lane identity and opt-in progress trace
+│   ├── message_pool_counts.go                            # Cumulative message pool counts
+│   ├── ip_ipv6_ext.go                                    # Shared IPv6 extension-header walker
+│   ├── ip_nat_fragment.go / ip_fragment.go / ip_ipv6_fragment.go# NAT fragment reassembly and fragmentation (IPv6 identification from crypto/rand)
+│   ├── ip_dial_failure.go / ip_dial_errno*.go            # Answer a source whose upstream dial failed (RST, ICMP unreachable)
+│   ├── ip_protocol_number.go                             # IANA IP protocol number type (upstream's)
+│   ├── api_wallet_consent.go                             # API client for the wallet sign-in challenge
 ├── go.mod / go.sum               # Module: github.com/urnetwork/connect (Go 1.27)
 ├── Dockerfile                    # Alpine multi-arch provider image
 ├── CHANGELOG.md                  # Version history with per-release notes
@@ -19,7 +46,7 @@ meso-miner/
 │   ├── bandwidth_reporter.go     # Posts bandwidth metrics to configured fleet target
 │   ├── proxy_id.go               # Stable proxy identity across reloads
 │   ├── claim_credential.go       # `provider claim` credential choice (store client, client jwt file, legacy coldkey)
-│   ├── thrash_watchdog.go        # Swap-thrash watchdog, supervised exit-75 restart, container opt-in
+│   ├── thrash_watchdog.go        # Swap-thrash watchdog, supervised exit-75 restart
 │   ├── shmlog_linux.go           # Linux shared-memory log ring buffer
 │   ├── shmlog_fallback.go        # Fallback for non-Linux builds
 │   ├── direct.go                 # Dynamic direct native connection controller
@@ -33,16 +60,37 @@ meso-miner/
 │   ├── dup_linux_generic.go      # Generic Linux fd dup shim
 │   ├── hotswap_windows.go        # Windows HotSwap via named pipes
 │   ├── hotswap_unix.go           # Linux HotSwap via Unix sockets
+│   ├── hotswap.go                # HotSwap handoff coordination (spawn, takeover, drain)
 │   ├── control_socket.go         # Control socket server (hotswap, shutdown, status commands)
+│   ├── audit_ring.go             # 1000-entry command audit ring, persisted to audit.json
+│   ├── systemd_status.go         # Proxy-liveness counters and sliding STATUS= severity
 │   ├── control_state.go          # Persistent provider state management
 │   ├── restrict_socket_windows.go # Windows DACL socket permission hardening
 │   ├── metrics_listen.go         # Prometheus /metrics HTTP listener
 │   ├── metrics_provider.go       # Provider-specific metrics registration
 │   ├── contract_metrics.go       # Per-contract Prometheus counters
 │   ├── lifetime_metrics.go       # Provider lifetime Prometheus gauges
+│   ├── oom_cap.go                # OOM-aware start cap (shadow by default) and kill switch
+│   ├── action_ledger.go          # Audit ledger of capacity decisions (autopilot.jsonl)
+│   ├── baseline.go               # Local behaviour record (baseline.jsonl) for upgrade comparison
+│   ├── h3_direct.go              # H3 settings and eligibility for the direct identity
+│   ├── node_internals.go         # Internals snapshot (goroutines, heap, transport split) served to `top`
+│   ├── memory_headroom.go        # Low free-memory watcher (host or cgroup headroom log)
+│   ├── resource_config_warn.go   # Startup warning when memory limits are short for the pool
+│   ├── smart_dialer_probe.go     # Background connect probes for the smart dialer
+│   ├── proxy_spread_sampler.go   # Content-keyed spread sampler for the stage-1 table probe
+│   ├── proxy_direct_grade.go     # Read-only direct-path health grade (~/.urnetwork/direct_grade.json)
+│   ├── family_transport.go       # Dual-stack platform transport group for the direct identity (ip_version)
+│   ├── h3_mode.go                # The `h3` control key: off, direct, on, a proxy count, or all
+│   ├── h3_mode_apply.go          # Applies a changed `h3` setting and relaunches the proxies it adds
+│   ├── h3_proxy_set.go           # Which proxied identities get the fallback transports
+│   ├── h3_packet_conn.go         # UDP packet conn factory for H3 (SOCKS5 relay for proxied identities)
+│   ├── socks5_udp.go             # SOCKS5 UDP relay (RFC 1928 section 7) so QUIC can use a proxy
+│   ├── proxy_udp_check.go        # Per-proxy UDP path check (relay answers, exit matches the TCP path)
+│   ├── h1plus_metrics.go         # H1+ counters and the `urnet_h1plus_*` metrics
+│   ├── wallet_consent.go         # Signed subnet wallet consent (`provider wallet challenge`, `wallet set`)
+│   ├── wallet_consent_owner_*.go # Seed-file ownership check per OS
 │   └── Makefile                  # Cross-compile targets (amd64, arm64, darwin)
-│
-├── hub/                          # [REMOVED v31.3+] Fleet bandwidth dashboard server (deprecated)
 │
 ├── protocol/                     # Protobuf definitions and generated Go code
 │   ├── *.proto                   # Source definitions (ip, transfer, frame, extender, audit)
@@ -67,6 +115,13 @@ meso-miner/
 │   ├── egg-urnetwork-323fix.json # PLCN_v3 egg definition (BUILD, USER_AUTH, PASSWORD, AUTHCODE)
 │   └── README.md                 # Panel deployment guide, env vars, PELICAN-gated updates
 │
+├── workers/                      # Cloudflare Worker sources (dl.fullbars.xyz + friends)
+│   ├── dl/                       # Script proxy + install.fullbars.xyz smart dispatcher/landing page
+│   ├── dl-fullbars/               # latest-version + releases/download GitHub release mirror
+│   ├── geo/                       # geo.fullbars.xyz — client geo/RTT info endpoint
+│   ├── provider-redirect/         # provider.fullbars.xyz -> GitHub 301 redirect
+│   └── README.md                  # Routes, deploy notes, wrangler usage
+│
 ├── cmd/                         # Go binaries (v3.23.0-fix.27.0+)
 │   ├── urnet-tools/             # Provider-aware fleet ops tool (process/systemd)
 │   └── urnet-docker/            # Container variant (docker exec delegation)
@@ -77,6 +132,9 @@ meso-miner/
 │   ├── discover.go              # Provider discovery (/proc + systemd units)
 │   ├── update.go                # Interactive-first update, digest verify, atomic swap
 │   ├── legacy_cmds.go           # Reporting config, lifecycle, tuning, and proxy commands
+│   ├── autopilot.go             # autopilot log: timeline of capacity decisions (OOM cap, trim)
+│   ├── baseline.go              # baseline show/mark/compare: this box's own record
+│   ├── internals.go             # Internals snapshot for the `top` panel (transport split)
 │   ├── log_stream.go            # Native log follower: last lines, then follow; rotation and truncation aware
 │   ├── log_follow_open_*.go     # Per-OS open for the follower (Windows: FILE_SHARE_DELETE, paths over MAX_PATH)
 │   ├── lifecycle_start_windows.go   # Windows provider start (schtasks/detached)
@@ -99,8 +157,6 @@ meso-miner/
 │   ├── Configuration.md
 │   ├── Docker-Deployment.md
 │   ├── Installation.md
-│   ├── Hub-Setup.md              # [deprecated v31.3+]
-│   ├── Hub-Dashboard.md          # [deprecated v31.3+]
 │   ├── High-Volume-Performance-Tuning.md
 │   ├── Multi-Container-Scaling.md
 │   ├── Proxy-Management.md
@@ -121,12 +177,21 @@ meso-miner/
 │
 ├── .github/workflows/
 │   ├── build.yml                 # CI: parallel test-and-lint + build-and-push Docker (multi-arch)
-│   ├── dash-compat.yml           # Dash/POSIX compatibility check
-│   ├── release.yml               # Tags a new release, scans (VirusTotal + ClamAV), uploads provider binaries
+│   ├── release.yml               # Tag push: builds provider binaries (multi-GOOS), scans (VirusTotal + ClamAV), publishes the release
 │   ├── shakedown.yml             # Pre-release shakedown: fresh-droplet install + proxy + URL + docker test on v3.23.0-fix.* tags
-│   ├── shakedown-sweeper.yml     # Every 15 min: destroy orphaned shakedown-ci droplets >3h, reap stale SSH keys
+│   ├── docker-shakedown.yml      # Docker shakedown on v3.23.0-fix.* tags
 │   ├── codeql.yml                # Weekly scheduled CodeQL security scan
-│   └── upstream_monitor.yml      # Twice-daily: watch urnetwork/connect PRs and commits, Discord alerts
+│   ├── dash-compat.yml           # Dash/POSIX compatibility check
+│   ├── unix-lifecycle.yml        # Unix lifecycle verification (push to main + PR)
+│   ├── windows-lifecycle.yml     # Windows lifecycle verification (push to main + PR)
+│   ├── lifecycle-stress.yml      # Lifecycle stress test (PRs touching provider/, daily, manual)
+│   ├── docker-multi-container.yml # Multi-container scaling test (fix/* pushes + manual)
+│   ├── tool-functional-smoke.yml # urnet-tools functional smoke (main + PR, manual)
+│   ├── functional-soak.yml       # Three-hour functional soak (manual only)
+│   ├── cfaa-blocklist-sync.yml   # Twice-daily CFAA blocklist data refresh from upstream
+│   ├── upstream_monitor.yml      # Twice-daily: watch urnetwork/connect PRs and commits, Discord alerts
+│   ├── wiki-sync.yml             # On docs/** push: copy docs/*.md into the GitHub wiki
+│   └── pr-labeler.yml            # Label pull requests
 │
 └── Root package files (core network stack):
     ├── ip.go                     # IP packet relay core (81 KB)
@@ -139,10 +204,19 @@ meso-miner/
     ├── transfer_encrypt.go       # Per-contract encryption
     ├── transfer_queue.go         # Backpressure queue
     ├── transport.go              # Transport abstraction layer
+    ├── transport_h3_gate.go      # Runtime on/off gate for the H3 transport
+    ├── transport_h3_counted.go   # Byte-counting wrapper for the H3 UDP socket
+    ├── transport_h3_datagram.go  # QUIC DATAGRAM message layer and receive route
+    ├── transport_h3_datagram_lane.go  # Bounded send lane for outgoing datagrams
+    ├── transport_h3_datagram_state.go # DATAGRAM counters shown on the [health] line
+    ├── transport_h3_memory.go    # H3 memory bound
+    ├── transport_mode_stats.go   # Payload frames and bytes per transport mode
     ├── transport_p2p_webrtc.go   # WebRTC P2P transport
     ├── transport_pt.go           # Pluggable tunnel transport
     ├── net_http.go               # HTTP proxy with chunked encoding
     ├── net_http_doh.go           # DNS-over-HTTPS resolver
+    ├── net_http_smart_dialer.go  # Smart dialer: measured-cost transport preference (off by default)
+    ├── emoji/                    # Network tag validation and suggestion (copied from upstream)
     ├── net_resilient.go          # Platform-aware resilient connections
     ├── message_pool.go           # GC-reducing byte buffer pool
     ├── proxy_health.go           # Proxy health scoring

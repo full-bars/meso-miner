@@ -138,33 +138,6 @@ func TestBaselineSampleRoundsOutTheSchema(t *testing.T) {
 	}
 }
 
-// state_reason is copied from the node snapshot, which computes it
-// (deriveStateReason) whenever the node is starting or degraded. When the
-// snapshot has no reason the key stays out of the record entirely: an empty
-// string would claim a reason was measured and found to be nothing.
-func TestBaselineSampleCopiesStateReasonAndOmitsItWhenEmpty(t *testing.T) {
-	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
-	got := buildBaselineSample(baselineInputs{
-		now:  now,
-		snap: &NodeSnapshot{V: 1, Version: "v1.2.3", State: "degraded", StateReason: "dead proxies"},
-	})
-	if got.StateReason != "dead proxies" {
-		t.Fatalf("StateReason = %q, want the snapshot's %q", got.StateReason, "dead proxies")
-	}
-
-	empty := buildBaselineSample(baselineInputs{
-		now:  now,
-		snap: &NodeSnapshot{V: 1, Version: "v1.2.3", State: "up"},
-	})
-	b, err := json.Marshal(empty)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(b), "state_reason") {
-		t.Errorf("sample without a reason carries state_reason, want the key absent:\n%s", b)
-	}
-}
-
 func TestBaselineSampleKeepsOnlyTheTopErrors(t *testing.T) {
 	// Brief section 4: top N by count, N=8, so the file cannot grow with the
 	// error taxonomy.

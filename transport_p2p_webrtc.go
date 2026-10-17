@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	mathrand "math/rand"
 	"net"
 	"os"
 	"sync"
@@ -427,16 +428,16 @@ func DefaultWebRtcSettings() *WebRtcSettings {
 		UdpSocketBufferByteCount: mib(4),
 
 		DataChannelLabel: "data",
-		IceServerUrls: []string{
-			"stun:openrelay.metered.ca:80",
-			"stun:openrelay.metered.ca:443",
-			"stun:stun.stunprotocol.org:3478",
-			"stun:stun.l.google.com:19302",
-			"stun:stun1.l.google.com:19302",
-			"stun:stun2.l.google.com:19302",
-			"stun:stun3.l.google.com:19302",
-			"stun:stun4.l.google.com:19302",
-		},
+		// Offer a fresh random subset of the pool per session. The fork's former
+		// fixed list carried stun:openrelay.metered.ca (times out on both ports)
+		// and stun:stun.stunprotocol.org (no longer resolves): every ICE gather
+		// waited on them (measured 2026-10-15: 3,200 openrelay timeouts in one
+		// 5 MB log window on a 1-CPU node). Upstream dropped both on 2026-07-25
+		// and moved to a sampled pool on 2026-10-07. A dead pool entry now costs at
+		// most one StunGatherTimeout, and only IceServerSampleCount are drawn.
+		IceServerPoolUrls:    defaultStunServerUrls,
+		IceServerSampleCount: defaultIceServerSampleCount,
+		StunGatherTimeout:    2 * time.Second,
 	}
 }
 
@@ -469,7 +470,22 @@ type WebRtcSettings struct {
 	DataChannelLabel string
 
 	// add stun:xxx urls here
+	// IceServerUrls, when non-empty, pins the exact ICE/STUN servers offered and
+	// overrides the pool. Leave it empty in production to get a per-session
+	// random subset; set it to pin servers (operator override, or a test).
 	IceServerUrls []string
+	// IceServerPoolUrls is the pool a per-session subset is drawn from when
+	// IceServerUrls is empty. See defaultStunServerUrls.
+	IceServerPoolUrls []string
+	// IceServerSampleCount is how many pool servers to offer per session. 0 or a
+	// value past the pool size offers the whole pool.
+	IceServerSampleCount int
+	// StunGatherTimeout bounds how long ICE candidate gathering waits on a STUN
+	// server. Pion's default is 5 s; zero keeps it.
+	StunGatherTimeout time.Duration
+	// Nil in production; tests inject a seeded source so the per-session subset
+	// is deterministic (see selectIceServerUrls).
+	iceServerRandForTest *mathrand.Rand
 }
 
 // pionLoggerFactory routes pion logs through a Logger, so the webrtc stack

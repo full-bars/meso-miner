@@ -100,3 +100,99 @@ func recordTransferResend(byteCount int, sendNumber int) {
 	}
 	transferSendCounters.resendDepth[bucket].Add(1)
 }
+
+// Counters that say where transmitted bytes go and what the sequences are doing,
+// beyond the first-send / resend split above.
+
+// sequence exit reasons, in the order of sendSequenceExitNames
+const (
+	sendExitCancelled = iota
+	sendExitAckTimeout
+	sendExitIdle
+	sendExitNoContract
+	sendExitHeadError
+	sendExitClosed
+	sendExitReasonCount
+)
+
+var sendSequenceExitNames = [sendExitReasonCount]string{
+	"cancelled", "ack_timeout", "idle", "no_contract", "head_error", "closed",
+}
+
+var transferMoreCounters struct {
+	ackFrames atomic.Int64
+	ackBytes  atomic.Int64
+
+	clientSentFrames  atomic.Int64
+	clientSentBytes   atomic.Int64
+	controlSentFrames atomic.Int64
+	controlSentBytes  atomic.Int64
+
+	sequenceExits [sendExitReasonCount]atomic.Int64
+
+	retainedBytes atomic.Int64
+
+	releasedHeldBytes atomic.Int64
+}
+
+// recordTransferAckSent counts an acknowledgement frame this node wrote to a peer.
+func recordTransferAckSent(byteCount int) {
+	transferMoreCounters.ackFrames.Add(1)
+	transferMoreCounters.ackBytes.Add(int64(byteCount))
+}
+
+// recordTransferDestinationSend counts a frame that reached a carrier, first send
+// or resend, by whether its destination is the control plane or a client.
+func recordTransferDestinationSend(control bool, byteCount int) {
+	if control {
+		transferMoreCounters.controlSentFrames.Add(1)
+		transferMoreCounters.controlSentBytes.Add(int64(byteCount))
+		return
+	}
+	transferMoreCounters.clientSentFrames.Add(1)
+	transferMoreCounters.clientSentBytes.Add(int64(byteCount))
+}
+
+func recordSendSequenceExit(reason int) {
+	transferMoreCounters.sequenceExits[reason].Add(1)
+}
+
+// TransferMoreStats is a snapshot of the counters above.
+type TransferMoreStats struct {
+	AckFrames         int64
+	AckBytes          int64
+	ClientSentFrames  int64
+	ClientSentBytes   int64
+	ControlSentFrames int64
+	ControlSentBytes  int64
+	// SequenceExits is keyed by SendSequenceExitReasons.
+	SequenceExits map[string]int64
+	// RetainedBytes is held right now in retained returns across all sequences.
+	RetainedBytes int64
+	// ReleasedHeldBytes is the undelivered bytes held for clients at the moment
+	// they were released (or, in shadow, would have been).
+	ReleasedHeldBytes int64
+}
+
+func TransferMoreStatsNow() TransferMoreStats {
+	s := TransferMoreStats{
+		AckFrames:         transferMoreCounters.ackFrames.Load(),
+		AckBytes:          transferMoreCounters.ackBytes.Load(),
+		ClientSentFrames:  transferMoreCounters.clientSentFrames.Load(),
+		ClientSentBytes:   transferMoreCounters.clientSentBytes.Load(),
+		ControlSentFrames: transferMoreCounters.controlSentFrames.Load(),
+		ControlSentBytes:  transferMoreCounters.controlSentBytes.Load(),
+		SequenceExits:     map[string]int64{},
+		RetainedBytes:     transferMoreCounters.retainedBytes.Load(),
+		ReleasedHeldBytes: transferMoreCounters.releasedHeldBytes.Load(),
+	}
+	for i, name := range sendSequenceExitNames {
+		s.SequenceExits[name] = transferMoreCounters.sequenceExits[i].Load()
+	}
+	return s
+}
+
+// SendSequenceExitReasons lists the exit reason names in a stable order.
+func SendSequenceExitReasons() []string {
+	return append([]string(nil), sendSequenceExitNames[:]...)
+}

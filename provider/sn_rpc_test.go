@@ -73,7 +73,7 @@ func TestParseEthHexBytes(t *testing.T) {
 		{name: "mixed case", input: "0xAb", want: []byte{0xab}},
 		// "0x" decodes to an empty, error-free slice (the prefix is valid,
 		// the payload is empty). An EMPTY STRING is no longer accepted: the
-		// 0x prefix is required, matching the reference's ErrMissingPrefix —
+		// 0x prefix is required, matching the reference's ErrMissingPrefix -
 		// a missing prefix would let a sloppy or hostile endpoint smuggle
 		// data past prefix-aware checks.
 		{name: "bare 0x yields empty slice", input: "0x", want: []byte{}},
@@ -337,8 +337,8 @@ func TestSnReadFleetRevokeDigest_FailoverToSecondEndpoint(t *testing.T) {
 }
 
 func TestSnReadFleetRevokeDigest_ShortReturnData(t *testing.T) {
-	// eth_call returns valid hex but only 4 bytes (< 32): that endpoint must
-	// be treated as unusable (printed as "expected >= 32"), not trusted.
+	// eth_call returns valid hex but only 4 bytes (< 32): the unpack fails,
+	// that endpoint is treated as unusable, and the read fails over silently.
 	server := snRPCServer("0x1", "0x1234")
 	defer server.Close()
 

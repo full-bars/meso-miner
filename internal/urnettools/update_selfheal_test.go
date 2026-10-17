@@ -120,7 +120,7 @@ func TestReconcileUnitTypeAndRestart_RestartFailurePropagates(t *testing.T) {
 
 	migrated, err := reconcileUnitTypeAndRestart(p)
 	if !migrated {
-		t.Error("the unit WAS migrated even though the restart failed; migrated should still report true")
+		t.Error("the unit WAS migrated even though the restart failed — migrated should still report true")
 	}
 	if err == nil || !errors.Is(err, wantErr) {
 		t.Fatalf("expected wrapped restart error, got %v", err)
@@ -132,7 +132,7 @@ func TestReconcileUnitTypeAndRestart_RestartFailurePropagates(t *testing.T) {
 // tests above, this catches a regression where a future edit removes the
 // call from reportAlreadyCurrent (or cmdUpdate stops calling
 // reportAlreadyCurrent) without anyone touching reconcileUnitTypeAndRestart
-// itself: the gap that let the installer silently strand HotSwap in the
+// itself — the gap that let the installer silently strand HotSwap in the
 // first place.
 func TestReportAlreadyCurrent_WiresIntoSelfHeal(t *testing.T) {
 	p, _, _ := fakeUnit(t, simpleUnit)
@@ -156,7 +156,7 @@ func TestReportAlreadyCurrent_WiresIntoSelfHeal(t *testing.T) {
 	out := captureStdout(t, func() { reportAlreadyCurrent(p, cfg) })
 
 	if !restarted {
-		t.Fatal("reportAlreadyCurrent did not reconcile the clobbered unit; self-heal is not wired into the skip path")
+		t.Fatal("reportAlreadyCurrent did not reconcile the clobbered unit — self-heal is not wired into the skip path")
 	}
 	if !strings.Contains(out, "reconciled for HotSwap") {
 		t.Errorf("expected the reconciled-unit message on stdout, got: %q", out)
@@ -165,7 +165,7 @@ func TestReportAlreadyCurrent_WiresIntoSelfHeal(t *testing.T) {
 
 // TestReportAlreadyCurrent_NoOpStaysQuiet is the control case: a unit that
 // needs no reconciliation must not restart the provider or print the
-// reconciled-unit message: the self-heal must not fire on every update.
+// reconciled-unit message — the self-heal must not fire on every update.
 func TestReportAlreadyCurrent_NoOpStaysQuiet(t *testing.T) {
 	p, _, _ := fakeUnit(t, strings.ReplaceAll(simpleUnit, "Type=simple", "Type=notify"))
 	p.PID = 111

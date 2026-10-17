@@ -16,13 +16,13 @@ apk add --no-cache curl
 `adduser -D urnet` creates the `urnet` user with a home directory and no password. If the user does not exist when you install, the installer still downloads the files but does **not** install the service, and prints the commands to finish. To run the provider under a different account, set `URNET_OPENRC_USER=<name>` for the install command:
 
 ```sh
-URNET_OPENRC_USER=provider sh -c 'curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh'
+URNET_OPENRC_USER=provider sh -c 'curl -fSsL https://dl.fullbars.xyz/install.sh | sh'
 ```
 
 ## Install
 
 ```sh
-curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh
+curl -fSsL https://dl.fullbars.xyz/install.sh | sh
 ```
 
 ### What the installer does on Alpine, and why
@@ -150,7 +150,7 @@ On a host where OpenRC is the running init system and the installer's `urnetwork
 | `auto-update daily\|weekly\|monthly` / `off` | A busybox `crond` entry in `/etc/periodic/<interval>/urnetwork-update` that runs `urnet-tools update -f`. There is no systemd timer. `off` removes it from every interval. |
 | `logs [N]` | Follows the service's log file, `/var/log/urnetwork.log` (the file named by `output_log` in `/etc/init.d/urnetwork`), falling back to the error log. |
 | `status` | Prints `rc-service urnetwork status`, then the usual table with the live control-socket view. |
-| `uninstall` | When it targets the service's provider: stops the service, removes it from the runlevels (`rc-update del`), removes `/etc/init.d/urnetwork`, removes every periodic auto-update entry (including a paused one), deletes the `/usr/local/lib/urnetwork-provider` install tree, deletes the state directory in the service user's home, and removes the tool links (including the staged `/usr/local/libexec` copy). |
+| `uninstall` | When it targets the service's provider: stops the service, runs `rc-update del`, removes `/etc/init.d/urnetwork` and clears the auto-update entry. |
 
 These commands need root, because they change a system service. Run as an ordinary user, a failing command adds a hint to re-run as root.
 
@@ -178,10 +178,10 @@ The provider's [swap-thrash watchdog](Configuration.md#swap-thrash-watchdog) res
 As root:
 
 ```sh
-curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh -s -- uninstall
+curl -fSsL https://dl.fullbars.xyz/uninstall.sh | sh
 ```
 
-This stops the service, removes it from the runlevels (`rc-update del`), removes `/etc/init.d/urnetwork`, removes every periodic auto-update entry (including a paused `.installer-paused` one), deletes the install tree at `/usr/local/lib/urnetwork-provider`, deletes the state directory in the service user's home (`/home/urnet/.urnetwork`), and removes the tool links (including the staged copy in `/usr/local/libexec/urnetwork`). It also deletes the login token in the state directory, so you would need a new auth code to install again. It leaves two things behind: the `urnet` user and the log files. Remove them if you want a clean slate:
+This stops the service, removes `/etc/init.d/urnetwork`, its `default` runlevel entry and any auto-update entry, and deletes the install directory. It also deletes `/home/urnet/.urnetwork`, which holds the login token, so you would need a new auth code to install again. It leaves two things behind: the `urnet` user and the log files. Remove them if you want a clean slate:
 
 ```sh
 deluser urnet

@@ -368,3 +368,61 @@ func TestExplorationQuotaInterleavesUnprovenProxy(t *testing.T) {
 		t.Fatalf("first unproven proxy at index %d, want 5 (after 5 trusted cold proxies)", firstUnprovenIdx)
 	}
 }
+
+// While the reconnect budget is throttled, recovery scouts are ranked. A paid or
+// file proxy is far likelier to work than one scraped from a URL, so it gets a
+// head start equal to the promotion threshold: a URL proxy that has actually
+// earned real traffic still outranks a cold file proxy, exactly as at launch.
+func TestScoutScore_FileProxiesLeadUnlessAURLProxyHasProvenItself(t *testing.T) {
+	restore := withGlobalEarningsStore(t)
+	defer restore()
+	connect.ResetProxyHealthForTesting()
+	defer resetScoutSourcesForTest()
+
+	register := func(index int, key, source string) {
+		connect.RegisterProxy(index, key, key)
+		registerScoutSource(key, source)
+	}
+	register(1, "file-cold", "file")
+	register(2, "url-cold", "url")
+	register(3, "url-earner", "url")
+	register(4, "file-earner", "file")
+	register(5, "internal-cold", "internal")
+	creditEarningsAt(globalProxyEarningsStore, "url-earner", earningsPromotionBytes*2, time.Now())
+	creditEarningsAt(globalProxyEarningsStore, "file-earner", earningsPromotionBytes*2, time.Now())
+
+	fileCold, urlCold := scoutScoreForIndex(1), scoutScoreForIndex(2)
+	urlEarner, fileEarner := scoutScoreForIndex(3), scoutScoreForIndex(4)
+	internalCold := scoutScoreForIndex(5)
+
+	if !(fileCold > urlCold) {
+		t.Fatalf("a cold file proxy must outrank a cold URL proxy: file=%d url=%d", fileCold, urlCold)
+	}
+	if !(urlEarner > fileCold) {
+		t.Fatalf("a URL proxy that has earned real traffic outranks a cold file proxy: url=%d file=%d", urlEarner, fileCold)
+	}
+	if !(fileEarner > urlEarner) {
+		t.Fatalf("at equal earnings the file proxy leads: file=%d url=%d", fileEarner, urlEarner)
+	}
+	if internalCold != fileCold {
+		t.Fatalf("an operator-configured proxy ranks with file proxies: internal=%d file=%d", internalCold, fileCold)
+	}
+	if scoutScoreForIndex(404) != 0 {
+		t.Fatal("an unknown proxy scores zero")
+	}
+}
+
+func TestTagProxySourceRegistersTheSourceForScouting(t *testing.T) {
+	defer resetScoutSourcesForTest()
+	state := &ProxyState{Proxies: map[string]ProxyEntry{}}
+
+	tagProxySourceIfUnset(state, "a:1", "url")
+	if got := scoutSourceOf("a:1"); got != "url" {
+		t.Fatalf("source = %q, want url", got)
+	}
+	// the first tag wins, and the registry must agree with the persisted state
+	tagProxySourceIfUnset(state, "a:1", "file")
+	if got := scoutSourceOf("a:1"); got != "url" {
+		t.Fatalf("source changed to %q after a second tag, the first tag wins", got)
+	}
+}

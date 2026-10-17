@@ -17,6 +17,13 @@ import (
 // unauthenticated public-key lookup API. The private half stays in
 // this process — it never leaves.
 //
+// `ClientSettings.SkipClientKeyPublication` keeps the public half local
+// too, for a client whose key nothing reads. A reader outranks it: with the
+// per-peer session layer on, peers verify the cert signature and identity
+// proof against the published key. The constructor then logs an error and
+// publishes anyway, so a misapplied skip costs one registration rather than
+// the reader's traffic or signatures.
+//
 // Trust model. The platform is not trusted to honestly distribute
 // per-client public keys for new ClientIds. The expectation is that
 // the (ClientId, public key) binding is registered at account creation
@@ -62,6 +69,9 @@ type ClientKeyManager struct {
 	privateKey ed25519.PrivateKey
 	publicKey  ed25519.PublicKey
 
+	// The settings' skip, unless the constructor found a reader of the key.
+	skipPublication bool
+
 	controlSync *ControlSync
 
 	stateLock sync.RWMutex
@@ -74,6 +84,24 @@ type ClientKeyManager struct {
 // fresh seed is generated. Callers can read the running seed back via
 // `Seed()` to persist it across restarts.
 func NewClientKeyManager(ctx context.Context, client *Client) (*ClientKeyManager, error) {
+	skipPublication := client.settings.SkipClientKeyPublication
+	if skipPublication {
+		// the per-peer session layer reads the published key: peers verify
+		// the cert signature and identity proof against it, so a skip
+		// would break the reader rather than save a registration
+		reader := ""
+		if client.settings.EncryptionSettings != nil && client.settings.EncryptionSettings.Mode != EncryptionModeOff {
+			reader = "per-peer sessions need peers to verify the published key"
+		}
+		// NOTE: upstream also refuses the skip when ClientKeyRegistrationRequired
+		// is set or a nonzero CloseReportDomainHash exists, since either
+		// needs the published key. Those settings are not in this fork yet;
+		// when they are synced in, add them as readers here.
+		if reader != "" {
+			client.log.Errorf("[key]%s client key publication skip ignored: %s\n", client.ClientTag(), reader)
+			skipPublication = false
+		}
+	}
 	var pub ed25519.PublicKey
 	var priv ed25519.PrivateKey
 	seed := client.settings.ClientKeySeed
@@ -99,11 +127,12 @@ func NewClientKeyManager(ctx context.Context, client *Client) (*ClientKeyManager
 		}
 	}
 	m := &ClientKeyManager{
-		ctx:         ctx,
-		client:      client,
-		privateKey:  priv,
-		publicKey:   pub,
-		controlSync: NewControlSync(ctx, client, "client-key"),
+		ctx:             ctx,
+		client:          client,
+		privateKey:      priv,
+		publicKey:       pub,
+		controlSync:     NewControlSync(ctx, client, "client-key"),
+		skipPublication: skipPublication,
 	}
 	// Publish the public identity key once the client is fully wired.
 	// `publishClientKey` waits on `client.ReadyNotify()` internally;
@@ -150,7 +179,8 @@ func (self *ClientKeyManager) Sign(data []byte) []byte {
 }
 
 // SetSeed replaces the local client's long-lived Ed25519 identity keypair
-// with the key derived from seed and republishes the public key.
+// with the key derived from seed and republishes the public key, unless
+// publication is skipped.
 func (self *ClientKeyManager) SetSeed(seed []byte) error {
 	if len(seed) != ed25519.SeedSize {
 		return fmt.Errorf("client key seed length %d (expected %d)", len(seed), ed25519.SeedSize)
@@ -224,7 +254,15 @@ func VerifyCertChainSignature(peerPub ed25519.PublicKey, chain [][]byte, sig []b
 // on the client's `ReadyNotify()` before its first send so the
 // `sendBuffer` is wired up; without this gate the send path races the
 // buffer wiring in `Client.initBuffers`.
+//
+// A skipped publication returns before anything is sent, so the constructor
+// and every `SetSeed` rotation leave the key local.
 func (self *ClientKeyManager) publishClientKey() {
+	if self.skipPublication {
+		// the settings asked for the key to stay local and the constructor
+		// found no reader of it; see `SkipClientKeyPublication`
+		return
+	}
 	if self.controlSync == nil {
 		return
 	}

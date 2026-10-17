@@ -246,9 +246,9 @@ var setKeyHelps = []string{
 	"  ramlogs             on|off        in-memory ramlogs toggle",
 	"  metrics             on|off        enable metrics endpoint",
 	"  metrics-listen      auto|<ip:port> /metrics listen address. auto binds loopback plus every Tailscale IPv4 (0.0.0.0 in a container); an explicit address is used as-is, and off clears back to auto. Live; a change rebinds a running listener (default: auto)",
-	"  h3                  on|off        run H3 (QUIC) beside H1 for the DIRECT identity only. H1 stays the health signal: if H3 cannot connect it backs off quietly and is never counted as a backend or proxy failure. Live; off is the kill switch and beats URNETWORK_H3, closing a live connection and stopping further dials, while clearing the key hands the decision back to URNETWORK_H3, so the startup default wins (default: off, or URNETWORK_H3)",
-	"  h3-datagram         on|off        offer QUIC DATAGRAM on that H3 connection. A server that accepts then sends its small frames as datagrams, so one lost packet stops holding up the frames behind it; everything this provider sends still goes on the stream. Live: changing it closes and re-dials H3, which does not count as a drop (default: off)",
-	"  h3-datagram-send    on|off        also SEND small frames as datagrams where the server accepted the offer (default: off; applies per message)",
+	"  h3                  off|direct|on|N|all   which identities may use H3 (QUIC), H3 over DNS and the DNS pump when H1 is blocked. direct (default): the DIRECT identity runs them as automatic fallbacks, tried in that order only while nothing better is connected, idle otherwise. N: also the N best proxies; all: every proxy. A proxy's QUIC goes out through that proxy's SOCKS5 UDP relay (never from this host), and a proxy that cannot relay UDP stays on H1. on: direct, plus H3 beside H1 on the direct identity (the old meaning of on). off: H1 only, and beats URNETWORK_H3. Live: a change relaunches the identities it affects, a few at a time. Clearing the key hands the decision back to URNETWORK_H3 and the startup default",
+	"  h3-datagram         on|off        offer QUIC DATAGRAM on that H3 connection. A server that accepts then sends its small frames as datagrams, so one lost packet stops holding up the frames behind it; everything this provider sends still goes on the stream. Live: changing it closes and re-dials H3, which does not count as a drop (default: on, as upstream)",
+	"  h3-datagram-send    on|off        let this provider SEND small frames as datagrams as well, on the same lane (needs h3-datagram; the send side is newer than the receive side, so both ends must support it). A congested or blackholing lane falls back to the reliable stream rather than stalling it (default: on, as upstream)",
 	"  baseline            on|off        record this box's behaviour into baseline.jsonl every 15 minutes, with the transport split and the lifetime counters, for `urnet-tools baseline show|compare` (default: on)",
 	"  proxy-audit         on|off        grade proxies and park the ones that prove junk. Observe mode by default (logs verdicts without acting); parking only acts when hot-restart is on (default: off)",
 }
@@ -263,7 +263,7 @@ var setKeyHelps = []string{
 // proxy_self_heal and metrics would otherwise revert to a default that is not
 // off, oom_cap would revert to the "shadow" default, which decides and logs
 // but enforces nothing, so the documented kill switch would never turn the
-// feature off, and baseline would revert to "on", so `set baseline off` would
+// feature off, baseline would revert to "on", so `set baseline off` would
 // report success while the recorder kept writing, and h3 would revert to
 // URNETWORK_H3, which may be on, so the box an operator switched off would
 // come back on at the next start.
@@ -524,6 +524,8 @@ func formatSets(p Provider, want string) error {
 		{"h3", "h3"},
 		{"h3-datagram", "h3_datagram"},
 		{"h3-datagram-send", "h3_datagram_send"},
+		{"ip-version", "ip_version"},
+		{"h1-plus", "h1_plus"},
 		{"baseline", "baseline"},
 		{"proxy-audit", "proxy_audit"},
 	}

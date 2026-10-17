@@ -572,25 +572,30 @@ volumes:
 
 ---
 
-### 📊 Prometheus + Grafana Monitoring Bundle (v3.23.0-fix.31.2)
+### 📊 Prometheus + Grafana monitoring bundle
 
-As of v31.2, a `docker-compose.monitoring.yml` file is included in the repository for a ready-made Prometheus + Grafana stack that scrapes the provider's built-in `/metrics` endpoint on port `9091`:
+The repository ships a ready-made Prometheus + Grafana stack in the `monitoring/` directory. It scrapes each provider's built-in `/metrics` endpoint and draws one fleet dashboard. It is a separate stack from the provider compose file, so it can run on the same host or on any machine that can reach the providers.
+
+Set it up once, then start it:
 
 ```bash
-# Start the provider + monitoring stack together
-docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+cd monitoring
+./setup.sh                            # create .env and an empty target list
+./setup.sh 100.64.0.10:9100=node-1    # add a provider (repeat for more)
+docker compose up -d
 ```
 
-This brings up:
-- **Prometheus** — configured to scrape `http://urnetwork:9091/metrics` at a 15s interval
-- **Grafana** — pre-loaded with a provider dashboard (default login `admin` / `admin`)
+What comes up:
+
+- **Prometheus** on `127.0.0.1:9090` (set `PROMETHEUS_PORT` to change it). It reads its targets from `monitoring/prometheus/targets/providers.yml` and picks up edits within a minute. The scrape interval is 30 seconds.
+- **Grafana** on port `3000` (set `GRAFANA_PORT`, and bind it with `GRAFANA_BIND`). The admin password is the random one `setup.sh` wrote to `monitoring/.env`.
+
+Each target is the host address and the port that reaches the provider. On bare metal, `urnet-tools metrics status` prints that address. Inside a container it prints the wildcard instead, because the provider listens on every interface of its own network namespace, so use the host address and the host-published port. Turn metrics on inside a container with `docker exec urnetwork urnet-tools metrics on`, or set `URNETWORK_METRICS=:9100` to listen on every interface at start.
 
 > [!TIP]
-> If you run multiple provider containers, update the Prometheus scrape targets in `docker-compose.monitoring.yml` to point at each container's metrics port. Each container needs a unique host-side port mapping (e.g. `-p 9091:9091` on the first, `-p 9092:9091` on the second).
+> For several provider containers on one host, publish each on its own host port (for example `-p 100.64.0.10:9101:9100`) and add that host port as the target. Each container binds its own internal `9100`, so the port only moves up to `9103` when several processes share one network namespace, as on bare metal. Never expose the metrics endpoint on a public address: it lists every proxy address and its traffic.
 
-The metrics endpoint is enabled by default — no environment variables are needed. To disable it on a specific container, add `-e URNETWORK_METRICS=0`.
-
-See also the [Configuration](Configuration.md#-monitoring--telemetry) reference for the full list of telemetry variables.
+See [Monitoring](Monitoring.md) for the full setup, the metric list and the alert rules. The [Configuration](Configuration.md#-monitoring--telemetry) reference lists the telemetry variables.
 
 ## 🐦 Pelican Panel
 
@@ -642,7 +647,7 @@ The egg ships with automated CI checks (`docker/scripts/test_pelican_gates.sh` f
 
 ## Letting the Thrash Watchdog Restart the Container's Provider
 
-The swap-thrash watchdog ([details](Configuration.md#swap-thrash-watchdog)) restarts the provider by exiting with status 75. Inside a container that is allowed only when you opt in, because only you know that the container restarts the provider afterwards:
+The swap-thrash watchdog ([details](Configuration.md#swap-thrash-watchdog)) restarts the provider by exiting with status 75. Inside a container the watchdog counts the container as a supervisor, the same as systemd and OpenRC, so the provider restarts with no extra switch: self-heal is the one switch.
 
 ```yaml
 services:
@@ -651,9 +656,8 @@ services:
     restart: unless-stopped
     environment:
       URNETWORK_SELF_HEAL: "1"
-      URNETWORK_EXIT75_OK: "1"
     volumes:
       - ur_config_1:/root/.urnetwork   # the thrash cap and its 24h ceiling live here
 ```
 
-The start scripts (`start_stable.sh`, `start_nightly.sh`, `start_jwt.sh` and the provider loop of the Pelican egg) treat exit 75 as a planned restart: they wait 5 seconds, restart the provider and leave the JWT alone. Without `URNETWORK_EXIT75_OK=1` the watchdog logs `no-supervisor` and never exits. Without a writable, persistent `~/.urnetwork` it logs `persist-failed` and never exits. On runtimes that do not create `/.dockerenv` (Podman, Kubernetes) also set `URNETWORK_CONTAINER=1`.
+The start scripts (`start_stable.sh`, `start_nightly.sh`, `start_jwt.sh` and the provider loop of the Pelican egg) treat exit 75 as a planned restart: they wait 5 seconds, restart the provider and leave the JWT alone. Without a writable, persistent `~/.urnetwork` the watchdog logs `persist-failed` and never exits. On runtimes that do not create `/.dockerenv` (Podman, Kubernetes) also set `URNETWORK_CONTAINER=1`.

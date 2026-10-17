@@ -2,6 +2,10 @@
 
 Status: SEEDED — facts verified 2026-09-15, branch carries the plan + workspaces scaffold.
 
+## Status refresh (2026-09-18)
+
+Phases 0-3 are DONE on `full-bars/sn` (main = 77e215ca): the provider runtime, ops tooling, CLI, workflows, and shakedown scripts are carried and green on the v2026 base. The file-presence review that suggested ~500 lines of control/hotswap unit tests were missing was a false negative — sn consolidated them into `control_socket_test.go`, `hotswap_test.go`, and `proxy_state_test.go` (all 23 test functions verified present, suite green). What actually remains for sn: the six installer/update regression scripts now ported (sn PR #6), and a fleet-rollout decision (Phase 4). This plan's phase list and Phase 0.5 sizing notes are retained below as history — do not re-derive scope from them.
+
 ## Why
 
 Upstream rewired its data path around H3/QUIC and moved the provider daemon to `urfoundation/sn`. The fork stays on the v3.23 library + its own ops layer. This branch tracks the migration to v2026 = H3 transport + IPv6 dual-stack + the sn miner base, carrying every fork customization.

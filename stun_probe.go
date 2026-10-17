@@ -250,7 +250,13 @@ func probeSettings() *WebRtcSettings {
 // candidate gathering). Deduplicated by host:port, so an endpoint listed twice —
 // or also configured in ICE — is probed once per cycle.
 func stunProbeEndpoints(settings *WebRtcSettings) []string {
-	all := append(append([]string{}, settings.IceServerUrls...), "stun:stun.cloudflare.com:3478")
+	configured := settings.IceServerUrls
+	if len(configured) == 0 {
+		// the sampled pool: probe the whole pool, not this session's subset, so
+		// the [stun] line shows which pool servers are alive
+		configured = settings.IceServerPoolUrls
+	}
+	all := append(append([]string{}, configured...), "stun:stun.cloudflare.com:3478")
 	seen := map[string]bool{}
 	out := make([]string, 0, len(all))
 	for _, url := range all {

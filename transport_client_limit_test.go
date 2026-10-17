@@ -542,6 +542,9 @@ func TestPlatformTransportH1CloseControlHoldsDials(t *testing.T) {
 	serverUrl := "ws" + strings.TrimPrefix(server.URL, "http")
 
 	settings := DefaultPlatformTransportSettings()
+	// this test counts raw accepts of a plain websocket server: the H1+ upgrade
+	// probe would be the first accept
+	settings.EnableH1Plus = false
 	settings.ReconnectTimeout = 5 * time.Millisecond
 	settings.ClientLimitBackoff = backoff
 	settings.clientLimitHoldForTest = func() {
@@ -604,6 +607,8 @@ func TestPlatformTransportH1CloseControlHoldsDials(t *testing.T) {
 		defer server2.Close()
 
 		settings2 := DefaultPlatformTransportSettings()
+		// the server keys its close control off the first raw accept
+		settings2.EnableH1Plus = false
 		settings2.ReconnectTimeout = 5 * time.Millisecond
 		settings2.ClientLimitBackoff = backoff2
 		settings2.clientLimitHoldForTest = func() {
@@ -658,6 +663,8 @@ func TestPlatformTransportH1CloseControlHoldsDials(t *testing.T) {
 		defer server3.Close()
 
 		settings3 := DefaultPlatformTransportSettings()
+		// the server keys its close control off the first raw accept
+		settings3.EnableH1Plus = false
 		settings3.ReconnectTimeout = 5 * time.Millisecond
 		settings3.ClientLimitBackoff = backoff3
 		settings3.clientLimitHoldForTest = func() {
@@ -726,6 +733,9 @@ func TestPlatformTransportH1CloseCode4001HoldsDials(t *testing.T) {
 	defer server.Close()
 
 	settings := DefaultPlatformTransportSettings()
+	// the 4001 close code rides a WebSocket close frame, and this server keys
+	// it off the first raw accept: the H1+ probe would consume both
+	settings.EnableH1Plus = false
 	settings.ReconnectTimeout = 5 * time.Millisecond
 	settings.ClientLimitBackoff = backoff
 	settings.clientLimitHoldForTest = func() {
@@ -799,6 +809,9 @@ func TestClientLimitCloseForSupersededIntentTakesNoHold(t *testing.T) {
 	defer server.Close()
 
 	settings := DefaultPlatformTransportSettings()
+	// this test counts raw accepts of a plain websocket server: the H1+ upgrade
+	// probe would be the first accept
+	settings.EnableH1Plus = false
 	settings.ReconnectTimeout = 5 * time.Millisecond
 	settings.ClientLimitBackoff = backoff
 	settings.clientLimitHoldForTest = func() {
@@ -1073,6 +1086,9 @@ func TestPlatformTransportHoldClosesLiveH1AndH3(t *testing.T) {
 
 	// H1 transport
 	h1Settings := DefaultPlatformTransportSettings()
+	// this test counts raw accepts of a plain websocket server: the H1+ upgrade
+	// probe would be the first accept
+	h1Settings.EnableH1Plus = false
 	h1Settings.ReconnectTimeout = 5 * time.Millisecond
 	h1Settings.ClientLimitBackoff = backoff
 	h1Settings.clientLimitHoldForTest = func() {

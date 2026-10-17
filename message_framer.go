@@ -9,25 +9,20 @@ import (
 	// "github.com/urnetwork/connect"
 )
 
-// a message framer that optimizes memory copies to reduce cpu+memory usage
-// on a typical connection, writing into the connection buffer will trigger a packet send
-// and incur some fixed overhead
-// to avoid small packets and excessive write calls, this framer approach breaks
-// messages above a threshold into exactly two writes, resulting in an effective
-// halving of the packet size on the wire
-// the benefit of this approach is the framing can be done with zero additional memory allocation
-// and a small constant memory copies before handing the message to the connection
-// versus allocating and copying into a new framed message buffer,
-// this approach is ~2x more cpu+memory efficient to send framed messages on a tcp/udp connection
-// the framer read/write op is called billions of times in a typical user hour
+// Framer preserves message boundaries on a byte stream. Write splits larger
+// messages into two stream writes to avoid copying the second half into a
+// temporary pooled frame. Where stream handoffs are more expensive than that
+// copy, WriteBatchWithStorage coalesces ready messages (including a singleton)
+// into one write using bounded caller-owned scratch. Neither framing path is
+// appropriate for a packet transport whose individual Write boundaries matter.
 
 type FramerSettings struct {
-	// Log, when set, is used by the framer.
-	// nil resolves to DefaultLogger().
+	// Log, when set, is used by the framer. nil resolves to `DefaultLogger()`.
+	// The platform transport propagates its log here when nil.
 	Log Logger
 
 	// MaxMessageLen is the maximum message (payload) length, in bytes, this
-	// framer will read or write. The on-wire frame is MaxMessageLen + 4:
+	// framer will read or write. The on-wire frame is `MaxMessageLen + 4`:
 	// the framer prepends a 4-byte length header and accounts for it
 	// internally (see NewFramer). There is intentionally no global default
 	// max -- every framer must declare the largest message its context can
@@ -35,8 +30,8 @@ type FramerSettings struct {
 	// silently inherit a cap too small for, e.g., the per-peer encryption
 	// handshake (ClientSettings.MinimumMessageLenLimit).
 	MaxMessageLen int
-	// SplitMinimumLen is the minimum message length above which Write
-	// splits the body into two io.Writer.Write calls to save a memcpy.
+	// SplitMinimumLen is the minimum message length above which `Write`
+	// splits the body into two `io.Writer.Write` calls to save a memcpy.
 	// This is a stream-transport optimization.
 	SplitMinimumLen int
 }
@@ -52,38 +47,32 @@ func DefaultFramerSettings(maxMessageLen int) *FramerSettings {
 	}
 }
 
-// Read and Write must be called from a single goroutine each
+// One reader and one writer may use a Framer concurrently. Each direction must
+// have a single owner: simultaneous reads or simultaneous writes are unsupported.
 type Framer struct {
-	log Logger
 	// maxFrameLen is the maximum on-wire frame length the framer reads or
 	// writes: the configured max message (payload) length plus the 4-byte
 	// length header it prepends.
 	maxFrameLen int
 	settings    *FramerSettings
+	log         Logger
 }
 
 func NewFramer(settings *FramerSettings) *Framer {
 	return &Framer{
-		log:         loggerOrDefault(settings.Log),
 		maxFrameLen: settings.MaxMessageLen + 4,
 		settings:    settings,
+		log:         loggerOrDefault(settings.Log),
 	}
 }
 
-// Read reads one length-prefixed frame from r: a 4-byte header whose first
-// two bytes are the big-endian payload length (the second uint16 is the
-// split index used by Write and is ignored here), followed by that many
-// payload bytes read via io.ReadFull. The payload is returned in a pooled
-// message buffer the caller owns (MessagePoolReturn when done). A frame
-// whose payload exceeds MaxMessageLen is rejected with an error.
-func (self *Framer) Read(r io.Reader) ([]byte, error) {
+// ReadHeader validates the next payload length before allocation. It is also
+// used by streaming message carriers, whose caller consumes exactly this many
+// bytes before requesting the next frame. The legacy split hint is ignored.
+func (self *Framer) ReadHeader(r io.Reader) (int, error) {
 	var h [4]byte
-	n, err := r.Read(h[:])
-	if err != nil {
-		return nil, err
-	}
-	if n < 4 {
-		return nil, fmt.Errorf("Could not read header.")
+	if _, err := io.ReadFull(r, h[:]); err != nil {
+		return 0, err
 	}
 
 	messageLen := int(binary.BigEndian.Uint16(h[0:2]))
@@ -96,49 +85,21 @@ func (self *Framer) Read(r io.Reader) ([]byte, error) {
 			"[framer][reject]read messageLen=%d > MaxMessageLen=%d (maxFrameLen=%d)\n",
 			messageLen, self.settings.MaxMessageLen, self.maxFrameLen,
 		)
-		return nil, fmt.Errorf("Max message len exceeded (%d<%d)", self.settings.MaxMessageLen, messageLen)
+		return 0, fmt.Errorf("Max message len exceeded (%d<%d)", self.settings.MaxMessageLen, messageLen)
 	}
+	return messageLen, nil
+}
 
+func (self *Framer) Read(r io.Reader) ([]byte, error) {
+	messageLen, err := self.ReadHeader(r)
+	if err != nil {
+		return nil, err
+	}
 	message := MessagePoolGet(messageLen)
 
 	if _, err := io.ReadFull(r, message); err != nil {
 		MessagePoolReturn(message)
 		return nil, err
-	}
-
-	return message, nil
-}
-
-// use this version if the reader dequeues an entire packet per read
-// REVIEW (e2e-pqe merge): upstream dropped FramerSettings.MaxPacketMessageLen;
-// mapped to MaxMessageLen to keep this (currently uncalled) method compiling.
-func (self *Framer) ReadPacket(r io.Reader) ([]byte, error) {
-	h := MessagePoolGet(self.settings.MaxMessageLen + 4)
-
-	n, err := r.Read(h)
-	if err != nil {
-		return nil, err
-	}
-	if n < 4 {
-		MessagePoolReturn(h)
-		return nil, fmt.Errorf("Could not read header.")
-	}
-
-	messageLen := int(binary.BigEndian.Uint16(h[0:2]))
-
-	if self.settings.MaxMessageLen < messageLen {
-		// self.log.Infof("READ MAX\n")
-		MessagePoolReturn(h)
-		return nil, fmt.Errorf("Max message len exceeded (%d<%d)", self.settings.MaxMessageLen, messageLen)
-	}
-
-	message := h[4 : messageLen+4]
-
-	if n-4 < messageLen {
-		if _, err := io.ReadFull(r, message[n-4:messageLen]); err != nil {
-			MessagePoolReturn(h)
-			return nil, err
-		}
 	}
 
 	return message, nil
@@ -173,11 +134,10 @@ func (self *Framer) Write(w io.Writer, message []byte) error {
 		binary.BigEndian.PutUint16(messageWithHeader[0:2], uint16(messageLen))
 		binary.BigEndian.PutUint16(messageWithHeader[2:4], uint16(0))
 		copy(messageWithHeader[4:4+messageLen], message)
-		if nw, writeErr := w.Write(messageWithHeader[0 : messageLen+4]); nw < messageLen+4 {
-			if writeErr == nil {
-				writeErr = io.ErrShortWrite
-			}
+		if nw, writeErr := w.Write(messageWithHeader[0 : messageLen+4]); writeErr != nil {
 			return writeErr
+		} else if nw < messageLen+4 {
+			return io.ErrShortWrite
 		}
 		return nil
 	}
@@ -187,17 +147,127 @@ func (self *Framer) Write(w io.Writer, message []byte) error {
 	binary.BigEndian.PutUint16(h[0:2], uint16(messageLen))
 	binary.BigEndian.PutUint16(h[2:4], uint16(splitIndex))
 	copy(h[4:4+splitIndex], message[0:splitIndex])
-	if nw, writeErr := w.Write(h[0 : 4+splitIndex]); nw < 4+splitIndex {
-		if writeErr == nil {
-			writeErr = io.ErrShortWrite
-		}
+	if nw, writeErr := w.Write(h[0 : 4+splitIndex]); writeErr != nil {
 		return writeErr
+	} else if nw < 4+splitIndex {
+		return io.ErrShortWrite
 	}
-	if nw, writeErr := w.Write(message[splitIndex:messageLen]); nw < len(message)-splitIndex {
-		if writeErr == nil {
-			writeErr = io.ErrShortWrite
-		}
+	if nw, writeErr := w.Write(message[splitIndex:messageLen]); writeErr != nil {
 		return writeErr
+	} else if nw < len(message)-splitIndex {
+		return io.ErrShortWrite
+	}
+	return nil
+}
+
+// WriteBatch emits several ordinary frames in one stream write. The wire is
+// identical to repeated Write calls with split index zero; only the syscall
+// and QUIC-stream handoff are coalesced. Message ownership remains with the
+// caller on every result.
+func (self *Framer) WriteBatch(w io.Writer, messages [][]byte) error {
+	if len(messages) == 0 {
+		return nil
+	}
+	if len(messages) == 1 {
+		return self.Write(w, messages[0])
+	}
+	totalByteCount, err := self.writeBatchByteCount(messages)
+	if err != nil {
+		return err
+	}
+
+	batchBytes := MessagePoolGet(totalByteCount)
+	defer MessagePoolReturn(batchBytes)
+	return writeFramerBatch(w, messages, batchBytes)
+}
+
+// WriteBatchWithStorage emits the same wire batch using caller-owned scratch
+// storage. The caller must provide exclusive storage for the duration of the
+// call and may reuse it after return. The storage must not overlap any message;
+// messages may share backing with each other. Message ownership always stays
+// with the caller. For a singleton, insufficient storage retains Write's legacy
+// split-copy fallback. An undersized multi-message batch is rejected before
+// any stream byte is written.
+func (self *Framer) WriteBatchWithStorage(
+	w io.Writer,
+	messages [][]byte,
+	storage []byte,
+) error {
+	if len(messages) == 0 {
+		return nil
+	}
+	// Preserve the legacy singleton fallback when no sufficiently large
+	// caller-owned scratch buffer was supplied. Otherwise, use the same
+	// one-copy, one-write path as a ready batch.
+	if len(messages) == 1 && len(storage) < len(messages[0])+4 {
+		return self.Write(w, messages[0])
+	}
+	totalByteCount, err := self.writeBatchByteCount(messages)
+	if err != nil {
+		return err
+	}
+	if len(storage) < totalByteCount {
+		return fmt.Errorf(
+			"Framer batch storage too small (%d<%d)",
+			len(storage),
+			totalByteCount,
+		)
+	}
+	return writeFramerBatch(w, messages, storage[:totalByteCount])
+}
+
+// writeBatchByteCount validates every message before the writer can observe a
+// prefix and returns the exact framed byte count.
+func (self *Framer) writeBatchByteCount(messages [][]byte) (int, error) {
+	totalByteCount := 0
+	for _, message := range messages {
+		messageByteCount := len(message)
+		if self.maxFrameLen < messageByteCount+4 {
+			self.log.Infof(
+				"[framer][reject]write batch messageLen=%d > MaxMessageLen=%d (maxFrameLen=%d)\n",
+				messageByteCount,
+				self.settings.MaxMessageLen,
+				self.maxFrameLen,
+			)
+			return 0, fmt.Errorf(
+				"Max message len exceeded (%d<%d)",
+				self.settings.MaxMessageLen,
+				messageByteCount,
+			)
+		}
+		if math.MaxUint16 < messageByteCount {
+			return 0, fmt.Errorf(
+				"Max possible message len exceeded (%d<%d)",
+				math.MaxUint16,
+				messageByteCount,
+			)
+		}
+		if math.MaxInt-totalByteCount < messageByteCount+4 {
+			return 0, fmt.Errorf("Framer batch byte count overflow.")
+		}
+		totalByteCount += messageByteCount + 4
+	}
+	return totalByteCount, nil
+}
+
+// writeFramerBatch fills exact-sized caller storage and performs one stream
+// write after all validation has completed.
+func writeFramerBatch(w io.Writer, messages [][]byte, batchBytes []byte) error {
+	offset := 0
+	for _, message := range messages {
+		messageByteCount := len(message)
+		binary.BigEndian.PutUint16(
+			batchBytes[offset:offset+2],
+			uint16(messageByteCount),
+		)
+		binary.BigEndian.PutUint16(batchBytes[offset+2:offset+4], 0)
+		copy(batchBytes[offset+4:offset+4+messageByteCount], message)
+		offset += messageByteCount + 4
+	}
+	if writtenByteCount, err := w.Write(batchBytes); err != nil {
+		return err
+	} else if writtenByteCount < len(batchBytes) {
+		return io.ErrShortWrite
 	}
 	return nil
 }

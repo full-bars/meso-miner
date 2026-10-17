@@ -84,7 +84,7 @@ func newSmtpSeamProviderWithClient(
 	localUserNat := NewLocalUserNatWithDefaults(ctx, "smtp-provider-test", nil)
 	settings := DefaultRemoteUserNatProviderSettings()
 	settings.WriteTimeout = 10 * time.Millisecond
-	settings.EgressSecurityPolicyGenerator = func(*SecurityPolicyStatsCollector) SecurityPolicy {
+	settings.EgressSecurityPolicyGenerator = func(context.Context, *SecurityPolicyStatsCollector) SecurityPolicy {
 		return policy
 	}
 	provider := NewRemoteUserNatProvider(client, localUserNat, nil, settings)
@@ -158,7 +158,7 @@ func newSmtpSeamMulti(
 		},
 	}
 	settings := DefaultMultiClientSettings()
-	settings.EgressSecurityPolicyGenerator = func(*SecurityPolicyStatsCollector) SecurityPolicy {
+	settings.EgressSecurityPolicyGenerator = func(context.Context, *SecurityPolicyStatsCollector) SecurityPolicy {
 		return policy
 	}
 	multi := NewRemoteUserNatMultiClient(
@@ -434,7 +434,7 @@ func smtpSeamTcp4Packet(
 	sourceIp := net.IPv4(10, 0, 0, 2).To4()
 	destinationIp := net.IPv4(203, 0, 113, 10).To4()
 	packet := make([]byte, Ipv4HeaderSizeWithoutExtensions+TcpHeaderSizeWithoutExtensions+len(payload))
-	writeIpv4Header(packet, IP_PROTOCOL_TCP, sourceIp, destinationIp)
+	writeIpv4Header(packet, ipProtocolNumberTcp, sourceIp, destinationIp)
 	tcp := packet[Ipv4HeaderSizeWithoutExtensions:]
 	binary.BigEndian.PutUint16(tcp[0:2], uint16(sourcePort))
 	binary.BigEndian.PutUint16(tcp[2:4], uint16(destinationPort))
@@ -445,7 +445,7 @@ func smtpSeamTcp4Packet(
 	binary.BigEndian.PutUint16(tcp[14:16], 65535)
 	copy(tcp[TcpHeaderSizeWithoutExtensions:], payload)
 	binary.BigEndian.PutUint16(tcp[16:18], transportChecksum(
-		IP_PROTOCOL_TCP,
+		ipProtocolNumberTcp,
 		sourceIp,
 		destinationIp,
 		tcp,

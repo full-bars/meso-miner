@@ -16,6 +16,11 @@
 | `urnet-tools hotswap` restarts instead of handing off | Unit is `Type=simple`, not `Type=notify` | Expected on any node installed before v3.23.0-fix.31.0. The update still applies via restart. See [HotSwap declines on an existing node](#5-hotswap-declines-on-an-existing-node). |
 | A setting from `urnet-tools set` seems not to apply | Change was queued, rejected, or applied only on restart | Check the provider log for `⚙️ [control]` / `❌ [control]`. See [Confirming a settings change](#6-confirming-a-settings-change). |
 | `status` shows a running PID but no control socket | Startup failure, or a second provider for the same OS user | The socket is the liveness signal, not the PID. Check the log for a startup error and `urnet-tools providers --all` for a collision. |
+| `[proxy][resources] warning` at startup | The memory limits are short for the pool (heap against `GOMEMLIMIT`, or footprint against the RAM the box gives the provider) | Advisory: the provider never changes limits. Lower the pool with `urnet-tools proxy trim <N>` or raise the limit. See the [Log Message Reference](../LOG_REFERENCE.md). |
+| `[proxy][resources] low memory headroom`, or kernel OOM kills | The box is short of memory. Connected clients drive memory, so this can happen with no change in the proxy count | Read the decisions with `urnet-tools autopilot log`. Lower the pool with `urnet-tools proxy trim <N>`, or let the provider cap itself after a kill with `urnet-tools set oom-cap on` (default is `shadow`: it logs only). |
+| `last restart: unclean` after a plain restart | Expected in 32.8: a plain `systemctl restart` reads `unclean`, the same as a crash | An in-place `urnet-tools update` reads `update`. A real crash also reads `unclean`. Telling a plain restart from a crash is tracked in [#707](https://github.com/full-bars/urnetwork-3.23-fix/issues/707). |
+| `last restart: unclean` after an update on a build older than 32.8 | Old builds read a version change as a crash | Fixed in 32.8: an upgrade reads `update`. |
+| Update restarts instead of hotswapping, `low_memory` outcome | The box cannot hold two providers at once | Expected on a small box. See [HotSwap](HotSwap.md). |
 
 > [!NOTE]
 > **Discovery dedup fix (v3.23.0-fix.31.2):** Previous versions could list duplicate providers when the same binary was registered under multiple paths or when `urnet-tools providers` scanned overlapping install locations. As of v31.2, provider discovery deduplicates entries by `(binary_path, uid)`, so `urnet-tools providers` and `urnet-tools providers --all` no longer show phantom duplicates. If you still see duplicates after upgrading, re-install the provider with `curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh` to refresh the registration.
@@ -45,7 +50,7 @@ Every time the provider binary exits with a non-zero code, it prints a `FATAL [e
 | 20 | The proxy file specified with `--proxy_file` cannot be read. Check the path and file permissions. |
 | 21 | The proxy file is empty or contains no valid `ip:port:user:pass` lines. |
 | 78 | The JWT is expired or invalid. The startup script intercepts this code, deletes the stale JWT, and re-authenticates automatically. |
-| 75 | Planned restart requested by the swap-thrash watchdog. It is not a crash. Under systemd with `Restart=on-failure` the unit restarts the provider. In a container the start script restarts it after 5 seconds, and only when `URNETWORK_EXIT75_OK=1` allowed the watchdog to exit at all. See [Swap-thrash watchdog](Configuration.md#swap-thrash-watchdog). |
+| 75 | Planned restart requested by the swap-thrash watchdog. It is not a crash. Under systemd with `Restart=on-failure` the unit restarts the provider. In a container the start script restarts it after 5 seconds. See [Swap-thrash watchdog](Configuration.md#swap-thrash-watchdog). |
 
 ### logs
 
@@ -101,7 +106,7 @@ The signaling layer is responsible for contract creation and connection handshak
 | :--- | :--- | :--- |
 | `oob err = Timeout` | The signaling response took >60s. | Check for network congestion or CPU starvation. |
 | `oob err = Invalid` | Authentication token (JWT) or credentials failed. | Verify your `<AUTH-CODE>` or email/pass. |
-| `exit could not create contract` | Repeated timeouts prevented contract initialization. | See [Performance Tuning](High-Volume-Performance-Tuning). |
+| `exit could not create contract` | Repeated timeouts prevented contract initialization. | See [Performance Tuning](High-Volume-Performance-Tuning.md). |
 
 ## 4. Resource Exhaustion
 
@@ -142,7 +147,7 @@ hotswap.
 > Releases up to and including v3.23.0-fix.32.0 skipped that migration for units
 > with no `Type=` line, so those nodes stay on restart-only updates
 > indefinitely, and the "update migrates it" wording in the decline message was
-> not true for them. Fixed in the release after v3.23.0-fix.32.0.
+> not true for them. Fixed in v3.23.0-fix.32.1.
 
 ```bash
 # Confirm what the unit actually is
@@ -206,7 +211,7 @@ urnet-tools providers --all # as root, to rule out a same-user collision
 
 ## 7. Claim and Wallet Messages
 
-These come from `provider claim`, `provider wallet set` and `provide --wallet`. None of them prints a token.
+These come from `provider claim`, `provider wallet challenge`, `provider wallet set` and `provide --wallet`. None of them prints a token.
 
 | Message | Meaning and fix |
 |---------|-----------------|
@@ -220,3 +225,24 @@ These come from `provider claim`, `provider wallet set` and `provide --wallet`. 
 | `<source> has expired; let the provider renew it or pass a fresher --provider-jwt` | Start the provider so it renews the identity, or pass a newer token file. |
 | `No claimable epoch.` | The platform's own answer: there is nothing to claim for that epoch with that client. Try another identity that served traffic, or another `--epoch`. |
 | `subnet wallet not set: provider wallet set sends the unsigned network wallet request ...` | The unsigned request is refused by default, because the platform is moving to a signed wallet consent. Set the wallet in the URnetwork app or web account, or add `--legacy-network-wallet` to send the unsigned request anyway. `provide --wallet` prints this and keeps providing. |
+
+| `wallet challenge: the server returned no message to sign` | The challenge request answered without the text to sign, so nothing was signed. Retry; if it repeats, the server side is at fault. |
+| `wallet challenge: the message to sign is not the expected sign-in challenge; refusing to sign it` | The provider signs only the server's documented three-line sign-in challenge. A different message means the answer was not the expected shape, so nothing is signed. |
+| `wallet challenge: the message to sign does not carry the issued challenge; refusing to sign it` | The text did not contain the challenge the server issued for this request; signing it would prove nothing. Nothing is signed. |
+| `seed file <path>: ...` | The 32-byte coldkey seed could not be used. It must be a regular file (not a symlink), mode 600, owned by the caller. |
+| `use either --coldkey_seed_file or --message with --signature, not both` | Give exactly one way to prove the coldkey. |
+
+`provider wallet challenge <coldkey_ss58>` prints the server's sign-in challenge so it can be signed elsewhere (btcli) and sent back with `--message`/`--signature`; the seed then never has to be on the node. `provider wallet set` sends the proof. The unsigned network wallet request is still refused unless `--legacy-network-wallet` is passed.
+
+### Hotkey, daemon and fleet messages
+
+These come from the hotkey delegation, the claim daemons and the fleet group. Their pages carry the full behavior: [Bittensor hotkey delegation](Bittensor-Hotkey-Delegation.md), [Bittensor claim daemons](Bittensor-Claim-Daemons.md), [Bittensor fleet](Bittensor-Fleet.md).
+
+| Message | Meaning and fix |
+|---------|-----------------|
+| `wallet consent: --wallet-from-epoch=<n> is far beyond the current epoch <m>; ...` | The explicit consent interval would leave epochs unpaid. Use the default window, or set `URNETWORK_WALLET_ALLOW_ODD_INTERVAL=1` to override deliberately. See [Wallet consent](Bittensor-Operations.md). |
+| `claim-daemon: <reason>; driving retained signed work only` | The v1 daemon's claim credential is missing or no longer accepted. Fix the token; new claims pause while already signed entries still finish. |
+| `explicit durable-volume declaration and hash are required` | Pass `--durable-volumes` with `--durable-volumes-sha256`; fleet mainnet writes and the claim daemons require a matching declaration. |
+| `fleet status does not match the canonical manifest` | The chain differs from the manifest (a missing publish or binding, or a newer generation). Re-run the write, then status again. |
+| `N of M authenticated operators do not adopt the head yet; ...` | The hotkey submission failed at the operator it resolved. Set the same message and signature again to retry. |
+| `private seed file custody is unsupported on this platform` | Seed-bearing commands (`wallet hotkey`, the `fleet` writes) run on Linux or macOS only. |

@@ -34,7 +34,26 @@ type SnStatusInfo struct {
 	ChainID           uint64  `json:"chain_id,omitempty"`
 	PayoutShareBps    int     `json:"payout_share_bps,omitempty"`
 	ClaimEpoch        uint64  `json:"claim_epoch,omitempty"`
-	Error             string  `json:"error,omitempty"`
+	// the network wallet consent as the platform reports it (the same read as
+	// `provider wallet status`): what release settlement actually pays
+	WalletConsent *SnWalletConsentSummary `json:"wallet_consent,omitempty"`
+	// legacy login-proof wallets: NOT consents; settlement does not pay them
+	WalletLoginProofColdkeys []string `json:"wallet_login_proof_coldkeys,omitempty"`
+	// why the consent state could not be read, when that fetch failed
+	WalletConsentUnavailable string `json:"wallet_consent_unavailable,omitempty"`
+	Error                    string `json:"error,omitempty"`
+}
+
+// SnWalletConsentSummary is the effective network consent entry: the coldkey,
+// the epoch interval it pays, and where the current epoch sits in it.
+type SnWalletConsentSummary struct {
+	ColdkeySs58       string `json:"coldkey_ss58,omitempty"`
+	FromEpoch         int64  `json:"from_epoch,omitempty"`
+	ThroughEpoch      int64  `json:"through_epoch,omitempty"`
+	MappingGeneration int64  `json:"mapping_generation,omitempty"`
+	// "in effect now", "starts in N epoch(s)" or "ended"; empty when the
+	// current epoch is unknown
+	State string `json:"state,omitempty"`
 }
 
 // snStatusAPI is the subset of BringYourApi used by FetchSnStatus, testable with a mock.
@@ -43,6 +62,7 @@ type snStatusAPI interface {
 	NetworkGetRankingSync() (*connect.NetworkRankingResult, error)
 	SnEpochSync() (*connect.SnEpochResult, error)
 	SnPoolClaimSync(*connect.SnPoolClaimArgs) (*connect.SnPoolClaimResult, error)
+	SnGetWalletSync() (*connect.SnGetWalletResult, error)
 }
 
 // newSnStatusAPI is a seam for testing; overridden in tests to inject a mock.
@@ -249,6 +269,48 @@ func FetchSnStatus(p Provider) (*SnStatusInfo, error) {
 		}
 	}
 
+	// Network wallet consent: the same GET /sn/wallet read as the provider's
+	// `wallet status`, so this shows what release settlement actually pays,
+	// apart from any legacy login-proof wallet. A failure here degrades the
+	// wallet section only; it never feeds the ranking/epoch error tally.
+	if walletRes, walletErr := api.SnGetWalletSync(); walletErr != nil {
+		info.WalletConsentUnavailable = walletErr.Error()
+	} else if walletRes != nil && walletRes.Error != nil && walletRes.Error.Message != "" {
+		info.WalletConsentUnavailable = walletRes.Error.Message
+	} else if walletRes != nil {
+		entries := walletRes.Wallets
+		if len(entries) == 0 && walletRes.Wallet != nil {
+			entries = []*connect.SnWalletEntry{walletRes.Wallet}
+		}
+		for _, entry := range entries {
+			if entry.ConsentScope == "" {
+				// a login-proof wallet is not a consent
+				if entry.ColdkeySs58 != "" {
+					info.WalletLoginProofColdkeys = append(info.WalletLoginProofColdkeys, entry.ColdkeySs58)
+				}
+				continue
+			}
+			consent := &SnWalletConsentSummary{
+				ColdkeySs58:       entry.ColdkeySs58,
+				FromEpoch:         entry.FromEpoch,
+				ThroughEpoch:      entry.ThroughEpoch,
+				MappingGeneration: entry.MappingGeneration,
+			}
+			if info.CurrentEpoch > 0 && entry.FromEpoch > 0 {
+				switch {
+				case int64(info.CurrentEpoch) < entry.FromEpoch:
+					consent.State = fmt.Sprintf("starts in %d epoch(s)", entry.FromEpoch-int64(info.CurrentEpoch))
+				case entry.ThroughEpoch > 0 && int64(info.CurrentEpoch) > entry.ThroughEpoch:
+					consent.State = "ended"
+				default:
+					consent.State = "in effect now"
+				}
+			}
+			// the newest consent entry wins
+			info.WalletConsent = consent
+		}
+	}
+
 	if len(errs) > 0 {
 		info.Error = strings.Join(errs, "; ")
 		// Return error when both independent API calls failed (ranking + epoch).
@@ -306,16 +368,43 @@ func renderSnStatusDashboard(s *SnStatusInfo) {
 		fmt.Printf("  \x1b[1mNet Bandwidth:\x1b[0m    0.00 MiB\n")
 	}
 
-	// Coldkey
-	if s.ColdkeySs58 != "" {
-		fmt.Printf("  \x1b[1mColdkey (SS58):\x1b[0m   \x1b[33m%s\x1b[0m\n", s.ColdkeySs58)
+	// Coldkey. The local cache may be absent while the platform still holds
+	// the consent; the consent's coldkey is what release settlement pays, so
+	// it is preferred when there is nothing local.
+	coldkey := s.ColdkeySs58
+	if coldkey == "" && s.WalletConsent != nil {
+		coldkey = s.WalletConsent.ColdkeySs58
+	}
+	if coldkey != "" {
+		fmt.Printf("  \x1b[1mColdkey (SS58):\x1b[0m   \x1b[33m%s\x1b[0m\n", coldkey)
 		if s.ColdkeyHex != "" {
 			fmt.Printf("  \x1b[1mColdkey (Hex):\x1b[0m    \x1b[90m%s\x1b[0m\n", s.ColdkeyHex)
 		}
 	} else if s.ColdkeyHex != "" {
 		fmt.Printf("  \x1b[1mColdkey (Hex):\x1b[0m    \x1b[33m%s\x1b[0m\n", s.ColdkeyHex)
 	} else {
-		fmt.Printf("  \x1b[1mColdkey:\x1b[0m          \x1b[90m(Not configured — register with 'provider wallet set <coldkey>')\x1b[0m\n")
+		fmt.Printf("  \x1b[1mColdkey:\x1b[0m          \x1b[90mno network wallet found; sign the consent with 'urnet-tools wallet sign'\x1b[0m\n")
+	}
+
+	// Wallet consent, apart from any legacy login-proof wallet
+	switch {
+	case s.WalletConsent != nil:
+		wc := s.WalletConsent
+		state := ""
+		if wc.State != "" {
+			state = ", " + wc.State
+		}
+		fmt.Printf("  \x1b[1mWallet consent:\x1b[0m    \x1b[32m%s\x1b[0m (epochs %d through %d%s)\n", wc.ColdkeySs58, wc.FromEpoch, wc.ThroughEpoch, state)
+		if len(s.WalletLoginProofColdkeys) > 0 {
+			fmt.Printf("  \x1b[90m                    login-proof wallet(s) %s are not a consent; settlement does not pay them\x1b[0m\n", strings.Join(s.WalletLoginProofColdkeys, ", "))
+		}
+	case len(s.WalletLoginProofColdkeys) > 0:
+		fmt.Printf("  \x1b[1mWallet consent:\x1b[0m    \x1b[33mno consent: only a login-proof wallet (%s); settlement does not pay it\x1b[0m\n", strings.Join(s.WalletLoginProofColdkeys, ", "))
+		fmt.Printf("  \x1b[90m                   sign the consent with 'urnet-tools wallet sign'\x1b[0m\n")
+	case s.WalletConsentUnavailable != "":
+		fmt.Printf("  \x1b[1mWallet consent:\x1b[0m    \x1b[90munavailable (%s); check it with 'urnet-tools wallet status'\x1b[0m\n", s.WalletConsentUnavailable)
+	default:
+		fmt.Printf("  \x1b[1mWallet consent:\x1b[0m    \x1b[90mno consent stored; sign one with 'urnet-tools wallet sign'\x1b[0m\n")
 	}
 
 	// Subnet Epoch & Contract

@@ -175,6 +175,130 @@ func TestMinConfirmDials_ConfirmationGrowthIsSizedToTheShortfall(t *testing.T) {
 	}
 }
 
+// TestMinConfirmDials_ConvictionGateRefusesAVerdictBelowTheFloor is the repro a
+// fifth review produced: the floor's ABORT gate only fires when the bar is
+// unreachable AND the floor has been met, so a pass that simply RUNS OUT of block
+// below the floor could still convict. One base host unresolvable (5 attempted,
+// all refused) puts Total one short of the floor; the single shortfall growth host
+// is unresolvable too, so Total stays 5 and the block ends. The quorum is still
+// met, so without the conviction gate this seals a decidable F on 5 attempted
+// dials — below the floor the rule promises.
+//
+// Falsifiable: remove the `res.Total < cfg.MinConfirmDials` conviction gate and
+// the pass becomes decidable again.
+func TestMinConfirmDials_ConvictionGateRefusesAVerdictBelowTheFloor(t *testing.T) {
+	// Pin the pass counter for the whole test: a concurrent grader or URL fetch
+	// advances tableProbePassCounter, which would move the probe's internal seed
+	// between the DNS seeding below and the probe read, sampling a different block.
+	origPass := tableProbePassCounter.Load()
+	t.Cleanup(func() { tableProbePassCounter.Store(origPass) })
+	addr, _, cleanup := listenSocks5Sequenced(t, func(n int) byte { return 0x05 })
+	defer cleanup()
+
+	cfg := defaultProxyTableProbeConfig()
+	cfg.SampleWidth = 6
+	cfg.MinSampleWidth = 6
+	cfg.MaxSampleWidth = 12
+	cfg.UseSpreadOrder = true
+	cfg.MinConfirmDials = 6
+	cfg.TargetTimeout = 300 * time.Millisecond
+
+	// Pin to a pass whose sampled base and growth blocks contain no literal-IP
+	// targets (1.1.1.1, 8.8.8.8, 9.9.9.9). resolveProbeTarget resolves literal
+	// IPs directly via net.ParseIP without consulting probeDNSCache, so an IP
+	// literal in base[0] or growth[0] cannot be made unresolvable via
+	// probeDNSCache.fail and would be dialed anyway, pushing Total to 6.
+	pass := tableProbePassConfirmGateUndecidable(addr, cfg)
+	tableProbePassCounter.Store(pass)
+
+	base := sampleProbeHosts(tableProbeSeed(addr, pass), cfg.MinSampleWidth, true)
+	// seed the first 6 growth hosts unresolvable, covering any shortfall sizing
+	growth := disjointGrowthHosts(addr, pass, cfg.MinSampleWidth, 6, true)
+
+	probeDNSCache.Lock()
+	for i, h := range base {
+		if i == 0 {
+			delete(probeDNSCache.m, h)
+			probeDNSCache.fail[h] = time.Now() // the one unresolvable base host
+			continue
+		}
+		probeDNSCache.m[h] = probeDNSCachedIP{ip: net.ParseIP("198.51.100.1"), at: time.Now()}
+		delete(probeDNSCache.fail, h)
+	}
+	for _, h := range growth {
+		delete(probeDNSCache.m, h)
+		probeDNSCache.fail[h] = time.Now() // and the growth hosts too
+	}
+	probeDNSCache.Unlock()
+	t.Cleanup(func() {
+		probeDNSCache.Lock()
+		defer probeDNSCache.Unlock()
+		for _, h := range connect.ProbeHostNames() {
+			delete(probeDNSCache.m, h)
+			delete(probeDNSCache.fail, h)
+		}
+	})
+
+	res := probeTableThroughProxy(context.Background(), addr, "", "", "", 0, cfg)
+	if res.Total >= cfg.MinConfirmDials {
+		t.Fatalf("precondition: the pass should end below the floor, Total=%d floor=%d",
+			res.Total, cfg.MinConfirmDials)
+	}
+	if res.Decidable {
+		t.Errorf("a pass that ran out of block at Total=%d (< floor %d) must NOT be convicted",
+			res.Total, cfg.MinConfirmDials)
+	}
+}
+
+// tableProbePassConfirmGateUndecidable returns the first pass >= 0 whose sampled
+// base and growth blocks for address contain no literal-IP target (1.1.1.1, 8.8.8.8,
+// 9.9.9.9). resolveProbeTarget resolves literal IPs directly via net.ParseIP without
+// consulting probeDNSCache, so a seeded fail in probeDNSCache can never make an IP
+// literal unresolvable.
+func tableProbePassConfirmGateUndecidable(address string, cfg proxyTableProbeConfig) uint64 {
+	for pass := uint64(0); pass < 128; pass++ {
+		base := sampleProbeHosts(tableProbeSeed(address, pass), cfg.MinSampleWidth, cfg.UseSpreadOrder)
+		growth := disjointGrowthHosts(address, pass, cfg.MinSampleWidth, 6, cfg.UseSpreadOrder)
+		hasLiteral := false
+		for _, h := range base {
+			if net.ParseIP(h) != nil {
+				hasLiteral = true
+				break
+			}
+		}
+		if hasLiteral {
+			continue
+		}
+		for _, h := range growth {
+			if net.ParseIP(h) != nil {
+				hasLiteral = true
+				break
+			}
+		}
+		if !hasLiteral {
+			return pass
+		}
+	}
+	return 0
+}
+
+// TestClampConfirmFloor_BoundsAnUnreachableFloor: with growth disabled
+// (max_sample_width <= the staged base width) a floor above the base block could
+// never be reached, so the conviction gate would make EVERY pass non-decidable
+// and grading would stop entirely. The clamp must bound the floor to what the
+// pass can actually attempt.
+func TestClampConfirmFloor_BoundsAnUnreachableFloor(t *testing.T) {
+	withTempHome(t)
+	writeReviewProbeOverride(t, map[string]any{
+		"sample_width": 12, "max_sample_width": 4, "min_sample_width": 4, "min_confirm_dials": 12,
+	})
+	cfg := loadProxyTableProbeConfig()
+	if cfg.MinConfirmDials > cfg.MinSampleWidth {
+		t.Errorf("floor %d exceeds the reachable base block %d with growth disabled",
+			cfg.MinConfirmDials, cfg.MinSampleWidth)
+	}
+}
+
 // TestClampConfirmFloor_BoundsEveryWriter pins the shared clamp directly. The
 // paid grader overrides the resolved config AFTER the loader clamp, so it must
 // call this too — clamping only in the loader leaves the paid path with an

@@ -2,11 +2,8 @@
 
 package connect
 
-// net_resilient_combined_unix_test.go — the parts of the combined-mode tests
-// that read socket options directly. TCP_NODELAY verification needs
-// syscall.GetsockoptInt, which does not type-check against a windows
-// syscall.Handle, so these live behind the unix tag while the rest of the
-// combined suite runs everywhere the fork's helpers compile (a270e78d).
+// The socket-option checks: the combined file is untagged so the pure
+// userspace tests run on windows too; these need syscall and stay unix-only.
 
 import (
 	"bytes"

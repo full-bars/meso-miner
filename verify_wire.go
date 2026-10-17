@@ -277,8 +277,8 @@ func BuildVerifyFinalMessage(serverKeyId byte, trailId Id, serverNonce []byte, v
 		// EgressIpHash stays a fixed [32]byte array on purpose: the sn
 		// protocol package compares it across modules with ==/!= (see
 		// urfoundation sn provider_attempt_receipt.go), which a slice or a
-		// named type cannot do. The cost is its JSON encoding — a 32-integer
-		// array, the one deliberate exception to the base64 convention — AND
+		// named type cannot do. The cost is its JSON encoding - a 32-integer
+		// array, the one deliberate exception to the base64 convention - AND
 		// its laxity: encoding/json zero-pads a short array, discards
 		// extras, and defaults an absent field, so a consumer reading this
 		// field without first verifying FinalSig can get a silently wrong

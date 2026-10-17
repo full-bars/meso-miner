@@ -36,6 +36,14 @@ const (
 	smtpEgressRejectLatched
 )
 
+// permitsSend reports whether the client send path may forward the packet. A
+// packet the SMTP guard does not govern (every non-SMTP flow) is permitted:
+// only an explicit reject, or a latched reject, stops it. Treating
+// smtpEgressNotApplicable as a refusal dropped all ordinary client traffic.
+func (self smtpEgressVerdict) permitsSend() bool {
+	return self == smtpEgressAllow || self == smtpEgressNotApplicable
+}
+
 func smtpRoutesLocally(ipPath *IpPath) bool {
 	return ipPath != nil &&
 		ipPath.Protocol == IpProtocolTcp &&
@@ -620,7 +628,7 @@ func tcpRstForPolicyReject(packet []byte) []byte {
 		return nil
 	}
 	ipVersion := int(packet[0] >> 4)
-	var ipProtocol IPProtocol
+	var ipProtocol ipProtocolNumber
 	var sourceIp net.IP
 	var destinationIp net.IP
 	var transport []byte
@@ -633,7 +641,7 @@ func tcpRstForPolicyReject(packet []byte) []byte {
 	default:
 		return nil
 	}
-	if !ok || ipProtocol != IP_PROTOCOL_TCP {
+	if !ok || ipProtocol != ipProtocolNumberTcp {
 		return nil
 	}
 	var tcp parsedTcp
@@ -673,7 +681,7 @@ func deliverTcpPolicyReset(
 
 // tcpRstForOrphan returns an RFC 793 reset addressed to the source of the
 // parsed TCP packet. Ported from upstream with the raw protocol number
-// constant adapted to the fork's IP_PROTOCOL_TCP spelling.
+// constant adapted to the fork's ipProtocolNumberTcp spelling.
 func tcpRstForOrphan(ipVersion int, tcp *parsedTcp) []byte {
 	var ipHeaderByteCount int
 	switch ipVersion {
@@ -688,9 +696,9 @@ func tcpRstForOrphan(ipVersion int, tcp *parsedTcp) []byte {
 	packet := MessagePoolGet(ipHeaderByteCount + TcpHeaderSizeWithoutExtensions)
 	switch ipVersion {
 	case 4:
-		writeIpv4Header(packet, IP_PROTOCOL_TCP, tcp.destinationIp, tcp.sourceIp)
+		writeIpv4Header(packet, ipProtocolNumberTcp, tcp.destinationIp, tcp.sourceIp)
 	case 6:
-		writeIpv6Header(packet, IP_PROTOCOL_TCP, tcp.destinationIp, tcp.sourceIp)
+		writeIpv6Header(packet, ipProtocolNumberTcp, tcp.destinationIp, tcp.sourceIp)
 	}
 
 	t := packet[ipHeaderByteCount:]
@@ -725,6 +733,6 @@ func tcpRstForOrphan(ipVersion int, tcp *parsedTcp) []byte {
 	// urgent
 	t[18] = 0
 	t[19] = 0
-	binary.BigEndian.PutUint16(t[16:18], transportChecksum(IP_PROTOCOL_TCP, tcp.destinationIp, tcp.sourceIp, t))
+	binary.BigEndian.PutUint16(t[16:18], transportChecksum(ipProtocolNumberTcp, tcp.destinationIp, tcp.sourceIp, t))
 	return packet
 }

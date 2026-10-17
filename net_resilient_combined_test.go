@@ -387,8 +387,6 @@ func TestResilientCombinedFirstHalfFailureSkipsSecond(t *testing.T) {
 	}
 }
 
-// TestNewResilientDialTlsContextConstructorsBackCompat keeps the exported
-// constructors compiling and working with their pre-segment signatures.
 func TestNewResilientDialTlsContextConstructorsBackCompat(t *testing.T) {
 	conn := &segmentRecordingConn{}
 	if rconn := NewResilientTlsConn(conn, true, false); rconn.segment {

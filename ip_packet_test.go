@@ -31,10 +31,10 @@ func TestTransportChecksumIndependent(t *testing.T) {
 	dst := net.IPv4(10, 0, 0, 1)
 	transport := []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 
-	cs := transportChecksum(IP_PROTOCOL_TCP, src, dst, transport)
+	cs := transportChecksum(ipProtocolNumberTcp, src, dst, transport)
 	sum := checksumAdd(0, src)
 	sum = checksumAdd(sum, dst)
-	sum = checksumAdd(sum, []byte{0, byte(IP_PROTOCOL_TCP)})
+	sum = checksumAdd(sum, []byte{0, byte(ipProtocolNumberTcp)})
 	sum = checksumAdd(sum, []byte{0, byte(len(transport))})
 	sum = checksumAdd(sum, transport)
 	direct := checksumFinish(sum)
@@ -61,7 +61,7 @@ func TestTcpPacketChecksumCoversPayload(t *testing.T) {
 	ipHeaderLen := int(packet[0]&0x0f) * 4
 	tcpBytes := packet[ipHeaderLen:]
 
-	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+	if transportChecksum(ipProtocolNumberTcp, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
 		t.Fatal("TCP checksum verification failed")
 	}
 }
@@ -89,7 +89,7 @@ func TestSynAckChecksumCoversOptions(t *testing.T) {
 	ipHeaderLen := int(packet[0]&0x0f) * 4
 	tcpBytes := packet[ipHeaderLen:]
 
-	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+	if transportChecksum(ipProtocolNumberTcp, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
 		t.Fatal("SynAck TCP checksum verification failed")
 	}
 
@@ -128,7 +128,7 @@ func TestConnectionStatePureAck(t *testing.T) {
 		t.Fatal("SYN flag should not be set on PureAck")
 	}
 
-	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+	if transportChecksum(ipProtocolNumberTcp, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
 		t.Fatalf("PureAck TCP checksum verification failed: stored=0x%x",
 			binary.BigEndian.Uint16(tcpBytes[16:18]))
 	}
@@ -162,7 +162,7 @@ func TestConnectionStateRstAck(t *testing.T) {
 		t.Fatal("ACK flag not set")
 	}
 
-	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+	if transportChecksum(ipProtocolNumberTcp, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
 		t.Fatalf("RstAck TCP checksum verification failed: stored=0x%x",
 			binary.BigEndian.Uint16(tcpBytes[16:18]))
 	}
@@ -171,7 +171,7 @@ func TestConnectionStateRstAck(t *testing.T) {
 func TestParseIpv4RoundTrip(t *testing.T) {
 	payload := []byte{0x01, 0x02, 0x03, 0x04}
 	packet := MessagePoolGet(Ipv4HeaderSizeWithoutExtensions + UdpHeaderSize + len(payload))
-	writeIpv4Header(packet, IP_PROTOCOL_UDP, net.IPv4(10, 0, 0, 1).To4(), net.IPv4(192, 168, 1, 1).To4())
+	writeIpv4Header(packet, ipProtocolNumberUdp, net.IPv4(10, 0, 0, 1).To4(), net.IPv4(192, 168, 1, 1).To4())
 	udp := packet[Ipv4HeaderSizeWithoutExtensions:]
 	binary.BigEndian.PutUint16(udp[0:2], 12345)
 	binary.BigEndian.PutUint16(udp[2:4], 80)
@@ -186,7 +186,7 @@ func TestParseIpv4RoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatal("parseIpv4 failed")
 	}
-	if ipProtocol != IP_PROTOCOL_UDP {
+	if ipProtocol != ipProtocolNumberUdp {
 		t.Fatalf("protocol: want UDP(17), got %d", ipProtocol)
 	}
 	if !srcIP.Equal(net.IPv4(10, 0, 0, 1)) {
@@ -212,7 +212,7 @@ func TestParseIpv6RoundTrip(t *testing.T) {
 	src := net.ParseIP("2001:db8::1")
 	dst := net.ParseIP("2001:db8::2")
 	packet := MessagePoolGet(Ipv6HeaderSize + UdpHeaderSize + len(payload))
-	writeIpv6Header(packet, IP_PROTOCOL_UDP, src, dst)
+	writeIpv6Header(packet, ipProtocolNumberUdp, src, dst)
 	udp := packet[Ipv6HeaderSize:]
 	binary.BigEndian.PutUint16(udp[0:2], 33445)
 	binary.BigEndian.PutUint16(udp[2:4], 53)
@@ -227,7 +227,7 @@ func TestParseIpv6RoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatal("parseIpv6 failed")
 	}
-	if ipProtocol != IP_PROTOCOL_UDP {
+	if ipProtocol != ipProtocolNumberUdp {
 		t.Fatalf("protocol: want UDP(17), got %d", ipProtocol)
 	}
 	if !srcIP.Equal(src) {
@@ -253,13 +253,13 @@ func TestParseUdpRoundTrip(t *testing.T) {
 	src := net.IPv4(10, 0, 0, 1)
 	dst := net.IPv4(192, 168, 1, 1)
 	packet := MessagePoolGet(Ipv4HeaderSizeWithoutExtensions + UdpHeaderSize + len(payload))
-	writeIpv4Header(packet, IP_PROTOCOL_UDP, src.To4(), dst.To4())
+	writeIpv4Header(packet, ipProtocolNumberUdp, src.To4(), dst.To4())
 	udp := packet[Ipv4HeaderSizeWithoutExtensions:]
 	binary.BigEndian.PutUint16(udp[0:2], 40000)
 	binary.BigEndian.PutUint16(udp[2:4], 53)
 	binary.BigEndian.PutUint16(udp[4:6], uint16(UdpHeaderSize+len(payload)))
 	copy(udp[UdpHeaderSize:], payload)
-	cs := transportChecksum(IP_PROTOCOL_UDP, src, dst, udp)
+	cs := transportChecksum(ipProtocolNumberUdp, src, dst, udp)
 	binary.BigEndian.PutUint16(udp[6:8], cs)
 	defer MessagePoolReturn(packet)
 
@@ -268,7 +268,7 @@ func TestParseUdpRoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatal("parseIpv4 failed")
 	}
-	if ipProtocol != IP_PROTOCOL_UDP {
+	if ipProtocol != ipProtocolNumberUdp {
 		t.Fatalf("protocol: want UDP, got %d", ipProtocol)
 	}
 	if !parseUdpPacket(nil, nil, transport, &udpPkt) {
@@ -287,11 +287,11 @@ func TestParseTcpRoundTrip(t *testing.T) {
 	src := net.IPv4(10, 0, 0, 1)
 	dst := net.IPv4(192, 168, 1, 1)
 	packet := MessagePoolGet(Ipv4HeaderSizeWithoutExtensions + TcpHeaderSizeWithoutExtensions + len(payload))
-	writeIpv4Header(packet, IP_PROTOCOL_TCP, src.To4(), dst.To4())
+	writeIpv4Header(packet, ipProtocolNumberTcp, src.To4(), dst.To4())
 	tcp := packet[Ipv4HeaderSizeWithoutExtensions:]
 	writeTcpHeader(tcp, 40000, 80, 100, 200, tcpFlagSyn|tcpFlagAck, 65535, nil)
 	copy(tcp[TcpHeaderSizeWithoutExtensions:], payload)
-	cs := transportChecksum(IP_PROTOCOL_TCP, src, dst, tcp)
+	cs := transportChecksum(ipProtocolNumberTcp, src, dst, tcp)
 	binary.BigEndian.PutUint16(tcp[16:18], cs)
 	defer MessagePoolReturn(packet)
 
@@ -300,7 +300,7 @@ func TestParseTcpRoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatal("parseIpv4 failed")
 	}
-	if ipProtocol != IP_PROTOCOL_TCP {
+	if ipProtocol != ipProtocolNumberTcp {
 		t.Fatalf("protocol: want TCP(6), got %d", ipProtocol)
 	}
 	if !parseTcpPacket(nil, nil, transport, &tcpPkt) {
@@ -335,11 +335,11 @@ func TestParseTcpSynWithWindowScale(t *testing.T) {
 	optsBytes[2] = 7
 	tcpOptionLen := len(optsBytes)
 	packet := MessagePoolGet(Ipv4HeaderSizeWithoutExtensions + TcpHeaderSizeWithoutExtensions + tcpOptionLen)
-	writeIpv4Header(packet, IP_PROTOCOL_TCP, src.To4(), dst.To4())
+	writeIpv4Header(packet, ipProtocolNumberTcp, src.To4(), dst.To4())
 	tcp := packet[Ipv4HeaderSizeWithoutExtensions:]
 	writeTcpHeader(tcp, 40000, 80, 100, 200, tcpFlagSyn, 65535, optsBytes)
 	fullTcp := packet[Ipv4HeaderSizeWithoutExtensions:]
-	cs := transportChecksum(IP_PROTOCOL_TCP, src, dst, fullTcp)
+	cs := transportChecksum(ipProtocolNumberTcp, src, dst, fullTcp)
 	binary.BigEndian.PutUint16(tcp[16:18], cs)
 	defer MessagePoolReturn(packet)
 
@@ -419,7 +419,7 @@ func TestParseTcpOptionsMalformedTail(t *testing.T) {
 
 func TestWriteIpv4RoundTrip(t *testing.T) {
 	packet := MessagePoolGet(Ipv4HeaderSizeWithoutExtensions + UdpHeaderSize)
-	writeIpv4Header(packet, IP_PROTOCOL_UDP, net.IPv4(10, 0, 0, 1).To4(), net.IPv4(192, 168, 1, 1).To4())
+	writeIpv4Header(packet, ipProtocolNumberUdp, net.IPv4(10, 0, 0, 1).To4(), net.IPv4(192, 168, 1, 1).To4())
 	defer MessagePoolReturn(packet)
 
 	_, srcIP, dstIP, _, ok := parseIpv4(packet)
@@ -444,7 +444,7 @@ func TestWriteIpv6RoundTrip(t *testing.T) {
 	src := net.ParseIP("2001:db8::1")
 	dst := net.ParseIP("2001:db8::2")
 	packet := MessagePoolGet(Ipv6HeaderSize)
-	writeIpv6Header(packet, IP_PROTOCOL_UDP, src, dst)
+	writeIpv6Header(packet, ipProtocolNumberUdp, src, dst)
 	defer MessagePoolReturn(packet)
 
 	_, srcIP, dstIP, _, ok := parseIpv6(packet)
@@ -465,11 +465,11 @@ func TestWriteTcpRoundTrip(t *testing.T) {
 	opts := []byte{3, 3, 7, 0}
 	tcpOptionLen := len(opts)
 	packet := MessagePoolGet(Ipv4HeaderSizeWithoutExtensions + TcpHeaderSizeWithoutExtensions + tcpOptionLen)
-	writeIpv4Header(packet, IP_PROTOCOL_TCP, src.To4(), dst.To4())
+	writeIpv4Header(packet, ipProtocolNumberTcp, src.To4(), dst.To4())
 	tcp := packet[Ipv4HeaderSizeWithoutExtensions:]
 	writeTcpHeader(tcp, 40000, 80, 100, 200, tcpFlagSyn|tcpFlagAck, 65535, opts)
 	fullTcp := packet[Ipv4HeaderSizeWithoutExtensions:]
-	cs := transportChecksum(IP_PROTOCOL_TCP, src, dst, fullTcp)
+	cs := transportChecksum(ipProtocolNumberTcp, src, dst, fullTcp)
 	binary.BigEndian.PutUint16(tcp[16:18], cs)
 	defer MessagePoolReturn(packet)
 
@@ -510,11 +510,11 @@ func TestParseTcpMalformedOptions(t *testing.T) {
 	src := net.IPv4(10, 0, 0, 1)
 	dst := net.IPv4(192, 168, 1, 1)
 	packet := MessagePoolGet(Ipv4HeaderSizeWithoutExtensions + TcpHeaderSizeWithoutExtensions)
-	writeIpv4Header(packet, IP_PROTOCOL_TCP, src.To4(), dst.To4())
+	writeIpv4Header(packet, ipProtocolNumberTcp, src.To4(), dst.To4())
 	tcp := packet[Ipv4HeaderSizeWithoutExtensions:]
 	tcp[12] = 0xFF
 	tcp[13] = tcpFlagAck
-	cs := transportChecksum(IP_PROTOCOL_TCP, src, dst, tcp)
+	cs := transportChecksum(ipProtocolNumberTcp, src, dst, tcp)
 	binary.BigEndian.PutUint16(tcp[16:18], cs)
 	defer MessagePoolReturn(packet)
 
@@ -551,10 +551,10 @@ func TestFlowHashIPv4Consistent(t *testing.T) {
 	src := net.IPv4(10, 0, 0, 1)
 	dst := net.IPv4(192, 168, 1, 1)
 	packet := MessagePoolGet(Ipv4HeaderSizeWithoutExtensions + TcpHeaderSizeWithoutExtensions)
-	writeIpv4Header(packet, IP_PROTOCOL_TCP, src.To4(), dst.To4())
+	writeIpv4Header(packet, ipProtocolNumberTcp, src.To4(), dst.To4())
 	tcp := packet[Ipv4HeaderSizeWithoutExtensions:]
 	writeTcpHeader(tcp, 40000, 80, 100, 200, tcpFlagSyn, 65535, nil)
-	cs := transportChecksum(IP_PROTOCOL_TCP, src, dst, tcp)
+	cs := transportChecksum(ipProtocolNumberTcp, src, dst, tcp)
 	binary.BigEndian.PutUint16(tcp[16:18], cs)
 	defer MessagePoolReturn(packet)
 
@@ -569,18 +569,18 @@ func TestFlowHashIPv4DifferentPort(t *testing.T) {
 	src := net.IPv4(10, 0, 0, 1)
 	dst := net.IPv4(192, 168, 1, 1)
 	packet1 := MessagePoolGet(Ipv4HeaderSizeWithoutExtensions + TcpHeaderSizeWithoutExtensions)
-	writeIpv4Header(packet1, IP_PROTOCOL_TCP, src.To4(), dst.To4())
+	writeIpv4Header(packet1, ipProtocolNumberTcp, src.To4(), dst.To4())
 	tcp1 := packet1[Ipv4HeaderSizeWithoutExtensions:]
 	writeTcpHeader(tcp1, 40000, 80, 100, 200, tcpFlagSyn, 65535, nil)
-	cs1 := transportChecksum(IP_PROTOCOL_TCP, src, dst, tcp1)
+	cs1 := transportChecksum(ipProtocolNumberTcp, src, dst, tcp1)
 	binary.BigEndian.PutUint16(tcp1[16:18], cs1)
 	defer MessagePoolReturn(packet1)
 
 	packet2 := MessagePoolGet(Ipv4HeaderSizeWithoutExtensions + TcpHeaderSizeWithoutExtensions)
-	writeIpv4Header(packet2, IP_PROTOCOL_TCP, src.To4(), dst.To4())
+	writeIpv4Header(packet2, ipProtocolNumberTcp, src.To4(), dst.To4())
 	tcp2 := packet2[Ipv4HeaderSizeWithoutExtensions:]
 	writeTcpHeader(tcp2, 40001, 80, 100, 200, tcpFlagSyn, 65535, nil)
-	cs2 := transportChecksum(IP_PROTOCOL_TCP, src, dst, tcp2)
+	cs2 := transportChecksum(ipProtocolNumberTcp, src, dst, tcp2)
 	binary.BigEndian.PutUint16(tcp2[16:18], cs2)
 	defer MessagePoolReturn(packet2)
 
@@ -592,7 +592,7 @@ func TestFlowHashIPv6Consistent(t *testing.T) {
 	src := net.ParseIP("2001:db8::1")
 	dst := net.ParseIP("2001:db8::2")
 	packet := MessagePoolGet(Ipv6HeaderSize + TcpHeaderSizeWithoutExtensions)
-	writeIpv6Header(packet, IP_PROTOCOL_TCP, src, dst)
+	writeIpv6Header(packet, ipProtocolNumberTcp, src, dst)
 	tcp := packet[Ipv6HeaderSize:]
 	writeTcpHeader(tcp, 40000, 80, 100, 200, tcpFlagSyn, 65535, nil)
 	defer MessagePoolReturn(packet)
@@ -646,13 +646,13 @@ func TestUdpChecksumNonZero(t *testing.T) {
 	src := net.IPv4(10, 0, 0, 1)
 	dst := net.IPv4(192, 168, 1, 1)
 	packet := MessagePoolGet(Ipv4HeaderSizeWithoutExtensions + UdpHeaderSize)
-	writeIpv4Header(packet, IP_PROTOCOL_UDP, src.To4(), dst.To4())
+	writeIpv4Header(packet, ipProtocolNumberUdp, src.To4(), dst.To4())
 	udp := packet[Ipv4HeaderSizeWithoutExtensions:]
 	binary.BigEndian.PutUint16(udp[0:2], 40000)
 	binary.BigEndian.PutUint16(udp[2:4], 53)
 	binary.BigEndian.PutUint16(udp[4:6], UdpHeaderSize)
 	binary.BigEndian.PutUint16(udp[6:8], 0)
-	cs := transportChecksum(IP_PROTOCOL_UDP, src, dst, udp)
+	cs := transportChecksum(ipProtocolNumberUdp, src, dst, udp)
 	binary.BigEndian.PutUint16(udp[6:8], cs)
 	defer MessagePoolReturn(packet)
 
@@ -660,7 +660,7 @@ func TestUdpChecksumNonZero(t *testing.T) {
 		t.Fatal("UDP checksum should be non-zero for this packet")
 	}
 
-	if transportChecksum(IP_PROTOCOL_UDP, src, dst, udp) != 0 {
+	if transportChecksum(ipProtocolNumberUdp, src, dst, udp) != 0 {
 		t.Fatal("UDP checksum verification failed")
 	}
 }
@@ -669,7 +669,7 @@ func TestUdpChecksumZero(t *testing.T) {
 	src := net.IPv4(10, 0, 0, 1)
 	dst := net.IPv4(192, 168, 1, 1)
 	packet := MessagePoolGet(Ipv4HeaderSizeWithoutExtensions + UdpHeaderSize)
-	writeIpv4Header(packet, IP_PROTOCOL_UDP, src.To4(), dst.To4())
+	writeIpv4Header(packet, ipProtocolNumberUdp, src.To4(), dst.To4())
 	udp := packet[Ipv4HeaderSizeWithoutExtensions:]
 	binary.BigEndian.PutUint16(udp[0:2], 40000)
 	binary.BigEndian.PutUint16(udp[2:4], 53)
@@ -715,7 +715,7 @@ func TestConnectionStateFinAck(t *testing.T) {
 		t.Fatal("ACK flag not set")
 	}
 
-	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+	if transportChecksum(ipProtocolNumberTcp, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
 		t.Fatal("FinAck TCP checksum verification failed")
 	}
 }
@@ -756,7 +756,7 @@ func TestSynAckIPv6(t *testing.T) {
 	}
 
 	tcpBytes := packet[Ipv6HeaderSize:]
-	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+	if transportChecksum(ipProtocolNumberTcp, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
 		t.Fatal("IPv6 SynAck TCP checksum verification failed")
 	}
 
@@ -797,7 +797,7 @@ func TestConnectionStatePureAckIPv6(t *testing.T) {
 		t.Fatal("SYN flag should not be set on PureAck")
 	}
 
-	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+	if transportChecksum(ipProtocolNumberTcp, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
 		t.Fatal("IPv6 PureAck TCP checksum verification failed")
 	}
 }
@@ -832,7 +832,7 @@ func TestConnectionStateRstAckIPv6(t *testing.T) {
 		t.Fatal("ACK flag not set")
 	}
 
-	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+	if transportChecksum(ipProtocolNumberTcp, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
 		t.Fatal("IPv6 RstAck TCP checksum verification failed")
 	}
 }
@@ -867,7 +867,7 @@ func TestConnectionStateFinAckIPv6(t *testing.T) {
 		t.Fatal("ACK flag not set")
 	}
 
-	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+	if transportChecksum(ipProtocolNumberTcp, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
 		t.Fatal("IPv6 FinAck TCP checksum verification failed")
 	}
 }
@@ -905,7 +905,7 @@ func TestTcpPacketIPv6WithPayload(t *testing.T) {
 	}
 
 	tcpBytes := packet[Ipv6HeaderSize:]
-	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+	if transportChecksum(ipProtocolNumberTcp, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
 		t.Fatal("IPv6 tcpPacket checksum verification failed")
 	}
 }
@@ -936,7 +936,7 @@ func TestSynAckNoWindowScale(t *testing.T) {
 		t.Fatal("SYN+ACK flags not set")
 	}
 
-	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+	if transportChecksum(ipProtocolNumberTcp, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
 		t.Fatal("SynAck (no WS) TCP checksum verification failed")
 	}
 
@@ -972,7 +972,7 @@ func TestDataPacketsSinglePacket(t *testing.T) {
 
 	ipHeaderLen := int(packets[0][0]&0x0f) * 4
 	tcpBytes := packets[0][ipHeaderLen:]
-	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+	if transportChecksum(ipProtocolNumberTcp, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
 		t.Fatal("DataPackets single packet checksum failed")
 	}
 }
@@ -1011,7 +1011,7 @@ func TestDataPacketsMultiMtu(t *testing.T) {
 		defer MessagePoolReturn(pkt)
 		ipHeaderLen := int(pkt[0]&0x0f) * 4
 		tcpBytes := pkt[ipHeaderLen:]
-		if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+		if transportChecksum(ipProtocolNumberTcp, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
 			t.Fatalf("DataPackets packet %d checksum failed", i)
 		}
 	}
@@ -1045,7 +1045,7 @@ func TestDataPacketsExactFit(t *testing.T) {
 
 	ipHeaderLen := int(packets[0][0]&0x0f) * 4
 	tcpBytes := packets[0][ipHeaderLen:]
-	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+	if transportChecksum(ipProtocolNumberTcp, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
 		t.Fatal("DataPackets exact-fit checksum failed")
 	}
 }
@@ -1078,7 +1078,7 @@ func TestDataPacketsIPv6(t *testing.T) {
 	}
 
 	tcpBytes := packets[0][Ipv6HeaderSize:]
-	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+	if transportChecksum(ipProtocolNumberTcp, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
 		t.Fatal("DataPackets IPv6 checksum failed")
 	}
 }
@@ -1106,7 +1106,7 @@ func TestTcpPacketEmptyPayload(t *testing.T) {
 			TcpHeaderSizeWithoutExtensions, len(tcpBytes))
 	}
 
-	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+	if transportChecksum(ipProtocolNumberTcp, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
 		t.Fatal("empty payload tcpPacket checksum failed")
 	}
 }
@@ -1115,7 +1115,7 @@ func TestFlowHashUdp(t *testing.T) {
 	src := net.IPv4(10, 0, 0, 1)
 	dst := net.IPv4(192, 168, 1, 1)
 	packet := MessagePoolGet(Ipv4HeaderSizeWithoutExtensions + UdpHeaderSize)
-	writeIpv4Header(packet, IP_PROTOCOL_UDP, src.To4(), dst.To4())
+	writeIpv4Header(packet, ipProtocolNumberUdp, src.To4(), dst.To4())
 	udp := packet[Ipv4HeaderSizeWithoutExtensions:]
 	binary.BigEndian.PutUint16(udp[0:2], 40000)
 	binary.BigEndian.PutUint16(udp[2:4], 53)
@@ -1138,12 +1138,12 @@ func TestTransportChecksumIPv6(t *testing.T) {
 	dst := net.ParseIP("2001:db8::2")
 	transport := make([]byte, TcpHeaderSizeWithoutExtensions)
 
-	cs := transportChecksum(IP_PROTOCOL_TCP, src, dst, transport)
+	cs := transportChecksum(ipProtocolNumberTcp, src, dst, transport)
 	if cs == 0 {
 		t.Fatal("expected non-zero transport checksum for IPv6 with zeroed transport")
 	}
 
-	cs2 := transportChecksum(IP_PROTOCOL_TCP, src, dst, transport)
+	cs2 := transportChecksum(ipProtocolNumberTcp, src, dst, transport)
 	if cs != cs2 {
 		t.Fatal("transportChecksum IPv6 not consistent")
 	}
@@ -1199,7 +1199,7 @@ func TestWriteIpv4HeaderTo4Required(t *testing.T) {
 	dst := net.IPv4(192, 168, 1, 1)
 
 	packet := make([]byte, Ipv4HeaderSizeWithoutExtensions+UdpHeaderSize)
-	writeIpv4Header(packet, IP_PROTOCOL_UDP, src.To4(), dst.To4())
+	writeIpv4Header(packet, ipProtocolNumberUdp, src.To4(), dst.To4())
 
 	if checksumFinish(checksumAdd(0, packet)) != 0 {
 		t.Fatal("IPv4 checksum verification failed with To4() IPs")
@@ -1266,7 +1266,7 @@ func TestFinAckIPv6ChecksumCoverage(t *testing.T) {
 	defer MessagePoolReturn(packet)
 
 	tcpBytes := packet[Ipv6HeaderSize:]
-	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+	if transportChecksum(ipProtocolNumberTcp, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
 		t.Fatal("FinAck IPv6 checksum verification failed")
 	}
 }
@@ -1364,7 +1364,7 @@ func TestSynAckWithTimestamp(t *testing.T) {
 		t.Fatalf("TS val/echo: want 7/42, got %d/%d", tsval, tsecr)
 	}
 
-	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+	if transportChecksum(ipProtocolNumberTcp, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
 		t.Fatal("SynAck (TS) TCP checksum verification failed")
 	}
 }
@@ -1409,7 +1409,7 @@ func TestTcpPacketWithTimestamp(t *testing.T) {
 	if string(packet[ipHeaderLen+dataOffset:]) != "hello" {
 		t.Fatal("payload not at expected offset")
 	}
-	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+	if transportChecksum(ipProtocolNumberTcp, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
 		t.Fatal("tcpPacket checksum verification failed")
 	}
 }
@@ -1442,7 +1442,7 @@ func TestPureAckWithTimestamp(t *testing.T) {
 	if dataOffset != 32 {
 		t.Fatalf("PureAck data offset: want 32 (TS), got %d", dataOffset)
 	}
-	if transportChecksum(IP_PROTOCOL_TCP, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
+	if transportChecksum(ipProtocolNumberTcp, cs.destinationIp, cs.sourceIp, tcpBytes) != 0 {
 		t.Fatal("PureAck checksum verification failed")
 	}
 }

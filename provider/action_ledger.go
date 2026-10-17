@@ -94,8 +94,8 @@ func ledgerTrim(path string, keepBytes int64) error {
 			// instead: over the bound for one entry beats losing all of them.
 			//
 			// j is the index of the newline BEFORE this line, so j+1 is where
-			// this line starts. Using 0 would keep the whole file and never
-			// trim anything.
+			// this line starts. Using 0 here would keep the whole file and
+			// never trim anything.
 			if size == 0 {
 				start = j + 1
 			}

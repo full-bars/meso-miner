@@ -87,8 +87,8 @@ func cmdSimpleDelegation(sub string, args []string) error {
 	if narrowed {
 		printNarrowedNote(len(providers), p, sub)
 	}
-	// The provider nests summary under the proxy branch: `provider proxy
-	// summary`, not `provider summary` (gauntlet finding BUG-5). Build the
+	// The provider nests summary under the proxy branch: run `provider proxy
+	// summary`, never a flat top-level name (gauntlet finding BUG-5). Build the
 	// nested argv; everything else stays flat.
 	cmdArgs := append([]string{"proxy", sub}, rest...)
 	return providerSubcommand(p, cmdArgs...)
@@ -239,6 +239,12 @@ Proxy Management [target]:
   proxy trim <N>                  ✂   hold running proxies at N, shed worst first (F -> A)
   report [<url>|off]              📡  set report URL at runtime (no restart)
 
+Wallet Consent [target]:
+  wallet status                   🪪  show the network wallet consent (read-only)
+  wallet challenge <coldkey>      🪪  fetch the consent statement to sign (signs nothing)
+  wallet set <coldkey>            🪪  submit a signed consent (--coldkey_seed_file: own workstation only)
+  wallet sign <coldkey>           🪪  sign with the browser helper; the seed never leaves the extension
+
 Maintenance [target]:
   reinstall                       🔧  reinstall provider
   uninstall                       🗑   uninstall provider
@@ -249,7 +255,7 @@ Providers are identified three ways (use any; the = form works too,
 e.g. --user=urnet is the same as --user urnet):
   --unit <name>          systemd unit, e.g. urnetwork-native.service
   --user <user>          OS user, e.g. urnet
-  --network <name>       JWT network name (account identity), e.g. tacogonzalez3000
+  --network <name>       JWT network name (account identity), e.g. mynetwork
   --network-id <id>      JWT network id - TRUE unique identity; use when two providers
                          share the same network name (e.g. mainnet + beta copies)
 

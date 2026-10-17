@@ -111,7 +111,8 @@ func newClosedPortTransport(t *testing.T, mode TransportMode, enableH3 bool) (*P
 		targetMode:           mode,
 		mode:                 NewMonitorValue[TransportMode](TransportModeNone),
 	}
-	transport.auth.Store(&ClientAuth{})
+	transport.auth = &ClientAuth{}
+	completeTestTransport(transport)
 	return transport, cancel
 }
 
@@ -127,7 +128,7 @@ func TestAuxiliaryH3FailureIsNotABackendOrProxyFailure(t *testing.T) {
 
 	transport, cancel := newClosedPortTransport(t, TransportModeAuto, true)
 	done := make(chan struct{})
-	go func() { defer close(done); transport.runH3(TransportModeH3, 0, 1) }()
+	go func() { defer close(done); transport.runH3(transport.ctx, TransportModeH3, 0, 1) }()
 	time.Sleep(1500 * time.Millisecond)
 	cancel()
 	<-done
@@ -151,7 +152,7 @@ func TestSoleH3FailureStillCountsAsABackendAndProxyFailure(t *testing.T) {
 
 	transport, cancel := newClosedPortTransport(t, TransportModeH3, false)
 	done := make(chan struct{})
-	go func() { defer close(done); transport.runH3(TransportModeH3, 0, 1) }()
+	go func() { defer close(done); transport.runH3(transport.ctx, TransportModeH3, 0, 1) }()
 	time.Sleep(1500 * time.Millisecond)
 	cancel()
 	<-done
@@ -272,7 +273,7 @@ func TestGateOffDoesNotDialAndGateOnStartsDialing(t *testing.T) {
 	transport.settings.EnableH3 = true // eligible, gate stays off
 	done := make(chan struct{})
 	before := TransportModeStats().H3Attempts
-	go func() { defer close(done); transport.runH3(TransportModeH3, 0, 1) }()
+	go func() { defer close(done); transport.runH3(transport.ctx, TransportModeH3, 0, 1) }()
 
 	time.Sleep(400 * time.Millisecond)
 	if got := TransportModeStats().H3Attempts; got != before {
@@ -322,7 +323,7 @@ func TestAuxiliaryH3FailureWithSwitchOffDoesNotRecordFailure(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		transport.runH3(TransportModeH3, 0, 1)
+		transport.runH3(transport.ctx, TransportModeH3, 0, 1)
 	}()
 
 	// Wait for the dial attempt to start.
@@ -381,7 +382,7 @@ func TestExplicitH3TargetModeStillRecordsFailures(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		transport.runH3(TransportModeH3, 0, 1)
+		transport.runH3(transport.ctx, TransportModeH3, 0, 1)
 	}()
 
 	deadline := time.Now().Add(3 * time.Second)
@@ -432,7 +433,10 @@ func TestAuxiliaryH3SwitchOffWhileLiveDoesNotMarkProxyDown(t *testing.T) {
 		transport.settings.ReconnectTimeout = 10 * time.Second
 
 		connected := make(chan struct{})
-		transport.settings.sendRouteObserverForTest = func(send chan []byte) {
+		transport.settings.SendRouteObserver = func(_ Transport, send Route, registered bool) {
+			if !registered {
+				return
+			}
 			select {
 			case <-connected:
 			default:
@@ -443,7 +447,7 @@ func TestAuxiliaryH3SwitchOffWhileLiveDoesNotMarkProxyDown(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			transport.runH3(TransportModeH3, 0, 1)
+			transport.runH3(transport.ctx, TransportModeH3, 0, 1)
 		}()
 		t.Cleanup(func() {
 			transportCancel()
@@ -517,7 +521,10 @@ func TestAuxiliaryH3SwitchOffWhileLiveDoesNotMarkProxyDown(t *testing.T) {
 		transport.settings.ReconnectTimeout = 10 * time.Second
 
 		connected := make(chan struct{})
-		transport.settings.sendRouteObserverForTest = func(send chan []byte) {
+		transport.settings.SendRouteObserver = func(_ Transport, send Route, registered bool) {
+			if !registered {
+				return
+			}
 			select {
 			case <-connected:
 			default:
@@ -528,7 +535,7 @@ func TestAuxiliaryH3SwitchOffWhileLiveDoesNotMarkProxyDown(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			transport.runH3(TransportModeH3, 0, 1)
+			transport.runH3(transport.ctx, TransportModeH3, 0, 1)
 		}()
 		t.Cleanup(func() {
 			transportCancel()
@@ -601,7 +608,7 @@ func TestPulseDoesNotResetAuxiliaryH3Backoff(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		transport.runH3(TransportModeH3, 0, 1)
+		transport.runH3(transport.ctx, TransportModeH3, 0, 1)
 	}()
 
 	// Wait for the first attempt to fail and enter backoff.
@@ -638,6 +645,11 @@ func TestPulseDoesNotResetAuxiliaryH3Backoff(t *testing.T) {
 // This guards the explicit H3 mode against regression; it also passes without the
 // pulse change, so it does not pin the reported bug.
 func TestPulseResetsNonAuxiliaryH3Backoff(t *testing.T) {
+	// this test asserts the pulse wakes the transport at once; the production
+	// pulse spreads that wake over a random slice of pulseSpread
+	prevSpread := pulseSpread
+	pulseSpread = 0
+	t.Cleanup(func() { pulseSpread = prevSpread })
 	// the explicit mode records its failures as real backend failures: leave
 	// that process-wide state clean for the tests that run after this one
 	resetBackendDegraded()
@@ -653,7 +665,7 @@ func TestPulseResetsNonAuxiliaryH3Backoff(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		transport.runH3(TransportModeH3, 0, 1)
+		transport.runH3(transport.ctx, TransportModeH3, 0, 1)
 	}()
 
 	// Wait for the first attempt to fail and enter backoff.
@@ -742,7 +754,7 @@ func TestAuxiliaryH3BackoffWakesOnGateChange(t *testing.T) {
 	transport.targetMode = TransportModeAuto
 	before := TransportModeStats().H3ConnectFailures
 	done := make(chan struct{})
-	go func() { defer close(done); transport.runH3(TransportModeH3, 0, 1) }()
+	go func() { defer close(done); transport.runH3(transport.ctx, TransportModeH3, 0, 1) }()
 	defer func() { transportCancel(); <-done }()
 
 	waitFor(t, "the first dial to fail", func() bool {
@@ -769,5 +781,47 @@ func TestNextH3BackoffNeverExceedsTheCeiling(t *testing.T) {
 	b := nextH3Backoff(a, 5*time.Second, 500*time.Millisecond)
 	if a != 500*time.Millisecond || b != a {
 		t.Fatalf("a ceiling under the floor must hold steady, got %v then %v", a, b)
+	}
+}
+
+// The sole H3 transport feeds the governor with every connect, like H1. An
+// auxiliary H3 beside H1 never does.
+func TestH3ConnectAttemptsFeedTheGovernorOnlyWhenNotAuxiliary(t *testing.T) {
+	run := func(aux bool) int64 {
+		resetBackendDegraded()
+		t.Cleanup(resetBackendDegraded)
+		ResetProxyHealthForTesting()
+		t.Cleanup(ResetProxyHealthForTesting)
+		if aux {
+			RegisterProxy(0, "direct", "direct")
+		}
+		mode := TransportModeH3
+		transport, cancel := newClosedPortTransport(t, mode, aux)
+		if aux {
+			mode = TransportModeAuto
+			transport.targetMode = TransportModeAuto
+		}
+		transport.settings.QuicConnectTimeout = 50 * time.Millisecond
+		transport.settings.QuicHandshakeTimeout = 50 * time.Millisecond
+		transport.settings.ReconnectTimeout = 10 * time.Second
+		switchH3Gate(t, true)
+		resetGovernorWindow(t)
+		before := connectGov.snapshot().Attempts
+		beforeStats := TransportModeStats().H3ConnectFailures
+		done := make(chan struct{})
+		go func() { defer close(done); transport.runH3(transport.ctx, TransportModeH3, 0, 1) }()
+		deadline := time.Now().Add(3 * time.Second)
+		for TransportModeStats().H3ConnectFailures == beforeStats && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+		cancel()
+		<-done
+		return connectGov.snapshot().Attempts - before
+	}
+	if got := run(false); got < 1 {
+		t.Fatal("a sole H3 connect failure was not seen by the governor")
+	}
+	if got := run(true); got != 0 {
+		t.Fatalf("an auxiliary H3 connect was fed to the governor (%d attempts)", got)
 	}
 }

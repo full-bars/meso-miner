@@ -140,6 +140,12 @@ var controlKeyCanonical = map[string]string{
 	"h3-datagram":                 "h3_datagram",
 	"h3_datagram":                 "h3_datagram",
 	"h3-datagram-send":            "h3_datagram_send",
+	"h1-plus":                     "h1_plus",
+	"h1_plus":                     "h1_plus",
+	"h1plus":                      "h1_plus",
+	"ip-version":                  "ip_version",
+	"ip_version":                  "ip_version",
+	"ip":                          "ip_version",
 	"h3_datagram_send":            "h3_datagram_send",
 	"proxy-audit":                 "proxy_audit",
 	"proxy_audit":                 "proxy_audit",
@@ -201,11 +207,26 @@ func validateControlValue(canonicalKey, value string) error {
 		default:
 			return fmt.Errorf("%s: must be none, url, or all (got %q)", canonicalKey, value)
 		}
-	case "fast_auth", "proxy_self_heal", "proxy_audit", "smart_dialer", "baseline", "h3", "h3_datagram", "h3_datagram_send":
+	case "ip_version":
+		switch strings.ToLower(value) {
+		case "dual", "dualstack", "dual-stack", "ipv4", "v4", "4", "ipv6", "v6", "6", "legacy":
+		default:
+			return fmt.Errorf("ip-version: must be dual, ipv4, ipv6 or legacy (got %q)", value)
+		}
+	case "fast_auth", "proxy_self_heal", "proxy_audit", "smart_dialer", "baseline", "h3_datagram", "h3_datagram_send", "h1_plus":
 		switch strings.ToLower(value) {
 		case "on", "off":
 		default:
 			return fmt.Errorf("%s: must be on or off (got %q)", canonicalKey, value)
+		}
+	case "h3":
+		// must match parseH3Mode in the provider: a positive proxy count or a word
+		switch v := strings.ToLower(strings.TrimSpace(value)); v {
+		case "off", "direct", "on", "all":
+		default:
+			if n, err := strconv.Atoi(v); err != nil || n < 0 || strconv.Itoa(n) != v {
+				return fmt.Errorf("h3: must be off, direct, on, a positive proxy count, or all (got %q)", value)
+			}
 		}
 	case "oom_cap":
 		switch strings.ToLower(value) {

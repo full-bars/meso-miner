@@ -297,6 +297,8 @@ func TestControlClient_AllKeysCanonicalizationAndValidation(t *testing.T) {
 		{"h3", "h3", "on"},
 		{"h3-datagram", "h3_datagram", "on"},
 		{"h3-datagram-send", "h3_datagram_send", "on"},
+		{"ip-version", "ip_version", "ipv6"},
+		{"h1-plus", "h1_plus", "on"},
 		{"oom-cap", "oom_cap", "shadow"},
 		{"metrics", "metrics", "on"},
 		{"metrics-listen", "metrics_listen", "auto"},
@@ -491,4 +493,17 @@ func canonicalKeyValuesForTest() map[string]bool {
 		out[canonical] = true
 	}
 	return out
+}
+
+func TestValidateH3Values(t *testing.T) {
+	for _, ok := range []string{"off", "direct", "on", "all", "ALL", "1", "16", "64"} {
+		if err := validateControlValue("h3", ok); err != nil {
+			t.Fatalf("h3=%q must be accepted: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"maybe", "-1", "+4", "04", "1.5", "true", "16 proxies"} {
+		if err := validateControlValue("h3", bad); err == nil {
+			t.Fatalf("h3=%q must be rejected", bad)
+		}
+	}
 }

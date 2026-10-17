@@ -1581,6 +1581,42 @@ func (self *peerEncryptionSession) SetPeerClientPublicKey(pub ed25519.PublicKey)
 	}
 }
 
+// Process-wide counters for the out-of-band peer key cross-check below. They
+// are exported to the provider's /metrics (urnet_peer_key_crosscheck_total) so
+// a mismatch has a rate instead of only a log line. Today the check is
+// log-only and the contract-supplied key is still trusted.
+var (
+	peerKeyCrossCheckStarted     atomic.Int64
+	peerKeyCrossCheckOk          atomic.Int64
+	peerKeyCrossCheckMismatch    atomic.Int64
+	peerKeyCrossCheckFetchFailed atomic.Int64
+	peerKeyCrossCheckWrongLength atomic.Int64
+	peerKeyCrossCheckNoKey       atomic.Int64
+)
+
+// PeerKeyCrossCheckCounts is a snapshot of the process-wide peer key
+// cross-check counters, for the provider's metrics endpoint.
+type PeerKeyCrossCheckCounts struct {
+	Started     int64
+	Ok          int64
+	Mismatch    int64
+	FetchFailed int64
+	WrongLength int64
+	NoKey       int64
+}
+
+// PeerKeyCrossCheck returns the process-wide cross-check counters.
+func PeerKeyCrossCheck() PeerKeyCrossCheckCounts {
+	return PeerKeyCrossCheckCounts{
+		Started:     peerKeyCrossCheckStarted.Load(),
+		Ok:          peerKeyCrossCheckOk.Load(),
+		Mismatch:    peerKeyCrossCheckMismatch.Load(),
+		FetchFailed: peerKeyCrossCheckFetchFailed.Load(),
+		WrongLength: peerKeyCrossCheckWrongLength.Load(),
+		NoKey:       peerKeyCrossCheckNoKey.Load(),
+	}
+}
+
 // crossCheckPeerClientPublicKey fetches the peer's public client key via the
 // session's per-session fetcher (set from
 // `EncryptionSettings.NewPeerClientPublicKeyFetcher` at session creation) and
@@ -1593,16 +1629,20 @@ func (self *peerEncryptionSession) SetPeerClientPublicKey(pub ed25519.PublicKey)
 // key. The fetched key lives only on the goroutine stack: not stored on the
 // session, not cached by the manager.
 func (self *peerEncryptionSession) crossCheckPeerClientPublicKey(contractPub ed25519.PublicKey) {
+	peerKeyCrossCheckStarted.Add(1)
 	fetched, err := self.peerClientPublicKeyFetcher(self.ctx)
 	if err != nil {
+		peerKeyCrossCheckFetchFailed.Add(1)
 		self.client.log.V(1).Infof("[key]%s peer public-key fetch failed: %s\n", self.logTag, err)
 		return
 	}
 	if len(fetched) == 0 {
+		peerKeyCrossCheckNoKey.Add(1)
 		self.client.log.V(1).Infof("[key]%s peer public-key fetch returned no key (peer has not published yet)\n", self.logTag)
 		return
 	}
 	if len(fetched) != ed25519.PublicKeySize {
+		peerKeyCrossCheckWrongLength.Add(1)
 		self.client.log.Errorf(
 			"[key]%s peer public-key fetch returned %d bytes (expected %d)\n",
 			self.logTag, len(fetched), ed25519.PublicKeySize,
@@ -1610,12 +1650,14 @@ func (self *peerEncryptionSession) crossCheckPeerClientPublicKey(contractPub ed2
 		return
 	}
 	if !bytes.Equal(fetched, contractPub) {
+		peerKeyCrossCheckMismatch.Add(1)
 		self.client.log.Errorf(
 			"[key]%s CONTRACT vs FETCHED peer client public key MISMATCH for %s — possible platform MITM (today: log only, contract value still trusted)\n",
 			self.logTag, self.peerId,
 		)
 		return
 	}
+	peerKeyCrossCheckOk.Add(1)
 	self.client.log.V(1).Infof("[key]%s peer public-key cross-check OK\n", self.logTag)
 }
 

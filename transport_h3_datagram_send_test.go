@@ -117,7 +117,10 @@ func startSendHarness(t *testing.T, serverReadsDatagrams bool, h1Up bool) *sendH
 
 	transportCtx, transportCancel := context.WithCancel(ctx)
 	transport := newH3DatagramTestTransport(transportCtx, transportCancel, server.port)
-	transport.settings.sendRouteObserverForTest = func(send chan []byte) {
+	transport.settings.SendRouteObserver = func(_ Transport, send Route, connected bool) {
+		if !connected {
+			return
+		}
 		select {
 		case harness.sendRoute <- send:
 		default:
@@ -130,7 +133,7 @@ func startSendHarness(t *testing.T, serverReadsDatagrams bool, h1Up bool) *sendH
 	harness.sessions = server.sessions
 	harness.cancel = transportCancel
 	harness.done = make(chan struct{})
-	go func() { defer close(harness.done); transport.runH3(TransportModeH3, 0, 1) }()
+	go func() { defer close(harness.done); transport.runH3(transport.ctx, TransportModeH3, 0, 1) }()
 	t.Cleanup(func() { transportCancel(); <-harness.done })
 
 	select {
@@ -379,8 +382,7 @@ func TestH3MemoryBoundsAreAppliedAndScale(t *testing.T) {
 	t.Cleanup(func() { SetMemoryBudget(previous) })
 
 	SetMemoryBudget(0)
-	config := &quic.Config{}
-	applyH3MemoryBounds(config)
+	config := newPlatformQuicConfig(DefaultPlatformTransportSettings(), 1)
 	if config.InitialStreamReceiveWindow != uint64(kib(256)) ||
 		config.InitialConnectionReceiveWindow != uint64(kib(512)) {
 		t.Fatalf("initial windows %d / %d", config.InitialStreamReceiveWindow, config.InitialConnectionReceiveWindow)
@@ -395,8 +397,7 @@ func TestH3MemoryBoundsAreAppliedAndScale(t *testing.T) {
 	// a small budget shrinks the ceilings but never below the working floor, and
 	// the initial credit never exceeds the ceiling
 	SetMemoryBudget(mib(8))
-	small := &quic.Config{}
-	applyH3MemoryBounds(small)
+	small := newPlatformQuicConfig(DefaultPlatformTransportSettings(), 1)
 	if small.MaxStreamReceiveWindow >= config.MaxStreamReceiveWindow ||
 		small.MaxConnectionReceiveWindow >= config.MaxConnectionReceiveWindow {
 		t.Fatalf("an 8 MiB budget did not shrink the windows: %d / %d", small.MaxStreamReceiveWindow, small.MaxConnectionReceiveWindow)
@@ -407,20 +408,5 @@ func TestH3MemoryBoundsAreAppliedAndScale(t *testing.T) {
 	if small.InitialStreamReceiveWindow > small.MaxStreamReceiveWindow ||
 		small.InitialConnectionReceiveWindow > small.MaxConnectionReceiveWindow {
 		t.Fatal("initial credit exceeds the ceiling")
-	}
-}
-
-// The H3 transport's real dial uses those bounds: a connection made by runH3
-// advertises the pinned windows, not quic-go's auto-tuned 6 MiB / 15 MiB.
-func TestH3DatagramLimitsAreMemoryScaledAndBounded(t *testing.T) {
-	settings, budget := h3DatagramLimits()
-	if settings == nil || budget == nil {
-		t.Fatal("limits not resolved")
-	}
-	if settings.ProcessReassemblyByteCount < int64(kib(512)) || int64(mib(8)) < settings.ProcessReassemblyByteCount {
-		t.Fatalf("process reassembly %d outside [512 KiB, 8 MiB]", settings.ProcessReassemblyByteCount)
-	}
-	if again, _ := h3DatagramLimits(); again != settings {
-		t.Fatal("the limits must resolve once")
 	}
 }

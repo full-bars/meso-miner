@@ -61,10 +61,15 @@ type proxyJWTWatcherConfig struct {
 	ApiURL         string
 	ClientStrategy *connect.ClientStrategy
 	OOB            *connect.ApiOutOfBandControl
-	Transport      *connect.PlatformTransport
+	Transport      transportAuthSetter
 	// RenewNow is signaled by the OOB's 401 callback (and available for
 	// tests to drive the fast-path directly).
 	RenewNow chan struct{}
+	// Refused is signaled when the platform definitively refuses the
+	// credential (revoked, expired, rejected). It forces a renewal behind the
+	// same limiter: a refusal reaches neither the OOB 401 counter nor the
+	// transport auth-failure counter, so without it nothing would renew.
+	Refused chan struct{}
 	// Tick overrides the internal 1h ticker in tests; nil means 1h.
 	Tick       <-chan time.Time
 	ProxyIndex int
@@ -148,7 +153,14 @@ func runProxyJWTWatcher(ctx context.Context, cfg proxyJWTWatcherConfig) {
 		// the rate, sustained success creeps it back up).
 		globalAuthRateLimiter.ReportResult(err)
 		if err != nil {
-			tlog("⚠️ [jwt-renew] proxy[%d] %s renewal failed: %v (will retry)\n", cfg.ProxyIndex, cfg.IdentityKey, err)
+			if isRenewalTransient(err) {
+				tlog("⚠️ [jwt-renew] proxy[%d] %s renewal failed: %v (will retry)\n", cfg.ProxyIndex, cfg.IdentityKey, err)
+			} else {
+				// the platform answered and said no: the identity cannot be
+				// renewed. Retrying is all this watcher can do; a fresh
+				// identity needs a restart (or URNETWORK_EVICT_REVOKED_IDENTITIES=1)
+				tlog("⚠️ [jwt-renew] proxy[%d] %s the platform refused the renewal: %v (the identity may be revoked; a restart mints a fresh one)\n", cfg.ProxyIndex, cfg.IdentityKey, err)
+			}
 			return false
 		}
 
@@ -226,8 +238,8 @@ func runProxyJWTWatcher(ctx context.Context, cfg proxyJWTWatcherConfig) {
 		authFailureBaseline = connect.ProxyAuthFailureCount(cfg.ProxyIndex)
 	}
 
-	renewIfNeeded := func(reason string) {
-		need := cfg.OOB.Audit401Count() > 0
+	renewIfNeeded := func(reason string, force bool) {
+		need := force || cfg.OOB.Audit401Count() > 0
 		if !need && cfg.ProxyIndex >= 0 && connect.ProxyAuthFailureCount(cfg.ProxyIndex)-authFailureBaseline >= revokedIdentityAuthFailureThreshold {
 			// The transport auth path is separate from the OOB; repeated
 			// transport auth failures mean the bearer is being rejected at
@@ -254,16 +266,26 @@ func runProxyJWTWatcher(ctx context.Context, cfg proxyJWTWatcherConfig) {
 
 	// Startup check: a hot-restart that reused an already-expired client JWT
 	// must not sit as a black hole until the first hourly tick.
-	renewIfNeeded("startup check")
+	renewIfNeeded("startup check", false)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-tick:
-			renewIfNeeded("hourly check")
+			renewIfNeeded("hourly check", false)
 		case <-cfg.RenewNow:
-			renewIfNeeded("401 fast-path")
+			renewIfNeeded("401 fast-path", false)
+		case <-cfg.Refused:
+			renewIfNeeded("the platform refused the credential", true)
 		}
 	}
+}
+
+// transportAuthSetter is what the renewal watcher needs of the platform
+// transport: the new JWT. It is an interface because the direct identity may run
+// a dual-stack transport group instead of one transport; both take the new auth.
+// The field must be left as a nil interface, never a typed nil, when unset.
+type transportAuthSetter interface {
+	SetAuth(auth *connect.ClientAuth)
 }

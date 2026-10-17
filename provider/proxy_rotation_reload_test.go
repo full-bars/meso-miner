@@ -174,6 +174,9 @@ func TestReload_EmptySource_StopsRunningProxies(t *testing.T) {
 // the ordinary removal path does. A proxy with no clients still stops at once.
 func TestReload_EmptySource_DrainsProxyWithActiveClients(t *testing.T) {
 	resetProxyCounters(t)
+	old := drainPollInterval
+	drainPollInterval = 20 * time.Millisecond
+	t.Cleanup(func() { drainPollInterval = old })
 
 	r := emptyReloader(t, writeProxyFile(t, "# empty"))
 	var cancelled atomic.Int32

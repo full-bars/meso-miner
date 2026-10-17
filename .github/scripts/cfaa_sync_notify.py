@@ -47,7 +47,7 @@ def call_openrouter(model: str, prompt: str, api_key: str) -> str | None:
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
-            "HTTP-Referer": "https://github.com/full-bars/meso-miner",
+            "HTTP-Referer": "https://github.com/full-bars/urnetwork-3.23-fix",
             "User-Agent": USER_AGENT,
         },
         method="POST",

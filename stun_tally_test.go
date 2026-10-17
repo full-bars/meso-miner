@@ -7,17 +7,17 @@ import (
 	"time"
 )
 
-// captureLogger renders and records each Infof so a test can assert on the
+// stunCaptureLogger renders and records each Infof so a test can assert on the
 // exact [stun] line the aggregate would print.
-type captureLogger struct{ lines []string }
+type stunCaptureLogger struct{ lines []string }
 
-func (l *captureLogger) Info(_ ...any) {}
-func (l *captureLogger) Infof(format string, args ...any) {
+func (l *stunCaptureLogger) Info(_ ...any) {}
+func (l *stunCaptureLogger) Infof(format string, args ...any) {
 	l.lines = append(l.lines, fmt.Sprintf(format, args...))
 }
-func (l *captureLogger) Warningf(format string, args ...any) {}
-func (l *captureLogger) Errorf(format string, args ...any)   {}
-func (l *captureLogger) V(_ int32) Verbose                   { return nopVerbose{} }
+func (l *stunCaptureLogger) Warningf(format string, args ...any) {}
+func (l *stunCaptureLogger) Errorf(format string, args ...any)   {}
+func (l *stunCaptureLogger) V(_ int32) Verbose                   { return nopVerbose{} }
 
 type nopVerbose struct{}
 
@@ -50,7 +50,7 @@ func TestIsStunFailLine(t *testing.T) {
 // TestStunTallyAdaptiveInterval verifies that record() emits a single
 // aggregate line on the adaptive cadence and picks the right next interval.
 func TestStunTallyAdaptiveInterval(t *testing.T) {
-	log := &captureLogger{}
+	log := &stunCaptureLogger{}
 
 	// Low-volume path: a completed 6-minute window with a single result
 	// yields rate ~0.17/min (< highRateThreshold) -> relax to 5 minutes.
@@ -95,7 +95,7 @@ func TestStunTallyAdaptiveInterval(t *testing.T) {
 // TestStunTallyIdleNeverEmits confirms no line is produced while the window
 // has not elapsed (no spam on an idle host).
 func TestStunTallyIdleNeverEmits(t *testing.T) {
-	log := &captureLogger{}
+	log := &stunCaptureLogger{}
 	tl := &stunTallyT{lastLogAt: time.Now()}
 	// Two pulses inside the still-open first window must not emit.
 	tl.record(true, log)
@@ -110,7 +110,7 @@ func TestStunTallyIdleNeverEmits(t *testing.T) {
 // construction did exactly that — a busy host reported ~0 events/min and then sat
 // on the slow cadence for the rest of the run.
 func TestStunTallyFirstPulseSeedsWindow(t *testing.T) {
-	log := &captureLogger{}
+	log := &stunCaptureLogger{}
 	tl := &stunTallyT{lastLogAt: time.Now().Add(-2 * time.Hour)}
 	tl.record(true, log)
 	if time.Since(tl.lastLogAt) > time.Minute {
@@ -127,7 +127,7 @@ func TestStunTallyFirstPulseSeedsWindow(t *testing.T) {
 // TestStunTallyDiscardsStaleWindow: counts left over from long ago are not this
 // window's events — reporting them would resurrect a stale burst as fresh.
 func TestStunTallyDiscardsStaleWindow(t *testing.T) {
-	log := &captureLogger{}
+	log := &stunCaptureLogger{}
 	tl := &stunTallyT{
 		lastLogAt: time.Now().Add(-2 * time.Hour),
 		nextLogAt: time.Now().Add(-time.Minute),
@@ -174,7 +174,7 @@ func TestStunTallyDoesNotHoldLockDuringLog(t *testing.T) {
 
 	// While the sink is blocked inside Infof, the lock must be free.
 	done := make(chan struct{})
-	go func() { tl.record(true, &captureLogger{}); close(done) }()
+	go func() { tl.record(true, &stunCaptureLogger{}); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):

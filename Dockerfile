@@ -8,9 +8,13 @@ WORKDIR /app
 # Install build dependencies
 RUN apk add --no-cache git gcc musl-dev
 
-# Copy module manifests first so dependency download is a separate
-# cacheable layer (only invalidated when go.mod/go.sum change)
+# Copy module manifests and the local replace trees first so dependency
+# download is a separate cacheable layer (only invalidated when go.mod,
+# go.sum or third_party change). go.mod replaces two modules with local
+# directories under third_party/, and `go mod download` reads their
+# go.mod files, so those trees must be present before it runs.
 COPY go.mod go.sum ./
+COPY third_party ./third_party
 
 # Download modules once (cached across builds unless manifests change)
 RUN go mod download

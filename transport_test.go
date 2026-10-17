@@ -19,16 +19,6 @@ func TestConnectHost(t *testing.T) {
 	assert.Equal(t, host, "other-connect.bar.com")
 }
 
-func TestConnectPumpHost(t *testing.T) {
-	host, err := pumpHost("http://connect.foo.bar", []byte("foo.com"))
-	assert.Equal(t, err, nil)
-	assert.Equal(t, host, "zone-foo-com.foo.bar")
-
-	host, err = pumpHost("http://127.0.0.1", []byte("foo.com"))
-	assert.Equal(t, err, nil)
-	assert.Equal(t, host, "127.0.0.1")
-}
-
 func TestSetModeAvailableWakesWaiter(t *testing.T) {
 	transport := &PlatformTransport{
 		availableModeMonitor: NewMonitor(),
@@ -111,46 +101,33 @@ func TestSetActiveModeNoSpuriousWake(t *testing.T) {
 	}
 }
 
-// TestPlatformTransportGetAuthZeroValue pins the zero-value behavior of the
-// atomic.Pointer[ClientAuth] auth field: before any SetAuth call, getAuth
-// must return nil rather than panicking on an uninitialized pointer.
-func TestPlatformTransportGetAuthZeroValue(t *testing.T) {
-	transport := &PlatformTransport{}
-
-	if got := transport.getAuth(); got != nil {
-		t.Fatalf("getAuth on a zero-value transport = %v, want nil", got)
-	}
-}
-
-// TestPlatformTransportSetAuthGetAuthRoundTrip verifies SetAuth/getAuth carry
-// the exact pointer through, and that a later SetAuth call fully replaces the
-// previous credential (the renewal watcher hot-swaps the whole *ClientAuth on
-// every JWT rotation).
-func TestPlatformTransportSetAuthGetAuthRoundTrip(t *testing.T) {
+func TestPlatformTransportSetAuthSnapshotRoundTrip(t *testing.T) {
 	transport := &PlatformTransport{}
 
 	auth1 := &ClientAuth{ByJwt: "jwt-1", AppVersion: "1.0.0", InstanceId: NewId()}
 	transport.SetAuth(auth1)
-	if got := transport.getAuth(); got != auth1 {
-		t.Fatalf("getAuth = %v, want the exact pointer set by SetAuth (%v)", got, auth1)
+	if got := transport.authSnapshot(); got.ByJwt != "jwt-1" || got.AppVersion != "1.0.0" || got.InstanceId != auth1.InstanceId {
+		t.Fatalf("authSnapshot = %v, want the credential set by SetAuth (%v)", got, auth1)
 	}
 
 	auth2 := &ClientAuth{ByJwt: "jwt-2", AppVersion: "1.0.1", InstanceId: NewId()}
 	transport.SetAuth(auth2)
-	if got := transport.getAuth(); got != auth2 {
-		t.Fatalf("getAuth after second SetAuth = %v, want %v", got, auth2)
+	if got := transport.authSnapshot(); got.ByJwt != "jwt-2" || got.AppVersion != "1.0.1" || got.InstanceId != auth2.InstanceId {
+		t.Fatalf("authSnapshot after second SetAuth = %v, want %v", got, auth2)
 	}
-	if got := transport.getAuth(); got == auth1 {
-		t.Fatal("getAuth still returned the stale auth pointer after a second SetAuth call")
+	// the transport owns a copy: mutating the caller's value changes nothing
+	auth2.ByJwt = "mutated"
+	if got := transport.authSnapshot(); got.ByJwt != "jwt-2" {
+		t.Fatalf("authSnapshot followed a mutation of the caller's auth: %q", got.ByJwt)
 	}
 }
 
-// TestPlatformTransportSetAuthConcurrentWithGetAuth exercises SetAuth (the
+// TestPlatformTransportSetAuthConcurrentWithSnapshot exercises SetAuth (the
 // renewal watcher rotating the bearer token) racing with getAuth (the dial
 // paths reading it) — this is the scenario atomic.Pointer replaced the old
 // stateLock-guarded field for. Run with -race to catch any regression back to
 // an unsynchronized read/write.
-func TestPlatformTransportSetAuthConcurrentWithGetAuth(t *testing.T) {
+func TestPlatformTransportSetAuthConcurrentWithSnapshot(t *testing.T) {
 	transport := &PlatformTransport{}
 	transport.SetAuth(&ClientAuth{ByJwt: "initial"})
 
@@ -181,8 +158,8 @@ func TestPlatformTransportSetAuthConcurrentWithGetAuth(t *testing.T) {
 				case <-stop:
 					return
 				default:
-					if auth := transport.getAuth(); auth == nil {
-						t.Errorf("getAuth returned nil after SetAuth had already been called")
+					if auth := transport.authSnapshot(); auth.ByJwt == "" {
+						t.Errorf("authSnapshot returned an empty credential after SetAuth had already been called")
 						return
 					}
 				}

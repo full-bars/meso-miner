@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -19,12 +20,16 @@ const (
 	// keep the newest (trimRatio-1)/trimRatio, discard the oldest 1/trimRatio
 	shmLogTrimRatio = 3
 
-	// Second, smaller buffer holding ONLY high-value lines (see
-	// isImportantLogLine) so the earnings/health signal survives for hours
-	// even when the main 5MB buffer floods in ~84s. Same /dev/shm (RAM) medium
-	// as the main log, surfaced via `urnet-tools logs --important`.
-	shmImportantLogPath    = "/dev/shm/urnetwork-important.log"
-	shmImportantLogMaxSize = 1 * 1024 * 1024 // 1MB target cap
+	// Second buffer holding ONLY high-value lines (see isImportantLogLine) so
+	// the earnings/health signal survives even when the main 5MB buffer floods
+	// in ~84s. It lives on disk (shmImportantLogDiskName in the state dir) so it
+	// survives restarts and reboots; the lines are rare, so the write rate is
+	// small. Surfaced via `urnet-tools logs --important`. A box with no usable
+	// home directory falls back to the old RAM file.
+	shmImportantLogPath       = "/dev/shm/urnetwork-important.log"
+	shmImportantLogDiskName   = "important.log"
+	shmImportantLogMaxSize    = 10 * 1024 * 1024 // per file; rotated once to .1, so 20MB on disk
+	shmImportantLogMaxSizeRAM = 1 * 1024 * 1024
 )
 
 // ramlogsDockerEnvPath is the marker file that identifies a Docker container
@@ -151,11 +156,22 @@ func initSHMLogger() {
 		// Second buffer: high-value lines only. Best-effort; nil disables mirroring.
 		// O_RDWR for the same reason as the main log: the trimmer reads before
 		// it truncates.
-		fImp, impErr := os.OpenFile(shmImportantLogPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
-		if impErr != nil {
-			fmt.Fprintf(os.Stderr, "failed to open important shm log: %v\n", impErr)
-			fImp = nil
+		impPath, impMax := importantLogLocation()
+		fImp, impErr := os.OpenFile(impPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0600)
+		if impErr != nil && impPath != shmImportantLogPath {
+			// the state dir is not writable: fall back to the RAM file
+			impPath, impMax = shmImportantLogPath, int64(shmImportantLogMaxSizeRAM)
+			fImp, impErr = os.OpenFile(impPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 		}
+		if impErr != nil {
+			fmt.Fprintf(os.Stderr, "failed to open important log: %v\n", impErr)
+			fImp = nil
+		} else if impPath != shmImportantLogPath {
+			// the RAM file from before the move is never written again; leaving it
+			// would show operators stale data
+			os.Remove(shmImportantLogPath)
+		}
+		impEnabled := fImp != nil // fImp itself is swapped under fImpMu when it rotates
 		var fImpMu sync.Mutex
 
 		go func() {
@@ -178,7 +194,7 @@ func initSHMLogger() {
 					// Mirror complete important lines into the small buffer. Both
 					// tlog and glog output flow through this pipe, so this captures
 					// [profit]/[earn]/[health]/etc. regardless of which logger emit.
-					if fImp != nil {
+					if impEnabled {
 						lineBuf = append(lineBuf, buf[:n]...)
 						for {
 							i := bytes.IndexByte(lineBuf, '\n')
@@ -204,20 +220,31 @@ func initSHMLogger() {
 			}
 		}()
 
-		// Trim the important buffer the same way as the main log.
-		if fImp != nil {
+		// Keep the important buffer bounded. On disk it rotates by rename (one
+		// previous file, no in-place rewrite, no periodic fsync: the lines are
+		// rare and a crash may lose the last few seconds). The RAM fallback is
+		// trimmed in place like the main log.
+		if impEnabled {
 			go func() {
 				for {
 					time.Sleep(5 * time.Second)
 					fImpMu.Lock()
-					err := trimRAMLog(fImp, shmImportantLogMaxSize, shmLogTrimRatio)
-					if err == nil {
-						fImp.Sync()
+					if impPath == shmImportantLogPath {
+						err := trimRAMLog(fImp, impMax, shmLogTrimRatio)
+						if err == nil {
+							fImp.Sync()
+						}
+						if err != nil {
+							fImpMu.Unlock()
+							reportTrimFailure(&impTrimWarned, &impTrimWarnTime, impPath, err)
+							continue
+						}
+					} else if err := rotateImportantLog(&fImp, impPath, impMax); err != nil {
+						fImpMu.Unlock()
+						reportTrimFailure(&impTrimWarned, &impTrimWarnTime, impPath, err)
+						continue
 					}
 					fImpMu.Unlock()
-					if err != nil {
-						reportTrimFailure(&impTrimWarned, &impTrimWarnTime, shmImportantLogPath, err)
-					}
 				}
 			}()
 		}
@@ -261,4 +288,35 @@ func shmLogFatal(code int, format string, args ...any) {
 	os.Stderr.Write([]byte(msg))
 	critLog("FATAL exit=%d: %s", code, fmt.Sprintf(format, args...))
 	os.Exit(code)
+}
+
+// importantLogLocation is where the important buffer lives and how big it may
+// grow: the state dir on disk, or the RAM file when there is no state dir.
+func importantLogLocation() (string, int64) {
+	if dir := mustStateDir(); dir != "" {
+		if err := os.MkdirAll(dir, 0700); err == nil {
+			return filepath.Join(dir, shmImportantLogDiskName), shmImportantLogMaxSize
+		}
+	}
+	return shmImportantLogPath, shmImportantLogMaxSizeRAM
+}
+
+// rotateImportantLog moves the on-disk important log to path+".1" once it
+// passes max and reopens it, so a previous file is always kept and nothing is
+// rewritten in place. The caller holds the buffer's mutex.
+func rotateImportantLog(f **os.File, path string, max int64) error {
+	info, err := (*f).Stat()
+	if err != nil || info.Size() < max {
+		return err
+	}
+	if err := os.Rename(path, path+".1"); err != nil {
+		return err
+	}
+	next, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0600)
+	if err != nil {
+		return err
+	}
+	(*f).Close()
+	*f = next
+	return nil
 }

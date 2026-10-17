@@ -132,7 +132,7 @@ func (d demoTopSource) Fetch(Provider) (*NodeSnapshot, error) {
 		hint = &h
 	}
 	s := float64(now.Unix())
-	prev := "v2026.9.18-1049118720-meso"
+	prev := "v3.23.0-fix.32.0"
 	memLimit := uint64(4 * 1024 * demoMiB)
 	rss := uint64(2300 * demoMiB)
 	fds, fdLimit := 310+int(20*math.Sin(s/50)), 65536
@@ -155,7 +155,7 @@ func (d demoTopSource) Fetch(Provider) (*NodeSnapshot, error) {
 
 	return &NodeSnapshot{
 		V:               1,
-		Version:         "v2026.9.22-1052862940-meso.demo",
+		Version:         "v3.23.0-fix.demo",
 		PreviousVersion: &prev,
 		StartedAt:       demoAnchor.Format(time.RFC3339),
 		Now:             now.Format(time.RFC3339),

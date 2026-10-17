@@ -81,6 +81,11 @@ type TransferCarrierProperties struct {
 	UnreliableMaxMessageByteCount int
 	unreliableFlightMessageLimit  int
 	unreliableFlightByteLimit     ByteCount
+	// Hybrid-carrier fields written by the ported platform transport. This
+	// tree's route manager does not read them (stage 3, upstream 20b29f79).
+	UnreliableFlowIsolation       bool
+	UnreliableFlowReserve         bool
+	unreliableForMessageByteCount func(transferFrameByteCount int) bool
 }
 
 type TransportType string

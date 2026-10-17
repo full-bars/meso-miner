@@ -11,6 +11,7 @@ package connect
 // verify_wire.go.
 
 import (
+	"encoding/json"
 	"fmt"
 	neturl "net/url"
 )
@@ -66,16 +67,30 @@ type SnSetWalletCallback ApiCallback[*SnSetWalletResult]
 // SnSetWalletArgs sets the caller network's subnet coldkey — the ss58
 // address pool payouts for this network are claimable by. Kept separate from
 // the payout wallet types on purpose.
+//
+// Message and Signature carry the coldkey's proof of possession: the exact
+// server-issued challenge text and the coldkey's sr25519 signature over it, hex
+// and 0x-prefixed. Both empty is an unsigned set, which the main network
+// refuses under its signed wallet rules.
 type SnSetWalletArgs struct {
 	ColdkeySs58 string `json:"coldkey_ss58"`
+	// ClientId selects a provider wallet consent; a network consent omits it.
+	ClientId  *Id    `json:"client_id,omitempty"`
+	Message   string `json:"message,omitempty"`
+	Signature string `json:"signature,omitempty"`
 }
 
 type SnSetWalletError struct {
+	Code    string `json:"code,omitempty"`
 	Message string `json:"message"`
 }
 
 type SnSetWalletResult struct {
 	Error *SnSetWalletError `json:"error,omitempty"`
+	// MappingHash is the hex sha256 of the stored original, the receipt a
+	// consent submission is checked against.
+	MappingHash       string `json:"mapping_hash,omitempty"`
+	MappingGeneration uint64 `json:"mapping_generation,omitempty"`
 }
 
 // SnSetWallet sets the subnet wallet via the authenticated
@@ -146,8 +161,13 @@ type SnPoolClaimResult struct {
 	Proof           [][]byte          `json:"proof"`
 	PayoutRoot      []byte            `json:"payout_root"`
 	ContractAddress string            `json:"contract_address"`
-	ChainId         uint64            `json:"chain_id"`
-	ClaimOpenBlock  uint64            `json:"claim_open_block"`
+	// SettlementVaultAddress is the vault the claim transaction must target.
+	// The server fills contract_address from the hot-epoch mirror as a
+	// fallback when this is empty; a present-but-different pair is refused
+	// before any transaction is built.
+	SettlementVaultAddress string `json:"settlement_vault_address,omitempty"`
+	ChainId                uint64 `json:"chain_id"`
+	ClaimOpenBlock         uint64 `json:"claim_open_block"`
 }
 
 // SnPoolClaim fetches the caller network's pool claim for an epoch via the
@@ -190,6 +210,13 @@ type SnEpochResult struct {
 	TEpochBlocks        uint64 `json:"t_epoch_blocks"`
 	ChainId             uint64 `json:"chain_id"`
 	ContractAddress     string `json:"contract_address"`
+	// the subnet identity a wallet consent is bound to; empty or zero from a
+	// server that predates them. NoId and Netuid accept the server's numeric or
+	// decimal-string encoding.
+	GenesisHash            string      `json:"genesis_hash,omitempty"`
+	SettlementVaultAddress string      `json:"settlement_vault_address,omitempty"`
+	NoId                   json.Number `json:"no_id,omitempty"`
+	Netuid                 json.Number `json:"netuid,omitempty"`
 }
 
 // SnEpoch fetches the current epoch state via `GET /sn/epoch`. The route

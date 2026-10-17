@@ -34,7 +34,7 @@ tests:
               instance: n1
             exp_annotations:
               summary: "URnetwork node n1 is down"
-              description: "Prometheus could not scrape n1 for 5 minutes. This does NOT tell a stopped provider apart from a provider with metrics switched off, a blocked port or a Tailscale outage, and it does not apply to a node that was removed from targets/providers.yml is absent from the scrape (a configured target with no successful scrape still fires). It says nothing about whether a reachable node is earning."
+              description: "Prometheus could not scrape n1 for 5 minutes. This does NOT tell a stopped provider apart from a provider with metrics switched off, a blocked port or a Tailscale outage, and it does not fire for a node that was removed from targets/providers.yml or never scraped. It says nothing about whether a reachable node is earning."
 
   - interval: 1m
     input_series:
@@ -58,3 +58,103 @@ tests:
             exp_annotations:
               summary: "URnetwork node n1 restarted more than 3 times in the last hour"
               description: "The uptime of n1 dropped more than 3 times in an hour. This does NOT catch a restart that hides between two scrapes (the node stayed down longer than it had been up, so uptime is higher again on the next scrape), and it does not say why the node restarted. Look at urnet_restart_reason for the reason, and at the node's logs for the cause."
+
+  # --- backend outage protection -------------------------------------------
+  - interval: 1m
+    input_series:
+      # n1 reads the backend as degraded from minute 2 on; n2 never does.
+      - series: 'urnet_govern_degraded{job="urnetwork", instance="n1"}'
+        values: '0 0 1x20'
+      - series: 'urnet_govern_degraded{job="urnetwork", instance="n2"}'
+        values: '0x22'
+    alert_rule_test:
+      # degraded for 2 minutes: pending
+      - eval_time: 4m
+        alertname: UrnetworkBackendDegraded
+        exp_alerts: []
+      # degraded for more than 3 minutes: only n1 fires
+      - eval_time: 8m
+        alertname: UrnetworkBackendDegraded
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: urnetwork
+              instance: n1
+            exp_annotations:
+              summary: "URnetwork node n1 reads the backend as degraded"
+              description: "n1 has judged the platform backend degraded for 3 minutes. While it does, reconnects run under a shared attempt budget and automatic proxy evictions are held off. This does NOT prove the backend is down: a node with a poor proxy list can read it on its own. Check the [govern] lines in its log for the failure classes, and UrnetworkFleetBackendDegraded to see whether other nodes agree."
+      # one node alone never reaches the fleet rule
+      - eval_time: 8m
+        alertname: UrnetworkFleetBackendDegraded
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'urnet_govern_degraded{job="urnetwork", instance="n1"}'
+        values: '1x20'
+      - series: 'urnet_govern_degraded{job="urnetwork", instance="n2"}'
+        values: '1x20'
+      - series: 'urnet_govern_degraded{job="urnetwork", instance="n3"}'
+        values: '1x20'
+      - series: 'urnet_govern_degraded{job="urnetwork", instance="n4"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: UrnetworkFleetBackendDegraded
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "3 URnetwork nodes read the backend as degraded"
+              description: "At least 3 nodes have judged the platform backend degraded for 3 minutes. This is the signal of a backend episode like the one that made providers flood their pipes with reconnect traffic. It does NOT say what is wrong on the backend. Check whether urnet_govern_budget_rate has fallen on those nodes and what the [govern] lines report."
+
+  - interval: 1m
+    input_series:
+      # n1 holds its budget at 50/s for the whole window; n2 is open.
+      - series: 'urnet_govern_budget_rate{job="urnetwork", instance="n1"}'
+        values: '50x40'
+      - series: 'urnet_govern_budget_rate{job="urnetwork", instance="n2"}'
+        values: '200x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: UrnetworkReconnectBudgetHeld
+        exp_alerts: []
+      - eval_time: 35m
+        alertname: UrnetworkReconnectBudgetHeld
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: urnetwork
+              instance: n1
+            exp_annotations:
+              summary: "URnetwork node n1 has held its reconnect budget below 200/s for 30 minutes"
+              description: "The connect attempt budget on n1 has been throttled for 30 minutes. This does NOT say whether the backend is still failing or the node simply has not reopened: compare with urnet_govern_degraded and look at the [govern] budget lines."
+
+  - interval: 1m
+    input_series:
+      # n1: resends 300 KB/s against 100 KB/s of first sends (amplified).
+      # n2: busy and healthy, resends are a small part of the traffic.
+      # n3: nearly idle, resends 30 KB/s against 1 KB/s of first sends (under the floor).
+      - series: 'urnet_transfer_send_bytes_total{job="urnetwork", instance="n1", kind="resend"}'
+        values: '0+18000000x40'
+      - series: 'urnet_transfer_send_bytes_total{job="urnetwork", instance="n1", kind="first"}'
+        values: '0+6000000x40'
+      - series: 'urnet_transfer_send_bytes_total{job="urnetwork", instance="n2", kind="resend"}'
+        values: '0+6000000x40'
+      - series: 'urnet_transfer_send_bytes_total{job="urnetwork", instance="n2", kind="first"}'
+        values: '0+60000000x40'
+      - series: 'urnet_transfer_send_bytes_total{job="urnetwork", instance="n3", kind="resend"}'
+        values: '0+1800000x40'
+      - series: 'urnet_transfer_send_bytes_total{job="urnetwork", instance="n3", kind="first"}'
+        values: '0+60000x40'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: UrnetworkResendAmplification
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: urnetwork
+              instance: n1
+            exp_annotations:
+              summary: "URnetwork node n1 sends more than twice as many resend bytes as first-send bytes"
+              description: "For 15 minutes more than 100 KB/s of what n1 transmits has been resends, and more than twice its first sends. This does NOT show which peer is not acknowledging, and a node with little traffic can briefly look amplified. See urnet_transfer_resend_deferred_total for what the retry budget is holding back."

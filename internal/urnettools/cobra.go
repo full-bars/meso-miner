@@ -37,6 +37,7 @@ Core Commands:
   dashboard               Status panel: state, settings, sources, warnings
   history [limit]         Show the provider's command audit trail
   autopilot log [limit]   Show the capacity decisions the provider made (OOM-aware cap, trim)
+  enforcement [history N] Show what the governors enforced (counts per day; or the newest N events)
   baseline [show|mark|compare]  Show this box's recorded behaviour, and compare an upgrade
 
 Performance & Tuning:
@@ -83,6 +84,12 @@ Proxy Management:
   direct [on|off]         Toggle providing on the machine's direct/local IP
   usage [graph[s] <view>] Traffic accounting: billable vs control, time-series
 
+Wallet Consent:
+  wallet status           Show the network wallet consent (read-only)
+  wallet challenge <ck>   Fetch the consent statement to sign (signs nothing)
+  wallet set <ck>         Submit a signed consent (--coldkey_seed_file: own workstation only)
+  wallet sign <ck>        Sign in the browser (Talisman); the seed never leaves the extension
+
 Maintenance:
   reinstall                     Reinstall provider
   uninstall                     Uninstall provider
@@ -106,7 +113,7 @@ Batch / safety flags:
   -n, --dry-run               print the plan, change nothing
   -h, --help                  show help (never executes)
 
-Need help? Email support@fullbars.xyz or visit https://github.com/full-bars/meso-miner
+Need help? Email support@fullbars.xyz or visit https://github.com/full-bars/urnetwork-3.23-fix
 `
 
 // buildRootCmd creates the root Cobra command for urnet-tools.
@@ -131,12 +138,13 @@ func buildRootCmd() *cobra.Command {
 	// Root -h/--help renders the same curated menu. Subcommands reset their own
 	// help template so they keep Cobra's per-command page (see newCobraCmd).
 	rootCmd.SetHelpTemplate(rootHelpMenu)
-	// The old dispatcher had no 'completion' subcommand; keep the surface stable.
-	rootCmd.CompletionOptions.DisableDefaultCmd = true
+	// Shell completion: the modern cobra completion command (bash/zsh/fish/
+	// powershell) is registered, so `urnet-tools completion <shell>` works.
+	rootCmd.CompletionOptions.DisableDefaultCmd = false
 
 	rootCmd.PersistentFlags().String("unit", "", "systemd unit, e.g. urnetwork-native.service")
 	rootCmd.PersistentFlags().String("user", "", "OS user, e.g. urnet")
-	rootCmd.PersistentFlags().String("network", "", "JWT network name, e.g. tacogonzalez3000")
+	rootCmd.PersistentFlags().String("network", "", "JWT network name, e.g. mynetwork")
 	rootCmd.PersistentFlags().String("network-id", "", "JWT network id")
 	rootCmd.PersistentFlags().String("state-dir", "", "state dir")
 	rootCmd.PersistentFlags().BoolP("force", "f", false, "skip confirm prompts ONLY")
@@ -169,6 +177,7 @@ func buildRootCmd() *cobra.Command {
 		newSetCmd(),
 		newAuthCmd(),
 		newChooseNetworkCmd(),
+		newWalletCmd(),
 		newProxyCmd(),
 		newDirectCmd(),
 		newUsageCmd(),
@@ -184,6 +193,7 @@ func buildRootCmd() *cobra.Command {
 		newGetCmd(),
 		newHistoryCmd(),
 		newAutopilotCmd(),
+		newEnforcementCmd(),
 		newBaselineCmd(),
 		newMetricsCmd(),
 		newSmartDialerCmd(),
@@ -245,7 +255,7 @@ func newStatusCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdStatus(rest)
 		})
-	}), "Show detailed status for one provider: user, unit, binary, version, state dir, PID, running state, network identity, and JWT expiry. On Linux this reproduces `systemctl status <unit>`; on Windows and macOS it renders a status panel with a proxy summary. When the provider answers, a live block follows: state, throughput, clients, proxies, uptime, last restart reason, memory. With several providers and no target, prints one compact row per provider. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir. --json prints the raw live snapshot for scripts.", "  urnet-tools status\n  urnet-tools status --network tacogonzalez3000\n  urnet-tools status --unit urnetwork-native.service\n  urnet-tools status --json")
+	}), "Show detailed status for one provider: user, unit, binary, version, state dir, PID, running state, network identity, and JWT expiry. On Linux this reproduces `systemctl status <unit>`; on Windows and macOS it renders a status panel with a proxy summary. When the provider answers, a live block follows: state, throughput, clients, proxies, uptime, last restart reason, memory. With several providers and no target, prints one compact row per provider. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir. --json prints the raw live snapshot for scripts.", "  urnet-tools status\n  urnet-tools status --network mynetwork\n  urnet-tools status --unit urnetwork-native.service\n  urnet-tools status --json")
 }
 
 func newTopCmd() *cobra.Command {
@@ -253,7 +263,7 @@ func newTopCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdTop(rest)
 		})
-	}), "Open a live, full-screen view of one provider: billable and total throughput graphs for the last 10 minutes, current and average rates, bytes moved this run, clients, proxy pool, memory and descriptors, and recent events such as restarts and state changes. Reads only the provider's control socket and changes nothing. Also available as `urtop`. Keys: q, Esc or Ctrl-C quit; Tab and Shift-Tab switch provider; - refreshes faster and + slower, like btop; w zooms the graphs to the last 15 seconds; g lists where the provider's goroutines are parked; m opens a menu for the color theme and graph style (braille, block or tty), which is remembered; ? shows help. When the provider is slow to answer the screen keeps the last data and shows SLOW; when it stops answering the screen stays up, shows DISCONNECTED with a countdown, and resumes by itself. Needs an interactive terminal; use `status` for scripts. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir. --interval sets the refresh period (default 1s, minimum 100ms; the rate numbers and the newest graph column update at that rate, the full snapshot at most once a second).", "  urnet-tools top\n  urnet-tools top --network tacogonzalez3000\n  urnet-tools top --interval 500ms\n  urtop")
+	}), "Open a live, full-screen view of one provider: billable and total throughput graphs for the last 10 minutes, current and average rates, bytes moved this run, clients, proxy pool, memory and descriptors, and recent events such as restarts and state changes. Reads only the provider's control socket and changes nothing. Also available as `urtop`. Keys: q, Esc or Ctrl-C quit; Tab and Shift-Tab switch provider; - refreshes faster and + slower, like btop; w zooms the graphs to the last 15 seconds; g lists where the provider's goroutines are parked; m opens a menu for the color theme and graph style (braille, block or tty), which is remembered; ? shows help. When the provider is slow to answer the screen keeps the last data and shows SLOW; when it stops answering the screen stays up, shows DISCONNECTED with a countdown, and resumes by itself. Needs an interactive terminal; use `status` for scripts. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir. --interval sets the refresh period (default 1s, minimum 100ms; the rate numbers and the newest graph column update at that rate, the full snapshot at most once a second).", "  urnet-tools top\n  urnet-tools top --network mynetwork\n  urnet-tools top --interval 500ms\n  urtop")
 }
 
 func newSnStatusCmd() *cobra.Command {
@@ -285,7 +295,7 @@ func newRestartCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdRestart(rest, force, dryRun)
 		})
-	}), "Restart the provider's systemd unit. This is a production action, so it asks for a typed \"yes\" unless you pass -f/--force (or -y/--yes). Use -n/--dry-run to print the plan without acting.", "  urnet-tools restart --unit urnetwork-native.service\n  urnet-tools restart --network tacogonzalez3000 --force")
+	}), "Restart the provider's systemd unit. This is a production action, so it asks for a typed \"yes\" unless you pass -f/--force (or -y/--yes). Use -n/--dry-run to print the plan without acting.", "  urnet-tools restart --unit urnetwork-native.service\n  urnet-tools restart --network mynetwork --force")
 }
 
 func newUpdateCmd() *cobra.Command {
@@ -361,7 +371,7 @@ func newSummaryCmd() *cobra.Command {
 			return err
 		}
 		return cmdSimpleDelegation("summary", rest)
-	}), "Show a fleet-style activity and performance summary for one provider. This delegates to the provider binary's own proxy summary command, so it needs the provider binary to be reachable and running.", "  urnet-tools summary\n  urnet-tools summary --network tacogonzalez3000")
+	}), "Show a fleet-style activity and performance summary for one provider. This delegates to the provider binary's own proxy summary command, so it needs the provider binary to be reachable and running.", "  urnet-tools summary\n  urnet-tools summary --network mynetwork")
 }
 
 func newVersionCmd() *cobra.Command {
@@ -379,7 +389,7 @@ func newVersionCmd() *cobra.Command {
 func newDefaultCmd() *cobra.Command {
 	return withHelp(newCobraCmd("default", "persist a default provider target for this box", nil, func(cmd *cobra.Command, args []string) error {
 		return cmdDefault(args)
-	}), "Persist, show, or clear a default provider target for this box, so later commands with no explicit target resolve to it on multi-provider boxes. 'default set' requires exactly one of --unit, --user, --network, --network-id, or --state-dir; the default is stored per user and is ignored automatically if it becomes stale or ambiguous.", "  urnet-tools default set --network tacogonzalez3000\n  urnet-tools default show\n  urnet-tools default clear")
+	}), "Persist, show, or clear a default provider target for this box, so later commands with no explicit target resolve to it on multi-provider boxes. 'default set' requires exactly one of --unit, --user, --network, --network-id, or --state-dir; the default is stored per user and is ignored automatically if it becomes stale or ambiguous.", "  urnet-tools default set --network mynetwork\n  urnet-tools default show\n  urnet-tools default clear")
 }
 
 func newSessionCmd() *cobra.Command {
@@ -434,7 +444,7 @@ func newRamlogsCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdTune("ramlogs", rest, force, dryRun)
 		})
-	}), "Show current RAM logging status, or turn it on/off. RAM logging writes provider logs to a RAM buffer instead of disk. This writes a systemd drop-in and restarts the provider unit, so it asks for a typed \\\"yes\\\" unless you pass -f/--force.", "  urnet-tools ramlogs\n  urnet-tools ramlogs on\n  urnet-tools ramlogs off --network tacogonzalez3000")
+	}), "Show current RAM logging status, or turn it on/off. RAM logging writes provider logs to a RAM buffer instead of disk. This writes a systemd drop-in and restarts the provider unit, so it asks for a typed \\\"yes\\\" unless you pass -f/--force.", "  urnet-tools ramlogs\n  urnet-tools ramlogs on\n  urnet-tools ramlogs off --network mynetwork")
 }
 
 func newOptimizeCmd() *cobra.Command {
@@ -691,6 +701,8 @@ func newHistoryCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:                "history [limit] [--cursor <cursor>]",
 		Short:              "show command audit trail",
+		Long:               "Show this box's command audit trail: the urnet-tools commands run against a provider, newest last, with their outcome. Read-only: reads the provider's audit ring from its state dir; needs no root beyond the file's own permissions. --cursor continues a paged read from where the last page ended. Alias: audit.",
+		Example:            "  urnet-tools history\n  urnet-tools history 50\n  urnet-tools history 50 --cursor <cursor>",
 		Aliases:            []string{"audit"},
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -706,6 +718,8 @@ func newMetricsCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:                "metrics [status|on|off|listen <ip:port|auto>]",
 		Short:              "show, toggle, or move the Prometheus /metrics endpoint",
+		Long:               "Show, enable, disable, or move the provider's Prometheus /metrics endpoint. 'listen <ip:port|auto>' moves where it serves; 'auto' picks the listen address. Changes are applied to the running provider at its next tick, with no restart. Honors -n/--dry-run, which prints the plan and sends nothing.",
+		Example:            "  urnet-tools metrics\n  urnet-tools metrics on\n  urnet-tools metrics listen 0.0.0.0:9099",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if hasHelpFlag(args) {
@@ -916,6 +930,8 @@ func newSmartDialerCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:                "smart-dialer [status|on|off]",
 		Short:              "show or toggle measured-cost transport preference (skip DPI-circumvention cost when the network does not need it)",
+		Long:               "Show or toggle the measured-cost transport preference: when the network does not need DPI circumvention, the provider prefers transport paths that avoid its cost. 'status' (the default) reports the current value; on and off change it. Applied to the running provider at its next tick, with no restart. Honors -n/--dry-run. Alias: smart_dialer.",
+		Example:            "  urnet-tools smart-dialer\n  urnet-tools smart-dialer on\n  urnet-tools smart-dialer off --unit urnetwork-native.service",
 		Aliases:            []string{"smart_dialer"},
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1023,6 +1039,8 @@ func newProfileCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:                "profile [auto|turbo-v4|turbo-v8|eco|lowmem]",
 		Short:              "show or set the memory/GC tuning profile",
+		Long:               "Show or set the provider's memory/GC tuning profile: auto sizes the box, turbo-v4 and turbo-v8 raise throughput on RAM-rich machines, eco GC-tunes for low RAM, and lowmem shrinks buffers for maximum savings. With no argument it prints the current value and the settable profiles. A change takes effect on the provider's next restart; turbo, eco and lowmode are the runtime-settable equivalents. Alias: profiles.",
+		Example:            "  urnet-tools profile\n  urnet-tools profile auto\n  urnet-tools profile lowmem --unit urnetwork-native.service",
 		Aliases:            []string{"profiles"},
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1160,6 +1178,8 @@ func newDashboardCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:                "dashboard [target]",
 		Short:              "rich provider status dashboard",
+		Long:               "A full-screen, read-only status view of one provider: identity and network, systemd state and uptime, proxy counts and health, bandwidth and client sessions, and the recent capacity decisions. Nothing changes: it reads the provider's state and control socket and prints the panel. Aliases: dash, panel.",
+		Example:            "  urnet-tools dashboard\n  urnet-tools dashboard --unit urnetwork-native.service",
 		Aliases:            []string{"dash", "panel"},
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {

@@ -12,6 +12,7 @@ Every provider therefore also keeps a small local record of its own behaviour in
 
 This is the no-setup alternative for the one question Prometheus does not answer: did that upgrade make this box worse? It is not a replacement for the fleet view, and it is not a time-series database. For a fleet, use the bundle below.
 
+
 ## 1. Turn on metrics on each provider
 
 ```bash
@@ -167,6 +168,74 @@ The test file covers the two enabled rules. `prometheus.yml` lists `urnetwork.ym
 
 **Panels are empty right after starting.** Rates need two scrapes, so allow about a minute.
 
+## Metrics and log lines for dual-stack platform transports
+
+The direct (native) identity runs the family group on hosts where global IPv6 works: one platform transport pinned to IPv4, one pinned to IPv6, and a parked family-agnostic fallback that dials only if neither pin connects. A proxied identity always stays on the single legacy transport, because a pinned dial through a proxy would prove the proxy's family, not the provider's. Choose the families with `urnet-tools set ip-version dual|ipv4|ipv6|legacy` (live, no restart; `legacy` is the pre-dual-stack single transport).
+
+Every series below carries a closed label set: `family` is `ipv4`, `ipv6`, or `any` (a family-agnostic transport: the fallback, or the single transport in `legacy`), `mode` is the carrier (`h1`, `h3`), and `cause` is the close cause (`ws_normal`, `ws_going_away`, `ws_abnormal`, `ws_policy`, `ws_internal`, `ws_app`, `ws_other`, `timeout`, `reset`, `eof`, `closed_local`, `other`).
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `urnet_dualstack_mode` | gauge | `mode`, `reason` | Launch decision: `group` or `legacy` (single transport) with the reason (`dualstack`, `proxied-identity`, `not-native`, `no-family-urls`, `connect-host-not-allowlisted`, `no-global-v6-address`, `no-v6-route`, `v6-source-not-global`) |
+| `urnet_ip_version` | gauge | `mode` | The operator's choice (`urnet-tools set ip-version`) (`dual`, `ipv4`, `ipv6`, `legacy`): 1 for the active one |
+| `urnet_dualstack_transport_state` | gauge | `transport`, `state` | One series per group member (`ipv4`, `ipv6`, `standby`): 1 for its state (`connected`, `connecting`, `disabled`, ...) |
+| `urnet_dualstack_standby_active` | gauge | | 1 while the fallback is dialing |
+| `urnet_dualstack_connect_attempts_total` | counter | `family`, `mode` | Connect attempts |
+| `urnet_dualstack_connects_total` | counter | `family`, `mode` | Connects that authenticated |
+| `urnet_dualstack_connect_failures_total` | counter | `family`, `mode` | Failed attempts |
+| `urnet_dualstack_drops_total` | counter | `family`, `mode`, `cause` | Sessions that ended on their own (not our shutdown or an operator change) |
+| `urnet_dualstack_sessions_up` | gauge | `family` | Sessions up now |
+| `urnet_dualstack_connected_seconds_total` | counter | `family` | Seconds with at least one session up |
+| `urnet_dualstack_last_connect_timestamp_seconds` / `urnet_dualstack_last_drop_timestamp_seconds` | gauge | `family` | Unix time, 0 if none yet |
+| `urnet_dualstack_session_lifetime_seconds` | histogram | `family` | Lifetime of ended sessions (buckets 10 s, 60 s, 5 min, 30 min, 2 h) |
+| `urnet_dualstack_family_mismatch_total` | counter | `family` | A pinned transport connected over the other family. Anything above 0 is a bug |
+| `urnet_dualstack_pinned_down` | gauge | | 1 while no pinned transport is connected (after the first connect) |
+| `urnet_dualstack_pinned_down_events_total`, `urnet_dualstack_pinned_down_seconds_total`, `urnet_dualstack_pinned_down_longest_seconds` | counter / gauge | | Stretches with no pinned transport connected |
+| `urnet_dualstack_standby_activations_total`, `urnet_dualstack_standby_active_seconds_total` | counter | | How often and how long the fallback dialed |
+
+Log lines (all start with `[ipv6]`; one per event, connect failures throttled to one a minute per family):
+
+```text
+[ipv6] direct identity platform transports: dualstack group
+[ipv6] family transports v4=connected v6=connected standby=disabled active=false
+[ipv6] v6 h1 connected remote=[2001:db8:100::1]:443 local=[2001:db8:200::2]:51096 remote_family=ipv6 dial=412ms after_failures=0
+[ipv6] v4 h1 connected remote=192.0.2.10:443 local=198.51.100.7:40992 remote_family=ipv4 dial=380ms after_failures=0
+[ipv6] v6 h1 connect failed class=timeout_platform dial=15.002s consecutive=3 suppressed=0 err="Timeout. 2 dial(s) failed ..."
+[ipv6] v6 h1 session ended lived=12m3s cause=ws_abnormal drop=true remote=[2001:db8:100::1]:443
+[ipv6] pinned transports: none connected (v4=connecting v6=connecting standby=disabled)
+[ipv6] pinned transports: connected again after 13s (v4=connected v6=connected standby=disabled)
+[ipv6] standby transport active: no pinned transport connected for 15s
+[ipv6] standby transport stood down after 40s: a pinned transport connected
+[ipv6] ip-version dual -> ipv6 (ipv4 transport false, ipv6 transport true, family-agnostic transport: off)
+[ipv6] v6 h1 FAMILY MISMATCH: pinned ipv6 but connected to 192.0.2.10:443
+```
+
+### How to confirm v6 is really working
+
+1. The `connected` line. Each connect logs the remote and local address and `remote_family`; a v6 pin shows a bracketed v6 remote with `remote_family=ipv6`. It works for H1 and H3 alike. `urnet_dualstack_family_mismatch_total` must stay 0.
+2. Sockets. `ss -tn` shows an `ESTAB` connection from the host's v6 source address to a connect-v6 address. `ss -ua -n` lists the QUIC sockets (the `-a` matters: they are unconnected).
+3. Counters. `urnet_dualstack_sessions_up{family="ipv6"}` is 1 and `urnet_dualstack_connected_seconds_total{family="ipv6"}` grows.
+
+These show the provider holds a connection on each family. Whether the platform classifies the provider as dual-stack is a server-side decision these checks cannot see.
+
+### Log lines worth alerting on when the `h3` setting is widened
+
+Two line families appear while transports are being changed, and both are expected rather than faults. They are useful to watch because a node that produces them continuously is one whose transport set cannot settle.
+
+```
+[h3] on: relaunching 3 proxies whose transport set changed
+[h3] on: 2 proxies have clients, retrying in 1m0s
+[proxy][udp] proxy[12] (198.51.100.7:1080) udp relay ok, exit 198.51.100.7 matches tcp; h3 allowed
+[proxy][udp] proxy[12] (198.51.100.7:1080) udp exits from 203.0.113.9 but tcp from 198.51.100.7; h3 not used for this proxy
+[proxy][udp] proxy[12] (198.51.100.7:1080) no udp relay (socks5: udp not supported); h3 not used for this proxy, tcp modes only
+[proxy][udp] proxy[12] (198.51.100.7:1080) udp relay works (exit 198.51.100.7) but the tcp exit could not be learned (timeout); h3 allowed, checking again soon
+```
+
+- The `[h3] <setting>: relaunching N proxies` line is emitted once when the setting changes. Seeing it repeatedly without a `urnet-tools set h3` in between means the setting is being rewritten by something else.
+- The `[h3] <setting>: N proxies have clients, retrying in 1m0s` line repeats once a minute for each proxy that is too busy to relaunch. On a node whose proxies always carry clients this repeats indefinitely, which is the designed behaviour (the proxy is not cut off) but means the widening never completes. Prefer a top-N over `all` on such a node.
+- The four `[proxy][udp]` lines are printed **per proxy per change of answer**, so their count is bounded by the number of proxies. A proxy that alternates between the "ok" and "could not be learned" lines has an intermittent UDP path; one that reports "no udp relay" or an exit mismatch is simply not offered for H3, which is the intended fallback and needs no action.
+- None of these lines is an error, and none counts as a backend or proxy auth failure, so they should not be wired into the existing error-rate alerts. Watch them as a transport-settling signal only.
+
 ## Metrics reference
 
 | Metric | Type | Labels | Meaning |
@@ -215,8 +284,16 @@ The test file covers the two enabled rules. `prometheus.yml` lists `urnetwork.ym
 | `urnet_proxy_auth_failures` | gauge | | Auth failures summed over current proxies |
 | `urnet_url_proxy_grades` | gauge | `tier` | URL-sourced proxies by grade |
 | `urnet_url_proxy_ungraded` | gauge | | URL-sourced proxies not yet graded |
+| `urnet_proxy_audit_acting` | gauge | | 1 when proxy audit parks proxies, 0 when it only observes |
+| `urnet_proxy_audit_parked` | gauge | | Proxies proxy audit is currently holding out |
+| `urnet_proxy_audit_would_park` | gauge | | Proxies proxy audit would park now in observe mode |
+| `urnet_proxy_audit_distrusted` | gauge | | 1 when the last pass tripped the mass-failure breaker |
+| `urnet_proxy_audit_thin_pass` | gauge | | 1 when too few proxies could be graded to trust the last pass |
+| `urnet_proxy_audit_parks_24h` | gauge | | Parks counted against the rolling 24h budget |
 | `urnet_contracts_total` | counter | `result` | Contract outcomes since start |
 | `urnet_errors_total` | counter | `category` | Errors since start |
+| `urnet_loop_restarts_total` | counter | `loop` | Times a supervised background loop ended unexpectedly and was restarted |
+| `urnet_loop_up` | gauge | `loop` | 1 while a supervised loop is running, 0 while it is stopped or backing off |
 | `urnet_doh_failures_total` | counter | | DNS-over-HTTPS failures |
 | `urnet_sessions_pqe` | gauge | | Active post-quantum sessions |
 | `urnet_sessions_classical` | gauge | | Active classical sessions |
@@ -250,5 +327,11 @@ The test file covers the two enabled rules. `prometheus.yml` lists `urnetwork.ym
 | `urnet_tcp_orphans` | gauge | | Orphaned TCP sockets (Linux) |
 | `urnet_goroutines` | gauge | | Goroutines |
 | `urnet_pool_latency_ms` | gauge | | Message pool average latency |
-| `urnet_loop_restarts_total` | counter | `loop` | Times a supervised background loop ended unexpectedly and was restarted |
-| `urnet_loop_up` | gauge | `loop` | 1 while a supervised loop is running, 0 while it is stopped or backing off |
+| `urnet_enforcement_events_total` | counter | `kind`, `mode` | Governor events recorded in the durable enforcement log since it began, by kind and mode. Survives restarts; each kind counts events as the governors emit them, so `dead_client_release` is rate-limited per destination and `retry_budget` is an aggregate report |
+| `urnet_enforcement_events` | gauge | `kind`, `mode`, `window` | Governor events in the durable log over today, the last 7 and 30 UTC days (`window` is `today`, `7d` or `30d`) |
+| `urnet_enforcement_log_suppressed_total` | counter | | Event lines counted but not written because a kind exceeded the per-minute line limit |
+| `urnet_enforcement_log_dropped_total` | counter | | Events dropped because the enforcement log's queue was full (the disk stalled) |
+| `urnet_enforcement_log_write_errors_total` | counter | | Enforcement log file operations that failed and were swallowed. Non-zero means the durable record is incomplete |
+| `urnet_disk_write_mbps` | gauge | | Synchronous write speed measured by the startup disk benchmark, MB/s (auto profile only; absent until one has run) |
+| `urnet_disk_slow` | gauge | | 1 when the last disk benchmark judged the disk slow (under 50 MB/s) or it hung |
+| `urnet_disk_bench_age_seconds` | gauge | | Age of the last disk benchmark result |

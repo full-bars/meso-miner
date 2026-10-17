@@ -13,14 +13,15 @@ import (
 // interleaved on and off windows would otherwise measure the restarts.
 //
 // It defaults to off, so an eligible identity opens no UDP socket and starts no
-// QUIC connection until something turns it on.
+// QUIC connection until something turns it on. (The datagram gates below default
+// on, as upstream does.)
 var h3Gate = newH3Gate()
 
 // h3DatagramGate is the runtime switch for OFFERING QUIC DATAGRAM on the
 // auxiliary H3 connection. It defaults to off, and it only has an effect while
 // H3 itself is on. The offer is made when a connection is dialed, so a change
 // closes the live H3 connection and lets it reconnect with the new setting.
-var h3DatagramGate = newH3Gate()
+var h3DatagramGate = newH3GateOn()
 
 type h3GateState struct {
 	mutex  sync.Mutex
@@ -30,6 +31,12 @@ type h3GateState struct {
 
 func newH3Gate() *h3GateState {
 	return &h3GateState{notify: make(chan struct{})}
+}
+
+// newH3GateOn is a gate that starts on: the datagram gates default on, as
+// upstream offers and sends datagrams by default.
+func newH3GateOn() *h3GateState {
+	return &h3GateState{on: true, notify: make(chan struct{})}
 }
 
 func (self *h3GateState) set(enabled bool) (previous bool) {
@@ -81,7 +88,7 @@ func h3GateWatch() (bool, <-chan struct{}) {
 // that negotiated them. It defaults to off, so enabling the offer alone is the
 // receive-only experiment, and it is read per message, so flipping it takes
 // effect at once with no reconnect.
-var h3DatagramSendGate = newH3Gate()
+var h3DatagramSendGate = newH3GateOn()
 
 // SetH3DatagramSendEnabled switches datagram send on or off and returns the
 // previous value. It only matters on a connection where the server accepted
@@ -106,11 +113,13 @@ func H3DatagramsEnabled() bool {
 	return h3DatagramGate.get()
 }
 
-// waitH3Enabled blocks until the gate is on. It returns false if the transport
-// is closed first. A transport that is not gated (the explicit H3 target mode
-// is the sole transport) never waits.
-func (self *PlatformTransport) waitH3Enabled() bool {
-	if !self.h3Gated() {
+// waitH3EnabledFor blocks until the gate is on for a carrier running mode. It
+// returns false if the transport is closed first. Only the plain H3 carrier of a
+// gated transport waits: the dns carriers are automatic fallbacks that the
+// gate does not govern, and a transport that is not gated (the explicit H3
+// target mode is the sole transport) never waits.
+func (self *PlatformTransport) waitH3EnabledFor(mode TransportMode) bool {
+	if !self.h3GatedFor(mode) {
 		return true
 	}
 	for {

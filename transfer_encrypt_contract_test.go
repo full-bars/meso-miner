@@ -161,7 +161,7 @@ func blackholeControlId(ctx context.Context, routeManager *RouteManager) {
 }
 
 // resetBackendDegradedState clears the process-global backend-health state
-// (backendFail in transport.go) that
+// (consecutiveBackendFails in transport.go) that
 // isBackendDegraded() reads. Those atomics are package-global and are NOT
 // reset between tests, so earlier tests in the package that exercise backend
 // failure paths (auth timeouts, a NoContractClientOob returning an error, etc.)
@@ -177,7 +177,7 @@ func blackholeControlId(ctx context.Context, routeManager *RouteManager) {
 // test hermetic with respect to that global. Tests run serially (no
 // t.Parallel), so a reset at the top is sufficient.
 func resetBackendDegradedState() {
-	backendFail.Store(&backendFailState{})
+	resetBackendDegraded()
 }
 
 // TestSendReceiveEncryptedWithContracts exercises bidirectional encrypted

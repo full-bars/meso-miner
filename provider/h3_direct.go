@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"strings"
+	"time"
 
 	"github.com/urnetwork/connect"
 )
@@ -52,9 +53,42 @@ func h3Eligible(proxySettings *connect.ProxySettings, isNative bool) bool {
 }
 
 // platformTransportSettingsFor returns the platform transport settings for an
-// identity: the engine defaults, with H3 eligibility only for a direct identity.
+// identity under the current h3 setting (see h3Mode): the engine defaults plus the
+// transport mode policy. The direct identity gets the fallbacks in every mode but
+// off, and is the only one that can be the beside-H1 auxiliary (EnableH3). A
+// proxied identity gets them only when the setting admits it, and then its QUIC
+// is relayed through its proxy (H3PacketConnFactory), never opened on the host.
 func platformTransportSettingsFor(proxySettings *connect.ProxySettings, isNative bool) *connect.PlatformTransportSettings {
 	settings := connect.DefaultPlatformTransportSettings()
-	settings.EnableH3 = h3Eligible(proxySettings, isNative)
+	applyProviderDialBackoff(settings)
+	setting := resolveH3Mode(globalControlState, currentProxyResolution())
+	direct := h3Eligible(proxySettings, isNative)
+	proxyEligible := false
+	if proxySettings != nil {
+		proxyEligible = h3ProxyEligible(setting, proxySettings.Key())
+		recordH3Launch(proxySettings.Key(), proxyEligible)
+		if proxyEligible {
+			settings.H3PacketConnFactory = newH3PacketConnFactory(proxySettings)
+		}
+	}
+	settings.ModePreferences = h3ModePreferences(setting, direct, proxyEligible)
+	settings.EnableH3 = direct && setting.Mode == h3ModeOn
 	return settings
+}
+
+// applyProviderDialBackoff gives an identity whose dials keep failing a second,
+// longer backoff tier. A provider runs hundreds of proxy identities and many of
+// them stay dead for hours; at the 60 s cap each one still redials every
+// ~45 s, a full TLS handshake with post-quantum key generation apiece (measured
+// 2026-10-15: ~5.8 H1+ attempts per second, 96% failing, on a 1,100 proxy node).
+// After 10 consecutive failures while the platform is reachable, an identity
+// waits up to 10 minutes between dials. Any success, network change or operator
+// toggle resets it, and a platform outage never enters it.
+// URNETWORK_DIAL_LONG_BACKOFF=off restores the single 60 s cap.
+func applyProviderDialBackoff(settings *connect.PlatformTransportSettings) {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("URNETWORK_DIAL_LONG_BACKOFF")), "off") {
+		return
+	}
+	settings.ReconnectLongAfter = 10
+	settings.ReconnectLongMaxTimeout = 10 * time.Minute
 }

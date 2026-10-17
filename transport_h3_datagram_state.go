@@ -27,6 +27,9 @@ var (
 	h3DatagramBlackholes atomic.Uint64
 )
 
+// processH3DatagramStats is the process-wide DATAGRAM collector.
+func processH3DatagramStats() *H3DatagramStats { return h3DatagramStats }
+
 // H3DatagramSnapshot is a point-in-time copy of the H3 DATAGRAM counters.
 type H3DatagramSnapshot struct {
 	Offered  uint64

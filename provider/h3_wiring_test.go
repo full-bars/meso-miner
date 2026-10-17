@@ -37,7 +37,8 @@ func TestBandwidthIsRegisteredBeforeTheTransportStarts(t *testing.T) {
 			// one per proxy and one for the native identity, and the LAST of
 			// them is the one that has to precede the transport.
 			registerAt = fset.Position(call.Pos()).Line
-		case "connect.NewPlatformTransport":
+		case "newProviderPlatformTransport":
+			// the one place main.go builds an identity's platform transport(s)
 			if transportAt == -1 {
 				transportAt = fset.Position(call.Pos()).Line
 			}
@@ -45,10 +46,10 @@ func TestBandwidthIsRegisteredBeforeTheTransportStarts(t *testing.T) {
 		return true
 	})
 	if registerAt == -1 || transportAt == -1 {
-		t.Fatalf("main.go no longer calls both: RegisterProxyBandwidth at %d, NewPlatformTransport at %d", registerAt, transportAt)
+		t.Fatalf("main.go no longer calls both: RegisterProxyBandwidth at %d, newProviderPlatformTransport at %d", registerAt, transportAt)
 	}
 	if registerAt > transportAt {
-		t.Fatalf("the last RegisterProxyBandwidth is called at line %d, after NewPlatformTransport at line %d: an H3 socket started by that transport would never be wrapped", registerAt, transportAt)
+		t.Fatalf("the last RegisterProxyBandwidth is called at line %d, after newProviderPlatformTransport at line %d: an H3 socket started by that transport would never be wrapped", registerAt, transportAt)
 	}
 }
 

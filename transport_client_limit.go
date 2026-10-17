@@ -1,6 +1,6 @@
 package connect
 
-// transport_client_limit.go - the hold a platform transport takes after the
+// transport_client_limit.go -- the hold a platform transport takes after the
 // platform closes it for the network's client limit.
 //
 // The platform enforces a network's concurrent client limit by closing an
@@ -18,10 +18,12 @@ package connect
 // transports sharing it close too. A network change does not end it, since the
 // limit belongs to the account network and not to the physical path.
 //
-// One hold is shared by every transport of one client. A provider passes the
-// same hold through PlatformTransportSettings, so a replacement never dials
-// through a hold its predecessor started. A transport whose settings carry
-// none owns a private hold.
+// One hold is shared by every transport of one client. A provider's transport
+// group passes the same hold to its v4, v6 and standby transports, and an owner
+// that replaces transports across generations (a migration) passes the same
+// hold to each generation through PlatformTransportSettings, so a replacement
+// never dials through a hold its predecessor started. A transport whose
+// settings carry none owns a private hold.
 //
 // The platform judges a connection by the provide intent it declared
 // (transport_provide_intent.go), so a hold follows the declaration. A close of
@@ -69,7 +71,7 @@ const ClientLimitCloseText = "client limit exceeded"
 // transportCloseReason reads a TransportControlClose message. ok is false for
 // every other message.
 func transportCloseReason(message []byte) (reason uint32, ok bool) {
-	if len(message) != 5 || message[0] != byte(TransportControlClose) {
+	if len(message) != 5 || message[0] != TransportControlClose {
 		return 0, false
 	}
 	return binary.BigEndian.Uint32(message[1:5]), true
@@ -283,14 +285,14 @@ func (self *PlatformTransport) noteClientLimitClose(
 	if self.clientLimitBackoff == nil {
 		return
 	}
+	self.clientLimitCloseCount.Add(1) // fork: read by the flap guard (sessionEndWait)
 	superseded := func() {
 		self.log.Infof(
 			"[t]%s connection closed by the platform: client limit exceeded for a provide intent the client no longer declares; redialing with the current one\n",
 			mode,
 		)
 	}
-	auth := self.getAuth()
-	if auth == nil || auth.ProvideIntent != provideIntent {
+	if self.authSnapshot().ProvideIntent != provideIntent {
 		superseded()
 		return
 	}
@@ -327,23 +329,29 @@ func (self *PlatformTransport) clientLimitHold() (ClientLimitStatus, chan struct
 	return self.clientLimitBackoff.Get()
 }
 
-// runClientLimitWatch closes a live connection when a client limit hold is in
+// runConnectionWatch closes a live connection on a network change kick, so the
+// loop re-dials over the new path at once, or when a client limit hold is in
 // force, so the connection stops with the one the platform closed. Closing the
 // carrier is what unblocks a reader or writer parked in socket I/O that
 // cancelling handleCtx alone cannot wake. Returns when the connection ends.
-func (self *PlatformTransport) runClientLimitWatch(
+func (self *PlatformTransport) runConnectionWatch(
 	handleCtx context.Context,
-	closeConnection func(),
+	kick chan struct{},
+	closeConnection func(reason string),
 ) {
 	for {
 		clientLimitStatus, clientLimitNotify := self.clientLimitHold()
 		if clientLimitStatus.Exceeded {
 			self.log.Infof("[t]client limit hold: closing connection\n")
-			closeConnection()
+			closeConnection("client limit")
 			return
 		}
 		select {
 		case <-handleCtx.Done():
+			return
+		case <-kick:
+			self.log.Infof("[t]kick: closing connection for re-dial\n")
+			closeConnection("network change")
 			return
 		case <-clientLimitNotify:
 		}

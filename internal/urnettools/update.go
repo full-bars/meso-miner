@@ -882,6 +882,8 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 	}
 
 	pidChanged := false
+	missReported := false
+	notReadyReported := false
 	for i := 0; i < maxIterations; i++ {
 		// Adaptive sleep: poll every 2s while waiting for the restart to
 		// land (old PID still alive), then every 3s once a new PID appears
@@ -893,9 +895,11 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 		verifySleepFn(time.Duration(sleepSec) * time.Second)
 
 		providers := verifyDiscoverFn()
+		matched := false
 		for _, rp := range providers {
 			// Check matching state directory and verify running image
 			if rp.StateDir == p.StateDir && rp.StateDir != "" && rp.PID != 0 && !rp.BinaryDeleted {
+				matched = true
 				// Track whether the PID changed — a new PID means the
 				// restart landed — just waiting for version match.
 				if rp.PID != oldPID && !pidChanged {
@@ -917,7 +921,7 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 					// the running image of the unit we just restarted, and
 					// providerVersion's --version fallback is gated behind
 					// isRecognizedExecutable.
-					procVersion := verifyProviderVersionFn(procExe)
+					//
 					// EXCEPT under OpenRC: providerVersion's fallback EXECS the
 					// image as root, and the running image there is a binary the
 					// service user may have influenced between the restart and
@@ -931,6 +935,7 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 					// verification fidelity is the price of not exec'ing a
 					// binary we do not own: fail closed on an unknown version
 					// rather than run it.
+					procVersion := verifyProviderVersionFn(procExe)
 					if rp.Supervisor == "openrc" || providerSupervisedByOpenRCFn(rp) {
 						procVersion = providerVersionReadOnly(procExe)
 					}
@@ -956,7 +961,50 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 					if i > 0 && i%5 == 0 {
 						fmt.Printf("still waiting for %s (pid %d running %q, iteration %d/%d)...\n", cfg.Tag, rp.PID, procVersion, i+1, maxIterations)
 					}
+				} else if i > 0 && i%5 == 0 {
+					// A ready entry exists but its running image could
+					// not be read (e.g. the process exited between
+					// discovery and the read). Without this the
+					// iteration prints nothing at all — the same silent
+					// wait these diagnostics exist to remove.
+					fmt.Printf("verify: matching entry (pid %d) found but running image unreadable: %v (iteration %d/%d)\n", rp.PID, perr, i+1, maxIterations)
 				}
+			}
+		}
+
+		if !matched {
+			// No entry satisfies the full readiness predicate. Two cases
+			// used to be indistinguishable here — and silent for the whole
+			// wait window: the state dir is missing from discovery entirely
+			// (a state-dir mismatch), or its entry is present but not ready
+			// (typically the stale pre-restart process, whose swapped-out
+			// binary reads as binaryDeleted). Report each case once, then a
+			// bounded heartbeat so a long wait stays visible.
+			notReady := make([]string, 0, 1)
+			for _, rp := range providers {
+				if rp.StateDir == p.StateDir && rp.StateDir != "" {
+					notReady = append(notReady, fmt.Sprintf("pid %d, binaryDeleted=%t", rp.PID, rp.BinaryDeleted))
+				}
+			}
+			if len(notReady) > 0 {
+				if !notReadyReported {
+					notReadyReported = true
+					fmt.Printf("verify: provider entry for state dir %q present but not ready (%s) — restart has not landed\n", p.StateDir, strings.Join(notReady, "; "))
+				}
+			} else if !missReported {
+				missReported = true
+				dirs := make([]string, 0, len(providers))
+				for _, rp := range providers {
+					dirs = append(dirs, fmt.Sprintf("%q", rp.StateDir))
+				}
+				seen := "(none)"
+				if len(dirs) > 0 {
+					seen = strings.Join(dirs, ", ")
+				}
+				fmt.Printf("verify: no provider entry matches state dir %q; discovery sees: %s\n", p.StateDir, seen)
+			}
+			if i > 0 && i%5 == 0 {
+				fmt.Printf("verify: no matching provider yet (iteration %d/%d; discovery sees %d provider(s))\n", i+1, maxIterations, len(providers))
 			}
 		}
 
@@ -1402,7 +1450,6 @@ func runningToolAssetName() (string, error) {
 
 // toolAssetURL is the release download URL for a tool asset.
 func toolAssetURL(tag, asset string) string {
-	// M3 fix: escape tag in download URL to prevent path traversal.
 	return releaseDownloadURL(tag, asset)
 }
 
@@ -1566,11 +1613,16 @@ func migrateUnitToNotify(p Provider) (bool, error) {
 	if err != nil {
 		// Can't determine type — skip migration rather than block
 		// the update. The systemctl call can fail when the user bus
-		// is unreachable or systemctl is missing.
+		// is unreachable or systemctl is missing. Report the skip so
+		// the update log shows which restart path was taken.
+		fmt.Printf("unit migration skipped: cannot read %s unit type: %v\n", p.Unit, err)
 		return false, nil
 	}
 	if typ != "simple" {
-		return false, nil // already notify, oneshot, or other type
+		// Already notify, oneshot, or other type — nothing to migrate.
+		// Report the skip for the same reason.
+		fmt.Printf("unit migration skipped: %s is Type=%s, not simple\n", p.Unit, typ)
+		return false, nil
 	}
 
 	// Resolve the unit file's on-disk path via FragmentPath.
@@ -1772,8 +1824,8 @@ func reconcileUnitTypeForBinary(p Provider, binaryVersion string) (bool, error) 
 
 // reportAlreadyCurrent is cmdUpdate's skip-branch body for a provider
 // already on the target version. Split out (rather than inlined in
-// cmdUpdate's loop) so the self-heal wiring itself, not just
-// reconcileUnitTypeAndRestart in isolation, is under test: a future edit
+// cmdUpdate's loop) so the self-heal wiring itself — not just
+// reconcileUnitTypeAndRestart in isolation — is under test: a future edit
 // that drops this call from the skip branch without touching
 // reconcileUnitTypeAndRestart would otherwise pass every existing test
 // while silently reintroducing the "no-op update never checks the unit"
@@ -1794,8 +1846,8 @@ func reportAlreadyCurrent(p Provider, cfg updateConfig) {
 // agreement with the currently-installed binary (see
 // reconcileUnitTypeForBinary) even when no new release is being installed.
 // updateProvider already reconciles after every binary swap; this covers
-// the other case (cmdUpdate's skip branch, where the provider is already
-// on the target version) so a unit clobbered by a re-run of the installer
+// the other case — cmdUpdate's skip branch, where the provider is already
+// on the target version — so a unit clobbered by a re-run of the installer
 // (which always writes Type=simple, unaware of any prior HotSwap
 // migration) self-heals on the very next `update` instead of staying
 // broken until a new release ships.
@@ -1805,13 +1857,13 @@ func reportAlreadyCurrent(p Provider, cfg updateConfig) {
 // NOTIFY_SOCKET (systemd only sets it for a process started under
 // Type=notify). Without this restart, the unit would read as notify on the
 // NEXT update, which would then attempt a real HotSwap (SIGUSR2) against a
-// process that still cannot send sd_notify: the exact scenario the
+// process that still cannot send sd_notify — the exact scenario the
 // migratedUnit gate in updateProvider exists to prevent, just deferred by
 // one cycle instead of avoided. A demotion to Type=simple needs no
 // restart: it only protects a future start from hanging and does not
 // affect the process already running.
 //
-// Returns whether the unit was migrated (never true for a demotion, see
+// Returns whether the unit was migrated (never true for a demotion — see
 // reconcileUnitTypeForBinary) and any error from the migration or restart.
 func reconcileUnitTypeAndRestart(p Provider) (bool, error) {
 	migrated, err := reconcileUnitTypeForBinary(p, verifyProviderVersionFn(p.Binary))
@@ -1837,7 +1889,7 @@ func reconcileUnitTypeAndRestart(p Provider) (bool, error) {
 // verifyPlainRestart waits for a provider's PID to change after a restart
 // that does not change the binary version. reconcileUnitTypeAndRestart's
 // restart exists purely to hand the process NOTIFY_SOCKET, so there is no
-// version to poll for, only "a new process came up in this state dir."
+// version to poll for — only "a new process came up in this state dir."
 // Package-level verify*Fn vars (shared with verifyRestartLoop) keep this
 // testable without real sleeps or process discovery.
 func verifyPlainRestart(p Provider) error {

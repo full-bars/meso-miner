@@ -84,3 +84,58 @@ func (self *PlatformTransport) countH3Socket(conn *net.UDPConn) net.PacketConn {
 	}
 	return conn
 }
+
+// countedPacketConn counts the bytes of an injected H3 endpoint (see
+// PlatformTransportSettings.H3PacketConnFactory) the way countedUDPConn counts a
+// host socket. An injected endpoint is a plain datagram conn (a proxy relay), so
+// there is no batch read path to cover; the socket buffer setters quic-go asks
+// for are forwarded when the endpoint has them.
+type countedPacketConn struct {
+	net.PacketConn
+	bw *ProxyBandwidth
+}
+
+func (self *countedPacketConn) ReadFrom(b []byte) (int, net.Addr, error) {
+	n, addr, err := self.PacketConn.ReadFrom(b)
+	if 0 < n {
+		self.bw.TotalRx.Add(uint64(n))
+	}
+	return n, addr, err
+}
+
+func (self *countedPacketConn) WriteTo(b []byte, addr net.Addr) (int, error) {
+	n, err := self.PacketConn.WriteTo(b, addr)
+	if 0 < n {
+		self.bw.TotalTx.Add(uint64(n))
+	}
+	return n, err
+}
+
+func (self *countedPacketConn) SetReadBuffer(bytes int) error {
+	if c, ok := self.PacketConn.(interface{ SetReadBuffer(int) error }); ok {
+		return c.SetReadBuffer(bytes)
+	}
+	return nil
+}
+
+func (self *countedPacketConn) SetWriteBuffer(bytes int) error {
+	if c, ok := self.PacketConn.(interface{ SetWriteBuffer(int) error }); ok {
+		return c.SetWriteBuffer(bytes)
+	}
+	return nil
+}
+
+// countInjectedH3Conn wraps an injected H3 endpoint so its bytes count into the
+// total of the identity this transport runs for, like countH3Socket. Without a
+// registered bandwidth record the endpoint is returned as is.
+func (self *PlatformTransport) countInjectedH3Conn(conn net.PacketConn) net.PacketConn {
+	if conn == nil {
+		return nil
+	}
+	if idx, ok := self.proxyIndex(); ok {
+		if bw := RegisteredProxyBandwidth(idx); bw != nil {
+			return &countedPacketConn{PacketConn: conn, bw: bw}
+		}
+	}
+	return conn
+}

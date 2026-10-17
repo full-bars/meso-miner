@@ -1,6 +1,6 @@
 # urnet-tools (Go) — Provider-Aware Fleet Ops
 
-> Applies to v3.23.0-fix.27.0+ (updated through v3.23.0-fix.30.9). The legacy shell tool (POSIX `Provider_Install_Linux.sh` + Windows `urnet-tools.ps1`) is replaced by a single provider-aware Go binary. Subcommand names and usage are preserved and expanded; what changed is **how the tool decides which provider it operates on**.
+> Applies to v3.23.0-fix.27.0+ (updated through v3.23.0-fix.32.9). The legacy shell tool (POSIX `Provider_Install_Linux.sh` + Windows `urnet-tools.ps1`) is replaced by a single provider-aware Go binary. Subcommand names and usage are preserved and expanded; what changed is **how the tool decides which provider it operates on**.
 
 ## Why this exists
 
@@ -44,11 +44,11 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | `auth <code> [target] [-f]` | Authenticate provider with an auth code. `-f` forces overwrite of existing JWT. Drops privileges to run as target user when called by root. |
 | `direct [on\|off\|status] [target]` | Toggle or report direct/local IP providing state. Taking effect immediately via reload. Available across `provider`, `urnet-tools`, and `urnet-docker`. |
 | `show-ip [on\|off\|status] [target]` | Control whether the provider appends its public IP to the dashboard label set by `rename`. Renamed from `ip-detect` in v3.23.0-fix.31.0, which is kept as an alias. This is about what the dashboard shows, not which address the provider serves on; for that see `direct`. |
-| `sn-status [--json] [target]` | Query and display Subnet 25 mining & node telemetry (v3.23.0-fix.30.9+): global rank, top-200 tier eligibility, net bandwidth provided, registered coldkey (SS58/Hex), current subnet epoch blocks, and finalized epoch pool payout share. Available across `urnet-tools`, `urnet-docker`, and `provider`. |
+| `sn-status [--json] [target]` | Query and display Subnet 25 mining & node telemetry (v3.23.0-fix.30.9+): global rank, top-200 tier eligibility, net bandwidth provided, registered coldkey (SS58/Hex), the network wallet consent (apart from any legacy login-proof wallet; with none it says to sign one with `urnet-tools wallet sign`), current subnet epoch blocks, and finalized epoch pool payout share. Available across `urnet-tools`, `urnet-docker`, and `provider`. |
 | `usage [graphs\|graph <view>] [target]` | Display traffic & billing accounting: billable relay bytes vs control-plane protocol overhead, with rolling time-series summaries. Available across `urnet-tools` and `urnet-docker`. |
 | `choose-network <api> <connect> [target]` | Point provider to custom API and WebSocket signaling endpoints. Use `--reset` to restore default bringyour endpoints. |
 | `fast-auth [on\|off\|status] [target]` | Toggle or check `~/.urnetwork/fast_auth` marker to bypass auth rate limiter. Confirm-gated. |
-| `set [help \| <key> <val> \| <key> off \| <key>] [target]` | Get, set, or clear runtime provider state overrides (`node-name`, `report-interval`, `proxy-url-max`, `proxy-url-refresh`, `cleanup-scope`, `cleanup-interval`, `fast-auth`). Sent live over the provider control socket, or queued to `pending_overrides.json` if the provider is stopped. Confirm-gated. |
+| `set [help \| <key> <val> \| <key> off \| <key>] [target]` | Get, set, or clear a runtime provider override over the control socket. `urnet-tools set help` lists every key with its value domain and what it changes. The keys are `node-name`, `report-url`, `report-interval`, `fast-auth`, `self-heal`, `proxy-url-max`, `proxy-url-refresh`, `cleanup-scope`, `cleanup-interval`, `hot-restart`, `oom-cap`, `smart-dialer`, `gomemlimit`, `gogc`, `profile`, `ramlogs`, `metrics`, `metrics-listen`, `h3`, `h3-datagram`, `h3-datagram-send`, `baseline` and `proxy-audit`. Most apply live on the next tick; `profile` and `ramlogs` need a restart. Queued to `pending_overrides.json` if the provider is stopped. Confirm-gated. |
 | `rename <name> [target]` | Set the dashboard identity label on the backend. Alias for `set node-name <name>`. Writes `~/.urnetwork/node_name`, re-read on next tick — no restart. Use `off` to clear. Available across `urnet-tools` and `urnet-docker`. |
 | `session save <file> [target]` | Export encrypted AES-256-CBC bundle of provider JWT identity and state. Prompts for passphrase. |
 | `session load <file> [target] [--allow-different-account]` | Decrypt and load identity bundle into provider. Automatically backs up current state first. Verifies account identity unless bypassed. |
@@ -58,6 +58,21 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 #### OpenRC (Alpine) command parity
 
 On a host where OpenRC is the running init system, the lifecycle commands (`start`, `stop`, `restart`, `auto-start`, `auto-update`, `logs`, `status`, `uninstall`) act on the installer's `urnetwork` service. The command table, the multi-provider selector rules and the root requirement are on the [Alpine Linux (OpenRC)](OpenRC.md#urnet-tools-command-parity) page.
+
+### Wallet Consent Commands
+
+The network wallet consent is one signature from your coldkey that covers every provider client of your network, current and future. Release settlement pays only a consented wallet. The group delegates to the provider binary's own `wallet` subcommands, like `auth` and `choose-network`.
+
+| Command | What it does |
+|---|---|
+| `wallet status [target]` | Show the stored network consent: the consent coldkey, its epoch interval, and whether it is in effect now, still starts in an epoch, or ended. A legacy login-proof wallet (if any) is listed apart: it is not a consent and settlement does not pay it. Read-only. |
+| `wallet challenge <coldkey_ss58> [--wallet-from-epoch N --wallet-through-epoch N] [target]` | Fetch a fresh, verified consent statement to sign. Signs nothing; prints the exact message and the epoch interval it covers. |
+| `wallet set <coldkey_ss58> [--message=<text> --signature=0x<hex> \| --coldkey_seed_file=<path>] [target]` | Submit a signed consent. The `--coldkey_seed_file` form reads a seed from disk and is **for the operator's own workstation only, never a fleet node**: on a fleet member the tool refuses unless you pass `--i-am-on-my-own-workstation`. Use `wallet sign` instead when you can. |
+| `wallet sign [coldkey_ss58] [target]` | Run `provider wallet sign`: one local page (127.0.0.1 only, 15 minutes, visible countdowns, extendable) where a wallet extension (Talisman, SubWallet, Polkadot{.js}, Nova, or any Polkadot `signRaw` extension) signs the consent statement; without an address you choose the account on the page. The seed never leaves the extension. Refused on a fleet node unless `--i-am-on-my-own-workstation`. See [scripts/wallet-consent/README.md](../scripts/wallet-consent/README.md). |
+
+A later consent must start at a later epoch than the one before it. Use `--wallet-from-epoch`/`--wallet-through-epoch` with `wallet challenge` and `wallet set` for an explicit interval; the default is the next epoch through the full 65,536-epoch span.
+
+The full flow, including where to run each form and what settlement pays, is in [Bittensor operations](Bittensor-Operations.md). Delegating the consent to a hotkey is covered in [Bittensor hotkey delegation](Bittensor-Hotkey-Delegation.md), and automatic claims in [Bittensor claim daemons](Bittensor-Claim-Daemons.md).
 
 ### Proxy Management Commands
 
@@ -78,24 +93,10 @@ On a host where OpenRC is the running init system, the lifecycle commands (`star
 | `proxy remove-dead [target]` | Interactively prune dead and degraded proxies. Honors `--dry-run`. |
 | `summary [target]` | Fleet-style summary of proxy counts by source (url, file, internal). Top-level command, not a `proxy` subcommand. |
 
-### Hub Command Family (v3.23.0-fix.30.4+)
+### Hub Command Family (removed)
 
 > [!WARNING]
-> **Deprecated (v31.3+):** The hub commands have been removed from `urnet-tools`. This section is retained for historical reference only.
-
-| Command | What it does |
-|---|---|
-| `hub init` | Initialize and configure the bandwidth hub service on this machine. Prompts for password (min 8 chars) or reads from stdin. |
-| `hub link <url>` | Pair provider with a remote bandwidth hub. Verifies TLS CA or SHA-256 certificate fingerprint (TOFU security). Confirm-gated on identity change. |
-| `hub unlink` | Unlink provider from bandwidth hub. |
-| `hub test` | Test reachability and TLS certificate chain validation to the configured hub. |
-| `hub onboard-cmd` | Generate one-line onboarding command with URL-escaped tokens for remote providers. |
-| `hub show-password` | Display current hub admin access password. |
-| `hub open-port` | Configure firewall rules (ufw/iptables/firewalld) to open hub listener port. Confirm-gated. |
-| `hub update` | Update bandwidth hub binary to latest release. |
-| `hub set <url>` | Set raw reporting endpoint URL in `~/.urnetwork/report_url`. |
-| `hub off` | Disable hub reporting by clearing `report_url`. |
-| `hub install` | Install bandwidth hub binary and systemd service. |
+> **Removed (v31.3+):** The hub service, its dashboard and the whole `hub` command family were removed from `urnet-tools`. Nothing in the tool depends on them. What remains is per-provider bandwidth reporting: `urnet-tools report <url>` (or `set report-url <url>`) points one provider's bandwidth reporter at your own collector, and `report off` disables it. See "Configuration & Introspection" below.
 
 ### System & Performance Tuning
 
@@ -104,10 +105,34 @@ On a host where OpenRC is the running init system, the lifecycle commands (`star
 | `auto [on\|off]` | Enable or disable Smart Auto hardware profile. |
 | `optimize [-f]` | Tune kernel parameters (conntrack, socket buffers, port ranges, BBR). Platform-aware. Self-elevates to root when needed (apply live + persist atomically, or roll back). |
 | `eco [on\|off]` | Enable or disable Eco profile (RAM-constrained hosts). |
+| `smart-dialer [status\|on\|off]` | **(New in 32.8)** Show or set the measured-cost transport preference. Live, persisted, off by default. `status` says which way it is set and how to change it. See [Configuration](Configuration.md#-control-socket--runtime-settings). |
+| `set oom-cap [on\|off\|shadow]` | **(New in 32.8)** Show or set the OOM-aware start cap kill switch. `shadow` (default) decides and logs and enforces nothing, `on` enforces, `off` disables it and forgets a standing cap. Any source saying `off` wins. Live and persisted. |
+| `set h3 [off\|direct\|on\|N\|all]` | Show or set which identities may use the transports beyond H1 (H3, H3 over DNS, the DNS pump), live and persisted. `direct` (default): the direct identity runs them as automatic fallbacks. `on` also runs H3 beside H1; a number or `all` widens the fallbacks to the best N or every proxy. Widening relaunches the proxies it adds and each redial costs the platform's speed tests. See [Configuration](Configuration.md). |
+| `set h3-datagram [on\|off]` | Offer QUIC DATAGRAM (RFC 9221) on the H3 connection, so a server that accepts can send its small frames as datagrams instead of on the reliable stream. On by default, as upstream. |
+| `set h3-datagram-send [on\|off]` | Also send small frames as datagrams on a connection where the server accepted them. On by default, as upstream; read per message, and used only while H1 is up. |
+| `set h1-plus [on\|off]` | Show or set the H1+ carrier upgrade on new H1 dials, live and persisted. On by default. See [Configuration](Configuration.md). |
+| `set ip-version [dual\|ipv4\|ipv6\|legacy]` | **(New)** Show or set which IP families the **direct** identity uses to reach the platform, live and persisted, no restart. `dual` (default): an IPv4 connection and an IPv6 connection plus a fallback if neither works. `ipv4` / `ipv6`: that family only, no fallback. `legacy`: the behavior before dual stack, one connection where the OS picks the family. `ip` is a short alias. Proxied identities are never affected. See [Configuration](Configuration.md) and [Monitoring](Monitoring.md#metrics-and-log-lines-for-dual-stack-platform-transports). |
+| `autopilot log [limit]` | **(New in 32.8)** Show the capacity decisions the provider recorded (OOM-aware start cap and trim results) as a timeline: UTC time, actor, action, the change, the mode and the reason. Shadow decisions show as `[shadow]`. Also prints the current `oom-cap` value. Default 20 entries, at most 200. A provider that predates the `ledger` command answers with an explanatory error.
+| `baseline show [-n N] [--json]` | **(New in 32.8)** Show the newest rows of this box's own behaviour record: UTC time, kind, version, proxies up against desired, RSS, host memory available, swap, and the file's first and last timestamps and size. Default 20 rows, at most 200. Reads `~/.urnetwork/baseline.jsonl` directly, so it works on a box whose provider is stopped. |
+| `baseline mark <label>` | **(New in 32.8)** Annotate the timeline, for example just before an upgrade. Goes through the control socket, so the provider stays the only writer to the file. Prints the timestamp recorded. A label is required: an unlabelled mark is a boundary `compare` cannot use. Works while the recorder is off, and never deletes the file. |
+| `baseline compare [--from A] [--to B] [--skip-ramp 20m] [--json]` | **(New in 32.8)** Compare the box's behaviour across an upgrade. With no arguments it splits at the most recent start whose version differs from the previous one. `A` and `B` are a mark label, a timestamp prefix, or (for `A`) the default. See the rules below, because they decide what the numbers mean. |
+| `enforcement [summary\|history [N]]` | Show the durable record of what the governors enforced: releases of silent clients, connect budget cuts, attempt caps, memory holds and crash-loop starts. `summary` (the default) counts events per kind and mode for today, the last 7 and 30 UTC days, and since the log began; `history [N]` lists the newest events (default 20, at most 500). Mode `shadow` means the governor only noted what it would have done. The files live in the provider's state dir and survive restarts and reboots. |
+
+#### What `baseline compare` actually computes
+
+The billable rate is the **lifetime byte counter's delta divided by the time delta**, never an average of the instantaneous rates. Instantaneous readings are bursty: a box showing 4.6 KiB/s now and 56 KiB/s a minute later is ordinary, and averaging those would report a figure that never happened.
+
+- A counter that went **down** was reset (a fresh lifetime store, or a wiped state directory). That interval is skipped rather than reported.
+- Rows with no lifetime total are skipped, since the store may not have been running for the whole segment.
+- The first `--skip-ramp` (default 20 minutes) after every start mark is excluded from **both** sides: a pool that just restarted under-earns while it ramps, and those minutes would otherwise make the comparison a story about the ramp.
+- A segment with **fewer than 4 samples** prints `insufficient data` and no percentages, because a segment that short may sit entirely inside one burst.
+- **Capacity and availability-source changes are warned about.** A box trimmed from 1170 to 500 is not a regression, and a container reporting host memory is not comparable to a systemd box. The row for `desired` and `trim cap` is always printed so the two sides can be read side by side.
+
+Rows: billable KiB/s, proxies up (mean), clients (mean), RSS (mean and max), host available MiB (min), swap used MiB (max), PSI full avg60 (mean and max), desired, trim cap, restarts, OOM kills. Every row shows before, after and the change. |
 | `turbo [v4\|v8\|off]` | Enable Turbo V4 or Turbo V8 high-throughput modes. |
 | `ramlogs [on\|off]` | Enable or disable RAM-disk logging (`/dev/shm`). |
 | `report <url>` | Set live bandwidth reporting URL (`report off` disables). Writes an override file the provider's bandwidth reporter re-reads on its next tick, so no restart is needed. |
-| `profile [name]` | **(New in 31.0)** Show or set the memory and GC tuning profile (`auto`, `turbo-v4`, `turbo-v8`, `eco`, `lowmem`; `v4` and `v8` are accepted aliases). With no argument, prints the current profile and what each one is for. |
+| `profile [name]` | **(New in 31.0)** Show or set the memory and GC tuning profile (`auto`, `turbo-v4`, `turbo-v8`, `eco`, `lowmem`). With no argument, prints the current profile and what each one is for. |
 | `metrics [status\|on\|off\|listen <ip:port\|auto>]` | Show where the Prometheus `/metrics` endpoint listens and the address to scrape, turn it on or off, or choose its listen address. Live, no restart, and persisted. See [Monitoring](Monitoring.md). |
 
 
@@ -123,21 +148,6 @@ On a host where OpenRC is the running init system, the lifecycle commands (`star
 | `set <key> off` | Clear a runtime setting and restore its default. Same queueing behavior. |
 | `history [limit]` | Show the provider's command audit trail from its 1000-entry circular ring. Defaults to the last 50, maximum 100. |
 | `dashboard` | Rich terminal status panel: state indicators, active settings, proxy sources, and restart warnings. Aliases `dash`, `panel`. |
-| `baseline show [-n N] [--json]` | Show the newest rows of this box's own behaviour record: UTC time, kind, version, proxies up against desired, RSS, host memory available, swap, and the file's first and last timestamps and size. Default 20 rows, at most 200. Reads `~/.urnetwork/baseline.jsonl` directly, so it works on a box whose provider is stopped. |
-| `baseline mark <label>` | Annotate the timeline, for example just before an upgrade. Goes through the control socket, so the provider stays the only writer to the file. Prints the timestamp recorded. A label is required: an unlabelled mark is a boundary `compare` cannot use. Works while the recorder is off, and never deletes the file. |
-| `baseline compare [--from A] [--to B] [--skip-ramp 20m] [--json]` | Compare the box's behaviour across an upgrade. With no arguments it splits at the most recent start whose version differs from the previous one. `A` and `B` are a mark label, a timestamp prefix, or (for `A`) the default. See the rules below, because they decide what the numbers mean. |
-
-#### What `baseline compare` actually computes
-
-The billable rate is the **lifetime byte counter's delta divided by the time delta**, never an average of the instantaneous rates. Instantaneous readings are bursty: a box showing 4.6 KiB/s now and 56 KiB/s a minute later is ordinary, and averaging those would report a figure that never happened.
-
-- A counter that went **down** was reset (a fresh lifetime store, or a wiped state directory). That interval is skipped rather than reported.
-- Rows with no lifetime total are skipped, since the store may not have been running for the whole segment.
-- The first `--skip-ramp` (default 20 minutes) after every start mark is excluded from **both** sides: a pool that just restarted under-earns while it ramps, and those minutes would otherwise make the comparison a story about the ramp.
-- A segment with **fewer than 4 samples** prints `insufficient data` and no percentages, because a segment that short may sit entirely inside one burst.
-- **Capacity and availability-source changes are warned about.** A box trimmed from 1170 to 500 is not a regression, and a container reporting host memory is not comparable to a systemd box. The row for `desired` and `trim cap` is always printed so the two sides can be read side by side.
-
-Rows: billable KiB/s, proxies up (mean), clients (mean), RSS (mean and max), host available MiB (min), swap used MiB (max), PSI full avg60 (mean and max), desired, trim cap, restarts, OOM kills. Every row shows before, after and the change.
 
 ---
 
@@ -189,6 +199,7 @@ urnet-tools proxy trim off
 - **Traffic Tiebreaker:** Proxies with active billable bandwidth are shed last within their grade tier, preserving active earning connections.
 - **Persistence:** Stored at `~/.urnetwork/proxy_trim`, surviving provider restarts and reloads.
 - **AIMD Integration:** Clamps the AIMD pool controller `TargetPoolSize` so automated pressure management works within the hard cap.
+- **Receipts and preview (32.8):** every change logs `[proxy][trim] received` and `applied` lines. `--preview` is computed by the running provider, and the CLI says so when it cannot reach one. Shed proxies keep their state, and the cap is honored before launching at startup. See [Proxy Management](Proxy-Management.md).
 
 ### 2. Session Save and Load
 

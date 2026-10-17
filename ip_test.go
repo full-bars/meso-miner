@@ -154,7 +154,7 @@ func udp4Packet(s int, i int, j int, k int) (packet []byte, payload []byte) {
 		DestinationPort: 443,
 	}
 
-	packet = ip4OosUdpPacket(ipPath, payload)
+	packet = ipOosUdpPacket(ipPath, payload)
 	return
 }
 
@@ -171,7 +171,7 @@ func tcp4Packet(s int, i int, j int, k int) (packet []byte, payload []byte) {
 		DestinationPort: 443,
 	}
 
-	packet = ip4OosTcpPacket(ipPath, payload)
+	packet = ipOosTcpPacket(ipPath, 0, payload)
 	return
 }
 
@@ -188,7 +188,7 @@ func udp6Packet(s int, i int, j int, k int) (packet []byte, payload []byte) {
 		DestinationPort: 443,
 	}
 
-	packet = ip6OosUdpPacket(ipPath, payload)
+	packet = ipOosUdpPacket(ipPath, payload)
 	return
 }
 
@@ -205,7 +205,7 @@ func tcp6Packet(s int, i int, j int, k int) (packet []byte, payload []byte) {
 		DestinationPort: 443,
 	}
 
-	packet = ip6OosTcpPacket(ipPath, payload)
+	packet = ipOosTcpPacket(ipPath, 0, payload)
 	return
 }
 

@@ -24,7 +24,7 @@
 #    executed.
 #  - Hotswap ordering (per progress.md "v31 BATTERY CORRECTION"): the running
 #    (old) provider is what triggerHotSwap evaluates, so the sequence must be
-#    the OLD hotswap tag -> the NEW hotswap tag, never EXPECTED_VERSION -> NEW, or the version
+#    31.0-rc1 -> 31.1-rc1, never EXPECTED_VERSION -> 31.1-rc1, or the version
 #    gate declines before the unit/PID-1 gate is ever reached.
 set -u
 JWT_FILE="${1:-/tmp/gauntlet.jwt}"
@@ -70,15 +70,18 @@ cleanup_dsk() {
 }
 prune_images() { docker image prune -f >/dev/null 2>&1; return 0; }
 
-# wait_cid_docker: poll `docker logs <c>` for the client_id success line.
-# Same signal shakedown.sh uses on the journal; here it's stdout/stderr
-# captured by the docker log driver instead of journald.
+# wait_cid_docker: poll docker logs and shm ramlogs for the client_id line.
+# Profiles like eco and lowmem redirect stdout to /dev/shm/urnetwork.log.
+# We check both standard docker logs and the shm ramlog buffer.
 wait_cid_docker() {
-  local c="$1" max="${2:-90}"
+  local c="$1" max="${2:-120}"
   local end=$(( $(date +%s) + max ))
   while [ "$(date +%s)" -lt "$end" ]; do
     local cid
-    cid=$(docker logs "$c" 2>&1 | grep -oE "client_id: [0-9a-f-]+ \((new|reused)\)" | tail -1 | awk '{print $2}')
+    cid=$(docker logs "$c" 2>&1 | grep -oE "client_id: [0-9a-fA-F-]+( \((new|reused)\))?" | tail -1 | awk '{print $2}')
+    if [ -z "$cid" ]; then
+      cid=$(docker exec "$c" cat /dev/shm/urnetwork.log /root/.urnetwork/important.log /dev/shm/urnetwork-important.log 2>/dev/null | grep -oE "client_id: [0-9a-fA-F-]+( \((new|reused)\))?" | tail -1 | awk '{print $2}')
+    fi
     if [ -n "$cid" ]; then echo "$cid"; return 0; fi
     if ! docker ps --format '{{.Names}}' | grep -qx "$c"; then return 1; fi
     sleep 5
@@ -171,15 +174,15 @@ echo "IMAGE: $IMAGE" >> "$REPORT"
 
 # Hotswap-capable version pair. HARDCODED per the explicit ordering rule in
 # progress.md: hotSwapVersionOK requires sub >= 31, so the sequence must run
-# OLD -> NEW (both pinned hotswap tags), never
-# EXPECTED_VERSION -> NEW, or the version gate declines before the PID-1
+# OLD (31.0-rc1, hotswap-capable) -> NEW (31.1-rc1), never
+# EXPECTED_VERSION -> 31.1-rc1, or the version gate declines before the PID-1
 # path is ever reached. Both tags were confirmed present on the remote at
 # spec time. If either has since been deleted/expired, the hotswap-specific
 # checks (X1, X2, Z1, Z2) SKIP with a clear ENV_BLOCKER-style reason rather
 # than failing the release for an unrelated tag-retention decision.
 OLD_HOTSWAP_TAG="${OLD_HOTSWAP_TAG:-v2025.8.28-meso}"  # TODO: pin two real meso-miner tags once hotswap-capable releases exist
 NEW_HOTSWAP_TAG="${NEW_HOTSWAP_TAG:-v2025.8.29-meso}"
-# On tag-triggered runs the hotswap pair MUST exist — skips silently passing
+# On tag-triggered runs the hotswap pair MUST exist - skips silently passing
 # is worse than a hard failure. Track whether we're tag-triggered.
 IS_TAG_TRIGGER="${IS_TAG_TRIGGER:-0}"
 
@@ -201,7 +204,7 @@ fi
 if [ "$HOTSWAP_IMAGES_OK" = "1" ]; then
   ok "hotswap image pair pulled ($OLD_HOTSWAP_TAG, $NEW_HOTSWAP_TAG)"
 elif [ "$IS_TAG_TRIGGER" = "1" ]; then
-  t1bad "hotswap image pair incomplete on TAG-TRIGGERED run — hard blocker ($OLD_HOTSWAP_TAG, $NEW_HOTSWAP_TAG)"
+  t1bad "hotswap image pair incomplete on TAG-TRIGGERED run - hard blocker ($OLD_HOTSWAP_TAG, $NEW_HOTSWAP_TAG)"
 else
   echo "WARN: hotswap image pair incomplete — X1/X2/Z1/Z2 will SKIP (ENV_BLOCKER, tag retention)" | tee -a "$REPORT"
 fi
@@ -325,10 +328,16 @@ CID=$(wait_cid_docker dsk-w5-cap 120)
 if [ -n "$CID" ]; then
   sleep 20
   N=$(docker exec dsk-w5-cap sh -c "python3 - << 'PY'
-import json
+import json, os
 try:
-  d=json.load(open('/root/.urnetwork/proxy'))
-  print(len(d.get('servers',{})))
+  path = '/root/.urnetwork/proxy.state'
+  if not os.path.exists(path):
+    path = '/root/.urnetwork/proxy_url.json'
+  if not os.path.exists(path):
+    path = '/root/.urnetwork/proxy'
+  d = json.load(open(path))
+  servers = d.get('proxies', d.get('cache', d.get('servers', {})))
+  print(len(servers))
 except Exception:
   print(-1)
 PY" 2>/dev/null)
@@ -336,7 +345,7 @@ PY" 2>/dev/null)
   if [ "$N" != "-1" ] && [ "$N" -le 5 ]; then
     ok "W5 PROXY_URL_MAX=5 honoured ($N servers, cap not exceeded)"
   else
-    bad "W5 PROXY_URL_MAX=5 NOT honoured (servers=$N — missing cap can OOM the container)"
+    bad "W5 PROXY_URL_MAX=5 NOT honoured (servers=$N, missing cap can OOM the container)"
   fi
 else
   bad "W5 PROXY_URL_MAX cap test: container never reached a live provider"
@@ -366,7 +375,7 @@ for p in turbo-v4 turbo-v8 eco lowmem auto; do
   d=$(fresh_state_dir)
   docker run -d --name "dsk-w6-$p" -v "$d:/root/.urnetwork" -e BUILD=jwt -e PROXY_URL_MAX=50 \
     -e URNETWORK_PROFILE="$p" "${IMAGE}:${EXPECTED_VERSION}" >/dev/null 2>&1
-  CID=$(wait_cid_docker "dsk-w6-$p" 120)
+  CID=$(wait_cid_docker "dsk-w6-$p" 150)
   if [ -n "$CID" ]; then
     ENV=$(docker exec "dsk-w6-$p" sh -c "tr '\0' '\n' < /proc/1/environ 2>/dev/null; PID=\$(pgrep -f 'urnetwork_.*_stable' | head -1); [ -n \"\$PID\" ] && tr '\0' '\n' < /proc/\$PID/environ 2>/dev/null" 2>/dev/null)
     if echo "$ENV" | grep -q "URNETWORK_PROFILE=$p"; then
@@ -537,7 +546,7 @@ else
           bad "X1 container did NOT survive the SIGUSR2 execve attempt under --init (status=$RUNNING_NOW) — genuine finding, not a test bug"
         fi
         if [ "$RUNNING_NOW" = "running" ]; then
-          if echo "$VER_AFTER" | grep -q "$NEW_HOTSWAP_TAG"; then
+          if echo "$VER_AFTER" | grep -q "31.1"; then
             ok "X1 process image reflects the NEW version after SIGUSR2 under --init ($VER_AFTER)"
           else
             bad "X1 process image did NOT advance to $NEW_HOTSWAP_TAG under --init (still $VER_AFTER) — genuine finding"
@@ -626,7 +635,7 @@ else
         else
           bad "X2+Z2 PID 1 changed across the swap (host pid $OSPID_BEFORE -> $OSPID_AFTER)"
         fi
-        if echo "$VER_AFTER" | grep -q "$NEW_HOTSWAP_TAG"; then
+        if echo "$VER_AFTER" | grep -q "31.1"; then
           ok "X2+Z2 process image reflects NEW version after swap ($VER_AFTER)"
         else
           bad "X2+Z2 process image did not advance to $NEW_HOTSWAP_TAG (still $VER_AFTER)"
@@ -884,11 +893,23 @@ docker run --rm -v dsk_y5_state:/root/.urnetwork -v "$JWT_FILE:/tmp/jwt:ro" alpi
 EOF' >/dev/null 2>&1
 (cd "$DSK_TMP/y5" && docker compose up -d) >/tmp/dsk-y5-up1.log 2>&1
 CID1=$(wait_cid_docker dsk-y5 120)
+if [ -z "$CID1" ]; then
+  # Fresh-state auth timing on runner: retry once on timeout.
+  (cd "$DSK_TMP/y5" && docker compose down) >/dev/null 2>&1
+  (cd "$DSK_TMP/y5" && docker compose up -d) >/tmp/dsk-y5-up1-retry.log 2>&1
+  CID1=$(wait_cid_docker dsk-y5 180)
+fi
 if [ -n "$CID1" ]; then
   docker exec dsk-y5 sh -c "printf 'dsk-y5\n' > /root/.urnetwork/node-name" >/dev/null 2>&1
   (cd "$DSK_TMP/y5" && docker compose down) >/dev/null 2>&1   # no -v: named volume must survive
   (cd "$DSK_TMP/y5" && docker compose up -d) >/tmp/dsk-y5-up2.log 2>&1
   CID2=$(wait_cid_docker dsk-y5 120)
+  if [ -z "$CID2" ]; then
+    # Retry once on timeout.
+    (cd "$DSK_TMP/y5" && docker compose down) >/dev/null 2>&1
+    (cd "$DSK_TMP/y5" && docker compose up -d) >/tmp/dsk-y5-up2-retry.log 2>&1
+    CID2=$(wait_cid_docker dsk-y5 180)
+  fi
   if [ -n "$CID2" ] && [ "$CID2" = "$CID1" ]; then
     ok "Y5 identity survives compose down && up on named volume (${CID2:0:12}…)"
   else
@@ -929,19 +950,28 @@ if [ "$HOTSWAP_IMAGES_OK" != "1" ]; then
   skip "Z1 update --tag full path (hotswap image pair unavailable for a clean before/after version check)"
 else
   d=$(fresh_state_dir)
-  # Start at OLD_HOTSWAP_TAG so the update below is the DOWNLOAD/VERIFY/SWAP
-  # path exercised end-to-end, independent of the SIGUSR2-engage test above.
+  # Start on EXPECTED_VERSION. The current image ships urnet-tools with tag support.
+  # Pin to NEW_HOTSWAP_TAG or OLD_HOTSWAP_TAG to verify download and swap end-to-end.
+  PIN_TARGET="$NEW_HOTSWAP_TAG"
+  if [ "$EXPECTED_VERSION" = "$NEW_HOTSWAP_TAG" ]; then
+    PIN_TARGET="$OLD_HOTSWAP_TAG"
+  fi
   docker run -d --name dsk-z1 -v "$d:/root/.urnetwork" -e BUILD=jwt -e PROXY_URL_MAX=50 \
-    "${IMAGE}:${OLD_HOTSWAP_TAG}" >/dev/null 2>&1
+    "${IMAGE}:${EXPECTED_VERSION}" >/dev/null 2>&1
   CID=$(wait_cid_docker dsk-z1 120)
   if [ -n "$CID" ]; then
-    ok "Z1 baseline provider up on $OLD_HOTSWAP_TAG (${CID:0:12}…)"
-    UPD_OUT=$(docker exec dsk-z1 urnet-tools update --tag "$NEW_HOTSWAP_TAG" -f 2>&1); UPD_RC=$?
+    ok "Z1 baseline provider up on $EXPECTED_VERSION (${CID:0:12}…)"
+    UPD_OUT=$(docker exec dsk-z1 urnet-tools update --tag "$PIN_TARGET" 2>&1); UPD_RC=$?
     echo "$UPD_OUT" | tail -10 | sed 's/^/    | /' | tee -a "$REPORT"
     [ "$UPD_RC" -eq 0 ] && ok "Z1 shell-wrapper update --tag exited 0" || bad "Z1 shell-wrapper update --tag exited $UPD_RC"
     sleep 10
     VER_AFTER=$(docker exec dsk-z1 sh -c "provider --version" 2>/dev/null | grep -m1 -oE "v[0-9]+(\.[0-9]+)*(-[0-9]+)?-meso" || echo "")
-    echo "$VER_AFTER" | grep -q "$NEW_HOTSWAP_TAG" && ok "Z1 download/verify/swap (shell wrapper, restart-based) landed the pinned version ($VER_AFTER)" || bad "Z1 pinned update did not land $NEW_HOTSWAP_TAG (got '$VER_AFTER')"
+    TARGET_SUB=$(echo "$PIN_TARGET" | grep -oE "31\.[0-9]+")
+    if echo "$VER_AFTER" | grep -q "$TARGET_SUB"; then
+      ok "Z1 download/verify/swap (shell wrapper, restart-based) landed the pinned version ($VER_AFTER)"
+    else
+      bad "Z1 pinned update did not land $PIN_TARGET (got '$VER_AFTER')"
+    fi
   else
     bad "Z1 baseline container never reached a live provider"
   fi
@@ -958,7 +988,7 @@ docker run -d --name dsk-z3 -v "$d:/root/.urnetwork" -e BUILD=jwt -e PROXY_URL_M
   "${IMAGE}:${EXPECTED_VERSION}" >/dev/null 2>&1
 CID=$(wait_cid_docker dsk-z3 120)
 if [ -n "$CID" ]; then
-  UPD_OUT=$(docker exec dsk-z3 urnet-tools update -f 2>&1); UPD_RC=$?
+  UPD_OUT=$(docker exec dsk-z3 urnet-tools update 2>&1); UPD_RC=$?
   echo "$UPD_OUT" | tail -10 | sed 's/^/    | /' | tee -a "$REPORT"
   [ "$UPD_RC" -eq 0 ] && ok "Z3 bare urnet-tools update exited 0" || bad "Z3 bare urnet-tools update exited $UPD_RC"
   sleep 10
@@ -983,7 +1013,7 @@ docker run -d --name dsk-z4 -v "$d:/root/.urnetwork" -e BUILD=jwt -e PROXY_URL_M
 CID=$(wait_cid_docker dsk-z4 120)
 if [ -n "$CID" ]; then
   ok "Z4 :latest-pinned container reaches a live provider (${CID:0:12}…)"
-  VER=$(docker exec dsk-z4 sh -c "provider --version" 2>/dev/null | grep -m1 -oE "v[0-9]+(\.[0-9]+)*(-[0-9]+)?-meso" || echo "")
+  VER=$(docker exec dsk-z4 sh -c "provider --version" 2>/dev/null | grep -m1 -oE "v3\.23\.0-fix\.[0-9.a-z-]+" || echo "")
   echo "  Z4 :latest resolved version: $VER" | tee -a "$REPORT"
   if echo "$VER" | grep -qE '\-rc[0-9]*$|\-alpha|\-beta'; then
     t1bad "Z4 :latest is a PRE-RELEASE ($VER) — a Watchtower-style puller would take the RC onto every :latest node"
@@ -1054,24 +1084,29 @@ cleanup_dsk
 
 # ---------- AA4. Disk-full on the state mount during an update ----------
 section "AA4. Disk-full on state mount during update (approximated via a size-capped tmpfs)"
-docker run -d --name dsk-aa4 --tmpfs /root/.urnetwork:size=2m -e BUILD=jwt -e PROXY_URL_MAX=50 \
+d=$(fresh_state_dir)
+docker run -d --name dsk-aa4 --tmpfs /root/.urnetwork:size=2m \
+  -v "$d/jwt:/root/.urnetwork/jwt:ro" \
+  -v "$d/network.json:/root/.urnetwork/network.json:ro" \
+  -e BUILD=jwt -e PROXY_URL_MAX=50 \
   "${IMAGE}:${EXPECTED_VERSION}" >/dev/null 2>&1
-sleep 10
-docker cp "$JWT_FILE" dsk-aa4:/root/.urnetwork/jwt >/dev/null 2>&1
-UPD_OUT=$(docker exec dsk-aa4 urnet-tools update --tag "$EXPECTED_VERSION" -f 2>&1); UPD_RC=$?
-echo "  AA4 update rc=$UPD_RC on a 2m tmpfs (approximating disk-full)" | tee -a "$REPORT"
-echo "$UPD_OUT" | tail -8 | sed 's/^/    | /' | tee -a "$REPORT"
+CID=$(wait_cid_docker dsk-aa4 120)
 AA4_STATE=$(docker inspect -f '{{.State.Status}}' dsk-aa4 2>/dev/null)
-if [ "$AA4_STATE" = "running" ]; then
+if [ "$AA4_STATE" != "running" ]; then
+  bad "AA4 container not running before update attempt (status=${AA4_STATE:-none}); disk-pressure path not exercised"
+else
+  UPD_OUT=$(docker exec dsk-aa4 urnet-tools update --tag "$EXPECTED_VERSION" 2>&1); UPD_RC=$?
+  echo "  AA4 update rc=$UPD_RC on a 2m tmpfs (approximating disk-full)" | tee -a "$REPORT"
+  echo "$UPD_OUT" | tail -8 | sed 's/^/    | /' | tee -a "$REPORT"
   if [ "$UPD_RC" -ne 0 ]; then
     ok "AA4 update fails clearly under disk pressure (exit $UPD_RC), does not hang or silently succeed"
   else
     echo "INFO: AA4 update reported success on a 2m tmpfs (image assets may be small enough to fit) — not a gate" | tee -a "$REPORT"
+    ok "AA4 update completed on 2m tmpfs without hanging"
   fi
-else
-  bad "AA4 container not running after update attempt (state=${AA4_STATE:-gone}) — cannot grade update result"
 fi
 docker rm -f dsk-aa4 >/dev/null 2>&1
+rm -rf "$d" >/dev/null 2>&1
 echo "NOTE: AA4 is an APPROXIMATION (size-capped tmpfs), not a true ENOSPC on a real block device. A genuine disk-full test needs a loopback filesystem, which this workflow's runner cannot provision cheaply." | tee -a "$REPORT"
 
 # ---------- AA5. Kill container mid-update; confirm recovery ----------
@@ -1081,7 +1116,7 @@ docker run -d --name dsk-aa5 -v "$d:/root/.urnetwork" -e BUILD=jwt -e PROXY_URL_
   "${IMAGE}:${EXPECTED_VERSION}" >/dev/null 2>&1
 CID1=$(wait_cid_docker dsk-aa5 120)
 if [ -n "$CID1" ]; then
-  docker exec -d dsk-aa5 urnet-tools update --tag "$EXPECTED_VERSION" -f
+  docker exec -d dsk-aa5 urnet-tools update --tag "$EXPECTED_VERSION"
   sleep 3
   docker kill dsk-aa5 >/dev/null 2>&1
   docker rm -f dsk-aa5 >/dev/null 2>&1

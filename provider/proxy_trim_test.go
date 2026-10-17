@@ -222,6 +222,11 @@ func TestWriteTrimTargetIsAtomicUnderConcurrentReadWrite(t *testing.T) {
 // Garbage in the operator cap file still means no cap (never a false cap), but
 // it is reported once instead of silently doing nothing.
 func TestTrimGarbageIsReportedOnce(t *testing.T) {
+	// reading a garbage trim file queues its warning on the process-wide deferred
+	// queue; leave it empty so a later test's queue assertion does not see it when
+	// the package runs shuffled
+	drainDeferredCrit()
+	t.Cleanup(func() { drainDeferredCrit() })
 	trimGarbageReset()
 	first := trimGarbageWarning("five hundred")
 	if first == "" || !strings.Contains(first, "not a proxy count") || !strings.Contains(first, "five hundred") {

@@ -4,10 +4,13 @@ This package implements a provider binary.
 
 ```
 Usage:
-    provider provide [--port=<port>] --user_auth=<user_auth> [--password=<password>]
+    provider auth ([<auth_code>] | --user_auth=<user_auth> [--password=<password>])
+    provider provide [--port=<port>]
         [--api_url=<api_url>]
         [--connect_url=<connect_url>]
 ```
+
+The `--user_auth`/`--password` login flags belong to `provider auth` (and `provider auth-provide`); `provider provide` does not take them.
 
 It is set up to be build with `warpctl build` and push to the community build.
 

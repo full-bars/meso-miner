@@ -220,3 +220,36 @@ func TestReceiveHoldRefuseNeverEvicts(t *testing.T) {
 		t.Fatalf("evictions = %d, want 0 under Refuse", got)
 	}
 }
+
+// commitHeldPrefix only borrows queue-owned item pointers in its reusable
+// scratch slice; after the scan the slice must be empty and every slot nil so
+// delivered items and their frame pointers are not kept reachable.
+func TestReceiveCommitHeldPrefixReleasesScratch(t *testing.T) {
+	const unit = ByteCount(1000)
+	_, seq := newReceiveHoldTestSequence(t, ReceiveHoldCommittedPrefix, 6*unit)
+
+	for _, n := range []uint64{1, 2, 3} {
+		if ok, err := seq.receive(holdPack(n, unit)); err != nil || !ok {
+			t.Fatalf("receive seq %d: ok=%v err=%v", n, ok, err)
+		}
+	}
+	// the scan fills the scratch from the (non-empty) hold; the three held
+	// items must not remain referenced once it returns
+	if n, _ := seq.receiveQueue.QueueSize(); n == 0 {
+		t.Fatal("hold unexpectedly empty")
+	}
+	seq.commitHeldPrefix()
+
+	if len(seq.heldScratch) != 0 {
+		t.Fatalf("held scratch len = %d, want 0", len(seq.heldScratch))
+	}
+	full := seq.heldScratch[:cap(seq.heldScratch)]
+	if len(full) == 0 {
+		t.Fatal("scratch capacity unexpectedly empty")
+	}
+	for i, slot := range full {
+		if slot != nil {
+			t.Fatalf("held scratch slot %d still references an item", i)
+		}
+	}
+}

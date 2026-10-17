@@ -19,6 +19,7 @@ type mockSnStatusAPI struct {
 	ranking *connect.NetworkRankingResult
 	epoch   *connect.SnEpochResult
 	claim   *connect.SnPoolClaimResult
+	wallet  *connect.SnGetWalletResult
 	// Track calls for assertions
 	byJwt string
 }
@@ -41,6 +42,12 @@ func (m *mockSnStatusAPI) SnPoolClaimSync(args *connect.SnPoolClaimArgs) (*conne
 		return nil, fmt.Errorf("pool claim: 500 Internal Server Error")
 	}
 	return m.claim, nil
+}
+func (m *mockSnStatusAPI) SnGetWalletSync() (*connect.SnGetWalletResult, error) {
+	if m.wallet == nil {
+		return nil, fmt.Errorf("wallet: 500 Internal Server Error")
+	}
+	return m.wallet, nil
 }
 
 func TestFetchSnStatus_MockEndpoints(t *testing.T) {

@@ -1,0 +1,91 @@
+name: Portable core (cross-OS)
+
+# The provider ships for linux, windows, macOS and FreeBSD. Most of the unit
+# suite is linux-only in build.yml, so this workflow covers what differs by
+# platform: (1) every target compiles and vets, (2) the platform-sensitive
+# deterministic tests run natively on windows and macOS, (3) the same tests run
+# on a real FreeBSD kernel in freebsd.yml. The focused list is kept short and
+# deterministic on purpose: no network, no timers beyond a few hundred ms.
+
+on:
+  push:
+    branches: [main, 'feat/v33*']
+  pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'releases/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Root package: ip layer (fragments, reassembly, dial-failure answers,
+  # packet parsing, dual-stack paths). Provider package: wallet consent,
+  # family transport, platform helpers.
+  ROOT_TESTS: 'Fragment|Reassembl|DialFailure|DialErrno|IcmpParse|IpPacket|DualStack|ParseIpPath|NatFragment'
+  PROVIDER_TESTS: 'Wallet|FamilyServiceUrl|UseFamilyTransports|ProbeIpv6|NewProviderPlatformTransport'
+
+jobs:
+  cross-build-vet:
+    name: build + vet (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {goos: linux, goarch: amd64}
+          - {goos: linux, goarch: arm64}
+          - {goos: windows, goarch: amd64}
+          - {goos: windows, goarch: arm64}
+          - {goos: darwin, goarch: amd64}
+          - {goos: darwin, goarch: arm64}
+          - {goos: freebsd, goarch: amd64}
+          - {goos: freebsd, goarch: arm64}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: go build ./...
+      - name: Vet (including test files)
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: go vet . ./provider/... ./internal/...
+
+  native-tests:
+    name: focused tests on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+      - name: Root package, platform-sensitive ip tests
+        shell: bash
+        run: go test -count=1 -timeout 300s -run "$ROOT_TESTS" .
+      - name: Provider package, wallet consent and family transport
+        shell: bash
+        run: go test -count=1 -timeout 300s -run "$PROVIDER_TESTS" ./provider/

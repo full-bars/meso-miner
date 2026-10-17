@@ -1,6 +1,6 @@
 # 📦 Installation Guide
 
-This guide covers the Linux installer, user-level systemd service, post-install commands, and host optimization tools.
+This guide covers the Linux installer, user-level systemd service, post-install commands, and host optimization tools. Alpine Linux (OpenRC) and FreeBSD have their own pages: [OpenRC](OpenRC.md) and [FreeBSD](FreeBSD.md).
 
 ## 🚀 Quick Start
 
@@ -40,8 +40,8 @@ urnet-tools proxy refresh
 
 ## 🧭 Other Platforms (Quick install)
 
-- **Alpine Linux (OpenRC):** the same install command, run from a root shell, installs a system service under `supervise-daemon`. See the [Alpine Linux (OpenRC) guide](https://github.com/full-bars/meso-miner/wiki/OpenRC).
-- **FreeBSD:** installs an `rc.d` service from the FreeBSD installer script. See the [FreeBSD guide](https://github.com/full-bars/meso-miner/wiki/FreeBSD).
+- **Alpine Linux (OpenRC):** the same install command, run from a root shell, installs a system service under `supervise-daemon`. See the [Alpine Linux (OpenRC) guide](https://github.com/full-bars/urnetwork-3.23-fix/wiki/OpenRC).
+- **FreeBSD:** installs an `rc.d` service from the FreeBSD installer script. See the [FreeBSD guide](https://github.com/full-bars/urnetwork-3.23-fix/wiki/FreeBSD).
 
 ## 🍎 macOS Installation
 
@@ -246,7 +246,7 @@ When the provider starts, it logs a **System Auditor** report that checks kernel
 For Docker-only users who do not want the systemd provider service, run the installer on the host to install the tools:
 
 ```bash
-curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh
+curl -fSsL https://dl.fullbars.xyz/install.sh | sh
 ```
 
 Then optimize the host:

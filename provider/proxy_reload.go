@@ -677,6 +677,7 @@ func runReloadReconciler(ctx context.Context) {
 // StartWatcher launches the background goroutine that polls the reload trigger
 // file every 2 seconds and triggers reload() when its sequence number changes.
 func (r *ProxyReloader) StartWatcher(ctx context.Context) {
+	activeProxyReloader.Store(r)
 	reloadPath, err := proxyReloadPath()
 	if err != nil {
 		tlog("[proxy] warning: could not determine reload path: %v\n", err)
@@ -749,6 +750,31 @@ func (r *ProxyReloader) acquireReloadSlot() bool {
 	}
 }
 
+// reloadOverdueDecide is the reload watchdog's per-tick decision, pure: given
+// the tick clock, the published reload state and the loop's carried throttle
+// state it reports whether this tick must escalate and how long the reload
+// has held the slot. No I/O and no atomics: RunReloadWatchdog reads the
+// state, carries episodeStart and lastFired, and performs the escalation.
+func reloadOverdueDecide(now time.Time, startedAt int64, active bool, lastFired time.Time, episodeStart int64) (fire bool, held time.Duration) {
+	if !active {
+		return false, 0
+	}
+	if startedAt <= 0 {
+		return false, 0
+	}
+	held = now.Sub(time.Unix(0, startedAt))
+	if held < reloadHardLimit {
+		return false, held
+	}
+	// Fire once per episode, then at most once per reloadWatchdogReFire while
+	// the same reload stays overdue. The hotswap decline ledger throttles
+	// repeats further.
+	if episodeStart == startedAt && now.Sub(lastFired) < reloadWatchdogReFire {
+		return false, held
+	}
+	return true, held
+}
+
 // RunReloadWatchdog watches for a reload holding the slot past
 // reloadHardLimit and escalates: a loud record (ramlog + events.log) and a
 // hot-restart request through reloadOverdueAction (gated on hot_restart).
@@ -756,7 +782,17 @@ func (r *ProxyReloader) acquireReloadSlot() bool {
 // a goroutine stuck inside a call that never returns. Without it, one stuck
 // reload stalls every future trigger and every proxy-pool maintenance path
 // for as long as the process lives.
-func (r *ProxyReloader) RunReloadWatchdog(ctx context.Context) {
+//
+// now is the clock seam: production passes a live delegator over nowFn and
+// nil falls back to the live seam. The overdue comparison, the re-fire
+// throttle and the last-fired stamp all read through it, so a test can step
+// a fake clock past reloadHardLimit without waiting.
+func (r *ProxyReloader) RunReloadWatchdog(ctx context.Context, now func() time.Time) {
+	if now == nil {
+		// A nil clock would panic this ticker loop on its first overdue
+		// check; fall back to the live seam.
+		now = func() time.Time { return nowFn() }
+	}
 	ticker := time.NewTicker(reloadWatchdogInterval)
 	defer ticker.Stop()
 	var lastFired time.Time
@@ -768,25 +804,25 @@ func (r *ProxyReloader) RunReloadWatchdog(ctx context.Context) {
 		case <-ticker.C:
 		}
 		if !r.reloadActive.Load() {
+			// End of an episode: the throttle state resets, nothing else.
 			episodeStart = 0
 			continue
 		}
 		started := r.reloadStartedAt.Load()
 		if started <= 0 {
+			// No live timestamp: nothing to compare. Like the old loop, do
+			// not read the clock on this tick.
 			continue
 		}
-		held := time.Since(time.Unix(0, started))
-		if held < reloadHardLimit {
-			continue
-		}
-		// Fire once per episode, then at most once per reloadWatchdogReFire
-		// while the same reload stays overdue. The hotswap decline ledger
-		// throttles repeats further.
-		if episodeStart == started && time.Since(lastFired) < reloadWatchdogReFire {
+		t := now()
+		// The loop keeps its own guards above; the pure step re-states them
+		// so a direct caller can never decide on a stale or absent timestamp.
+		fire, held := reloadOverdueDecide(t, started, true, lastFired, episodeStart)
+		if !fire {
 			continue
 		}
 		episodeStart = started
-		lastFired = time.Now()
+		lastFired = t
 		// tlog is a cheap in-memory write and goes out immediately; the
 		// fsyncing critLog record is written inside the action goroutine so
 		// a thrashing disk or a busy critLogMu cannot stall this ticker
@@ -985,6 +1021,14 @@ func (r *ProxyReloader) reload() {
 	for _, s := range desiredSet {
 		desiredValues = append(desiredValues, s)
 	}
+	// a count setting ranks over the proxies this provider runs; when the ranked
+	// set moved, relaunch the proxies that joined or left it
+	// (the candidates are noted under every setting, so a later switch to a count
+	// ranks over the real set at once)
+	setting := resolveH3Mode(globalControlState, currentProxyResolution())
+	if noteH3Candidates(desiredValues, setting) {
+		go connect.HandleError(func() { r.relaunchH3Proxies(r.parentCtx, setting) })
+	}
 	adoptLegacyProxyState(r.state, desiredValues)
 	if globalClientJWTStore != nil {
 		globalClientJWTStore.AdoptLegacy(desiredValues)
@@ -1090,6 +1134,8 @@ func (r *ProxyReloader) reload() {
 			setProxyResolutionStatus(proxyResolutionNoSource, "direct transport disabled and no proxy source configured")
 		} else {
 			tlog("[proxy] reload: 0 proxies; direct-only (no proxy source configured) — settled\n")
+			// applyDirectOnlyH3Defaults is NOT called here: setProxyResolutionStatus
+			// owns it, and fires it on the transition into ZeroValid only.
 			setProxyResolutionStatus(proxyResolutionZeroValid, "direct-only providing; no proxy source configured")
 		}
 		// A source that was configured and has now gone empty is NOT a reason to
@@ -1509,10 +1555,10 @@ func (r *ProxyReloader) reload() {
 	// at 25ms intervals while cold proxies use standard backoff.
 	addedSchedules, _, _, _ := prioritizeAndScheduleProxies(added, sourceOf, r.networkID)
 	warmupDeferred := 0
-	// Count URL-sourced proxies that will actually be launched, inside the loop
-	// so a draining proxy (skipped before launch) is not counted as scheduled.
-	// urlLaunchLine subtracts warmupDeferred, so warmup-deferred entries stay in
-	// the total.
+	// Count URL-sourced proxies that will actually be launched, inside the
+	// loop so a draining proxy (skipped before launch) is not counted as
+	// scheduled. urlLaunchLine subtracts warmupDeferred, so warmup-deferred
+	// entries stay in the total.
 	urlAdded := 0
 	for _, sched := range addedSchedules {
 		settings := sched.Settings

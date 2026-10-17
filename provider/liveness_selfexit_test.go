@@ -78,10 +78,27 @@ func assertNoSelfExit(t *testing.T, exited chan int, run func(context.Context)) 
 	}
 }
 
+// TestSelfExitLivenessExitsOnStallUnderOpenRc: supervise-daemon has no watchdog
+// of its own, so a provider that is alive but making no progress must ask for
+// its own restart by exiting 75, and leave the same lean start cap a thrash
+// escape leaves.
+func TestSelfExitLivenessExitsOnStallUnderOpenRc(t *testing.T) {
+	exited := selfExitLivenessRig(t, map[string]string{"URNETWORK_INIT": "openrc"})
+	t.Setenv("URNETWORK_SELF_HEAL", "1")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	go runSelfExitLivenessWatchdog(ctx, livenessGate)
+
+	waitSelfExit(t, exited, "a stalled provider under OpenRC")
+	if cap, ok := activeThrashCap(time.Now()); !ok || cap != 300 {
+		t.Fatalf("the exit must leave the lean start cap (300 of 500), got %d ok=%v", cap, ok)
+	}
+}
+
 // TestSelfExitLivenessExitsOnStallInAContainer: a container's start script
-// treats exit 75 as a planned restart and it has no watchdog either, so a
-// provider that is alive but making no progress must ask for its own restart by
-// exiting 75, and leave the same lean start cap a thrash escape leaves.
+// treats exit 75 as a planned restart too, and it has no watchdog either, so the
+// same recovery must apply there.
 func TestSelfExitLivenessExitsOnStallInAContainer(t *testing.T) {
 	exited := selfExitLivenessRig(t, map[string]string{"URNETWORK_CONTAINER": "1"})
 	t.Setenv("URNETWORK_SELF_HEAL", "1")
@@ -91,9 +108,6 @@ func TestSelfExitLivenessExitsOnStallInAContainer(t *testing.T) {
 	go runSelfExitLivenessWatchdog(ctx, livenessGate)
 
 	waitSelfExit(t, exited, "a stalled provider in a container")
-	if cap, ok := activeThrashCap(time.Now()); !ok || cap != 300 {
-		t.Fatalf("the exit must leave the lean start cap (300 of 500), got %d ok=%v", cap, ok)
-	}
 }
 
 // TestSelfExitLivenessRefusesWhenTheStateDirIsNotDurable: a container's state
@@ -135,10 +149,9 @@ func TestSelfExitLivenessRefusesWhenTheRestartCannotBeRecorded(t *testing.T) {
 }
 
 // TestLivenessAppliesPinsTheSupervisorsThatGetTheStallDefense: with a systemd
-// watchdog there is a ping to withhold; in a container the action is a
-// self-exit; with neither there is no action to take, so the loop must not run.
-// (This repo has no OpenRC surface, so the OpenRC marker is not detected here;
-// the stall code is shared and would light up on its own if it ever were.)
+// watchdog there is a ping to withhold; under OpenRC or in a container the
+// action is a self-exit; with none of those there is no action to take, so the
+// loop must not run.
 func TestLivenessAppliesPinsTheSupervisorsThatGetTheStallDefense(t *testing.T) {
 	withTempHome(t)
 	prevEnv, prevFiles := thrashEnvFn, thrashFileExistsFn
@@ -148,6 +161,15 @@ func TestLivenessAppliesPinsTheSupervisorsThatGetTheStallDefense(t *testing.T) {
 
 	if livenessApplies() {
 		t.Fatal("no supervisor: the stall defense must not run")
+	}
+	thrashEnvFn = func(k string) string {
+		if k == "URNETWORK_INIT" {
+			return "openrc"
+		}
+		return ""
+	}
+	if !livenessApplies() {
+		t.Fatal("under OpenRC the stall defense runs with a self-exit as its action")
 	}
 	thrashEnvFn = func(k string) string {
 		if k == "URNETWORK_CONTAINER" {
@@ -172,6 +194,7 @@ func TestRunSdWatchdogDispatchesToSelfExit(t *testing.T) {
 		name string
 		env  map[string]string
 	}{
+		{"openrc", map[string]string{"URNETWORK_INIT": "openrc"}},
 		{"container", map[string]string{"URNETWORK_CONTAINER": "1"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

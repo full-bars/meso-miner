@@ -113,7 +113,7 @@ The emergency goroutine pin at >= 25000 goroutines provides an extra safety net.
 ## 📊 Hub Dashboard (Deprecated)
 
 > [!WARNING]
-> **Deprecated (v31.3+):** The hub dashboard has been removed. For fleet-wide visibility, use Prometheus metrics (`urnet-tools metrics on`) and the Grafana monitoring bundle. Historical hub documentation: [Hub Setup](../Hub-Setup.md), [Hub Dashboard](../Hub-Dashboard.md).
+> **Removed (v32.0):** The hub dashboard has been removed. For fleet-wide visibility, use Prometheus metrics (`urnet-tools metrics on`) and the Grafana monitoring bundle.
 
 > [!CAUTION]
 > **The hub commands and setup instructions below are historical and non-actionable.** The `hub/` package has been removed from this codebase. The commands shown here (`hub install`, `hub init`, `hub link`, etc.) no longer exist. They are retained only as a reference for operators who previously ran the hub and may need to understand the old setup.
@@ -230,9 +230,13 @@ The message pool free-list is auto-sized to RAM/32 at startup, capped at 256 MiB
 | Source | Location | Persists restarts? |
 |--------|----------|-------------------|
 | Health logs | `/dev/shm/urnetwork.log` | Survives process restarts, not host reboots (RAM-backed tmpfs) |
-| Important events | `/dev/shm/urnetwork-important.log` | Survives process restarts, not host reboots (RAM-backed tmpfs) |
+| Important events | `~/.urnetwork/important.log` (`urnet-tools logs -i`) | Yes: on disk, 10MB plus one rotated `.1`. A box with no usable state dir falls back to `/dev/shm/urnetwork-important.log` (RAM, not host reboots) |
+| Governor events | `~/.urnetwork/enforcement.jsonl` | Yes: one JSON line per release, hold, cut or cap (5MB plus `.1`; at most 20 lines a minute per kind, the rest only counted). Per-day counts live in `enforcement-daily.json` (120 days) and are exposed as `urnet_enforcement_events_total` and `urnet_enforcement_events{window}` on `/metrics` |
 | Critical events | `~/.urnetwork/events.log` | Yes (1MB capped, auto-rotated) |
 | System journal | `journalctl -u urnetwork` | Yes |
+
+> [!NOTE]
+> **Docker and OpenRC.** The state dir is the service user's `~/.urnetwork`: `/root/.urnetwork` in the Docker image (declared a `VOLUME`; mount a named volume or bind mount there, e.g. `-v urnetwork_config:/root/.urnetwork`, or the logs are lost when the container is removed) and `<service user home>/.urnetwork` under OpenRC. Under OpenRC, `urnet-tools logs -i` looks in the service user's home, not the invoking user's.
 
 ### Log levels
 

@@ -76,8 +76,6 @@ func TestRetryBudget_RefusalsAreNotCharged(t *testing.T) {
 // to 16 times, so a node sent many times what it delivered. With the budget the
 // resends are bounded by what was first sent plus a small floor.
 func TestSendSequence_ResendsToANonAckingPeerAreBudgeted(t *testing.T) {
-	// these tests exercise refusal, which only enforce does (shadow is the default on this line)
-	defer setGovernModeForTest(governEnforce)()
 	clientSettings := DefaultClientSettings()
 	clientSettings.EncryptionSettings.Mode = EncryptionModeOff
 	clientSettings.SendBufferSettings.MinResendInterval = 2 * time.Millisecond
@@ -127,7 +125,15 @@ func TestSendSequence_ResendsToANonAckingPeerAreBudgeted(t *testing.T) {
 	transferResendBudget.reset(20_000)
 	before := TransferSendStatsNow()
 
-	go HandleError(func() { seq.Run() })
+	done := make(chan struct{})
+	go HandleError(func() { defer close(done); seq.Run() })
+	// stop the resend loop before this test ends: the tests that follow swap the
+	// shared budget's clock in and out, and a goroutine still inside
+	// retryAllowed would race those writes
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 	time.Sleep(600 * time.Millisecond)
 
 	after := TransferSendStatsNow()
@@ -176,8 +182,6 @@ func TestSendSequence_ResendBudgetIsOnlyEnforcedInEnforceMode(t *testing.T) {
 // every deferral halved the flight window and forgot the flight for a send that
 // never happened.
 func TestSendSequence_DeferredResendHasNoFlightSideEffects(t *testing.T) {
-	// these tests exercise refusal, which only enforce does (shadow is the default on this line)
-	defer setGovernModeForTest(governEnforce)()
 	clientSettings := DefaultClientSettings()
 	clientSettings.EncryptionSettings.Mode = EncryptionModeOff
 	clientSettings.SendBufferSettings.MinResendInterval = 2 * time.Millisecond
@@ -240,8 +244,6 @@ func TestSendSequence_DeferredResendHasNoFlightSideEffects(t *testing.T) {
 // says: the first resend is free, and the frame at the head of the sequence, the
 // one every later frame waits behind, gets a head start of further free resends.
 func TestSendSequence_FirstResendIsFreeAndTheHeadGetsAHeadStart(t *testing.T) {
-	// these tests exercise refusal, which only enforce does (shadow is the default on this line)
-	defer setGovernModeForTest(governEnforce)()
 	clientSettings := DefaultClientSettings()
 	clientSettings.EncryptionSettings.Mode = EncryptionModeOff
 	clientSettings.SendBufferSettings.MinResendInterval = 2 * time.Millisecond
@@ -456,11 +458,15 @@ func TestSendSequence_FailedResendWriteRefundsTheBudget(t *testing.T) {
 		seq.resendQueue.Add(item)
 	}
 	before := TransferSendStatsNow()
-	go HandleError(func() { seq.Run() })
+	done := make(chan struct{})
+	go HandleError(func() { defer close(done); seq.Run() })
 	time.Sleep(400 * time.Millisecond)
 	// stop the loop and let any write still in flight fail and refund
 	cancel()
 	time.Sleep(150 * time.Millisecond)
+	// the loop has stopped: it must not read the budget while this test's
+	// deferred cleanup restores the clock it swapped
+	<-done
 
 	attempts := TransferSendStatsNow().ResendFrames - before.ResendFrames
 	if attempts == 0 {

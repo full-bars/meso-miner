@@ -26,10 +26,11 @@ import (
 )
 
 var (
-	dropErrLogThrottle   = newLogThrottle(time.Minute)
-	pingLogThrottle      = newLogThrottle(5 * time.Minute)
-	pingErrLogThrottle   = newLogThrottle(5 * time.Minute)
-	auditSendErrThrottle = newLogThrottle(time.Minute)
+	dropErrLogThrottle         = newLogThrottle(time.Minute)
+	pingLogThrottle            = newLogThrottle(5 * time.Minute)
+	pingErrLogThrottle         = newLogThrottle(5 * time.Minute)
+	auditSendErrThrottle       = newLogThrottle(time.Minute)
+	contractExpiredLogThrottle = newLogThrottle(time.Minute)
 )
 
 /*
@@ -444,6 +445,15 @@ type ClientSettings struct {
 	// across process lifetimes.
 	ClientKeySeed []byte
 
+	// Keep the identity key local: `ClientKeyManager` sends no `ClientKey`
+	// control, so the platform holds no registration and `/key/<client_id>`
+	// has no key for this client. Only for a client whose key nothing reads.
+	// A reader outranks it: with the per-peer session layer on (encryption
+	// mode other than off), peers verify the cert signature and identity
+	// proof against the published key, so construction logs an error and
+	// publishes anyway. The zero value publishes.
+	SkipClientKeyPublication bool
+
 	ProtocolVersion int
 
 	DefaultTransferOpts TransferOptions
@@ -471,8 +481,13 @@ type ClientSettings struct {
 // their framer caps (and matching receive-side limits):
 //
 //	settings.FramerSettings.MaxMessageLen = max(yourValue, int(client.MinimumMessageLenLimit()))
+//
+// fork: 16 KiB, as upstream. The per-peer TLS handshake flights (X25519MLKEM768,
+// mTLS) are 4.9 KB in the lab and a production capture reached 9,124 bytes; at the
+// fork's old 4 KiB value the native identity's sessions ended with "websocket:
+// read limit exceeded" within seconds of connecting.
 func (self *ClientSettings) MinimumMessageLenLimit() ByteCount {
-	return ByteCount(4 * 1024)
+	return ByteCount(16 * 1024)
 }
 
 // note all callbacks are wrapped to check for nil and recover from errors
@@ -1738,6 +1753,17 @@ type SendBufferSettings struct {
 
 	beforeResendCapacityWaitForTest func(sendSequenceId)
 
+	// SendSequenceLoopStartedForTest, when set, runs once just before a send
+	// sequence's main loop enters its first iteration: a test that cancels a
+	// bare sequence waits for it, so the cancel cannot land in the start-up
+	// path and record the exit under another reason. Nil in production.
+	SendSequenceLoopStartedForTest func()
+
+	// SendSequenceExitRecorderForTest, when set, observes every send-sequence
+	// exit at record time, with the sequence the record is for. Nil in
+	// production.
+	SendSequenceExitRecorderForTest func(seq *SendSequence, reason int)
+
 	SequenceBufferSize int
 	AckBufferSize      int
 
@@ -2775,6 +2801,13 @@ func resendBackoff(scaledRtt time.Duration, sendCount int, maxResendInterval tim
 }
 
 func (self *SendSequence) Run() {
+	exitReason := sendExitClosed
+	defer func() {
+		if self.sendBufferSettings.SendSequenceExitRecorderForTest != nil {
+			self.sendBufferSettings.SendSequenceExitRecorderForTest(self, exitReason)
+		}
+		recordSendSequenceExit(exitReason)
+	}()
 	defer func() {
 		if r := recover(); r != nil {
 			self.log.Errorf("[s]%s->%s...%s s(%s) abnormal exit =  %s\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId, r)
@@ -2819,6 +2852,7 @@ func (self *SendSequence) Run() {
 			safeAck(item.ackCallback, errors.New("Send sequence closed."))
 			item.messagePoolReturn()
 		}
+		transferMoreCounters.retainedBytes.Add(-int64(self.retainedByteCount))
 		self.retainedByteCount = 0
 
 		// close contract — after the drain above so unack()'s correction to
@@ -2897,6 +2931,14 @@ func (self *SendSequence) Run() {
 	idleTimer := time.NewTimer(0)
 	defer idleTimer.Stop()
 
+	// sendSequenceLoopStartedForTest, when set, runs once here, just before the
+	// main loop's first iteration: a test that cancels a bare sequence must wait
+	// for the loop to be entered, or the cancel lands in the start-up path and
+	// the exit is recorded under another reason. Nil in production.
+	if self.sendBufferSettings.SendSequenceLoopStartedForTest != nil {
+		self.sendBufferSettings.SendSequenceLoopStartedForTest()
+	}
+
 	for {
 		// apply the acks
 		ackSnapshot := ackWindow.Snapshot(true)
@@ -2949,6 +2991,7 @@ func (self *SendSequence) Run() {
 				itemAckTimeout := item.sendTime.Add(self.sendBufferSettings.AckTimeout).Sub(sendTime)
 				if itemAckTimeout <= 0 && !item.retainAfterAckTimeout {
 					self.log.V(1).Infof("[s]%s->%s...%s s(%s) exit ack timeout (%s)\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId, self.sendBufferSettings.AckTimeout)
+					exitReason = sendExitAckTimeout
 					return
 				}
 				if !item.retainAfterAckTimeout && itemAckTimeout < timeout {
@@ -2979,6 +3022,7 @@ func (self *SendSequence) Run() {
 						// retained-byte budget, contract unack, error callback,
 						// and pool-return — all in one idempotent call.
 						self.dropItem(item, err)
+						exitReason = sendExitHeadError
 						return
 					}
 					// setHead succeeded — now safe to remove from resendQueue.
@@ -3079,8 +3123,8 @@ func (self *SendSequence) Run() {
 					refundRetry(resendDebit)
 				}
 				if disposition.transportType != "" || disposition.unreliable || disposition.reliable {
-					self.noteYieldSend(len(resendBytes))
 					self.observeCarrierWrite(item, disposition)
+					self.noteYieldSend(len(resendBytes))
 				}
 
 				recordTransferResend(len(resendBytes), item.sendCount+1)
@@ -3182,6 +3226,7 @@ func (self *SendSequence) Run() {
 			idleTimer.Reset(timeout)
 			select {
 			case <-self.ctx.Done():
+				exitReason = sendExitCancelled
 				return
 			case <-ackSnapshot.ackNotify:
 			case <-idleTimer.C:
@@ -3199,6 +3244,7 @@ func (self *SendSequence) Run() {
 					if done {
 						// close the sequence
 						self.log.V(2).Infof("[s]%s->%s...%s s(%s) exit idle timeout\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+						exitReason = sendExitIdle
 						return
 					}
 				}
@@ -3207,6 +3253,7 @@ func (self *SendSequence) Run() {
 			idleTimer.Reset(timeout)
 			select {
 			case <-self.ctx.Done():
+				exitReason = sendExitCancelled
 				return
 			case <-ackSnapshot.ackNotify:
 			case sendPack, ok := <-self.packs:
@@ -3224,6 +3271,7 @@ func (self *SendSequence) Run() {
 					self.log.Errorf("[s]%s->%s...%s s(%s) exit could not create contract.\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
 					safeAck(sendPack.AckCallback, errors.New("No contract"))
 					MessagePoolReturn(sendPack.Frame.MessageBytes)
+					exitReason = sendExitNoContract
 					return
 				}
 			case <-idleTimer.C:
@@ -3241,6 +3289,7 @@ func (self *SendSequence) Run() {
 					if done {
 						// close the sequence
 						self.log.V(2).Infof("[s]%s->%s...%s s(%s) exit idle timeout\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId)
+						exitReason = sendExitIdle
 						return
 					}
 				}
@@ -3312,6 +3361,14 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 			}
 
 			if _, ok := self.openSendContracts[nextSendContract.contractId]; ok {
+				return false
+			}
+
+			if nextSendContract.expired() {
+				if v := self.log.V(1); v.Enabled() {
+					v.Infof("[s]%s->%s...%s s(%s) taken contract already expired %s\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId, nextSendContract.contractId)
+				}
+				self.client.ContractManager().CloseContract(nextSendContract.contractId, 0, 0)
 				return false
 			}
 
@@ -3413,7 +3470,11 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 
 		if self.sendContract != nil {
 			// there should be a queued up contract
-			if traceNextContract(min(self.sendBufferSettings.CreateContractTimeout, retryInterval())) {
+			initialWait := min(self.sendBufferSettings.CreateContractTimeout, retryInterval())
+			if self.sendContract.expired() {
+				initialWait = 0
+			}
+			if traceNextContract(initialWait) {
 				return true
 			}
 		}
@@ -3779,6 +3840,7 @@ func (self *SendSequence) sendWithSetContract(
 			} else {
 				item.retainedCharge = retainCharge
 				self.retainedByteCount += retainCharge
+				transferMoreCounters.retainedBytes.Add(int64(retainCharge))
 			}
 		}
 		self.sendItems = append(self.sendItems, item)
@@ -5091,25 +5153,33 @@ func (self *ReceiveSequence) Run() {
 
 		writeAck := func(sendAck *sequenceAck) {
 			path := self.source.Reverse().AddSource(self.client.ClientId())
+			// every Ack states the receive hold capacity, starting with the
+			// first: the platform's capability probe classifies a provider as
+			// having resizable windows from the first Ack it sees
+			receiveWindow := self.receiveWindowAdvertisement()
 
 			var transferFrameBytes []byte
 			if 2 <= self.receiveBufferSettings.ProtocolVersion {
 				// hand-rolled marshal of the hot Ack TransferFrame; wire-identical
 				// to the proto structs in the legacy branch (see frame_protobuf_test.go).
 				saf := sendAckFrame{
-					path:       path,
-					messageId:  sendAck.messageId,
-					sequenceId: self.sequenceId,
-					selective:  sendAck.selective,
-					tag:        sendAck.tag,
+					path:                   path,
+					messageId:              sendAck.messageId,
+					sequenceId:             self.sequenceId,
+					selective:              sendAck.selective,
+					tag:                    sendAck.tag,
+					receiveWindowByteCount: uint64(receiveWindow),
+					receiveWindowSet:       true,
 				}
 				transferFrameBytes = marshalSendAckTransferFrame(&saf)
 			} else {
+				receiveWindowByteCount := uint64(receiveWindow)
 				ack := &protocol.Ack{
-					MessageId:  sendAck.messageId.Bytes(),
-					SequenceId: self.sequenceId.Bytes(),
-					Selective:  sendAck.selective,
-					Tag:        sendAck.tag,
+					MessageId:              sendAck.messageId.Bytes(),
+					SequenceId:             self.sequenceId.Bytes(),
+					Selective:              sendAck.selective,
+					Tag:                    sendAck.tag,
+					ReceiveWindowByteCount: &receiveWindowByteCount,
 				}
 				ackBytes, _ := ProtoMarshal(ack)
 				defer MessagePoolReturn(ackBytes)
@@ -5166,6 +5236,14 @@ func (self *ReceiveSequence) Run() {
 					MessagePoolShareReadOnly(wrapped),
 					self.receiveBufferSettings.WriteTimeout,
 				)
+			}
+			ackWrite := c
+			c = func() error {
+				err := ackWrite()
+				if err == nil {
+					recordTransferAckSent(len(transferFrameBytes))
+				}
+				return err
 			}
 			if self.log.V(2).Enabled() {
 				TraceWithReturn(
@@ -5358,7 +5436,7 @@ func (self *ReceiveSequence) Run() {
 				if self.nextSequenceNumber == item.sequenceNumber {
 					// this item is the head of sequence
 					if err := self.registerContracts(item); err != nil {
-						self.log.Errorf("[r]%s<-%s s(%s) exit could not register contracts = %s\n", self.client.ClientTag(), self.source.SourceId, self.source.StreamId, err)
+						self.logRegisterContractsError("exit", err)
 						return
 					}
 					if self.updateContract(item) {
@@ -5540,7 +5618,7 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 			self.nextSequenceNumber = self.nextSequenceNumber + 1
 
 			if err := self.registerContracts(item); err != nil {
-				self.log.Errorf("[r]%s<-%s s(%s) ack could not register contracts = %s\n", self.client.ClientTag(), self.source.SourceId, self.source.StreamId, err)
+				self.logRegisterContractsError("ack", err)
 				return false, err
 			}
 			if self.updateContract(item) {
@@ -5635,7 +5713,30 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 // is sent as it crosses. One second-order cost: a tentative item gives the
 // sender no proving acknowledgement, so a gap just below the boundary
 // recovers on the paced resend rather than on gap recovery.
+// receiveWindowAdvertisement is the out-of-order hold capacity this receiver
+// advertises on its Acks (`Ack.receive_window_byte_count`): the capacity
+// measured from the delivered point, not the free space. It is the same
+// capacity that `commitHeldPrefix` and the receive queue enforce, so a sender
+// that keeps within it cannot force an eviction. Never negative; zero would
+// tell a sender the receiver can hold nothing.
+func (self *ReceiveSequence) receiveWindowAdvertisement() ByteCount {
+	window := self.receiveBufferSettings.ReceiveQueueMaxByteCount
+	if budget := self.receiveBufferSettings.ReceiveQueueBudget; budget != nil {
+		window = min(window, budget.TotalByteCount())
+	}
+	return max(0, window)
+}
+
 func (self *ReceiveSequence) commitHeldPrefix() {
+	// The queue owns these items; the reusable slice only borrows pointers
+	// during this scan. Clearing the slots keeps delivered items and their
+	// frame pointers from staying reachable through the scratch capacity.
+	// This only nils the borrowed pointers and never returns a pooled buffer
+	// (ported from upstream c46b46f6f).
+	defer func() {
+		clear(self.heldScratch)
+		self.heldScratch = self.heldScratch[:0]
+	}()
 	capacity := self.receiveBufferSettings.ReceiveQueueMaxByteCount
 	frameByteCount := max(self.maxHeldByteCount, 1)
 
@@ -5748,7 +5849,7 @@ func (self *ReceiveSequence) receiveNack(receivePack *ReceivePack) (bool, error)
 	}
 
 	if err := self.registerContracts(item); err != nil {
-		self.log.Errorf("[r]%s<-%s s(%s) nack could not register contracts = %s\n", self.client.ClientTag(), self.source.SourceId, self.source.StreamId, err)
+		self.logRegisterContractsError("nack", err)
 		return false, err
 	}
 
@@ -5878,6 +5979,20 @@ func (self *ReceiveSequence) deliverEncryptedControlFrames(frames []*protocol.Fr
 	return passthrough
 }
 
+func (self *ReceiveSequence) logRegisterContractsError(contextStr string, err error) {
+	if errors.Is(err, errContractExpired) {
+		if ok, suppressed := contractExpiredLogThrottle.Allow(time.Now()); ok {
+			if suppressed > 0 {
+				self.log.Infof("[r]%s<-%s s(%s) %s could not register contracts = %s (%d suppressed)\n", self.client.ClientTag(), self.source.SourceId, self.source.StreamId, contextStr, err, suppressed)
+			} else {
+				self.log.Infof("[r]%s<-%s s(%s) %s could not register contracts = %s\n", self.client.ClientTag(), self.source.SourceId, self.source.StreamId, contextStr, err)
+			}
+		}
+	} else {
+		self.log.Errorf("[r]%s<-%s s(%s) %s could not register contracts = %s\n", self.client.ClientTag(), self.source.SourceId, self.source.StreamId, contextStr, err)
+	}
+}
+
 func (self *ReceiveSequence) registerContracts(item *receiveItem) error {
 	if item.contractFrame == nil {
 		return nil
@@ -5924,7 +6039,19 @@ func (self *ReceiveSequence) registerContracts(item *receiveItem) error {
 		return err
 	}
 
+	if nextReceiveContract.expired() {
+		if nextReceiveContract.expiredClockSkewSuspect() {
+			if ok, _ := contractClockSkewLogThrottle.Allow(time.Now()); ok {
+				self.log.Errorf("[r]%s<-%s s(%s) contract %s arrived long past its signed deadline (%s); if this repeats check the system clock\n", self.client.ClientTag(), self.source.SourceId, self.source.StreamId, nextReceiveContract.contractId, nextReceiveContract.expiredError())
+			}
+		}
+		return nextReceiveContract.expiredError()
+	}
+
 	if err := self.setContract(nextReceiveContract); err != nil {
+		if errors.Is(err, errContractExpired) {
+			return err
+		}
 		// the next contract has already been used
 		// bad contract
 		// close sequence
@@ -5938,12 +6065,21 @@ func (self *ReceiveSequence) registerContracts(item *receiveItem) error {
 }
 
 func (self *ReceiveSequence) setContract(nextReceiveContract *sequenceContract) error {
+	if nextReceiveContract.expired() {
+		return errContractExpired
+	}
 	// contract already set
 	if self.receiveContract != nil && self.receiveContract.contractId == nextReceiveContract.contractId {
+		if self.receiveContract.expired() {
+			return errContractExpired
+		}
 		return nil
 	}
 
 	if receiveContract, ok := self.openReceiveContracts[nextReceiveContract.contractId]; ok {
+		if receiveContract.expired() {
+			return errContractExpired
+		}
 		// switch to the current contract
 		self.receiveContract = receiveContract
 		return nil
@@ -5985,12 +6121,22 @@ func (self *ReceiveSequence) updateContract(item *receiveItem) bool {
 	// always use a contract if present
 	// the sender may send contracts even if `receiveNoContract` is set locally
 	if item.contractId != nil {
-		if receiveContract, ok := self.openReceiveContracts[*item.contractId]; ok && receiveContract.update(item.messageByteCount) {
+		if receiveContract, ok := self.openReceiveContracts[*item.contractId]; ok {
+			if receiveContract.expired() {
+				return false
+			}
+			if receiveContract.update(item.messageByteCount) {
+				return true
+			}
+		}
+	} else if self.receiveContract != nil {
+		if self.receiveContract.expired() {
+			return false
+		}
+		if self.receiveContract.update(item.messageByteCount) {
+			item.contractId = &self.receiveContract.contractId
 			return true
 		}
-	} else if self.receiveContract != nil && self.receiveContract.update(item.messageByteCount) {
-		item.contractId = &self.receiveContract.contractId
-		return true
 	}
 	// `receiveNoContract` is a mutual configuration
 	// both sides must configure themselves to require no contract from each other
@@ -6051,14 +6197,16 @@ type receiveItem struct {
 	transferItem
 
 	contractId         *Id
-	head               bool
 	receiveTime        time.Time
 	frames             []*protocol.Frame
 	contractFrame      *protocol.Frame
 	receiveCallback    ReceiveFunction
-	ack                bool
 	tag                *protocol.Tag
 	transferFrameBytes []byte
+	// Flags are kept together at the end to avoid per-field padding
+	// (ported from upstream 54c66fa70).
+	head bool
+	ack  bool
 	// unwrapped is true when the originating TransferFrame arrived on
 	// the wire as plaintext (no outer encrypted wrap). Propagated into
 	// the sequenceAck so the ack format mirrors the incoming pack.
@@ -6355,6 +6503,7 @@ type sequenceContract struct {
 	transferByteCount          ByteCount
 	effectiveTransferByteCount ByteCount
 	provideMode                protocol.ProvideMode
+	expirationTimeUnixMilli    *int64
 
 	minUpdateByteCount ByteCount
 
@@ -6438,7 +6587,7 @@ func newSequenceContract(log Logger, tag string, contract *protocol.Contract, mi
 		destinationClientKeySignedTlsCertificate = contract.DestinationClientKeySignedTlsCertificate
 	}
 
-	return &sequenceContract{
+	c := &sequenceContract{
 		log:                                      log,
 		localId:                                  NewId(),
 		tag:                                      tag,
@@ -6454,10 +6603,18 @@ func newSequenceContract(log Logger, tag string, contract *protocol.Contract, mi
 		provideTlsCertificate:                    provideTlsCertificate,
 		destinationClientPublicKey:               destinationClientPublicKey,
 		destinationClientKeySignedTlsCertificate: destinationClientKeySignedTlsCertificate,
-	}, nil
+	}
+	if v := storedContract.ExpirationTimeUnixMilli; v != nil {
+		d := *v
+		c.expirationTimeUnixMilli = &d
+	}
+	return c, nil
 }
 
 func (self *sequenceContract) update(byteCount ByteCount) bool {
+	if self.expired() {
+		return false
+	}
 	effectiveByteCount := max(self.minUpdateByteCount, byteCount)
 
 	if self.effectiveTransferByteCount < self.ackedByteCount+self.unackedByteCount+effectiveByteCount {
@@ -6974,25 +7131,11 @@ func MessageByteCount(frames []*protocol.Frame) ByteCount {
 // 	return messages
 // }
 
-// releaseRetained gives back exactly what admission charged for this item, once.
-// An item that was never charged through admission (built directly) releases its
-// current queue size, the historical behaviour.
-func (self *SendSequence) releaseRetained(item *sendItem) {
-	if item.retainedReleased {
-		return
-	}
-	item.retainedReleased = true
-	charge := item.retainedCharge
-	if charge == 0 {
-		charge = item.MessageByteCount()
-	}
-	item.retainedCharge = 0
-	self.retainedByteCount -= charge
-}
-
 // noteYieldSend records a frame written to this sequence's destination.
 func (self *SendSequence) noteYieldSend(byteCount int) {
-	if self.sendBuffer == nil || self.destination.IsControlDestination() {
+	control := self.destination.IsControlDestination()
+	recordTransferDestinationSend(control, byteCount)
+	if self.sendBuffer == nil || control {
 		return
 	}
 	self.sendBuffer.yieldFor(self.destination.DestinationId).noteSend(byteCount, time.Now().UnixNano())
@@ -7012,4 +7155,21 @@ func (self *SendSequence) noteYieldLive() {
 		return
 	}
 	self.sendBuffer.yieldFor(self.destination.DestinationId).noteLive(time.Now().UnixNano())
+}
+
+// releaseRetained gives back exactly what admission charged for this item, once.
+// An item that was never charged through admission (built directly) releases its
+// current queue size, the historical behaviour.
+func (self *SendSequence) releaseRetained(item *sendItem) {
+	if item.retainedReleased {
+		return
+	}
+	item.retainedReleased = true
+	charge := item.retainedCharge
+	if charge == 0 {
+		charge = item.MessageByteCount()
+	}
+	item.retainedCharge = 0
+	self.retainedByteCount -= charge
+	transferMoreCounters.retainedBytes.Add(-int64(charge))
 }

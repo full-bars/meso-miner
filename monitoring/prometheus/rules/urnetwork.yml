@@ -1,6 +1,8 @@
 # Alert rules for URnetwork providers. Loaded by prometheus.yml (rule_files).
 #
-# Two rules are enabled: UrnetworkNodeDown and UrnetworkRestartLoop.
+# Enabled rules: UrnetworkNodeDown, UrnetworkRestartLoop, and the backend outage
+# protection rules (UrnetworkBackendDegraded, UrnetworkFleetBackendDegraded,
+# UrnetworkReconnectBudgetHeld, UrnetworkResendAmplification).
 # The rules under "Optional rules" further down are commented out. Read the
 # note above each one, adjust the threshold to your fleet, then remove the
 # leading "# " to enable it. See docs/Monitoring.md.
@@ -30,7 +32,7 @@ groups:
             This does NOT tell a stopped provider apart from a provider with
             metrics switched off, a blocked port or a Tailscale outage, and it
             does not fire for a node that was removed from targets/providers.yml
-            is absent from the scrape (a configured target with no successful scrape still fires). It says nothing about whether a reachable node is
+            or never scraped. It says nothing about whether a reachable node is
             earning.
 
       # More than 3 restarts of one node within an hour.
@@ -56,6 +58,93 @@ groups:
             node restarted. Look at urnet_restart_reason for the reason, and
             at the node's logs for the cause.
 
+      # The provider's backend outage protection reads the platform as failing.
+      #
+      # urnet_govern_degraded is 1 while the last 60 seconds of platform connect
+      # attempts on this host look like a failing backend (judged against what is
+      # normal for this host, see docs/Configuration.md, "Backend outage
+      # protection"). One host can read it wrongly if its own proxies are bad,
+      # which is why UrnetworkFleetBackendDegraded asks for several.
+      - alert: UrnetworkBackendDegraded
+        expr: urnet_govern_degraded{job="urnetwork"} == 1
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "URnetwork node {{ $labels.instance }} reads the backend as degraded"
+          description: >-
+            {{ $labels.instance }} has judged the platform backend degraded for
+            3 minutes. While it does, reconnects run under a shared attempt
+            budget and automatic proxy evictions are held off. This does NOT
+            prove the backend is down: a node with a poor proxy list can read it
+            on its own. Check the [govern] lines in its log for the failure
+            classes, and UrnetworkFleetBackendDegraded to see whether other nodes
+            agree.
+
+      # Several nodes agree that the backend is degraded.
+      #
+      # A fleet-wide signal is much stronger than one node's: independent
+      # proxy lists rarely fail together. The threshold of 3 nodes is a
+      # starting point, set it to a fraction of your fleet.
+      - alert: UrnetworkFleetBackendDegraded
+        expr: count(urnet_govern_degraded{job="urnetwork"} == 1) >= 3
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $value }} URnetwork nodes read the backend as degraded"
+          description: >-
+            At least 3 nodes have judged the platform backend degraded for
+            3 minutes. This is the signal of a backend episode like the one that
+            made providers flood their pipes with reconnect traffic. It does NOT
+            say what is wrong on the backend. Check whether urnet_govern_budget_rate
+            has fallen on those nodes and what the [govern] lines report.
+
+      # The attempt budget is holding reconnects back.
+      #
+      # 200 is open. Below it the budget is throttling platform connects, which
+      # is the protection working. This one is about how LONG: a budget held for
+      # half an hour means either a long outage or a node that is not opening back
+      # up, and both need a person to look.
+      - alert: UrnetworkReconnectBudgetHeld
+        expr: urnet_govern_budget_rate{job="urnetwork"} < 200
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "URnetwork node {{ $labels.instance }} has held its reconnect budget below 200/s for 30 minutes"
+          description: >-
+            The connect attempt budget on {{ $labels.instance }} has been
+            throttled for 30 minutes. This does NOT say whether the backend is
+            still failing or the node simply has not reopened: compare with
+            urnet_govern_degraded and look at the [govern] budget lines.
+
+      # Resends are a large part of what a node sends.
+      #
+      # urnet_transfer_send_bytes_total splits what the transfer layer writes into
+      # first sends and resends. A node whose far ends are slow resends the same
+      # frames again and again: on one host 90% of everything transmitted was
+      # resends while the billable payload stayed flat. The resend retry budget
+      # bounds this; this rule shows when it is binding. The 100 KB/s floor keeps
+      # an idle node, where a few frames are always resent, from firing.
+      - alert: UrnetworkResendAmplification
+        expr: >-
+          rate(urnet_transfer_send_bytes_total{job="urnetwork",kind="resend"}[10m])
+            > ignoring (kind) 2 * rate(urnet_transfer_send_bytes_total{job="urnetwork",kind="first"}[10m])
+          and on (instance, job)
+          rate(urnet_transfer_send_bytes_total{job="urnetwork",kind="resend"}[10m]) > 102400
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "URnetwork node {{ $labels.instance }} sends more than twice as many resend bytes as first-send bytes"
+          description: >-
+            For 15 minutes more than 100 KB/s of what {{ $labels.instance }}
+            transmits has been resends, and more than twice its first sends. This
+            does NOT show which peer is not acknowledging, and a node with little
+            traffic can briefly look amplified. See urnet_transfer_resend_deferred_total
+            for what the retry budget is holding back.
+
       # ---------------------------------------------------------------------
       # Optional rules. Commented out on purpose: they need thresholds that fit
       # your fleet, and a few use metrics only new providers export
@@ -63,6 +152,24 @@ groups:
       # that do not export a metric never match its rule, so a mixed fleet
       # is safe. Remove the leading "# " of a block to enable it.
       # ---------------------------------------------------------------------
+
+      # Optional: platform speed tests are costing a lot of bandwidth.
+      #
+      # Every connect is speed-tested by the platform (about 2 MiB each way on the
+      # proxy, none of it billable), so a mass reconnect is a bandwidth event.
+      # This fires when a node echoes more than 20 GB in 15 minutes, far above a
+      # restart of a large fleet. Raise it for a bigger fleet.
+      #
+      # - alert: UrnetworkSpeedTestStorm
+      #   expr: increase(urnet_speedtest_echo_bytes_total{job="urnetwork"}[15m]) > 20e9
+      #   labels:
+      #     severity: warning
+      #   annotations:
+      #     summary: "URnetwork node {{ $labels.instance }} echoed more than 20 GB of speed tests in 15 minutes"
+      #     description: >-
+      #       The platform speed-tested {{ $labels.instance }} heavily. This
+      #       does NOT mean anything is leaking on the node: speed tests are the
+      #       platform's, and the cost scales with connects.
 
       # Optional: a node running a different version from most of the fleet
       # for more than 7 days.

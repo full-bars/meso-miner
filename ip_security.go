@@ -1,6 +1,7 @@
 package connect
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"strconv"
@@ -39,6 +40,20 @@ type SecurityPolicy interface {
 	Inspect(provideMode protocol.ProvideMode, ipPath *IpPath, payload []byte) (SecurityPolicyResult, error)
 }
 
+// dmcaIngressToucher is implemented by the egress security policy: the relay's
+// ingress path reports received packets here so the payload detector keeps each
+// flow's idle clock fresh in both directions. Policies that do not implement it
+// simply never refresh anything.
+type dmcaIngressToucher interface {
+	touchIngress(ipPath *IpPath)
+}
+
+// dmcaFlowToucher is implemented by the egress security policy for callers that
+// hold the flow's own (client to server) path, as the provider's return path does.
+type dmcaFlowToucher interface {
+	touchFlow(ipPath *IpPath)
+}
+
 type egressSecurityPolicy struct {
 	stats *SecurityPolicyStatsCollector
 	cfaa  *cfaaDetector
@@ -46,11 +61,16 @@ type egressSecurityPolicy struct {
 }
 
 func DefaultEgressSecurityPolicy() SecurityPolicy {
-	return DefaultEgressSecurityPolicyWithStats(DefaultSecurityPolicyStatsCollector())
+	// no context: the idle-flow scan stays off
+	return DefaultEgressSecurityPolicyWithStats(nil, DefaultSecurityPolicyStatsCollector())
 }
 
-func DefaultEgressSecurityPolicyWithStats(stats *SecurityPolicyStatsCollector) SecurityPolicy {
+// DefaultEgressSecurityPolicyWithStats matches the EgressSecurityPolicyGenerator
+// shape: the context ties the detector's idle-flow scan to the policy's owner,
+// and a nil context leaves the scan off.
+func DefaultEgressSecurityPolicyWithStats(ctx context.Context, stats *SecurityPolicyStatsCollector) SecurityPolicy {
 	return NewEgressSecurityPolicy(
+		ctx,
 		DefaultCfaaSecurityPolicySettings(),
 		DefaultDmcaSecurityPolicySettings(),
 		DefaultWebStandardSettings(),
@@ -58,16 +78,27 @@ func DefaultEgressSecurityPolicyWithStats(stats *SecurityPolicyStatsCollector) S
 	)
 }
 
-func NewEgressSecurityPolicy(cfaaSettings *CfaaSecurityPolicySettings, dmcaSettings *DmcaSecurityPolicySettings, webSettings *WebStandardSettings, stats *SecurityPolicyStatsCollector) SecurityPolicy {
+func NewEgressSecurityPolicy(ctx context.Context, cfaaSettings *CfaaSecurityPolicySettings, dmcaSettings *DmcaSecurityPolicySettings, webSettings *WebStandardSettings, stats *SecurityPolicyStatsCollector) SecurityPolicy {
 	return &egressSecurityPolicy{
 		stats: stats,
 		cfaa:  newCfaaDetector(cfaaSettings),
-		dmca:  newDmcaDetector(dmcaSettings, newWebStandardDetector(webSettings)),
+		dmca:  newDmcaDetector(ctx, dmcaSettings, newWebStandardDetector(webSettings)),
 	}
 }
 
 func (self *egressSecurityPolicy) Stats() *SecurityPolicyStatsCollector {
 	return self.stats
+}
+
+// touchIngress refreshes the dmca flow clock from a received packet, so a flow
+// whose traffic is (currently) one-directional is not reclaimed as idle.
+func (self *egressSecurityPolicy) touchIngress(ipPath *IpPath) {
+	self.dmca.touchIngress(ipPath)
+}
+
+// touchFlow is touchIngress for a path in the flow's own orientation.
+func (self *egressSecurityPolicy) touchFlow(ipPath *IpPath) {
+	self.dmca.touchFlow(ipPath)
 }
 
 func (self *egressSecurityPolicy) Inspect(provideMode protocol.ProvideMode, ipPath *IpPath, payload []byte) (SecurityPolicyResult, error) {
@@ -94,14 +125,17 @@ func (self *egressSecurityPolicy) inspect(provideMode protocol.ProvideMode, ipPa
 	case cfaaAllow:
 		return SecurityPolicyResultAllow, nil
 	default:
-		// No static verdict — run stateful payload DPI. Switch on the verdict so
+		// No static verdict: run stateful payload DPI. Switch on the verdict so
 		// the policy reads explicitly: a positive BitTorrent signature is reported;
 		// a flow that looks fully encrypted is dropped UNLESS it matched a
-		// sanctioned web standard (TLS/QUIC/DTLS/STUN) — that web-standard match is
-		// the fallback that rescues an otherwise-ambiguous encrypted flow.
+		// sanctioned web/communication standard (TLS/QUIC/DTLS/STUN/TURN or
+		// RTP/RTCP), or an exact provider-scoped gaming exception; that positive
+		// match is the fallback that rescues an otherwise-ambiguous encrypted flow.
 		// Enforcement of each verdict honors the detector settings (log-only,
 		// drop/report toggles), applied by result().
-		switch v := self.dmca.classify(ipPath, payload); v {
+		v, reason, decidedNow := self.dmca.classifyDetailed(ipPath, payload)
+		recordDpiDecision(ipPath, reason, decidedNow)
+		switch v {
 		case dmcaBittorrent:
 			return self.dmca.result(v), nil
 		case dmcaDropEncrypted:

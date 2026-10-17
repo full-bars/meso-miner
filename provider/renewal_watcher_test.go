@@ -178,6 +178,79 @@ func TestRunProxyJWTWatcherRenewsOn401(t *testing.T) {
 	<-done
 }
 
+func TestRunProxyJWTWatcherRenewsWhenThePlatformRefusesTheCredential(t *testing.T) {
+	setTestHome(t)
+	ts := newRenewalTestServer(t)
+	defer ts.srv.Close()
+
+	clientID := connect.NewId()
+	storePath := t.TempDir() + "/client_jwts.json"
+	store := newClientJWTStore(storePath)
+	// Fresh token expiring in 30h: NOT within the 12h threshold, so only the
+	// 401 fast-path can trigger renewal.
+	fresh := createFakeJWTWithClaims(map[string]interface{}{
+		"client_id": clientID.String(),
+		"exp":       float64(time.Now().Add(30 * time.Hour).Unix()),
+	})
+	if err := store.Put("proxy-refused", clientJWTEntry{
+		ByClientJWT: fresh,
+		ClientID:    clientID.String(),
+		NetworkID:   "net-1",
+		MintedAt:    time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	oldStore := globalClientJWTStore
+	globalClientJWTStore = store
+	defer func() { globalClientJWTStore = oldStore }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// OOB control whose SendControl will get a 401 from the fake server.
+	oob := connect.NewApiOutOfBandControl(ctx, connect.NewClientStrategyWithDefaults(ctx), "dead-jwt", ts.srv.URL)
+
+	renewNow := make(chan struct{}, 1)
+	refused := make(chan struct{}, 1)
+	tick := make(chan time.Time)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runProxyJWTWatcher(ctx, proxyJWTWatcherConfig{
+			IdentityKey:    "proxy-refused",
+			ClientID:       clientID,
+			Description:    "test [beta-test]",
+			ApiURL:         ts.srv.URL,
+			ClientStrategy: connect.NewClientStrategyWithDefaults(ctx),
+			OOB:            oob,
+			RenewNow:       renewNow,
+			Refused:        refused,
+			Tick:           tick,
+			ProxyIndex:     0,
+		})
+	}()
+
+	// A refusal reaches neither the OOB 401 counter nor the transport
+	// auth-failure counter; the token is 30 h from expiry. Only the refusal
+	// signal can trigger this renewal.
+	refused <- struct{}{}
+
+	deadline := time.After(5 * time.Second)
+	for {
+		entry, ok := store.Get("proxy-refused")
+		if ok && entry.ByClientJWT != fresh {
+			break // renewed
+		}
+		select {
+		case <-deadline:
+			t.Fatal("watcher did not renew when the platform refused the credential")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	cancel()
+	<-done
+}
+
 func TestRunProxyJWTWatcherRenewsExpiredAtStartup(t *testing.T) {
 	setTestHome(t)
 	ts := newRenewalTestServer(t)

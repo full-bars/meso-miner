@@ -2,7 +2,13 @@ package connect
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"math/big"
 	"net"
 	"testing"
 	"time"
@@ -19,6 +25,16 @@ var _ quic.OOBCapablePacketConn = (*countedUDPConn)(nil)
 var _ interface {
 	ReadBatch(ms []ipv4.Message, flags int) (int, error)
 } = (*countedUDPConn)(nil)
+
+func listenLoopbackUDP(t *testing.T) *net.UDPConn {
+	t.Helper()
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return conn
+}
 
 // Each read and write method credits the right counter by exactly the bytes it
 // moved, and none of them credits the other direction.
@@ -70,6 +86,31 @@ func TestCountedUDPConnCountsEveryReadAndWritePath(t *testing.T) {
 	}
 	if got := bw.TotalTx.Load(); got != 150 {
 		t.Fatalf("reads changed TotalTx to %d", got)
+	}
+}
+
+func selfSignedTlsConfig(t *testing.T) *tls.Config {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "localhost"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		DNSNames:     []string{"localhost"},
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
+		NextProtos:   []string{"h3count"},
 	}
 }
 

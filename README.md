@@ -9,38 +9,11 @@
 
 A high-performance, high-visibility fork of the **UrNetwork Connect** provider, based on the stable **v3.23** engine. Tuned for professional providers managing large proxy lists, high throughput, and production-grade operations.
 
-## 🆚 What this fork changes vs upstream
-
-| | Upstream | This fork |
-| :--- | :--- | :--- |
-| Control-plane dial visibility | Debug-level glog (silent by default) | INFO — one line per successful backend dial (`[net][s]select`, control-plane not relay traffic) |
-| Contract sizing | Fixed 1 MiB initial, 4-contract ramp to 128 MiB standard | Profile-tuned initial size (256 KiB lowmem/balanced, 1 MiB default) with a faster 3-contract ramp |
-| Proxy startup | All at once | Jittered stagger with live `[pace]` warmup, plus a shared adaptive rate limiter that bounds aggregate auth load on the API |
-| Proxy changes | Restart required | Hot-reload via trigger file, zero downtime, with full added-proxy listing |
-| Dead proxy handling | Retry forever (15 min loop, no ceiling) | 24 h daily retry, 14-day drop (file) or 65 min cleanup (URL), persisted state |
-| Proxy source | Static file only | File and/or live URL feed, with scoped auto-cleanup |
-| Error noise | Log-level throttle (suppresses repeated lines) | Shared auth rate limiter reduces the error source itself — fewer API calls hit the failure path |
-| Proxy health grading | None | A–F reachability grade per proxy with continuous re-probing (`proxy health`, `proxy trim`) |
-| Fleet visibility & accounting | None | Built-in CLI accounting (`usage`, `proxy traffic`), persistent byte splits, and Prometheus metrics (`urnet-tools metrics on`) |
-| Performance profiles | None | Auto / Turbo V4 / Turbo V8 / Eco / Lowmem — memory, window, and GC tuned per profile |
-| Crash diagnostics | Journal-only, logs lost on restart | Shared-memory RAM logs (`shmlog`) + disk-based critical event log, panic hooks |
-| Custom API/connect backend | One-off `--api_url`/`--connect_url` flags only, re-passed on every invocation | `choose_network` persists the URLs to disk; flags still override per-call |
-| Runtime settings | Edit systemd drop-ins by hand, then restart | Live control socket (`~/.urnetwork/provider.sock`); changes apply without a restart and are queued in `pending_overrides.json` when the provider is stopped |
-| Binary upgrade | Stop, swap, start (20–60 s of downtime) | HotSwap handoff to a verified candidate, with automatic rollback: no gap where no provider process is running, though proxy connections still ramp back over about 30 s (requires a `Type=notify` unit, which `urnet-tools update` sets up; see [docs/HotSwap.md](docs/HotSwap.md)) |
-| Node identity on the dashboard | Hostname only | `rename` sets the display label and `show-ip` appends the public IP, both without a restart |
-| Multi-provider boxes | One provider per host, no targeting | One provider per OS user, with `providers` / `providers --all` inventory and cross-user `sudo` self-elevation |
-| Session migration | None | `session save` / `session load` exports identity + proxy state as an encrypted bundle for cross-machine transfer |
-| Subnet 25 telemetry | None | `sn-status` command with STSubnet operations guide, wallet registration, and head-fleet tiering docs |
-| Subnet 25 claims | Network token only | `provider claim` takes an explicit client credential (`--store-client`, `--provider-jwt` or `--legacy-coldkey`), and a failed renewal no longer replaces a client identity |
-| Memory-thrash recovery | None | Swap-thrash watchdog with a supervised exit-75 restart (systemd and containers both restart it; self-heal is the one switch) |
-| Windows operations | Not provided | `urnet-tools` runs natively on Windows: no `tail`, `sudo` or WSL, and its log follower survives rotation |
-
----
-
 ## 🗺 Start Here
 
 | If you want to... | Go here |
 | :--- | :--- |
+| **Run a Bittensor SN25 provider** | [Bittensor Operations](docs/Bittensor-Operations.md) |
 | **Start here — pick your skill level** | [🐣 Beginner](docs/guides/beginner.md) · [🧭 Intermediate](docs/guides/intermediate.md) · [🚀 Advanced](docs/guides/advanced.md) |
 | Install on a Linux host as a user-level service | [Installation Guide](docs/Installation.md) |
 | Run one Docker container | [Docker Deployment](docs/Docker-Deployment.md) |
@@ -52,6 +25,18 @@ A high-performance, high-visibility fork of the **UrNetwork Connect** provider, 
 | Load a proxy file into the provider (per-OS) | [Adding Proxies](docs/Adding-Proxies.md) |
 | Feed the provider a live proxy list URL | [Proxy URL Sources](docs/Proxy-URL-Sources.md) |
 | Import into a Pelican game-server panel | [Pelican Panel](docs/Docker-Deployment.md#-pelican-panel) · [Egg README](pelican/README.md) |
+
+---
+
+## ₿ Bittensor Subnet 25
+
+This build is the Bittensor mainnet release. Everything a provider needs to take part in SN25 is here: the signed network wallet consent that settlement pays, hotkey delegation, claiming by hand or with the claim daemons, fleet registration for head nodes, and multi-operator provide. Nothing here runs unless you start it.
+
+- [Bittensor operations](docs/Bittensor-Operations.md): the guide, from the two miner tiers and wallet consent through claims, the fleet group and the operators.
+- [Bittensor claim daemons](docs/Bittensor-Claim-Daemons.md): automatic epoch claims, config key by key.
+- [Bittensor fleet](docs/Bittensor-Fleet.md): the head-tier lifecycle from one manifest.
+- [Bittensor hotkey delegation](docs/Bittensor-Hotkey-Delegation.md): one coldkey signature pays the miner's network on every operator.
+- [Multi-operator providers](docs/Multi-Operator.md): one provider per operator from one supervisor.
 
 ---
 
@@ -213,6 +198,35 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 
 ---
 
+## 🆚 What this fork changes vs upstream
+
+| | Upstream | This fork |
+| :--- | :--- | :--- |
+| Control-plane dial visibility | Debug-level glog (silent by default) | INFO — one line per successful backend dial (`[net][s]select`, control-plane not relay traffic) |
+| Contract sizing | Fixed 1 MiB initial, 4-contract ramp to 128 MiB standard | Profile-tuned initial size (256 KiB lowmem/balanced, 1 MiB default) with a faster 3-contract ramp |
+| Proxy startup | All at once | Jittered stagger with live `[pace]` warmup, plus a shared adaptive rate limiter that bounds aggregate auth load on the API |
+| Proxy changes | Restart required | Hot-reload via trigger file, zero downtime, with full added-proxy listing |
+| Dead proxy handling | Retry forever (15 min loop, no ceiling) | 24 h daily retry, 14-day drop (file) or 65 min cleanup (URL), persisted state |
+| Proxy source | Static file only | File and/or live URL feed, with scoped auto-cleanup |
+| Error noise | Log-level throttle (suppresses repeated lines) | Shared auth rate limiter reduces the error source itself — fewer API calls hit the failure path |
+| Proxy health grading | None | A–F reachability grade per proxy with continuous re-probing (`proxy health`, `proxy trim`) |
+| Fleet visibility & accounting | None | Built-in CLI accounting (`usage`, `proxy traffic`), persistent byte splits, and Prometheus metrics (`urnet-tools metrics on`) |
+| Performance profiles | None | Auto / Turbo V4 / Turbo V8 / Eco / Lowmem — memory, window, and GC tuned per profile |
+| Crash diagnostics | Journal-only, logs lost on restart | Shared-memory RAM logs (`shmlog`) + disk-based critical event log, panic hooks |
+| Custom API/connect backend | One-off `--api_url`/`--connect_url` flags only, re-passed on every invocation | `choose_network` persists the URLs to disk; flags still override per-call |
+| Runtime settings | Edit systemd drop-ins by hand, then restart | Live control socket (`~/.urnetwork/provider.sock`); changes apply without a restart and are queued in `pending_overrides.json` when the provider is stopped |
+| Binary upgrade | Stop, swap, start (20–60 s of downtime) | HotSwap handoff to a verified candidate, with automatic rollback: no gap where no provider process is running, though proxy connections still ramp back over about 30 s (requires a `Type=notify` unit, which `urnet-tools update` sets up; see [docs/HotSwap.md](docs/HotSwap.md)) |
+| Node identity on the dashboard | Hostname only | `rename` sets the display label and `show-ip` appends the public IP, both without a restart |
+| Multi-provider boxes | One provider per host, no targeting | One provider per OS user, with `providers` / `providers --all` inventory and cross-user `sudo` self-elevation |
+| Session migration | None | `session save` / `session load` exports identity + proxy state as an encrypted bundle for cross-machine transfer |
+| Subnet 25 telemetry | None | `sn-status` command with STSubnet operations guide, wallet registration, and head-fleet tiering docs |
+| Subnet 25 claims | Network token only | `provider claim` takes an explicit client credential (`--store-client`, `--provider-jwt` or `--legacy-coldkey`), and a failed renewal no longer replaces a client identity |
+| Bittensor command families | None | The v33 port adds `provider fleet` (manifest, register, publish, bind, sign, status, revoke), `provider wallet hotkey` (challenge, set, status), `provider claim-daemon` and `provider claim-daemon-v2`, `provider operators`, and `provider provide --all-operators`; see docs/Bittensor-Operations.md |
+| Memory-thrash recovery | None | Swap-thrash watchdog with a supervised exit-75 restart (systemd, OpenRC and containers all restart it; self-heal is the one switch) |
+| Windows operations | Not provided | `urnet-tools` runs natively on Windows: no `tail`, `sudo` or WSL, and its log follower survives rotation |
+
+---
+
 ## 🔧 Common Operations
 
 | Command | Use this when... |
@@ -262,7 +276,7 @@ The `monitoring/` bundle runs Prometheus and Grafana with a ready-made fleet
 dashboard. See [Monitoring](docs/Monitoring.md).
 
 > [!NOTE]
-> **Fleet Dashboard (Deprecated):** The multi-node aggregation hub dashboard has been removed as of v31.3+. For fleet-wide visibility, use Prometheus metrics (`urnet-tools metrics on`) with the [Monitoring bundle](docs/Monitoring.md), or Grafana for custom dashboards. Historical documentation is retained at [Hub Setup](docs/Hub-Setup.md) and [Hub Dashboard](docs/Hub-Dashboard.md) for reference.
+> **Fleet Dashboard (Removed):** The multi-node aggregation hub was removed in v32.0. For fleet-wide visibility, use Prometheus metrics (`urnet-tools metrics on`) with the [Monitoring bundle](docs/Monitoring.md), or Grafana for custom dashboards.
 
 ---
 
@@ -288,25 +302,27 @@ dashboard. See [Monitoring](docs/Monitoring.md).
 - [Proxy Management & Hot-Reload](docs/Proxy-Management.md)
 - [High-Volume Performance Tuning](docs/High-Volume-Performance-Tuning.md)
 - [Monitoring](docs/Monitoring.md)
-- [Hub Setup](docs/Hub-Setup.md) *(deprecated — removed in v31.3+)*
-- [Hub Dashboard](docs/Hub-Dashboard.md) *(deprecated — removed in v31.3+)*
 - [Project Structure](docs/Project-Structure.md)
 - [Log Message Reference](LOG_REFERENCE.md)
 - [Go urnet-tools Reference](docs/urnet-tools-go.md)
+- [Bittensor Operations](docs/Bittensor-Operations.md)
+- [Bittensor Claim Daemons](docs/Bittensor-Claim-Daemons.md) · [Bittensor Fleet](docs/Bittensor-Fleet.md) · [Bittensor Hotkey Delegation](docs/Bittensor-Hotkey-Delegation.md) · [Multi-Operator](docs/Multi-Operator.md)
 - [Changelog](CHANGELOG.md)
 
 **Wiki:**
 
 - [Online GitHub Wiki](https://github.com/full-bars/meso-miner/wiki)
 - [CI and Release Process](https://github.com/full-bars/meso-miner/wiki/CI-and-Release-Process)
+- [Bittensor Operations](https://github.com/full-bars/meso-miner/wiki/Bittensor-Operations)
+- [Bittensor Claim Daemons](https://github.com/full-bars/meso-miner/wiki/Bittensor-Claim-Daemons) · [Bittensor Fleet](https://github.com/full-bars/meso-miner/wiki/Bittensor-Fleet) · [Bittensor Hotkey Delegation](https://github.com/full-bars/meso-miner/wiki/Bittensor-Hotkey-Delegation) · [Multi-Operator](https://github.com/full-bars/meso-miner/wiki/Multi-Operator)
 
 ---
 
 ## 🏗 Build Info
 
 - **Base engine:** UrNetwork v3.23
-- **Language:** Go 1.27, compiled on Alpine
-- **Platforms:** Linux (systemd, and Alpine/OpenRC with a native boot-start service), macOS, Windows and FreeBSD. Alpine setup: [docs/OpenRC.md](docs/OpenRC.md); FreeBSD setup: [docs/FreeBSD.md](docs/FreeBSD.md)
+- **Language:** Go 1.27, built on Alpine
+- **Platforms:** Linux (systemd, and Alpine/OpenRC with a native boot-start service), macOS and Windows. Alpine setup: [docs/OpenRC.md](docs/OpenRC.md)
 - **Images:** Multi-arch `linux/amd64` + `linux/arm64`, `darwin/amd64` + `darwin/arm64` via GitHub Actions → GHCR
 - **Bridge-friendly:** runs on standard Docker bridge networks, no `--network host` required
 

@@ -242,6 +242,8 @@ func TestSnFleetRevokeDomainRoundTrip(t *testing.T) {
 	}
 }
 
+// TestSnLoadSeedsRejectsLoosePermissions: a seed file with loose permissions
+// or reached through a symlink is refused; only a regular, owner-only file loads.
 func TestSnLoadSeedsRejectsLoosePermissions(t *testing.T) {
 	dir := t.TempDir()
 	rawSeed := make([]byte, 32)

@@ -51,7 +51,7 @@ func TestParseIpv4AllowsUnfragmented(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected unfragmented packet to parse, got ok=false")
 	}
-	if ipProtocol != IPProtocol(17) {
+	if ipProtocol != ipProtocolNumber(17) {
 		t.Fatalf("expected protocol=17 (UDP), got %v", ipProtocol)
 	}
 }
@@ -139,7 +139,7 @@ func TestParseIpv4DropsFragmentReturnsZeroValues(t *testing.T) {
 	if ok {
 		t.Fatalf("expected fragment to be dropped, got ok=true")
 	}
-	if ipProtocol != IPProtocol(0) {
+	if ipProtocol != ipProtocolNumber(0) {
 		t.Fatalf("expected zero-value ipProtocol on drop, got %v", ipProtocol)
 	}
 	if sourceIp != nil {
@@ -160,7 +160,7 @@ func TestParseIpv4DropsFragmentBuiltWithWriteIpv4Header(t *testing.T) {
 	// headers produced through the normal write path.
 	packet := MessagePoolGet(Ipv4HeaderSizeWithoutExtensions + UdpHeaderSize)
 	defer MessagePoolReturn(packet)
-	writeIpv4Header(packet, IP_PROTOCOL_UDP, net.IPv4(10, 0, 0, 1).To4(), net.IPv4(10, 0, 0, 2).To4())
+	writeIpv4Header(packet, ipProtocolNumberUdp, net.IPv4(10, 0, 0, 1).To4(), net.IPv4(10, 0, 0, 2).To4())
 	binary.BigEndian.PutUint16(packet[6:8], 0x0005) // MF clear, offset=5
 
 	_, _, _, _, ok := parseIpv4(packet)

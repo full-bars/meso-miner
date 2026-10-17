@@ -223,7 +223,7 @@ func TestRunH3CountsADnsModeAttemptUnderDns(t *testing.T) {
 	before := TransportModeStats()
 	transport, cancel := newClosedPortTransport(t, TransportModeH3Dns, false)
 	done := make(chan struct{})
-	go func() { defer close(done); transport.runH3(TransportModeH3Dns, 0, 1) }()
+	go func() { defer close(done); transport.runH3(transport.ctx, TransportModeH3Dns, 0, 1) }()
 	time.Sleep(600 * time.Millisecond)
 	cancel()
 	<-done

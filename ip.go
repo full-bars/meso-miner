@@ -46,13 +46,6 @@ const TcpHeaderSizeWithoutExtensions = 20
 
 const debugVerifyHeaders = false
 
-type IPProtocol uint8
-
-const (
-	IP_PROTOCOL_UDP IPProtocol = 17
-	IP_PROTOCOL_TCP IPProtocol = 6
-)
-
 type UDPPort uint16
 type TCPPort uint16
 
@@ -108,7 +101,7 @@ func (self *parsedTcp) flagsString() string {
 	return strings.Join(flags, ", ")
 }
 
-func parseIpv4(ipPacket []byte) (ipProtocol IPProtocol, sourceIp net.IP, destinationIp net.IP, transport []byte, ok bool) {
+func parseIpv4(ipPacket []byte) (ipProtocol ipProtocolNumber, sourceIp net.IP, destinationIp net.IP, transport []byte, ok bool) {
 	if len(ipPacket) < Ipv4HeaderSizeWithoutExtensions {
 		return
 	}
@@ -124,7 +117,7 @@ func parseIpv4(ipPacket []byte) (ipProtocol IPProtocol, sourceIp net.IP, destina
 	if binary.BigEndian.Uint16(ipPacket[6:8])&0x3fff != 0 {
 		return
 	}
-	ipProtocol = IPProtocol(ipPacket[9])
+	ipProtocol = ipProtocolNumber(ipPacket[9])
 	sourceIp = net.IP(ipPacket[12:16])
 	destinationIp = net.IP(ipPacket[16:20])
 	transport = ipPacket[headerByteCount:totalByteCount]
@@ -132,18 +125,36 @@ func parseIpv4(ipPacket []byte) (ipProtocol IPProtocol, sourceIp net.IP, destina
 	return
 }
 
-func parseIpv6(ipPacket []byte) (ipProtocol IPProtocol, sourceIp net.IP, destinationIp net.IP, transport []byte, ok bool) {
+func parseIpv6(ipPacket []byte) (ipProtocol ipProtocolNumber, sourceIp net.IP, destinationIp net.IP, transport []byte, ok bool) {
 	if len(ipPacket) < Ipv6HeaderSize {
 		return
 	}
-	payloadByteCount := int(binary.BigEndian.Uint16(ipPacket[4:6]))
-	if len(ipPacket) < Ipv6HeaderSize+payloadByteCount {
-		return
+	// the extension walker (upstream connect b31ec82df ip.go parseIpv6): a
+	// hop-by-hop, routing, destination-options, authentication or atomic
+	// fragment chain must reach the transport header; a non-atomic fragment
+	// ends the walk and cannot be parsed until it is reassembled
+	var transportOffset int
+	var payloadEnd int
+	if !isIpv6ExtensionHeader(ipPacket[6]) {
+		// the common case, answered without the walk
+		payloadEnd = Ipv6HeaderSize + int(binary.BigEndian.Uint16(ipPacket[4:6]))
+		if len(ipPacket) < payloadEnd {
+			return
+		}
+		ipProtocol = ipProtocolNumber(ipPacket[6])
+		transportOffset = Ipv6HeaderSize
+	} else {
+		walk, walkOk := walkIpv6ExtensionHeaders(ipPacket)
+		if !walkOk || walk.fragmented {
+			return
+		}
+		ipProtocol = walk.nextHeader
+		transportOffset = walk.transportOffset
+		payloadEnd = walk.payloadEnd
 	}
-	ipProtocol = IPProtocol(ipPacket[6])
 	sourceIp = net.IP(ipPacket[8:24])
 	destinationIp = net.IP(ipPacket[24:40])
-	transport = ipPacket[Ipv6HeaderSize : Ipv6HeaderSize+payloadByteCount]
+	transport = ipPacket[transportOffset:payloadEnd]
 	ok = true
 	return
 }
@@ -275,7 +286,7 @@ func checksumFinish(sum uint32) uint16 {
 	return ^uint16(sum)
 }
 
-func transportChecksum(protocol IPProtocol, packetSourceIp net.IP, packetDestinationIp net.IP, transport []byte) uint16 {
+func transportChecksum(protocol ipProtocolNumber, packetSourceIp net.IP, packetDestinationIp net.IP, transport []byte) uint16 {
 	sum := checksumAdd(0, packetSourceIp)
 	sum = checksumAdd(sum, packetDestinationIp)
 	sum += uint32(protocol)
@@ -283,7 +294,7 @@ func transportChecksum(protocol IPProtocol, packetSourceIp net.IP, packetDestina
 	return checksumFinish(checksumAdd(sum, transport))
 }
 
-func writeIpv4Header(packet []byte, ipProtocol IPProtocol, packetSourceIp net.IP, packetDestinationIp net.IP) {
+func writeIpv4Header(packet []byte, ipProtocol ipProtocolNumber, packetSourceIp net.IP, packetDestinationIp net.IP) {
 	packet[0] = 0x45
 	packet[1] = 0
 	binary.BigEndian.PutUint16(packet[2:4], uint16(len(packet)))
@@ -300,7 +311,7 @@ func writeIpv4Header(packet []byte, ipProtocol IPProtocol, packetSourceIp net.IP
 	binary.BigEndian.PutUint16(packet[10:12], checksumFinish(checksumAdd(0, packet[0:Ipv4HeaderSizeWithoutExtensions])))
 }
 
-func writeIpv6Header(packet []byte, ipProtocol IPProtocol, packetSourceIp net.IP, packetDestinationIp net.IP) {
+func writeIpv6Header(packet []byte, ipProtocol ipProtocolNumber, packetSourceIp net.IP, packetDestinationIp net.IP) {
 	packet[0] = 0x60
 	packet[1] = 0
 	packet[2] = 0
@@ -368,12 +379,21 @@ func DefaultTcpBufferSettings() *TcpBufferSettings {
 }
 
 func DefaultLocalUserNatSettings() *LocalUserNatSettings {
-	return &LocalUserNatSettings{
+	settings := &LocalUserNatSettings{
 		SequenceBufferSize: DefaultIpBufferSize,
 		// BufferTimeout:      15 * time.Second,
-		UdpBufferSettings: DefaultUdpBufferSettings(),
-		TcpBufferSettings: DefaultTcpBufferSettings(),
+		UdpBufferSettings:  DefaultUdpBufferSettings(),
+		TcpBufferSettings:  DefaultTcpBufferSettings(),
+		IcmpBufferSettings: DefaultIcmpBufferSettings(),
 	}
+	// fork: fixed icmp flow caps, not the memory-budget-derived ones upstream
+	// computes. An echo flow is one per ping process and this table is additive
+	// above the udp/tcp split, so a small fixed ceiling bounds sockets and
+	// goroutines without touching the udp/tcp tables. The 60s idle reap and the
+	// read/write timeouts come from DefaultIcmpBufferSettings.
+	settings.IcmpBufferSettings.UserLimit = 64
+	settings.IcmpBufferSettings.GlobalLimit = 128
+	return settings
 }
 
 type LocalUserNatSettings struct {
@@ -381,6 +401,9 @@ type LocalUserNatSettings struct {
 	// BufferTimeout      time.Duration
 	UdpBufferSettings *UdpBufferSettings
 	TcpBufferSettings *TcpBufferSettings
+	// nil resolves to DefaultIcmpBufferSettings, so caller-built settings that
+	// predate icmp support keep working
+	IcmpBufferSettings *IcmpBufferSettings
 
 	// Log, when set, is used by the local user nat and its udp/tcp buffers
 	// and sequences (propagated to the buffer settings `Log` fields that are
@@ -399,6 +422,10 @@ type LocalUserNat struct {
 
 	sendShards []chan *SendPacket
 	numShards  int
+
+	// one tracker shared by every per-shard, per-family icmp buffer, so the
+	// configured icmp flow caps are nat-wide (see icmpFlowTracker)
+	icmpFlowTracker *icmpFlowTracker
 
 	settings *LocalUserNatSettings
 
@@ -441,6 +468,12 @@ func NewLocalUserNat(ctx context.Context, clientTag string, bw *ProxyBandwidth, 
 	if settings.TcpBufferSettings != nil && settings.TcpBufferSettings.Log == nil {
 		settings.TcpBufferSettings.Log = log
 	}
+	if settings.IcmpBufferSettings == nil {
+		settings.IcmpBufferSettings = DefaultIcmpBufferSettings()
+	}
+	if settings.IcmpBufferSettings.Log == nil {
+		settings.IcmpBufferSettings.Log = log
+	}
 
 	numShards := runtime.NumCPU()
 	if numShards < 1 {
@@ -465,6 +498,7 @@ func NewLocalUserNat(ctx context.Context, clientTag string, bw *ProxyBandwidth, 
 		log:              log,
 		sendShards:       sendShards,
 		numShards:        numShards,
+		icmpFlowTracker:  newIcmpFlowTracker(),
 		settings:         settings,
 		bw:               bw,
 		receiveCallbacks: NewCallbackList[ReceivePacketFunction](),
@@ -516,8 +550,22 @@ func flowHash(packet []byte) uint32 {
 		if len(packet) >= 20 {
 			h := hash(packet[12:20])
 			protocol := packet[9]
-			if protocol == 6 || protocol == 17 {
-				headerLen := int(packet[0]&0x0F) * 4
+			if binary.BigEndian.Uint16(packet[6:8])&0x3fff != 0 {
+				// Every fragment of one datagram, the first included, pins by the
+				// shared ipv4 identity: a non-first fragment carries no ports, and
+				// the reassembler of a shard only sees the fragments pinned to it.
+				h ^= hash(packet[9:10])
+				h ^= hash(packet[4:6])
+				return h
+			}
+			headerLen := int(packet[0]&0x0F) * 4
+			if protocol == 1 {
+				// icmp: type/code/checksum vary per packet, so the echo
+				// identifier is the flow identity
+				if len(packet) >= headerLen+6 {
+					h ^= hash(packet[headerLen+4 : headerLen+6])
+				}
+			} else if protocol == 6 || protocol == 17 {
 				if len(packet) >= headerLen+4 {
 					h ^= hash(packet[headerLen : headerLen+4])
 				}
@@ -528,7 +576,33 @@ func flowHash(packet []byte) uint32 {
 		if len(packet) >= 40 {
 			h := hash(packet[8:40])
 			protocol := packet[6]
-			if protocol == 6 || protocol == 17 {
+			if isIpv6ExtensionHeader(protocol) {
+				// a fragmented datagram pins every fragment, the first included,
+				// by its shared identification, for the same reason as ipv4
+				if walk, ok := walkIpv6ExtensionHeaders(packet); ok {
+					if walk.fragmented {
+						var identification [4]byte
+						binary.BigEndian.PutUint32(identification[:], walk.fragment.identification)
+						h ^= hash(identification[:])
+						return h
+					}
+					// an unfragmented chain hashes the ports like a plain
+					// packet, so a flow does not change shard when a stack
+					// adds or drops an extension header (an atomic fragment
+					// walks through to its transport header here)
+					if (walk.nextHeader == ipProtocolNumberTcp || walk.nextHeader == ipProtocolNumberUdp) &&
+						walk.transportOffset+4 <= len(packet) {
+						h ^= hash(packet[walk.transportOffset : walk.transportOffset+4])
+					}
+					return h
+				}
+			}
+			if protocol == 58 {
+				// icmpv6: same identity rule as icmpv4
+				if len(packet) >= 46 {
+					h ^= hash(packet[44:46])
+				}
+			} else if protocol == 6 || protocol == 17 {
 				if len(packet) >= 44 {
 					h ^= hash(packet[40:44])
 				}
@@ -624,13 +698,31 @@ func (self *LocalUserNat) runShard(shard int) {
 	udp6Buffer := NewUdp6Buffer(self.ctx, self.receive, self.settings.UdpBufferSettings, self.bw)
 	tcp4Buffer := NewTcp4Buffer(self.ctx, self.receive, self.settings.TcpBufferSettings, self.bw)
 	tcp6Buffer := NewTcp6Buffer(self.ctx, self.receive, self.settings.TcpBufferSettings, self.bw)
+	// the icmp echo path is provider-side only: these buffers are all a ping
+	// can reach, and the client send path stays off. the pair shares the
+	// nat's flow tracker with every other shard's pair, so the flow caps
+	// hold across the nat instead of once per shard and family
+	icmp4Buffer := newIcmp4BufferShared(self.ctx, self.receive, self.settings.IcmpBufferSettings, self.icmpFlowTracker)
+	icmp6Buffer := newIcmp6BufferShared(self.ctx, self.receive, self.settings.IcmpBufferSettings, self.icmpFlowTracker)
 	shardCh := self.sendShards[shard]
+	// Fragments are reassembled before they are parsed: a non-first fragment
+	// has no transport header and a first fragment has a truncated payload.
+	// Every fragment of a datagram pins to this shard (flowHash), so a shard
+	// reassembles only its own datagrams. Both are bounded in datagrams,
+	// fragments and retained bytes.
+	ipv4Fragments := newIpv4FragmentReassembler()
+	ipv4Fragments.maxRetainedBytes = natFragmentReassemblyMaxRetainedBytes
+	defer ipv4Fragments.close()
+	ipv6Fragments := newIpv6FragmentReassembler()
+	ipv6Fragments.maxRetainedBytes = natFragmentReassemblyMaxRetainedBytes
+	defer ipv6Fragments.close()
 	func() {
 		self.sourceCancelMutex.Lock()
 		defer self.sourceCancelMutex.Unlock()
 		self.sourceCancels = append(self.sourceCancels, func(sourceId Id) int {
 			return udp4Buffer.CancelSource(sourceId) + udp6Buffer.CancelSource(sourceId) +
-				tcp4Buffer.CancelSource(sourceId) + tcp6Buffer.CancelSource(sourceId)
+				tcp4Buffer.CancelSource(sourceId) + tcp6Buffer.CancelSource(sourceId) +
+				icmp4Buffer.CancelSource(sourceId) + icmp6Buffer.CancelSource(sourceId)
 		})
 	}()
 
@@ -646,16 +738,23 @@ func (self *LocalUserNat) runShard(shard int) {
 			}
 			var udpPacket parsedUdp
 			var tcpPacket parsedTcp
+			var icmpPacket parsedIcmp
 			ipVersion := uint8(ipPacket[0]) >> 4
 			switch ipVersion {
 			case 4:
+				// an unfragmented packet comes back unchanged; a fragment is
+				// retained (nil) until its datagram is whole
+				ipPacket = ipv4Fragments.process(sendPacket.source, TransferKey{}, sendPacket.provideMode, ipPacket)
+				if ipPacket == nil {
+					continue
+				}
 				ipProtocol, sourceIp, destinationIp, transport, ok := parseIpv4(ipPacket)
 				if !ok {
 					MessagePoolReturn(ipPacket)
 					continue
 				}
 				switch ipProtocol {
-				case IP_PROTOCOL_UDP:
+				case ipProtocolNumberUdp:
 					if !parseUdpPacket(sourceIp, destinationIp, transport, &udpPacket) {
 						MessagePoolReturn(ipPacket)
 						continue
@@ -679,7 +778,7 @@ func (self *LocalUserNat) runShard(shard int) {
 					} else {
 						c()
 					}
-				case IP_PROTOCOL_TCP:
+				case ipProtocolNumberTcp:
 					if !parseTcpPacket(sourceIp, destinationIp, transport, &tcpPacket) {
 						MessagePoolReturn(ipPacket)
 						continue
@@ -703,18 +802,61 @@ func (self *LocalUserNat) runShard(shard int) {
 					} else {
 						c()
 					}
+				case ipProtocolNumberIcmp4:
+					if !icmpEchoParsingEnabled(4) {
+						// the gate latched off (operator switch or a platform
+						// refusal) after this packet was queued: drop it here
+						// too, or a refused platform would still open sockets
+						MessagePoolReturn(ipPacket)
+						continue
+					}
+					if !parseIcmpPacket(4, sourceIp, destinationIp, transport, &icmpPacket) {
+						MessagePoolReturn(ipPacket)
+						continue
+					}
+					if !icmpPacket.echoRequest {
+						// an outbound echo reply is always an orphan: an
+						// unsolicited inbound ping cannot reach a source, and the
+						// egress backends cannot send one anyway
+						MessagePoolReturn(ipPacket)
+						continue
+					}
+					icmpPacket.ttl = ipPacket[8]
+
+					c := func() bool {
+						success, err := icmp4Buffer.send(
+							sendPacket.source,
+							sendPacket.provideMode,
+							&icmpPacket,
+							self.settings.IcmpBufferSettings.WriteTimeout,
+							ipPacket,
+						)
+						return success && err == nil
+					}
+					if self.log.V(2).Enabled() {
+						TraceWithReturn(
+							fmt.Sprintf("[lnr]send icmp4 %s<-%s s(%s)", self.clientTag, sendPacket.source.SourceId, sendPacket.source.StreamId),
+							c,
+						)
+					} else {
+						c()
+					}
 				default:
 					// no support for this protocol, drop
 					MessagePoolReturn(ipPacket)
 				}
 			case 6:
+				ipPacket = ipv6Fragments.process(sendPacket.source, TransferKey{}, sendPacket.provideMode, ipPacket)
+				if ipPacket == nil {
+					continue
+				}
 				ipProtocol, sourceIp, destinationIp, transport, ok := parseIpv6(ipPacket)
 				if !ok {
 					MessagePoolReturn(ipPacket)
 					continue
 				}
 				switch ipProtocol {
-				case IP_PROTOCOL_UDP:
+				case ipProtocolNumberUdp:
 					if !parseUdpPacket(sourceIp, destinationIp, transport, &udpPacket) {
 						MessagePoolReturn(ipPacket)
 						continue
@@ -738,7 +880,7 @@ func (self *LocalUserNat) runShard(shard int) {
 					} else {
 						c()
 					}
-				case IP_PROTOCOL_TCP:
+				case ipProtocolNumberTcp:
 					if !parseTcpPacket(sourceIp, destinationIp, transport, &tcpPacket) {
 						MessagePoolReturn(ipPacket)
 						continue
@@ -757,6 +899,42 @@ func (self *LocalUserNat) runShard(shard int) {
 					if self.log.V(2).Enabled() {
 						TraceWithReturn(
 							fmt.Sprintf("[lnr]send tcp6 %s<-%s s(%s)", self.clientTag, sendPacket.source.SourceId, sendPacket.source.StreamId),
+							c,
+						)
+					} else {
+						c()
+					}
+				case ipProtocolNumberIcmp6:
+					if !icmpEchoParsingEnabled(6) {
+						// see the icmpv4 case: the gate can latch off while
+						// packets are queued
+						MessagePoolReturn(ipPacket)
+						continue
+					}
+					if !parseIcmpPacket(6, sourceIp, destinationIp, transport, &icmpPacket) {
+						MessagePoolReturn(ipPacket)
+						continue
+					}
+					if !icmpPacket.echoRequest {
+						// see the icmpv4 case: an outbound echo reply is an orphan
+						MessagePoolReturn(ipPacket)
+						continue
+					}
+					icmpPacket.ttl = ipPacket[7]
+
+					c := func() bool {
+						success, err := icmp6Buffer.send(
+							sendPacket.source,
+							sendPacket.provideMode,
+							&icmpPacket,
+							self.settings.IcmpBufferSettings.WriteTimeout,
+							ipPacket,
+						)
+						return success && err == nil
+					}
+					if self.log.V(2).Enabled() {
+						TraceWithReturn(
+							fmt.Sprintf("[lnr]send icmp6 %s<-%s s(%s)", self.clientTag, sendPacket.source.SourceId, sendPacket.source.StreamId),
 							c,
 						)
 					} else {
@@ -1238,6 +1416,7 @@ func (self *UdpSequence) Run() {
 	}
 
 	self.log.V(2).Infof("[init]udp connect\n")
+	dialStart := time.Now()
 	socket, err := self.udpBufferSettings.DialContext(
 		self.ctx,
 		"udp",
@@ -1245,6 +1424,12 @@ func (self *UdpSequence) Run() {
 	)
 	if err != nil {
 		self.log.V(1).Infof("[init]udp connect error = %s\n", err)
+		// A UDP dial cannot yield a meaningful refusal to the inner source.
+		if self.ctx.Err() == nil {
+			if _, signal := classifyDialFailure(self.IpPath(), err, time.Since(dialStart)); signal != nil {
+				receive(MessagePoolCopy(signal))
+			}
+		}
 		return
 	}
 	defer socket.Close()
@@ -1560,17 +1745,27 @@ func (self *StreamState) DataPackets(payload []byte, n int, mtu int) ([][]byte, 
 		return nil, fmt.Errorf("mtu %d is too small for IP+UDP headers (%d bytes)", mtu, headerByteCount)
 	}
 	packetByteCount := mtu - headerByteCount
+	// the IPv6 payload length is 16 bits wide, so a UDP datagram larger than this
+	// cannot be represented at all; check it before either packetization branch
+	if self.ipVersion == 6 && 0xffff-UdpHeaderSize < n {
+		return nil, fmt.Errorf("udp payload of %d bytes exceeds the datagram limit", n)
+	}
 	if n <= packetByteCount {
 		self.singleDataPacket[0] = self.udpPacket(payload[0:n])
 		return self.singleDataPacket[:], nil
 	}
-	packets := make([][]byte, 0, (n+packetByteCount-1)/packetByteCount)
-	for i := 0; i < n; {
-		j := min(i+packetByteCount, n)
-		packets = append(packets, self.udpPacket(payload[i:j]))
-		i = j
+	// splitting one UDP payload into several independent datagrams would
+	// corrupt application framing, so an oversized datagram is fragmented at
+	// the ip layer in both families and reassembled by the source stack. The
+	// fragment sequence carries the full datagram's udp header and checksum
+	// once.
+	if self.ipVersion == 6 {
+		return fragmentIpv6Packet(self.udpPacket(payload[:n]), mtu)
 	}
-	return packets, nil
+	if 0xffff-Ipv4HeaderSizeWithoutExtensions-UdpHeaderSize < n {
+		return nil, fmt.Errorf("udp payload of %d bytes exceeds the ipv4 packet limit", n)
+	}
+	return fragmentIpv4Packet(self.udpPacket(payload[:n]), mtu)
 }
 
 // builds a udp packet from the stream destination to the stream source
@@ -1587,9 +1782,9 @@ func (self *StreamState) udpPacket(payload []byte) []byte {
 	packet := MessagePoolGet(ipHeaderByteCount + UdpHeaderSize + len(payload))
 	switch self.ipVersion {
 	case 4:
-		writeIpv4Header(packet, IP_PROTOCOL_UDP, self.destinationIp, self.sourceIp)
+		writeIpv4Header(packet, ipProtocolNumberUdp, self.destinationIp, self.sourceIp)
 	case 6:
-		writeIpv6Header(packet, IP_PROTOCOL_UDP, self.destinationIp, self.sourceIp)
+		writeIpv6Header(packet, ipProtocolNumberUdp, self.destinationIp, self.sourceIp)
 	}
 
 	udp := packet[ipHeaderByteCount:]
@@ -1599,7 +1794,7 @@ func (self *StreamState) udpPacket(payload []byte) []byte {
 	udp[6] = 0
 	udp[7] = 0
 	copy(udp[UdpHeaderSize:], payload)
-	checksum := transportChecksum(IP_PROTOCOL_UDP, self.destinationIp, self.sourceIp, udp)
+	checksum := transportChecksum(ipProtocolNumberUdp, self.destinationIp, self.sourceIp, udp)
 	if checksum == 0 {
 		checksum = 0xffff
 	}
@@ -2167,6 +2362,7 @@ func (self *TcpSequence) Run() {
 
 	// connect to upstream before sending the syn+ack
 	self.log.V(2).Infof("[init]tcp connect\n")
+	dialStart := time.Now()
 	socket, err := self.tcpBufferSettings.DialContext(
 		self.ctx,
 		"tcp",
@@ -2174,7 +2370,29 @@ func (self *TcpSequence) Run() {
 	)
 	if err != nil {
 		self.log.V(1).Infof("[init]tcp connect error = %s\n", err)
+		// The source has not seen our synthetic syn-ack yet. Abandoning the
+		// sequence silently leaves it retransmitting the syn in backoff, so
+		// answer it instead (classifyDialFailure says what and when). A parent
+		// cancellation is teardown, not an upstream refusal, and must not
+		// generate new output.
 		MessagePoolReturn(packet)
+		if self.ctx.Err() == nil {
+			switch action, signal := classifyDialFailure(self.IpPath(), err, time.Since(dialStart)); action {
+			case dialFailureRst:
+				var rstPacket []byte
+				var rstErr error
+				func() {
+					self.mutex.Lock()
+					defer self.mutex.Unlock()
+					rstPacket, rstErr = self.RstAck()
+				}()
+				if rstErr == nil {
+					receive(rstPacket)
+				}
+			case dialFailureUnreachable:
+				receive(MessagePoolCopy(signal))
+			}
+		}
 		return
 	}
 	self.UpdateLastActivityTime()
@@ -2851,9 +3069,9 @@ func (self *ConnectionState) SynAck(mtu int) ([]byte, error) {
 	packet := MessagePoolGet(ipHeaderByteCount + tcpHeaderByteCount)
 	switch self.ipVersion {
 	case 4:
-		writeIpv4Header(packet, IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp)
+		writeIpv4Header(packet, ipProtocolNumberTcp, self.destinationIp, self.sourceIp)
 	case 6:
-		writeIpv6Header(packet, IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp)
+		writeIpv6Header(packet, ipProtocolNumberTcp, self.destinationIp, self.sourceIp)
 	}
 
 	flags := tcpFlagSyn | tcpFlagAck
@@ -2863,7 +3081,7 @@ func (self *ConnectionState) SynAck(mtu int) ([]byte, error) {
 
 	// checksum covers the full segment (header + options), not just the fixed header
 	tcpBytes := packet[ipHeaderByteCount:]
-	checksum := transportChecksum(IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp, tcpBytes)
+	checksum := transportChecksum(ipProtocolNumberTcp, self.destinationIp, self.sourceIp, tcpBytes)
 	binary.BigEndian.PutUint16(tcpBytes[16:18], checksum)
 
 	return packet, nil
@@ -2902,15 +3120,15 @@ func (self *ConnectionState) PureAck() ([]byte, error) {
 	packet := MessagePoolGet(ipHeaderByteCount + tcpHeaderByteCount)
 	switch self.ipVersion {
 	case 4:
-		writeIpv4Header(packet, IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp)
+		writeIpv4Header(packet, ipProtocolNumberTcp, self.destinationIp, self.sourceIp)
 	case 6:
-		writeIpv6Header(packet, IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp)
+		writeIpv6Header(packet, ipProtocolNumberTcp, self.destinationIp, self.sourceIp)
 	}
 
 	writeTcpHeader(packet[ipHeaderByteCount:], uint16(self.destinationPort), uint16(self.sourcePort), self.receiveSeq, self.sendSeq, tcpFlagAck, self.encodedWindowSize(), options)
 
 	tcpBytes := packet[ipHeaderByteCount : ipHeaderByteCount+tcpHeaderByteCount]
-	checksum := transportChecksum(IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp, tcpBytes)
+	checksum := transportChecksum(ipProtocolNumberTcp, self.destinationIp, self.sourceIp, tcpBytes)
 	binary.BigEndian.PutUint16(tcpBytes[16:18], checksum)
 
 	return packet, nil
@@ -2930,16 +3148,16 @@ func (self *ConnectionState) FinAck() ([]byte, error) {
 	packet := MessagePoolGet(ipHeaderByteCount + tcpHeaderByteCount)
 	switch self.ipVersion {
 	case 4:
-		writeIpv4Header(packet, IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp)
+		writeIpv4Header(packet, ipProtocolNumberTcp, self.destinationIp, self.sourceIp)
 	case 6:
-		writeIpv6Header(packet, IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp)
+		writeIpv6Header(packet, ipProtocolNumberTcp, self.destinationIp, self.sourceIp)
 	}
 
 	flags := tcpFlagFin | tcpFlagAck
 	writeTcpHeader(packet[ipHeaderByteCount:], uint16(self.destinationPort), uint16(self.sourcePort), self.receiveSeq, self.sendSeq, flags, self.encodedWindowSize(), options)
 
 	tcpBytes := packet[ipHeaderByteCount : ipHeaderByteCount+tcpHeaderByteCount]
-	checksum := transportChecksum(IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp, tcpBytes)
+	checksum := transportChecksum(ipProtocolNumberTcp, self.destinationIp, self.sourceIp, tcpBytes)
 	binary.BigEndian.PutUint16(tcpBytes[16:18], checksum)
 
 	return packet, nil
@@ -2956,16 +3174,16 @@ func (self *ConnectionState) RstAck() ([]byte, error) {
 	packet := MessagePoolGet(ipHeaderByteCount + TcpHeaderSizeWithoutExtensions)
 	switch self.ipVersion {
 	case 4:
-		writeIpv4Header(packet, IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp)
+		writeIpv4Header(packet, ipProtocolNumberTcp, self.destinationIp, self.sourceIp)
 	case 6:
-		writeIpv6Header(packet, IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp)
+		writeIpv6Header(packet, ipProtocolNumberTcp, self.destinationIp, self.sourceIp)
 	}
 
 	flags := tcpFlagRst | tcpFlagAck
 	writeTcpHeader(packet[ipHeaderByteCount:], uint16(self.destinationPort), uint16(self.sourcePort), self.receiveSeq, self.sendSeq, flags, self.encodedWindowSize(), nil)
 
 	tcpBytes := packet[ipHeaderByteCount : ipHeaderByteCount+TcpHeaderSizeWithoutExtensions]
-	checksum := transportChecksum(IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp, tcpBytes)
+	checksum := transportChecksum(ipProtocolNumberTcp, self.destinationIp, self.sourceIp, tcpBytes)
 	binary.BigEndian.PutUint16(tcpBytes[16:18], checksum)
 
 	return packet, nil
@@ -3026,9 +3244,9 @@ func (self *ConnectionState) tcpPacket(payload []byte, seq uint32) []byte {
 	packet := MessagePoolGet(totalLen)
 	switch self.ipVersion {
 	case 4:
-		writeIpv4Header(packet, IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp)
+		writeIpv4Header(packet, ipProtocolNumberTcp, self.destinationIp, self.sourceIp)
 	case 6:
-		writeIpv6Header(packet, IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp)
+		writeIpv6Header(packet, ipProtocolNumberTcp, self.destinationIp, self.sourceIp)
 	}
 
 	writeTcpHeader(packet[ipHeaderByteCount:], uint16(self.destinationPort), uint16(self.sourcePort), seq, self.sendSeq, tcpFlagAck, self.encodedWindowSize(), options)
@@ -3036,7 +3254,7 @@ func (self *ConnectionState) tcpPacket(payload []byte, seq uint32) []byte {
 
 	// checksum covers the full segment (header + payload), not just the header
 	tcpBytes := packet[ipHeaderByteCount:]
-	checksum := transportChecksum(IP_PROTOCOL_TCP, self.destinationIp, self.sourceIp, tcpBytes)
+	checksum := transportChecksum(ipProtocolNumberTcp, self.destinationIp, self.sourceIp, tcpBytes)
 	binary.BigEndian.PutUint16(tcpBytes[16:18], checksum)
 
 	return packet
@@ -3058,8 +3276,19 @@ type RemoteUserNatProviderSettings struct {
 
 	ProtocolVersion int
 
-	EgressSecurityPolicyGenerator func(*SecurityPolicyStatsCollector) SecurityPolicy
+	EgressSecurityPolicyGenerator func(context.Context, *SecurityPolicyStatsCollector) SecurityPolicy
 }
+
+// providerIngressFragmentMaxRetainedBytes bounds the in-flight fragment bytes
+// the provider holds per family for all tunnel clients of one provider.
+const providerIngressFragmentMaxRetainedBytes = 16 * 1024
+
+// providerIngressFragmentMaxRetainedBytesPerSource is one client source's
+// share of that shared ingress cache. A source over its share sheds its own
+// oldest half-built datagrams first, so one client streaming opening
+// fragments cannot evict every other client's datagrams. Half the budget
+// leaves every other source at least as much room as the loudest one.
+const providerIngressFragmentMaxRetainedBytesPerSource = providerIngressFragmentMaxRetainedBytes / 2
 
 type RemoteUserNatProvider struct {
 	client         *Client
@@ -3069,7 +3298,11 @@ type RemoteUserNatProvider struct {
 	// intentionally independent, and multiple tunnel clients can share an IP
 	// tuple, so this ingress guard namespaces its state by the authenticated
 	// source (the smtpEgressGuard type serves both directions).
-	smtpIngressGuard  smtpEgressGuard
+	smtpIngressGuard smtpEgressGuard
+	// Reassembles fragments arriving from tunnel clients before any parse or
+	// policy runs, so the NAT only ever sees whole datagrams (see
+	// receiveFragment). Reassembly is per source path.
+	ingressFragments  ipFragmentGate
 	settings          *RemoteUserNatProviderSettings
 	bw                *ProxyBandwidth
 	localUserNatUnsub func()
@@ -3091,9 +3324,17 @@ func NewRemoteUserNatProvider(
 	settings *RemoteUserNatProviderSettings,
 ) *RemoteUserNatProvider {
 	userNatProvider := &RemoteUserNatProvider{
+		// one provider per proxy: keep the shared ingress cache small. A
+		// legitimate fragmented datagram is a few KiB. the per-source quota
+		// bounds one client's share so it cannot evict every other client's
+		// half-built datagrams
+		ingressFragments: ipFragmentGate{
+			maxRetainedBytes:          providerIngressFragmentMaxRetainedBytes,
+			maxRetainedBytesPerSource: providerIngressFragmentMaxRetainedBytesPerSource,
+		},
 		client:         client,
 		localUserNat:   localUserNat,
-		securityPolicy: settings.EgressSecurityPolicyGenerator(DefaultSecurityPolicyStatsCollector()),
+		securityPolicy: settings.EgressSecurityPolicyGenerator(client.Ctx(), DefaultSecurityPolicyStatsCollector()),
 		settings:       settings,
 		bw:             bw,
 	}
@@ -3129,6 +3370,8 @@ func (self *RemoteUserNatProvider) Receive(
 		self.client.log.V(2).Infof("drop remote user nat provider s packet ->%s\n", source.SourceId)
 		return
 	}
+
+	self.refreshEgressFlow(provideMode, ipPath)
 
 	ipPacketFromProvider := &protocol.IpPacketFromProvider{
 		IpPacket: &protocol.IpPacket{
@@ -3180,6 +3423,20 @@ func (self *RemoteUserNatProvider) Receive(
 
 }
 
+// refreshEgressFlow keeps the egress payload detector's idle clock fresh from the
+// return direction: a flow that is receiving but whose client has not sent for a
+// while must not be reclaimed as idle, because a reclaimed flow restarts payload
+// inspection mid-stream. The path here is in the flow's own orientation. Network
+// mode packets bypass the detector on the egress side, so no flow exists for them.
+func (self *RemoteUserNatProvider) refreshEgressFlow(provideMode protocol.ProvideMode, ipPath *IpPath) {
+	if protocol.ProvideMode_Network == provideMode || ipPath == nil {
+		return
+	}
+	if toucher, ok := self.securityPolicy.(dmcaFlowToucher); ok {
+		toucher.touchFlow(ipPath)
+	}
+}
+
 // `connect.ReceiveFunction`
 func (self *RemoteUserNatProvider) ClientReceive(source TransferPath, frames []*protocol.Frame, peer Peer) {
 	for _, frame := range frames {
@@ -3208,6 +3465,11 @@ func (self *RemoteUserNatProvider) ClientReceive(source TransferPath, frames []*
 			ipPacketToProvider := ipPacketToProvider_.(*protocol.IpPacketToProvider)
 			if self.bw != nil {
 				self.bw.BillableTx.Add(uint64(len(ipPacketToProvider.IpPacket.PacketBytes)))
+			}
+
+			if isIpFragmentPacket(ipPacketToProvider.IpPacket.PacketBytes) {
+				self.receiveFragment(source, peer, ipPacketToProvider.IpPacket.PacketBytes)
+				continue
 			}
 
 			ipPath, payload, err := ParseIpPathWithPayload(ipPacketToProvider.IpPacket.PacketBytes)
@@ -3270,12 +3532,70 @@ func (self *RemoteUserNatProvider) ClientReceive(source TransferPath, frames []*
 	}
 }
 
+// receiveFragment reassembles a fragment from a tunnel client. The parser
+// rejects every fragment, so without this gate a fragmented datagram (a QUIC
+// Initial larger than the tunnel MTU, a large DNS answer) would be dropped
+// silently before it reached the NAT. Policy runs once on the complete
+// datagram and the NAT receives the reassembled datagram, which is sharded by
+// its real flow instead of by fragment identification. Only UDP is accepted:
+// TCP segments at the MSS, and accepting a partial TCP header would open a
+// policy-evasion path (same rule as upstream). The packet is a borrowed
+// reference; the gate takes its own copy.
+func (self *RemoteUserNatProvider) receiveFragment(
+	source TransferPath,
+	peer Peer,
+	packetBytes []byte,
+) {
+	result := self.ingressFragments.processOwned(
+		source,
+		TransferKey{},
+		peer.ProvideMode,
+		MessagePoolCopy(packetBytes),
+	)
+	// take the reassembled datagram out of the result so only the original
+	// fragment owners are returned below
+	datagram := result.packet
+	result.packet = nil
+	defer returnIpFragmentProcessResult(result)
+	if datagram == nil {
+		return
+	}
+
+	ipPath, payload, err := ParseIpPathWithPayload(datagram)
+	if err != nil || ipPath.Protocol != IpProtocolUdp {
+		MessagePoolReturn(datagram)
+		return
+	}
+	r, err := self.securityPolicy.Inspect(peer.ProvideMode, ipPath, payload)
+	if err != nil {
+		MessagePoolReturn(datagram)
+		return
+	}
+	switch r {
+	case SecurityPolicyResultAllow:
+		// SendPacketWithTimeout takes ownership of the datagram on all paths
+		self.localUserNat.SendPacketWithTimeout(
+			source,
+			peer.ProvideMode,
+			datagram,
+			self.settings.WriteTimeout,
+		)
+	case SecurityPolicyResultIncident:
+		MessagePoolReturn(datagram)
+		self.client.ReportAbuse(source)
+	default:
+		MessagePoolReturn(datagram)
+	}
+}
+
 func (self *RemoteUserNatProvider) Close() {
 	unregisterDeadClientProvider(self)
 	// self.client.RemoveReceiveCallback(self.clientCallbackId)
 	// self.localUserNat.RemoveReceivePacketCallback(self.localUserNatCallbackId)
 	self.clientUnsub()
 	self.localUserNatUnsub()
+	// after the unsubscribes, so a late receive cannot recreate the cache
+	self.ingressFragments.close()
 }
 
 // deliverSmtpPolicyReset sends the synthesized reset for a rejected SMTP
@@ -3388,7 +3708,7 @@ func NewRemoteUserNatClientWithClose(
 	userNatClient := &RemoteUserNatClient{
 		client:                client,
 		receivePacketCallback: receivePacketCallback,
-		securityPolicy:        DefaultEgressSecurityPolicy(),
+		securityPolicy:        DefaultEgressSecurityPolicyWithStats(client.Ctx(), DefaultSecurityPolicyStatsCollector()),
 		pathTable:             pathTable,
 		provideMode:           provideMode,
 		localUserNat:          localUserNat,
@@ -3438,7 +3758,7 @@ func (self *RemoteUserNatClient) SendPacket(source TransferPath, provideMode pro
 		}
 		return self.localUserNat.SendPacket(source, provideMode, packet, 0)
 	}
-	if smtpVerdict := self.smtpEgressGuard.inspect(ipPath, payload); smtpVerdict != smtpEgressAllow {
+	if smtpVerdict := self.smtpEgressGuard.inspect(ipPath, payload); !smtpVerdict.permitsSend() {
 		// smtpEgressReject: send the reset once. smtpEgressRejectLatched:
 		// already rejected and reset: drop silently (no amplification).
 		if smtpVerdict == smtpEgressReject {
@@ -3523,6 +3843,14 @@ func (self *RemoteUserNatClient) ClientReceive(source TransferPath, frames []*pr
 
 			ipPath, err := ParseIpPath(packet)
 			if err == nil {
+				// keep the egress payload detector's flow clock fresh from the return
+				// direction (see RemoteUserNatProvider.refreshEgressFlow); the path
+				// here is parsed from the packet, so it is in the return orientation
+				if protocol.ProvideMode_Network != peer.ProvideMode {
+					if toucher, ok := self.securityPolicy.(dmcaIngressToucher); ok {
+						toucher.touchIngress(ipPath)
+					}
+				}
 				HandleError(func() {
 					self.receivePacketCallback(
 						source,
@@ -3770,6 +4098,8 @@ func (self IpProtocol) String() string {
 		return "tcp"
 	case IpProtocolUdp:
 		return "udp"
+	case IpProtocolIcmp:
+		return "icmp"
 	default:
 		return "unknown"
 	}
@@ -3816,7 +4146,7 @@ func ParseIpPathWithPayload(ipPacket []byte) (*IpPath, []byte, error) {
 		destinationIpCopy := ipBacking[sn:]
 
 		switch ipProtocol4 {
-		case IP_PROTOCOL_UDP:
+		case ipProtocolNumberUdp:
 			var udpPacket parsedUdp
 			if !parseUdpPacket(sourceIp4, destinationIp4, transport, &udpPacket) {
 				return nil, nil, fmt.Errorf("No support for protocol")
@@ -3830,7 +4160,7 @@ func ParseIpPathWithPayload(ipPacket []byte) (*IpPath, []byte, error) {
 				DestinationIp:   destinationIpCopy,
 				DestinationPort: int(udpPacket.destinationPort),
 			}, udpPacket.payload, nil
-		case IP_PROTOCOL_TCP:
+		case ipProtocolNumberTcp:
 			var tcpPacket parsedTcp
 			if !parseTcpPacket(sourceIp4, destinationIp4, transport, &tcpPacket) {
 				return nil, nil, fmt.Errorf("No support for protocol")
@@ -3849,8 +4179,9 @@ func ParseIpPathWithPayload(ipPacket []byte) (*IpPath, []byte, error) {
 				Ack:             tcpPacket.ack,
 			}, tcpPacket.payload, nil
 		default:
-			// no support for this protocol
-			return nil, nil, fmt.Errorf("No support for protocol %d", ipProtocol4)
+			// icmp and the unsupported protocols are parsed out of line so
+			// the hot tcp/udp dispatch is unchanged by icmp support
+			return parseIcmpIpPath(4, ipProtocol4, sourceIpCopy, destinationIpCopy, transport)
 		}
 	case 6:
 		ipProtocol6, sourceIp6, destinationIp6, transport, ok := parseIpv6(ipPacket)
@@ -3868,7 +4199,7 @@ func ParseIpPathWithPayload(ipPacket []byte) (*IpPath, []byte, error) {
 		destinationIpCopy := ipBacking[sn:]
 
 		switch ipProtocol6 {
-		case IP_PROTOCOL_UDP:
+		case ipProtocolNumberUdp:
 			var udpPacket parsedUdp
 			if !parseUdpPacket(sourceIp6, destinationIp6, transport, &udpPacket) {
 				return nil, nil, fmt.Errorf("No support for protocol")
@@ -3882,7 +4213,7 @@ func ParseIpPathWithPayload(ipPacket []byte) (*IpPath, []byte, error) {
 				DestinationIp:   destinationIpCopy,
 				DestinationPort: int(udpPacket.destinationPort),
 			}, udpPacket.payload, nil
-		case IP_PROTOCOL_TCP:
+		case ipProtocolNumberTcp:
 			var tcpPacket parsedTcp
 			if !parseTcpPacket(sourceIp6, destinationIp6, transport, &tcpPacket) {
 				return nil, nil, fmt.Errorf("No support for protocol")
@@ -3901,13 +4232,57 @@ func ParseIpPathWithPayload(ipPacket []byte) (*IpPath, []byte, error) {
 				Ack:             tcpPacket.ack,
 			}, tcpPacket.payload, nil
 		default:
-			// no support for this protocol
-			return nil, nil, fmt.Errorf("No support for protocol %d", ipProtocol6)
+			// icmp and the unsupported protocols are parsed out of line (see
+			// the v4 branch)
+			return parseIcmpIpPath(6, ipProtocol6, sourceIpCopy, destinationIpCopy, transport)
 		}
 	default:
 		// no support for this version
 		return nil, nil, fmt.Errorf("No support for ip version %d", ipVersion)
 	}
+}
+
+// parseIcmpIpPath is the cold tail of ParseIpPathWithPayload: the icmp echo
+// view, or the unsupported-protocol error. Split out so the hot tcp/udp
+// dispatch is unchanged by icmp support (the upstream connect b31ec82df
+// shape). Only echo request/reply parse (parseIcmpPacket); every other icmp
+// type fails here, which is what lets an unreachable reach the dial-failure
+// intercept instead. The acceptance is gated: the operator kill switch and
+// the platform self-disable both restore the historical drop exactly.
+//
+//go:noinline
+func parseIcmpIpPath(ipVersion int, ipProtocol ipProtocolNumber, sourceIp net.IP, destinationIp net.IP, transport []byte) (*IpPath, []byte, error) {
+	switch ipProtocol {
+	case ipProtocolNumberIcmp4, ipProtocolNumberIcmp6:
+	default:
+		return nil, nil, fmt.Errorf("No support for protocol %d", ipProtocol)
+	}
+	if (ipProtocol == ipProtocolNumberIcmp4) != (ipVersion == 4) {
+		// the icmp variant must match the ip version
+		return nil, nil, fmt.Errorf("No support for protocol %d", ipProtocol)
+	}
+	if !icmpEchoParsingEnabled(ipVersion) {
+		return nil, nil, fmt.Errorf("No support for protocol %d", ipProtocol)
+	}
+	var icmp parsedIcmp
+	if !parseIcmpPacket(ipVersion, sourceIp, destinationIp, transport, &icmp) {
+		return nil, nil, fmt.Errorf("Unsupported or malformed icmp packet.")
+	}
+	// the echo identifier stands in for the client-side port: the source for
+	// a request, the destination for a reply, so Reverse aligns the two
+	// directions (see ICMP.md)
+	ipPath := &IpPath{
+		Version:       ipVersion,
+		Protocol:      IpProtocolIcmp,
+		SourceIp:      sourceIp,
+		DestinationIp: destinationIp,
+	}
+	if icmp.echoRequest {
+		ipPath.SourcePort = int(icmp.identifier)
+	} else {
+		ipPath.DestinationPort = int(icmp.identifier)
+	}
+	return ipPath, icmp.payload, nil
 }
 
 // func (self *IpPath) Copy() *IpPath {

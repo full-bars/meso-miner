@@ -45,6 +45,7 @@ func testingNewEmptyMultiClientChannel(t *testing.T, settings *MultiClientSettin
 		ctx, channelArgs, generator,
 		func(client *multiClientChannel, source TransferPath, provideMode protocol.ProvideMode, ipPath *IpPath, packet []byte) {
 		},
+		nil,
 		DefaultIngressSecurityPolicy(),
 		func(contractStatus *ContractStatus) {},
 		func(contractStatsEvents []*ContractStatsEvent) {},

@@ -59,7 +59,11 @@ type ExtenderConnectMode string
 
 const (
 	ExtenderConnectModeTcpTls ExtenderConnectMode = "tcptls"
-	// ExtenderConnectModeQuic   ExtenderConnectMode = "quic"
+	// quic and dns carriers: declared so the ported platform transport compiles.
+	// This tree's extender dialers only produce tcptls, so no config carries
+	// these modes (stage 3, upstream 20b29f79).
+	ExtenderConnectModeQuic ExtenderConnectMode = "quic"
+	ExtenderConnectModeDns  ExtenderConnectMode = "dns"
 	// TODO
 	// ExtenderConnectModeUdp ExtenderConnectMode = "udp"
 )

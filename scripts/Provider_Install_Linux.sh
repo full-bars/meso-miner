@@ -2,7 +2,7 @@
 # urnet-tools: URnetwork provider manager
 # Author: full-bars (GitHub), onlyinthe707 / "mesocyclone" (Discord)
 # Based on: Ar Rakin, Ryan Mello (original)
-# https://github.com/full-bars/meso-miner
+# https://github.com/full-bars/urnetwork-3.23-fix
 
 me="$0"
 script_rundir="$(pwd)"
@@ -65,7 +65,7 @@ show_help ()
     echo "  -f, --force             Skip confirmation prompts"
     echo "  -B, --no-modify-bashrc  Do not modify ~/.bashrc"
     echo ""
-    echo "Need help? Email support@fullbars.xyz or visit <https://github.com/full-bars/meso-miner>"
+    echo "Need help? Email support@fullbars.xyz or visit <https://github.com/full-bars/urnetwork-3.23-fix>"
 }
 
 get_arch ()
@@ -100,13 +100,19 @@ has_openrc=0
 no_modify_bashrc=0
 update_timer_oncalendar="Sun *-*-* 00:00:00 UTC"
 
-api_base="${URNET_API_BASE:-https://api.github.com/repos/full-bars/meso-miner}"
-# Releases for this fork are published on its own GitHub releases, so both
-# endpoints point there. A shared CDN across forks would let this installer
-# fetch another fork's assets, which is what test_provider_install.sh asserts
-# against.
-urnet_dl_base="${URNET_DL_BASE:-https://github.com/full-bars/meso-miner}"
-urnet_github_dl_base="${URNET_MIRROR_BASE:-https://github.com/full-bars/meso-miner/releases/download}"
+# Release endpoints. Overridable so a test harness can serve the build under
+# test (a branch build, a staged release) instead of whatever happens to be
+# published — without that, any automated run of this installer exercises the
+# last PUBLISHED release, never the code being changed.
+#
+# SECURITY: these redirect the entire trust chain, digests included, because the
+# asset digests are read from the same API. That is the same exposure as
+# URNET_INSTALL_URL above. A hostile environment can therefore make the install
+# succeed against attacker-chosen binaries. This is a testing/CI seam, not a
+# user-facing feature; do not document it.
+api_base="${URNET_API_BASE:-https://api.github.com/repos/full-bars/urnetwork-3.23-fix}"
+urnet_dl_base="${URNET_DL_BASE:-https://dl.fullbars.xyz}"
+urnet_github_dl_base="${URNET_MIRROR_BASE:-https://github.com/full-bars/urnetwork-3.23-fix/releases/download}"
 
 install_path="$HOME/.local/share/urnetwork-provider"
 install_path_explicit=0
@@ -114,7 +120,7 @@ version_file="$install_path/.version"
 
 # Canonical URL for re-running this installer in a freshly created user's context.
 # Overridable via URNET_INSTALL_URL (e.g. to test a branch before it lands on main).
-urnet_install_url="${URNET_INSTALL_URL:-https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh}"
+urnet_install_url="${URNET_INSTALL_URL:-https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_Linux.sh}"
 
 # If no operation is specified and running as a one-off pipe (curl | sh),
 # default to install. The installed urnet-tools binary is handled later
@@ -775,15 +781,17 @@ show_version ()
 
     if [ -z "$latest_version" ]; then
         if command -v curl > /dev/null; then
-            tag_url=$(curl -Ls -o /dev/null -w %{url_effective} "https://github.com/full-bars/meso-miner/releases/latest")
-            if [ -n "$tag_url" ] && [ "$tag_url" != "https://github.com/full-bars/meso-miner/releases/latest" ]; then
+            tag_url=$(curl -Ls -o /dev/null -w %{url_effective} "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest")
+            if [ -n "$tag_url" ] && [ "$tag_url" != "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest" ]; then
                 latest_version="${tag_url##*/}"
             fi
         fi
     fi
 
     if [ -z "$latest_version" ]; then
-        latest_version="$(get_version_from_api_response "$(network_fetch "$api_base/releases/latest" 2>/dev/null)" 2>/dev/null)"
+        if latest_version="$(network_fetch "$urnet_dl_base/latest-version" 2>/dev/null)"; then
+            latest_version="$(printf "%s" "$latest_version" | tr -d '[:space:]')"
+        fi
     fi
 
     if [ -z "$latest_version" ]; then
@@ -2327,8 +2335,8 @@ do_install ()
     # If tag was "latest" and API failed to provide a version, try the redirect trick
     if [ "$tag" = "latest" ] && [ -z "$version_to_install" ]; then
         if command -v curl > /dev/null; then
-            tag_url=$(curl -Ls -o /dev/null -w %{url_effective} "https://github.com/full-bars/meso-miner/releases/latest")
-            if [ -n "$tag_url" ] && [ "$tag_url" != "https://github.com/full-bars/meso-miner/releases/latest" ]; then
+            tag_url=$(curl -Ls -o /dev/null -w %{url_effective} "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest")
+            if [ -n "$tag_url" ] && [ "$tag_url" != "https://github.com/full-bars/urnetwork-3.23-fix/releases/latest" ]; then
                 version_to_install="${tag_url##*/}"
             fi
         fi
@@ -2339,10 +2347,10 @@ do_install ()
         version_to_install="$tag"
     fi
 
-    # Fallback: GitHub API latest release
+    # Fallback: try dl.fullbars.xyz latest-version endpoint
     if [ -z "$version_to_install" ]; then
-        if release="$(network_fetch "$api_base/releases/latest" 2>/dev/null)"; then
-            version_to_install="$(get_version_from_api_response "$release" 2>/dev/null)"
+        if worker_version="$(network_fetch "$urnet_dl_base/latest-version" 2>/dev/null)"; then
+            version_to_install="$(printf "%s" "$worker_version" | tr -d '[:space:]')"
         fi
     fi
 
@@ -2959,12 +2967,26 @@ show_logs ()
     # high-value lines (profit/earn/health/outage/evictions), so the earnings
     # signal survives for hours even when the main ramlog floods.
     if [ "$mode" = "important" ] || [ "$mode" = "--important" ] || [ "$mode" = "-i" ]; then
-        if [ ! -f "/dev/shm/urnetwork-important.log" ]; then
+        # The important log is on disk in the SERVICE user's state dir (the OpenRC
+        # service user's home when urnet-tools runs as someone else; the RAM file
+        # is the fallback for a box with no usable state dir). Take the newest.
+        important_state="$HOME/.urnetwork"
+        if [ "$has_openrc" -eq 1 ] && [ -f /etc/init.d/urnetwork ]; then
+            important_state="$(openrc_user_home)/.urnetwork"
+        fi
+        important_log=""
+        for candidate in "$important_state/important.log" /dev/shm/urnetwork-important.log; do
+            if [ -f "$candidate" ] && { [ -z "$important_log" ] || [ "$candidate" -nt "$important_log" ]; }; then
+                important_log="$candidate"
+            fi
+        done
+        if [ -z "$important_log" ]; then
             pr_err "Important log not found. Is the provider running with RAM logs (urnet-tools ramlogs on)?"
             exit 1
         fi
-        pr_info "Streaming high-value lines (/dev/shm/urnetwork-important.log)"
-        tail -n 1000 -f /dev/shm/urnetwork-important.log
+        pr_info "Streaming high-value lines ($important_log)"
+        # -F follows the name, so the follow survives the provider rotating the file
+        tail -n 1000 -F "$important_log"
         return
     fi
 

@@ -75,8 +75,8 @@ func providerClientId16() ([16]byte, error) {
 // Allowlisted fleet chains, mirroring the sn reference's mainnet runtime gate
 // (miner/fleet_mainnet_runtime.go): 964 is mainnet, 945 is the provisional
 // testnet. The reference additionally requires a SHA-256-pinned reviewed
-// authority document for 964 and explicit provisional flags for 945 — the
-// port enforce the allowlist itself and prints the commitment hash so the
+// authority document for 964 and explicit provisional flags for 945 - the
+// port enforces the allowlist itself and prints the commitment hash so the
 // operator can verify the manifest against the on-chain commitment.
 const (
 	fleetChainIDMainnet            = 964
