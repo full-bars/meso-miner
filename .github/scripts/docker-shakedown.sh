@@ -314,8 +314,21 @@ else
 fi
 cleanup_dsk
 
-# ---------- W5. Proxy config (PROXY_URL, PROXY_URL_MAX, PROXY_FILE) ----------
-section "W5. Proxy config (PROXY_URL_MAX cap, PROXY_FILE)"
+# ---------- W5. Proxy config (PROXY_URL source, PROXY_URL_MAX bound, PROXY_FILE) ----------
+# PROXY_URL is a proxy-list URL source (comma-separated URLs), not an inline
+# proxy list: docs/Proxy-URL-Sources.md. The fixture below is deliberately a
+# bare ip:port list, the classic operator paste: every fetch fails at request
+# build, deterministically, with no external dependency, which is what makes
+# the source-consumed assertion below reliable. The entries are also RFC 5737
+# documentation addresses, so even a well-formed list could not be admitted:
+# stage 0 (SOCKS5 + API CONNECT) drops dead endpoints and the merge-time
+# PROXY_URL_MAX cap only bites once entries qualify (a source URL cannot be
+# served locally either: the SSRF guard refuses non-global dials at
+# sourceURLTransport). The cap itself is therefore covered by the provider
+# unit tests (TestMergeProxyURLEntries_* in
+# provider/proxy_grade_tier_merge_test.go); this container check asserts the
+# env-source wiring and the OOM-relevant bound.
+section "W5. Proxy config (PROXY_URL source, PROXY_URL_MAX bound, PROXY_FILE)"
 BIGLIST=""
 for i in $(seq 1 30); do BIGLIST="${BIGLIST}198.51.100.$((i%255)):$((10000+i)),"; done
 d=$(fresh_state_dir)
@@ -323,23 +336,51 @@ docker run -d --name dsk-w5-cap -v "$d:/root/.urnetwork" -e BUILD=jwt \
   -e PROXY_URL="${BIGLIST%,}" -e PROXY_URL_MAX=5 "${IMAGE}:${EXPECTED_VERSION}" >/dev/null 2>&1
 CID=$(wait_cid_docker dsk-w5-cap 120)
 if [ -n "$CID" ]; then
-  sleep 20
-  N=$(docker exec dsk-w5-cap sh -c "python3 - << 'PY'
-import json
-try:
-  d=json.load(open('/root/.urnetwork/proxy'))
-  print(len(d.get('servers',{})))
-except Exception:
-  print(-1)
-PY" 2>/dev/null)
-  N=${N:-'-1'}
-  if [ "$N" != "-1" ] && [ "$N" -le 5 ]; then
-    ok "W5 PROXY_URL_MAX=5 honoured ($N servers, cap not exceeded)"
+  # The fetcher waits for file-proxy warmup, then a 20s startup cooldown,
+  # then fetches each source in turn. Poll for the per-source failure line
+  # instead of sleeping a fixed time: the cycle start varies with warmup.
+  FETCH_SEEN=""
+  FETCH_END=$(( $(date +%s) + 90 ))
+  while [ "$(date +%s)" -lt "$FETCH_END" ]; do
+    if docker logs dsk-w5-cap 2>&1 | grep -q "fetch failed for"; then
+      FETCH_SEEN=1
+      break
+    fi
+    sleep 3
+  done
+  if [ -n "$FETCH_SEEN" ]; then
+    ok "W5 PROXY_URL env source consumed (bad source refused per cycle)"
   else
-    bad "W5 PROXY_URL_MAX=5 NOT honoured (servers=$N — missing cap can OOM the container)"
+    bad "W5 PROXY_URL env source was never fetched"
+    docker logs dsk-w5-cap 2>&1 | tail -10 | sed 's/^/    | /' | tee -a "$REPORT"
   fi
+  # jq reads the URL-source cache (proxy_url.json, "cache"). The image ships
+  # jq, not python3: the old in-container python read exited 127 on every
+  # run, and its empty output was mapped to servers=-1 (the rc5 false fail).
+  N=$(docker exec dsk-w5-cap sh -c '
+    if [ -f /root/.urnetwork/proxy_url.json ]; then
+      jq -r "(.cache // {}) | length" /root/.urnetwork/proxy_url.json 2>/dev/null || echo READ_ERROR
+    else
+      echo ABSENT
+    fi' 2>/dev/null)
+  N=${N:-READ_ERROR}
+  case "$N" in
+    ABSENT)
+      ok "W5 URL cache empty for an unadmittable fixture; PROXY_URL_MAX=5 bound holds" ;;
+    READ_ERROR)
+      bad "W5 proxy_url.json could not be read"
+      docker logs dsk-w5-cap 2>&1 | tail -5 | sed 's/^/    | /' | tee -a "$REPORT" ;;
+    *[!0-9]*)
+      bad "W5 unexpected URL cache reading '$N'" ;;
+    *)
+      if [ "$N" -le 5 ]; then
+        ok "W5 URL cache within PROXY_URL_MAX=5 ($N entries)"
+      else
+        bad "W5 URL cache $N EXCEEDS PROXY_URL_MAX=5 (cap not honoured)"
+      fi ;;
+  esac
 else
-  bad "W5 PROXY_URL_MAX cap test: container never reached a live provider"
+  bad "W5 PROXY_URL source test: container never reached a live provider"
 fi
 docker rm -f dsk-w5-cap >/dev/null 2>&1
 d=$(fresh_state_dir)
@@ -862,6 +903,12 @@ done
 # ---------- Y5. compose down && up on the same named volume ----------
 section "Y5. compose down && up on the same named volume (identity + settings survive)"
 mkdir -p "$DSK_TMP/y5"
+# The volume key MUST pin name: dsk_y5_state. Without it Compose namespaces
+# the compose-created volume (<project>_dsk_y5_state, project = the compose
+# directory name) and the service mounts that EMPTY volume while the seeded
+# dsk_y5_state below sits unused: the entrypoint then exits on the missing
+# jwt and the section reads as "compose up did not reach a live provider" on
+# every run (the rc5 false fail).
 cat > "$DSK_TMP/y5/docker-compose.yml" << EOF
 services:
   provider:
@@ -876,6 +923,7 @@ services:
       - dsk_y5_state:/root/.urnetwork
 volumes:
   dsk_y5_state:
+    name: dsk_y5_state
 EOF
 docker volume create dsk_y5_state >/dev/null 2>&1
 docker run --rm -v dsk_y5_state:/root/.urnetwork -v "$JWT_FILE:/tmp/jwt:ro" alpine:latest \
@@ -898,6 +946,8 @@ if [ -n "$CID1" ]; then
   [ "$NODENAME" = "dsk-y5" ] && ok "Y5 settings (node-name) survive compose down && up" || bad "Y5 settings lost across compose down && up (got '$NODENAME')"
 else
   bad "Y5 initial compose up did not reach a live provider"
+  (cd "$DSK_TMP/y5" && docker compose ps) 2>&1 | tail -5 | sed 's/^/    | /' | tee -a "$REPORT"
+  docker logs dsk-y5 2>&1 | tail -10 | sed 's/^/    | /' | tee -a "$REPORT"
 fi
 (cd "$DSK_TMP/y5" && docker compose down -v) >/dev/null 2>&1
 docker volume rm dsk_y5_state >/dev/null 2>&1

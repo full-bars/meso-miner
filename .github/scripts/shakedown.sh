@@ -82,6 +82,39 @@ restart_provider() {
   runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user restart urnetwork.service
 }
 
+# stop_provider: stop the unit and wait for the provider process to exit, so
+# nothing can write state or emit client_id lines after this returns. Used by
+# the client-identity checks that take a journal mark around a restart: a
+# plain `systemctl restart` races them two ways. (1) The still-running old
+# process can flush its in-memory client-JWT store back to disk after the
+# caller's `rm -f .client_jwts.json`: with the file missing, flushBatchLocked
+# falls back to the process's in-memory map and rewrites the whole store
+# (client_jwt_store.go), so one flush resurrects the cache the check believes
+# it cleared. (2) Its own "client_id ... (reused)" lines emitted before the
+# SIGTERM lands are past the mark and count as post-restart samples, carrying
+# pre-clear ids into the cleared-cache window. Bounded: a unit that refuses to
+# stop must not kill the job; the caller's assertions then report it.
+stop_provider() {
+  timeout 180 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user stop urnetwork.service >&2
+  local end=$(( $(date +%s) + 60 ))
+  while pgrep -u urnet -f 'urnetwork provide' >/dev/null 2>&1; do
+    if [ "$(date +%s)" -ge "$end" ]; then
+      echo "WARN: urnetwork provide still running 60s after stop; the next mark may include its lines" >&2
+      break
+    fi
+    sleep 1
+  done
+}
+
+# start_provider: start the unit and return the pre-start journal line count in
+# restart_provider's DATA form. Paired with stop_provider for the client-identity
+# checks: the mark is taken only after the old process has exited, so neither its
+# store writes nor its log lines can land inside the post-restart sample window.
+start_provider() {
+  echo $(journal_line_count)
+  timeout 180 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user start urnetwork.service >&2
+}
+
 echo "SHAKEDOWN START $(date -u +%FT%TZ)" > "$REPORT"
 # MUST-FIX 10: EXPECTED_VERSION comes from the workflow (GITHUB_REF_NAME for
 # tag-triggered runs, latest release for manual). Derive the base for the
@@ -380,8 +413,13 @@ section "H. Hot-restart + identity"
 CID_BEFORE=$(j | grep -oE "client_id: [0-9a-f-]+" | tail -1 | awk '{print $2}')
 [ -n "$CID_BEFORE" ] && ok "provider client_id present (${CID_BEFORE:0:12}…)" || bad "provider client_id missing"
 
-# 1) hot-restart must REUSE the same client_id (identity preserved).
-MARK=$(restart_provider)
+# 1) hot-restart must REUSE the same client_id (identity preserved). stop/start,
+#    not a plain restart: the mark must sit on a quiescent boundary (see
+#    stop_provider), otherwise lines the old process emits during the stop
+#    window can satisfy this check by themselves (it would then pass with
+#    reuse broken).
+stop_provider
+MARK=$(start_provider)
 CID_AFTER=$(wait_client_id "$MARK" 120)
 if [ -n "$CID_AFTER" ] && [ "$CID_BEFORE" = "$CID_AFTER" ]; then
   ok "hot-restart reused client_id (${CID_AFTER:0:12}…)"
@@ -390,8 +428,14 @@ else
 fi
 
 # 2) Clear the persisted client-JWT cache, restart -> a NEW client_id mints.
+#    Stop FIRST: while the old process is live it can flush its in-memory store
+#    back to disk after the rm (a missing file makes flushBatchLocked rewrite
+#    the whole map), and its tail client_id lines land past the mark as if
+#    post-restart. That race is the rc5 false fail (2 of 12 sampled ids carried
+#    over).
+stop_provider
 rm -f /home/urnet/.urnetwork/.client_jwts.json
-MARK=$(restart_provider)
+MARK=$(start_provider)
 CID_FRESH=$(wait_client_id "$MARK" 120)
 if [ -n "$CID_FRESH" ] && [ "$CID_FRESH" != "$CID_AFTER" ]; then
   ok "cleared cache minted NEW client_id (${CID_FRESH:0:12}…)"
@@ -449,9 +493,12 @@ if [ -n "$PROC_PID" ] && tr '\0' '\n' < /proc/$PROC_PID/environ | grep -q "URNET
 else
   bad "URNETWORK_HOT_RESTART=0 NOT in /proc/$PROC_PID/environ (env toggle broken)"
 fi
-# With the toggle off, a restart must mint a NEW client_id (no reuse).
+# With the toggle off, a restart must mint a NEW client_id (no reuse). Stop/
+# clear/start, the same quiescent order as H step 2: the clear must not race
+# the running process (see stop_provider).
+stop_provider
 rm -f /home/urnet/.urnetwork/.client_jwts.json
-MARK=$(restart_provider)
+MARK=$(start_provider)
 CID_OFF=$(wait_client_id "$MARK" 120)
 if [ -n "$CID_OFF" ] && [ "$CID_OFF" != "$CID_FRESH" ]; then
   ok "hot-restart OFF minted new client_id (${CID_OFF:0:12}…)"
@@ -459,9 +506,12 @@ else
   bad "hot-restart OFF did not mint new client_id (fresh=${CID_FRESH:0:12} off=${CID_OFF:0:12})"
 fi
 # Restore the default (remove override) so the rest of the run reuses identity.
+# Stop before touching the override: the new process must be the only one
+# writing the store or the log during the sampled window (see stop_provider).
+stop_provider
 rm -f "$OVERRIDE_DIR/override.conf"
 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user daemon-reload
-MARK=$(restart_provider)
+MARK=$(start_provider)
 CID_ON=$(wait_client_id "$MARK" 120)
 if [ -n "$CID_ON" ] && [ "$CID_ON" = "$CID_OFF" ]; then
   ok "hot-restart back ON reused client_id (${CID_ON:0:12}…)"
