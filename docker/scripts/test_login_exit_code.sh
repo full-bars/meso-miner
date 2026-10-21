@@ -66,9 +66,13 @@ run_login() {
         echo "PASSWORD='test-pass'"
         echo "JWT_FILE='$out/jwt'"
         echo "export JWT_FILE"
+        echo "PROVIDER_STOPPING=0"
+        echo 'PROVIDER_CHILD_PID=""'
         echo "DEBUG=false"
         echo "log() { echo \"\$*\" >> '$out/login.log'; }"
         echo "sleep() { :; }"
+        extract_func "$common" func_exit_if_stopping
+        extract_func "$common" func_sleep
         extract_func "$common" func_login_retry_loop
         echo 'func_login_retry_loop'
         echo 'echo "rc=$?"'

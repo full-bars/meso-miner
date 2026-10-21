@@ -158,9 +158,14 @@ upd_verify_digest "$tmp/bad.bin" "$good_sum" "primary" >/dev/null 2>&1
 t "verify_digest rejects tampered content" test $? -ne 0
 
 # Source label must appear in mismatch output (error-indistinction fix).
-upd_verify_digest "$tmp/bad.bin" "$good_sum" "mirror-fallback" 2> "$tmp/err.txt"
-grep -q "mirror-fallback" "$tmp/err.txt"
-t "mismatch error names the download source" true
+# Both commands must run inside one function defined in this file so the
+# assertion genuinely fails iff either command fails (sh -c would lose the
+# sourced helpers).
+mismatch_names_source() {
+    upd_verify_digest "$tmp/bad.bin" "$good_sum" "mirror-fallback" 2> "$tmp/err.txt"
+    grep -q "mirror-fallback" "$tmp/err.txt"
+}
+t "mismatch error names the download source" mismatch_names_source
 
 upd_verify_digest "$tmp/nonexistent.bin" "$good_sum" "primary" >/dev/null 2>&1
 t "verify_digest rejects missing file" test $? -ne 0
@@ -201,40 +206,41 @@ t "helper works when sourced by strict /bin/sh (dash-compatible)" test "$(cat "$
 # caller's environment: UPD_raw, UPD_json_clean, UPD_actual all covered
 # (UPD_actual is unexported so env cannot see it — probe via a sourced
 # subshell asserting emptiness instead).
-sh -c ". '$HERE/update_verify.sh' && upd_asset_digest_from_json '$JSON_OK' '$ASSET' >/dev/null; test -z \"\${UPD_raw:-}\" && test -z \"\${UPD_json_clean:-}\" && test -z \"\${UPD_actual:-}\"" 2>/dev/null
-t "helper globals cleaned after successful call" true
+t "helper globals cleaned after successful call" \
+    sh -c ". '$HERE/update_verify.sh' && upd_asset_digest_from_json '$JSON_OK' '$ASSET' >/dev/null; test -z \"${UPD_raw:-}\" && test -z \"${UPD_json_clean:-}\" && test -z \"${UPD_actual:-}\""
 
 # --- Tarball asset pickers (upd_pick_arch_tarball_name / upd_pick_fat_tarball_name) ---
 # The pickers live in update_verify.sh and both update consumers call them.
-# The fat tarball is recognized by having NO per-arch OS token, so the OS list
-# must name EVERY platform we ship (linux, freebsd, darwin, windows, ...): the
-# old inline filters listed only darwin/linux/windows, which made a released
-# platform's tarball fall outside the list and the nightly updater select the
-# wrong platform's tarball for this container. Every platform we ship is a
-# wanted build; the list exists for platform-correct selection, and a new
-# release platform must be added to it.
-# Fixture shaped like a real release: a freebsd-amd64 tarball sorts before the
-# linux one and the fat tarball is last.
-JSON_V342='{"assets":[
+# Regression: the old deny-list fat picker treated every provider tarball
+# without a listed OS token as the OS-less fat tarball, so a decoy artifact,
+# an unlisted new platform's tarball, or a musl-suffix variant of the arch
+# asset could win depending on how the assets sorted.
+# Fixture shaped like a real release: decoys and other platforms sort BEFORE
+# the linux assets the container wants. The pickers resolve EXACT names keyed
+# on tag_name, so none of the decoys can win.
+JSON_V342='{"tag_name":"v3.23.0-fix.34.2","assets":[
   {"name":"urnet-tools-linux-amd64","digest":"sha256:1"},
-  {"name":"urnetwork-provider-v9-darwin-amd64.tar.gz","digest":"sha256:2"},
-  {"name":"urnetwork-provider-v9-freebsd-amd64.tar.gz","digest":"sha256:3"},
-  {"name":"urnetwork-provider-v9-linux-amd64.tar.gz","digest":"sha256:4"},
-  {"name":"urnetwork-provider-v9-linux-arm64.tar.gz","digest":"sha256:5"},
-  {"name":"urnetwork-provider-v9-windows-amd64.tar.gz","digest":"sha256:6"},
-  {"name":"urnetwork-provider-v9.tar.gz","digest":"sha256:7"}]}'
+  {"name":"urnetwork-provider-v3.23.0-fix.34.2-darwin-amd64.tar.gz","digest":"sha256:2"},
+  {"name":"urnetwork-provider-v3.23.0-fix.34.2-freebsd-amd64.tar.gz","digest":"sha256:3"},
+  {"name":"urnetwork-provider-v3.23.0-fix.34.2-linux-amd64.tar.gz","digest":"sha256:4"},
+  {"name":"urnetwork-provider-v3.23.0-fix.34.2-linux-amd64-musl.tar.gz","digest":"sha256:8"},
+  {"name":"urnetwork-provider-v3.23.0-fix.34.2-linux-arm64.tar.gz","digest":"sha256:5"},
+  {"name":"urnetwork-provider-v3.23.0-fix.34.2-netbsd-amd64.tar.gz","digest":"sha256:9"},
+  {"name":"urnetwork-provider-v3.23.0-fix.34.2-checksums.tar.gz","digest":"sha256:10"},
+  {"name":"urnetwork-provider-v3.23.0-fix.34.2-windows-amd64.tar.gz","digest":"sha256:6"},
+  {"name":"urnetwork-provider-v3.23.0-fix.34.2.tar.gz","digest":"sha256:7"}]}'
 
 got="$(upd_pick_arch_tarball_name "$JSON_V342" "amd64")"
 t "arch picker takes linux-amd64 over the other platforms regardless of asset order" \
-    test "$got" = "urnetwork-provider-v9-linux-amd64.tar.gz"
+    test "$got" = "urnetwork-provider-v3.23.0-fix.34.2-linux-amd64.tar.gz"
 
 got="$(upd_pick_arch_tarball_name "$JSON_V342" "arm64")"
 t "arch picker resolves the arm64 per-arch tarball" \
-    test "$got" = "urnetwork-provider-v9-linux-arm64.tar.gz"
+    test "$got" = "urnetwork-provider-v3.23.0-fix.34.2-linux-arm64.tar.gz"
 
 got="$(upd_pick_fat_tarball_name "$JSON_V342")"
 t "fat picker takes the OS-less tarball, never a per-arch one" \
-    test "$got" = "urnetwork-provider-v9.tar.gz"
+    test "$got" = "urnetwork-provider-v3.23.0-fix.34.2.tar.gz"
 
 got="$(upd_pick_arch_tarball_name '{"assets":[{"name":"urnetwork-provider-v9-freebsd-amd64.tar.gz"}]}' "amd64")"
 t "arch picker empty without a linux asset (caller falls back to fat)" test -z "$got"
@@ -261,20 +267,20 @@ t "stale inline darwin/linux/windows OS list is gone from docker/scripts" \
 
 # Nightly asset mapping: URL->name match-back finds the API name even when
 # the URL layout changes above the filename segment.
-URL_V9="https://github.com/full-bars/meso-miner/releases/download/v9/urnetwork-provider-v9.tar.gz"
+URL_V9="https://github.com/full-bars/meso-miner/releases/download/v3.23.0-fix.34.2/urnetwork-provider-v3.23.0-fix.34.2.tar.gz"
 matched=""
 for upd_candidate in $(printf '%s\n' "$JSON_V342" | grep -oE '"name": *"[^"]+"' | sed -E 's/"name": *"([^"]+)"/\1/'); do
     case "$URL_V9" in
         *"/$upd_candidate") matched="$upd_candidate"; break ;;
     esac
 done
-t "nightly URL-to-name match-back resolves the real API asset name" test "$matched" = "urnetwork-provider-v9.tar.gz"
+t "nightly URL-to-name match-back resolves the real API asset name" test "$matched" = "urnetwork-provider-v3.23.0-fix.34.2.tar.gz"
 
 # Basename last-resort path: an asset name absent from the JSON must NOT
 # match-back (guarding the match-back order) — basename of URL used only
 # after match-back exhausts candidates.
 BNAME="${URL_V9##*/}"
-t "basename fallback yields the filename segment" test "$BNAME" = "urnetwork-provider-v9.tar.gz"
+t "basename fallback yields the filename segment" test "$BNAME" = "urnetwork-provider-v3.23.0-fix.34.2.tar.gz"
 
 # --- Source guard: upstream repos must not appear in fetch URLs ---
 violations=""
@@ -291,8 +297,7 @@ for f in "$HERE"/start_update.sh "$HERE"/start_nightly.sh "$HERE"/start_stable.s
         esac
     done < <(grep -oE 'https://api\.github\.com/repos/[^"]+' "$f" || true)
 done
-[ -z "$violations" ]
-t "no upstream urnetwork repo named in any release-fetch URL" true
+t "no upstream urnetwork repo named in any release-fetch URL" test -z "$violations"
 
 echo ""
 echo "Results: $pass passed, $fail failed"

@@ -35,7 +35,7 @@ common="$REPO/docker/scripts/provider_common.sh"
     echo 'APP_DIR=/app'
     echo 'PROVIDER_CHILD_PID=""'
     echo 'PROVIDER_STOPPING=0'
-    for fn in log func_forward_stop func_install_stop_trap func_exit_if_stopping func_run_provider; do
+    for fn in log func_forward_stop func_install_stop_trap func_exit_if_stopping func_sleep func_run_provider; do
         extract_func "$common" "$fn"
     done
     cat <<'EOF'
@@ -93,10 +93,18 @@ fi
 
 # 2. set -e parity: production runs these helpers under `set -e`, so a
 # provider crash (wait returns non-zero) must not abort the supervisor, and
-# the crash must be logged with its real exit code.
-if command -v timeout >/dev/null 2>&1; then
-    out="$tmp/crash"; mkdir -p "$out"
-    cat >"$tmp/crash_stub.sh" <<'EOF'
+# the crash must be logged with its real exit code. Also pins pelican's
+# standalone helper copies to stay byte-identical with provider_common's:
+# they drift silently otherwise, since pelican is the copy that runs as
+# PID 1 under the Pelican egg.
+out="$tmp/crash"; mkdir -p "$out"
+for fn in func_forward_stop func_install_stop_trap func_exit_if_stopping func_sleep func_run_provider; do
+    diff <(extract_func "$common" "$fn") \
+         <(extract_func "$REPO/docker/scripts/pelican_panel.sh" "$fn") >/dev/null 2>&1 \
+        && ok "pelican helper copy matches provider_common: $fn" \
+        || bad "pelican helper copy drifted from provider_common: $fn"
+done
+cat >"$tmp/crash_stub.sh" <<'EOF'
 #!/bin/sh
 echo $$ >"$OUT/stub.pid"
 if [ -f "$OUT/crashed" ]; then
@@ -105,27 +113,24 @@ fi
 touch "$OUT/crashed"
 exit 5
 EOF
-    chmod +x "$tmp/crash_stub.sh"
-    OUT="$out" STUB="$tmp/crash_stub.sh" sh "$tmp/harness.sh" >"$out/stdout" 2>&1 &
-    sup=$!
-    if wait_file "$out/stub.pid"; then
-        sleep 2
-        if kill -0 "$sup" 2>/dev/null; then
-            ok "supervisor survives a provider crash under set -e"
-        else
-            bad "supervisor died on the first provider crash (set -e + failing wait?)"
-        fi
-        grep -q "provider exited code=5; restarting" "$out/supervisor.log" \
-            && ok "crash logged with the real exit code (5)" \
-            || bad "crash exit code not logged as 5"
-        kill -TERM "$sup" 2>/dev/null && sleep 1
-        kill -KILL "$sup" 2>/dev/null
-        kill -KILL "$(cat "$out/stub.pid")" 2>/dev/null
+chmod +x "$tmp/crash_stub.sh"
+OUT="$out" STUB="$tmp/crash_stub.sh" sh "$tmp/harness.sh" >"$out/stdout" 2>&1 &
+sup=$!
+if wait_file "$out/stub.pid"; then
+    sleep 2
+    if kill -0 "$sup" 2>/dev/null; then
+        ok "supervisor survives a provider crash under set -e"
     else
-        bad "crash scenario stub never started"
+        bad "supervisor died on the first provider crash (set -e + failing wait?)"
     fi
+    grep -q "provider exited code=5; restarting" "$out/supervisor.log" \
+        && ok "crash logged with the real exit code (5)" \
+        || bad "crash exit code not logged as 5"
+    kill -TERM "$sup" 2>/dev/null && sleep 1
+    kill -KILL "$sup" 2>/dev/null
+    kill -KILL "$(cat "$out/stub.pid")" 2>/dev/null
 else
-    echo "SKIP: timeout(1) not available for the set -e crash scenario"
+    bad "crash scenario stub never started"
 fi
 
 # 3. Docker: the same shell as PID 1, stopped with `docker stop` (default 10s

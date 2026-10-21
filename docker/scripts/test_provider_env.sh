@@ -208,6 +208,7 @@ STUB_EOF
         esac
         extract_func "$REPO/docker/scripts/provider_common.sh" resolve_provider_env_args
         extract_func "$REPO/docker/scripts/provider_common.sh" func_exit_if_stopping
+        extract_func "$REPO/docker/scripts/provider_common.sh" func_sleep
         extract_func "$REPO/docker/scripts/provider_common.sh" func_run_provider
         extract_func "$REPO/docker/scripts/provider_common.sh" "$_fn"
         echo "$_fn"

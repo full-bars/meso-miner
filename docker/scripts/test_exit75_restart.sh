@@ -115,8 +115,11 @@ STUB_EOF
         echo "func_check_credentials() { echo 'LOG: func_check_credentials called' >> '$test_dir/out.log'; }"
         echo ". '$REPO/docker/scripts/provider_env.sh'"
         extract_func "$REPO/docker/scripts/provider_common.sh" resolve_provider_env_args
-        extract_func "$REPO/docker/scripts/provider_common.sh" func_exit_if_stopping
-        extract_func "$REPO/docker/scripts/provider_common.sh" func_run_provider
+        # helpers come from the SAME file the loop comes from, so pelican's
+        # standalone copies are exercised and drift cannot hide here
+        for _h in func_exit_if_stopping func_sleep func_run_provider; do
+            extract_func "$src_file" "$_h" 2>/dev/null || extract_func "$REPO/docker/scripts/provider_common.sh" "$_h"
+        done
         extract_func "$src_file" "$fn_name"
         echo "$fn_name"
     } > "$runner"
