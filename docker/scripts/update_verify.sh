@@ -102,6 +102,40 @@ upd_release_select_cleanup() {
     unset UPD_root UPD_per_page UPD_max_pages UPD_page UPD_page_json UPD_selected UPD_count
 }
 
+# --- Tarball asset selection -----------------------------------------------
+# A release ships one per-arch tarball per platform/GOARCH (name carries an
+# -<os>-<goarch> token: linux, freebsd, darwin, windows, ...) plus one OS-less
+# multi-arch fat tarball (urnetwork-provider-vX.tar.gz). Every platform is a
+# wanted build; the updater either takes the linux-<arch> tarball for this
+# container or, for tooling, the fat tarball. The fat tarball is recognized
+# by having NO OS token, so the list below must name EVERY platform we ship:
+# an unlisted platform makes its tarball indistinguishable from the fat
+# tarball and the updater installs the wrong platform's binary. Add the
+# platform to this list when releases gain a new one.
+UPD_PER_ARCH_OS_RES="darwin|freebsd|linux|windows"
+
+# upd_pick_arch_tarball_name <release-json> <goarch>
+# Prints the name of the linux-<goarch> per-arch tarball, or nothing when the
+# release carries none (the caller then falls back to the fat tarball).
+upd_pick_arch_tarball_name() {
+    printf '%s' "$1" | jq -r --arg arch "$2" \
+        '.assets[] | .name |
+         select((startswith("urnetwork-provider-")) and (endswith(".tar.gz")) and
+                (contains("linux-" + $arch)))
+      ' 2>/dev/null | head -n1
+}
+
+# upd_pick_fat_tarball_name <release-json>
+# Prints the name of the OS-less multi-arch fat tarball, or nothing when the
+# release carries none.
+upd_pick_fat_tarball_name() {
+    printf '%s' "$1" | jq -r --arg os "$UPD_PER_ARCH_OS_RES" \
+        '.assets[] | .name |
+         select((startswith("urnetwork-provider-")) and (endswith(".tar.gz")) and
+                ((test("-(" + $os + ")-")) | not))
+      ' 2>/dev/null | head -n1
+}
+
 # upd_fetch_stable_release_json <api-root>
 # Walks release pages (newest first) and prints the newest eligible stable
 # release object. UPD_RELEASE_PER_PAGE / UPD_RELEASE_MAX_PAGES override the

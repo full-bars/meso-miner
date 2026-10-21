@@ -59,6 +59,60 @@ log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') >>> UrNetwork >>> $*"
 }
 
+# === Stop Forwarding ===
+# `docker stop` sends SIGTERM to PID 1, which is this shell. A shell running as
+# PID 1 has no default action for SIGTERM, so without a trap the provider never
+# hears it and Docker SIGKILLs the container after its timeout, skipping the
+# provider's own shutdown (final metrics counter flush, clean close).
+PROVIDER_CHILD_PID=""
+PROVIDER_STOPPING=0
+
+func_forward_stop() {
+    PROVIDER_STOPPING=1
+    if [ -n "$PROVIDER_CHILD_PID" ]; then
+        kill -TERM "$PROVIDER_CHILD_PID" 2>/dev/null || true
+    fi
+    # a hotswap successor is not this shell's child; pkill returns 1 when
+    # nothing matches (the common no-hotswap case), and because this runs
+    # inside the trap handler, set -e would otherwise kill the supervisor
+    # itself mid-stop instead of waiting for the provider to exit
+    pkill -TERM -f "^$APP_DIR/urnetwork_.* provide" 2>/dev/null || true
+}
+
+func_install_stop_trap() {
+    trap func_forward_stop TERM INT
+}
+
+func_exit_if_stopping() {
+    if [ "$PROVIDER_STOPPING" -eq 1 ]; then
+        log "[INFO] Stop requested; supervisor exiting."
+        exit 0
+    fi
+}
+
+# func_run_provider runs the provider in the background so the stop trap can
+# fire while it runs, and sets code to its exit status. wait returns early
+# (status > 128) when a trapped signal arrives, so it keeps waiting until the
+# provider itself has exited.
+func_run_provider() {
+    "$@" &
+    PROVIDER_CHILD_PID=$!
+    code=0
+    while :; do
+        # `|| code=$?` keeps the real exit code AND the run alive: under
+        # `set -e` a bare failing wait (a crashed provider, or a wait
+        # interrupted by the TERM trap with status 143) would abort the
+        # whole supervisor loop instead of handling the exit.
+        wait "$PROVIDER_CHILD_PID" || code=$?
+        kill -0 "$PROVIDER_CHILD_PID" 2>/dev/null || break
+    done
+    PROVIDER_CHILD_PID=""
+    if [ "$PROVIDER_STOPPING" -eq 1 ]; then
+        log "[INFO] Stop requested; UrNetwork exited (code=$code)."
+        exit 0
+    fi
+}
+
 # resolve_provider_env_args fills PROVIDER_ENV_ARGS from provider_env_flags.
 # An invalid operator setting is fatal: the mapping logs the offending setting,
 # and providing with a half-applied flag set would be worse. With none of the
@@ -223,9 +277,12 @@ func_login_retry_loop() {
 
         log "[INFO] Attempting authentication..."
 
-        # Capture auth command output for parsing
-        AUTH_OUTPUT=$("$PROVIDER_BIN" auth --user_auth="$USER_AUTH" --password="$PASSWORD" -f 2>&1) || true
-        AUTH_EXIT_CODE=$?
+        # Capture the auth command output for parsing. The `|| cmd` form keeps
+        # the real exit status in AUTH_EXIT_CODE: `|| true` followed by $? gave
+        # 0 for every failure, so the failure log said "exit code: 0" and the
+        # panic line was the only real diagnostic left.
+        AUTH_EXIT_CODE=0
+        AUTH_OUTPUT=$("$PROVIDER_BIN" auth --user_auth="$USER_AUTH" --password="$PASSWORD" -f 2>&1) || AUTH_EXIT_CODE=$?
         PANIC_LINE=$(echo "$AUTH_OUTPUT" | grep -E '^panic:' || true)
 
         if [ "${DEBUG:-false}" = "true" ]; then
@@ -352,14 +409,14 @@ func_check_update() {
     ASSET_NAME=""
     DOWNLOAD_URL=""
     if command -v jq >/dev/null 2>&1 && [ -n "$RELEASE_JSON" ]; then
-        ASSET_NAME="$(printf '%s\n' "$RELEASE_JSON" \
-          | jq -r --arg arch "$A_SYS_ARCH" '
-              .assets[] | .name |
-              select((startswith("urnetwork-provider-")) and (endswith(".tar.gz")) and
-                     (contains("linux-" + $arch) or
-                      ((test("-darwin-|-linux-|-windows-")) | not)))
-            ' 2>/dev/null \
-          | head -n1)"
+        # Preference 1: per-arch tarball for this container (~11MB vs ~84MB).
+        # Preference 2: the multi-arch fat tarball (no OS token in the name);
+        # the extract step below can still pull linux/${A_SYS_ARCH}/provider
+        # from it. The pickers live in update_verify.sh so start_update.sh
+        # shares the exact same per-arch OS list, keeping nightly selection
+        # platform-correct for every tarball we ship.
+        ASSET_NAME="$(upd_pick_arch_tarball_name "$RELEASE_JSON" "$A_SYS_ARCH")"
+        [ -n "$ASSET_NAME" ] || ASSET_NAME="$(upd_pick_fat_tarball_name "$RELEASE_JSON")"
         if [ -n "$ASSET_NAME" ]; then
             DOWNLOAD_URL="$(printf '%s\n' "$RELEASE_JSON" \
               | jq -r --arg f "$ASSET_NAME" '.assets[] | select(.name == $f) | .browser_download_url' 2>/dev/null)"
@@ -382,7 +439,7 @@ func_check_update() {
           | head -n1)"
         if [ -z "$DOWNLOAD_URL" ]; then
             DOWNLOAD_URL="$(printf '%s\n' "$CAND_URLS" \
-              | grep -Ev -- '-(darwin|linux|windows)-' \
+              | grep -Ev -- "-($UPD_PER_ARCH_OS_RES)-" \
               | head -n1)"
         fi
         [ -n "$DOWNLOAD_URL" ] || {
@@ -508,6 +565,7 @@ func_check_update() {
 func_start_provider_stable(){
     failures=0
     while :; do
+        func_exit_if_stopping
         log "[INFO] Starting UrNetwork (attempt #$((failures+1)))"
         PROVIDER_BIN="$APP_DIR/urnetwork_${A_SYS_ARCH}_${PROVIDER_FLAVOR}"
 		BIN_VER="$($PROVIDER_BIN --version)"
@@ -519,7 +577,7 @@ func_start_provider_stable(){
         # as written, not as whatever happens to match on disk
         set -f
         # shellcheck disable=SC2086  # PROVIDER_ENV_ARGS is a deliberately split flag list
-        if "$PROVIDER_BIN" provide $PROVIDER_ENV_ARGS; then code=0; else code=$?; fi
+        func_run_provider "$PROVIDER_BIN" provide $PROVIDER_ENV_ARGS
         set +f
         if [ "$code" -eq 0 ]; then
             if [ -f "$HOME/.urnetwork/update-pending" ]; then
@@ -535,6 +593,7 @@ func_start_provider_stable(){
                 while pgrep -f "urnetwork.*provide" >/dev/null 2>&1; do
                     sleep 2
                 done
+                func_exit_if_stopping
                 continue
             fi
             log " [INFO] UrNetwork exited cleanly."
@@ -579,6 +638,7 @@ func_start_provider_stable(){
 func_start_provider_nightly(){
     failures=0
     while :; do
+        func_exit_if_stopping
         log "[INFO] Starting UrNetwork (attempt #$((failures+1)))"
         PROVIDER_BIN="$APP_DIR/urnetwork_${A_SYS_ARCH}_${PROVIDER_FLAVOR}"
 		BIN_VER="$($PROVIDER_BIN --version)"
@@ -587,7 +647,7 @@ func_start_provider_nightly(){
         resolve_provider_env_args
         set -f
         # shellcheck disable=SC2086  # PROVIDER_ENV_ARGS is a deliberately split flag list
-        if "$PROVIDER_BIN" provide $PROVIDER_ENV_ARGS; then code=0; else code=$?; fi
+        func_run_provider "$PROVIDER_BIN" provide $PROVIDER_ENV_ARGS
         set +f
         if [ "$code" -eq 0 ]; then
             if [ -f "$HOME/.urnetwork/update-pending" ]; then
@@ -603,6 +663,7 @@ func_start_provider_nightly(){
                 while pgrep -f "urnetwork.*provide" >/dev/null 2>&1; do
                     sleep 2
                 done
+                func_exit_if_stopping
                 continue
             fi
             log " [INFO] UrNetwork exited cleanly."
@@ -702,6 +763,7 @@ func_start_provider_jwt(){
     failures=0
     reauth_attempts=0
     while :; do
+        func_exit_if_stopping
         log "[INFO] Starting UrNetwork (attempt #$((failures+1)))"
         # Capture the real exit code. Reading $? after the `if ... fi` gave
         # the compound's status, 0 whenever provide failed: every crash logged
@@ -709,7 +771,7 @@ func_start_provider_jwt(){
         resolve_provider_env_args
         set -f
         # shellcheck disable=SC2086  # PROVIDER_ENV_ARGS is a deliberately split flag list
-        if "$PROVIDER_BIN" provide $PROVIDER_ENV_ARGS; then code=0; else code=$?; fi
+        func_run_provider "$PROVIDER_BIN" provide $PROVIDER_ENV_ARGS
         set +f
         if [ "$code" -eq 0 ]; then
             if [ -f "$HOME/.urnetwork/update-pending" ]; then
@@ -727,6 +789,7 @@ func_start_provider_jwt(){
                 while pgrep -f "urnetwork.*provide" >/dev/null 2>&1; do
                     sleep 2
                 done
+                func_exit_if_stopping
                 continue
             fi
             log "[INFO] UrNetwork exited cleanly."
@@ -893,5 +956,6 @@ func_bootstrap() {
 
 # === Main Entrypoint ===
 main() {
+    func_install_stop_trap
     func_bootstrap "$@"
 }

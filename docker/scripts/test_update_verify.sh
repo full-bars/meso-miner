@@ -10,8 +10,11 @@
 #      fails on missing file / empty expected digest / absent hashing tool, names the
 #      download source in mismatch output.
 #   3. POSIX discipline: no `local`, sources clean under dash.
-#   4. Caller asset-selection filter: parenthesized jq shape pinned, broken shape
-#      rejected, first-wins multi-asset order.
+#   4. Tarball asset pickers: the arch picker takes the linux-<arch> per-arch
+#      tarball for this container (platform-correct selection; freebsd and the
+#      other platforms are wanted per-arch builds), the fat picker takes the
+#      OS-less multi-arch tarball, both consumers call the shared helpers, and
+#      the stale inline OS list is gone.
 #   5. Source guard: no docker script names an upstream urnetwork repo in fetch URLs.
 #
 # HARNESS CONTRACT (regression-hardened): every assertion is evaluated INSIDE the t()
@@ -201,32 +204,66 @@ t "helper works when sourced by strict /bin/sh (dash-compatible)" test "$(cat "$
 sh -c ". '$HERE/update_verify.sh' && upd_asset_digest_from_json '$JSON_OK' '$ASSET' >/dev/null; test -z \"\${UPD_raw:-}\" && test -z \"\${UPD_json_clean:-}\" && test -z \"\${UPD_actual:-}\"" 2>/dev/null
 t "helper globals cleaned after successful call" true
 
-# --- Caller asset-selection filter (start_update.sh Download_API) ---
-# Regression: jq `select(A) and B` parses as `(select(A)) and B`, so the
-# un-parenthesized form errors "Cannot index boolean with string" on every
-# real release. Pin the CORRECT parenthesized expression + first-wins order.
-# start_update.sh must select the MULTI-ARCH fat tarball (Extract_Providers
-# pulls both linux/amd64 and linux/arm64 from one file), so per-arch assets
-# (which carry an -<os>-<goarch> token, darwin first) are excluded.
-JSON_MULTI='{"assets":[
+# --- Tarball asset pickers (upd_pick_arch_tarball_name / upd_pick_fat_tarball_name) ---
+# The pickers live in update_verify.sh and both update consumers call them.
+# The fat tarball is recognized by having NO per-arch OS token, so the OS list
+# must name EVERY platform we ship (linux, freebsd, darwin, windows, ...): the
+# old inline filters listed only darwin/linux/windows, which made a released
+# platform's tarball fall outside the list and the nightly updater select the
+# wrong platform's tarball for this container. Every platform we ship is a
+# wanted build; the list exists for platform-correct selection, and a new
+# release platform must be added to it.
+# Fixture shaped like a real release: a freebsd-amd64 tarball sorts before the
+# linux one and the fat tarball is last.
+JSON_V342='{"assets":[
   {"name":"urnet-tools-linux-amd64","digest":"sha256:1"},
-  {"name":"urnetwork-provider-v9-linux-amd64.tar.gz","digest":"sha256:2"},
-  {"name":"urnetwork-provider-v9.tar.gz","digest":"sha256:3"},
-  {"name":"urnetwork-provider-v9-darwin-amd64.tar.gz","digest":"sha256:4"}]}'
-sel="$(printf '%s' "$JSON_MULTI" | jq -r '.assets[] | select((.name | startswith("urnetwork-provider-")) and (.name | endswith(".tar.gz")) and ((.name | test("-darwin-|-linux-|-windows-")) | not)) | .name' | head -n1)"
-t "start_update asset filter picks the multi-arch fat tarball, never darwin" test "$sel" = "urnetwork-provider-v9.tar.gz"
+  {"name":"urnetwork-provider-v9-darwin-amd64.tar.gz","digest":"sha256:2"},
+  {"name":"urnetwork-provider-v9-freebsd-amd64.tar.gz","digest":"sha256:3"},
+  {"name":"urnetwork-provider-v9-linux-amd64.tar.gz","digest":"sha256:4"},
+  {"name":"urnetwork-provider-v9-linux-arm64.tar.gz","digest":"sha256:5"},
+  {"name":"urnetwork-provider-v9-windows-amd64.tar.gz","digest":"sha256:6"},
+  {"name":"urnetwork-provider-v9.tar.gz","digest":"sha256:7"}]}'
 
-# The broken (unparenthesized) shape must stay broken-and-unused: assert it
-# errors, so nobody reintroduces it thinking it works.
+got="$(upd_pick_arch_tarball_name "$JSON_V342" "amd64")"
+t "arch picker takes linux-amd64 over the other platforms regardless of asset order" \
+    test "$got" = "urnetwork-provider-v9-linux-amd64.tar.gz"
+
+got="$(upd_pick_arch_tarball_name "$JSON_V342" "arm64")"
+t "arch picker resolves the arm64 per-arch tarball" \
+    test "$got" = "urnetwork-provider-v9-linux-arm64.tar.gz"
+
+got="$(upd_pick_fat_tarball_name "$JSON_V342")"
+t "fat picker takes the OS-less tarball, never a per-arch one" \
+    test "$got" = "urnetwork-provider-v9.tar.gz"
+
+got="$(upd_pick_arch_tarball_name '{"assets":[{"name":"urnetwork-provider-v9-freebsd-amd64.tar.gz"}]}' "amd64")"
+t "arch picker empty without a linux asset (caller falls back to fat)" test -z "$got"
+
+# The digest lookup must follow the picked asset name end to end.
+got="$(upd_asset_digest_from_json "$JSON_V342" "$(upd_pick_arch_tarball_name "$JSON_V342" "amd64")")"
+t "digest lookup resolves the picked asset" test "$got" = "4"
+
+# The unparenthesized select+and shape must stay rejected: jq parses
+# `select(A) and B` as a boolean stage and errors on every real release, so
+# nobody reintroduces it thinking it works.
 broken_exit=0
-printf '%s' "$JSON_MULTI" | jq -r '.assets[] | select(.name | startswith("urnetwork-provider-")) and (.name | endswith(".tar.gz")) | .name' >/dev/null 2>&1 || broken_exit=1
+printf '%s' "$JSON_V342" | jq -r '.assets[] | select(.name | startswith("urnetwork-provider-")) and (.name | endswith(".tar.gz")) | .name' >/dev/null 2>&1 || broken_exit=1
 t "unparenthesized select+and stays rejected (would abort under set -e)" test "$broken_exit" -eq 1
+
+# Wiring guard: both update consumers must call the shared pickers, and the
+# old incomplete inline OS list must not reappear anywhere in docker/scripts.
+t "start_update.sh selects the fat tarball through the shared picker" \
+    grep -q 'upd_pick_fat_tarball_name' "$HERE/start_update.sh"
+t "nightly updater calls the shared arch picker" \
+    grep -q 'upd_pick_arch_tarball_name' "$HERE/provider_common.sh"
+t "stale inline darwin/linux/windows OS list is gone from docker/scripts" \
+    test -z "$(grep -rlE -- '-darwin-\|-linux-\|-windows-' "$HERE")"
 
 # Nightly asset mapping: URL->name match-back finds the API name even when
 # the URL layout changes above the filename segment.
 URL_V9="https://github.com/full-bars/meso-miner/releases/download/v9/urnetwork-provider-v9.tar.gz"
 matched=""
-for upd_candidate in $(printf '%s\n' "$JSON_MULTI" | grep -oE '"name": *"[^"]+"' | sed -E 's/"name": *"([^"]+)"/\1/'); do
+for upd_candidate in $(printf '%s\n' "$JSON_V342" | grep -oE '"name": *"[^"]+"' | sed -E 's/"name": *"([^"]+)"/\1/'); do
     case "$URL_V9" in
         *"/$upd_candidate") matched="$upd_candidate"; break ;;
     esac
