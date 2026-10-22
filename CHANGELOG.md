@@ -14,6 +14,8 @@
 
 ### Changed
 
+- **The CFAA and IP blocker tables refreshed**: 41,202 to 46,733 IPv4 entries and 593 to 597 IPv6 entries, with blocked hosts moving from 163,972 to 164,212. Data only; it takes effect once a node runs this release.
+- **SN25 costs on the Bittensor pages come from the chain** ([#264](https://github.com/full-bars/meso-miner/pull/256)): the head-tier and quick-start pages show a live cost snapshot with the time it was taken and a link to the live copy, instead of a figure that ages into a guess.
 - **The IP blocker table syncs with CFAA** ([#262](https://github.com/full-bars/meso-miner/pull/262)): the scheduled job pulled one file, so the blocker table drifted unseen. Both files sync now, and a check fails on drift.
 - **Four Bittensor claims are corrected** ([#260](https://github.com/full-bars/meso-miner/pull/260)): the v1 and v2 claim triggers, the quoted challenge message, the stopped-daemon caveat for unsigned v1 claims, and the consent scope.
 - **The v2026.10.21 changes are documented where operators look** ([#253](https://github.com/full-bars/meso-miner/pull/253)): `FORK_CHANGES.md`, `LOG_REFERENCE.md`, the HotSwap page and the install docs now carry the counter persistence, the swap behaviour and the install detail.
