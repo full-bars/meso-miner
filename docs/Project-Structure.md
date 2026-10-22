@@ -66,17 +66,17 @@ Test files sit beside the code they test (`*_test.go`).
 - `scripts/`: installers and uninstallers (`Provider_Install_Linux.sh`, `_Mac.sh`, `_Win32.ps1`, `_FreeBSD.sh`), the Docker host installer (`install-urnet-docker.sh`), and release helpers (`pre-tag-check.sh`, `compute-meso-tag.sh`).
 - `Dockerfile` and `docker/scripts/`: the container image. `entrypoint.sh` picks the start script from the `BUILD` setting.
 - `pelican/`: egg for the Pelican game-server panel.
-- `monitoring/`: ready-made Prometheus and Grafana stack. See [Monitoring](Monitoring.md).
+- `monitoring/`: ready-made Prometheus and Grafana stack. See [Monitoring](/full-bars/meso-miner/wiki/Monitoring).
 - `.github/workflows/`: CI. `build.yml` builds and tests, `release.yml` publishes releases, plus installer, OpenRC, FreeBSD, CodeQL and soak checks.
 
 ## Documentation
 
-- [README.md](../README.md): start here.
+- [README.md](/full-bars/meso-miner/blob/main/README.md): start here.
 - `docs/`: one page per topic. `docs/guides/` has beginner, intermediate and advanced walkthroughs. `docs/design/` is design history for maintainers.
-- [CHANGELOG.md](../CHANGELOG.md) and `releases/`: what changed in each release. Release notes before the `v2026...` ones are inherited from the 3.23-fix line.
-- [FORK_CHANGES.md](../FORK_CHANGES.md): everything this fork changed compared with upstream.
-- [LOG_REFERENCE.md](../LOG_REFERENCE.md): what each log line means.
-- [CODESTYLE.md](../CODESTYLE.md), [AI.md](../AI.md): conventions and a guide for AI assistants.
+- [CHANGELOG.md](/full-bars/meso-miner/blob/main/CHANGELOG.md) and `releases/`: what changed in each release. Release notes before the `v2026...` ones are inherited from the 3.23-fix line.
+- [FORK_CHANGES.md](/full-bars/meso-miner/blob/main/FORK_CHANGES.md): everything this fork changed compared with upstream.
+- [LOG_REFERENCE.md](/full-bars/meso-miner/blob/main/LOG_REFERENCE.md): what each log line means.
+- [CODESTYLE.md](/full-bars/meso-miner/blob/main/CODESTYLE.md), [AI.md](/full-bars/meso-miner/blob/main/AI.md): conventions and a guide for AI assistants.
 
 ## What was removed
 

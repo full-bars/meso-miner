@@ -3,7 +3,7 @@
 > [!NOTE]
 > **Status: ships in the v34 parity release** (the next meso release, 2026-10-20). `h3 auto` is opt-in: nothing in this page changes anything unless the `h3` control key is set to `auto`. The same release also turns plain H3 on by default for a settled direct-only node (mode `on`), but that is not `auto` and it does not run the sizing controller described here.
 
-`h3 auto` is a value for the existing [`h3`](Configuration.md#-control-socket--runtime-settings) control key. It chooses how many proxies get the H3, H3-over-DNS and DNS-pump fallback policy from the provider's memory limit and its existing memory pressure signal. It does not add a sensor, a background loop or a metric series.
+`h3 auto` is a value for the existing [`h3`](/full-bars/meso-miner/wiki/Configuration#-control-socket--runtime-settings) control key. It chooses how many proxies get the H3, H3-over-DNS and DNS-pump fallback policy from the provider's memory limit and its existing memory pressure signal. It does not add a sensor, a background loop or a metric series.
 
 ## What it sizes
 
@@ -63,7 +63,7 @@ A target move logs one line, and only when the ranked set actually changes:
 
 The first number is the previous target, the second the new one. `capacity` is what the effective memory limit allows, from 0 to 64. A pool smaller than the target does not produce a line per step.
 
-The usual H3 signals still apply: the `[health]` fields (`h3_up`, `h3_tx_share`, `h3_drops`, `h3_conn_fail`), the `[proxy][udp]` lines, and the `urnet_h3_*` and `urnet_transport_*` series in `/metrics`. See [Monitoring](Monitoring.md) and the [log reference](../LOG_REFERENCE.md#widening-or-narrowing-the-h3-key-relaunches-proxies).
+The usual H3 signals still apply: the `[health]` fields (`h3_up`, `h3_tx_share`, `h3_drops`, `h3_conn_fail`), the `[proxy][udp]` lines, and the `urnet_h3_*` and `urnet_transport_*` series in `/metrics`. See [Monitoring](/full-bars/meso-miner/wiki/Monitoring) and the [log reference](/full-bars/meso-miner/blob/main/LOG_REFERENCE.md#widening-or-narrowing-the-h3-key-relaunches-proxies).
 
 ## Default and compatibility
 
@@ -85,6 +85,6 @@ Known risks:
 
 ## Related
 
-- [Configuration](Configuration.md#-control-socket--runtime-settings): the `h3` row and the other control keys.
-- [Monitoring](Monitoring.md): the H3 metrics and health fields.
-- [Log reference](../LOG_REFERENCE.md#widening-or-narrowing-the-h3-key-relaunches-proxies): the relaunch and auto lines.
+- [Configuration](/full-bars/meso-miner/wiki/Configuration#-control-socket--runtime-settings): the `h3` row and the other control keys.
+- [Monitoring](/full-bars/meso-miner/wiki/Monitoring): the H3 metrics and health fields.
+- [Log reference](/full-bars/meso-miner/blob/main/LOG_REFERENCE.md#widening-or-narrowing-the-h3-key-relaunches-proxies): the relaunch and auto lines.

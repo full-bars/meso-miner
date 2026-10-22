@@ -45,7 +45,7 @@ Every time the provider binary exits with a non-zero code, it prints a `FATAL [e
 | 20 | The proxy file specified with `--proxy_file` cannot be read. Check the path and file permissions. |
 | 21 | The proxy file is empty or contains no valid `ip:port:user:pass` lines. |
 | 78 | The JWT is expired or invalid. The startup script intercepts this code, deletes the stale JWT, and re-authenticates automatically. |
-| 75 | Planned restart requested by the swap-thrash watchdog. It is not a crash. Under systemd with `Restart=on-failure` the unit restarts the provider. In a container the start script restarts it after 5 seconds, and only when `URNETWORK_EXIT75_OK=1` allowed the watchdog to exit at all. See [Swap-thrash watchdog](Configuration.md#swap-thrash-watchdog). |
+| 75 | Planned restart requested by the swap-thrash watchdog. It is not a crash. Under systemd with `Restart=on-failure` the unit restarts the provider. In a container the start script restarts it after 5 seconds, and only when `URNETWORK_EXIT75_OK=1` allowed the watchdog to exit at all. See [Swap-thrash watchdog](/full-bars/meso-miner/wiki/Configuration#swap-thrash-watchdog). |
 
 ### logs
 
@@ -101,7 +101,7 @@ The signaling layer is responsible for contract creation and connection handshak
 | :--- | :--- | :--- |
 | `oob err = Timeout` | The signaling response took >60s. | Check for network congestion or CPU starvation. |
 | `oob err = Invalid` | Authentication token (JWT) or credentials failed. | Verify your `<AUTH-CODE>` or email/pass. |
-| `exit could not create contract` | Repeated timeouts prevented contract initialization. | See [Performance Tuning](High-Volume-Performance-Tuning.md). |
+| `exit could not create contract` | Repeated timeouts prevented contract initialization. | See [Performance Tuning](/full-bars/meso-miner/wiki/High-Volume-Performance-Tuning). |
 
 ## 4. Resource Exhaustion
 
@@ -151,7 +151,7 @@ systemctl --user show urnetwork.service -p Type,NotifyAccess   # drop --user for
 
 **Fix**: nothing manual. Run `urnet-tools update` on a build that includes the
 migration fix: the first update converts the unit to `Type=notify` and restarts
-once, and the updates after that hotswap (see [HotSwap](HotSwap.md#which-update-hotswaps)).
+once, and the updates after that hotswap (see [HotSwap](/full-bars/meso-miner/wiki/HotSwap#which-update-hotswaps)).
 If the update prints `note: ... is Type=simple but its unit file cannot be
 migrated automatically`, `Type=` is set by a drop-in you control: change it
 there to `Type=notify` and `NotifyAccess=all`, then `systemctl daemon-reload`.
@@ -219,4 +219,4 @@ These come from `provider claim`, `provider wallet set` and `provide --wallet`. 
 | `<source> does not name a client (is it the network token?) ...` | The token is the network token. Claim needs a client token. |
 | `<source> has expired; let the provider renew it or pass a fresher --provider-jwt` | Start the provider so it renews the identity, or pass a newer token file. |
 | `No claimable epoch.` | The platform's own answer: there is nothing to claim for that epoch with that client. Try another identity that served traffic, or another `--epoch`. |
-| `subnet wallet not set: provider wallet set sends the unsigned network wallet request ...` | The unsigned request is refused by default, because the platform is moving to a signed wallet consent. Sign the wallet consent instead with `provider wallet sign <coldkey>` from your own computer, then confirm with `provider wallet status` (see the [Bittensor Quick Start](Bittensor-Quick-Start.md)). A plain "connect wallet" in the app or website is only a login proof and is not paid. The unsigned `--legacy-network-wallet` request is not paid either. `provide --wallet` prints this and keeps providing. |
+| `subnet wallet not set: provider wallet set sends the unsigned network wallet request ...` | The unsigned request is refused by default, because the platform is moving to a signed wallet consent. Sign the wallet consent instead with `provider wallet sign <coldkey>` from your own computer, then confirm with `provider wallet status` (see the [Bittensor Quick Start](/full-bars/meso-miner/wiki/Bittensor-Quick-Start)). A plain "connect wallet" in the app or website is only a login proof and is not paid. The unsigned `--legacy-network-wallet` request is not paid either. `provide --wallet` prints this and keeps providing. |
