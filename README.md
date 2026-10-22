@@ -97,7 +97,7 @@ curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/mai
 docker pull ghcr.io/full-bars/meso-miner:latest
 ```
 
-**🐋 Docker (management wrapper)**
+**🐋 Docker Wrapper (Optional but Recommended -- For docker deployments, install this to control and interact with your container)**
 
 ```sh
 curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/install-urnet-docker.sh | sh
