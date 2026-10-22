@@ -33,7 +33,7 @@ Operators with **many distinct, stable public IP ranges** that are not shared wi
 
 ## What it costs and requires
 
-The live figures below are read from the chains by CI, so this page does not carry hand-maintained numbers. The bullets after the table explain what each figure means.
+The chain figures below are read from the chains by a scheduled job, and every dollar amount is an estimate from an external TAO price feed, so this page does not carry hand-maintained numbers. GitHub runs scheduled jobs on a best-effort basis and can delay them by hours, so the "last changed" line, not the clock, tells you how fresh they are. The bullets after the table explain what each figure means.
 
 <!-- BEGIN SN25 LIVE NUMBERS (generated) -->
 _Live values · last changed 2026-10-22 21:26 UTC · refreshed automatically_
