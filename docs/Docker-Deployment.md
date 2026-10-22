@@ -76,7 +76,7 @@ docker run -d --name urfix \
 
 | Env var | Purpose |
 |---|---|
-| `PROXY_URL` | Live proxy list URL, fetched and merged on interval (see [Proxy URL Sources](Proxy-URL-Sources.md)) |
+| `PROXY_URL` | Live proxy list URL, fetched and merged on interval (see [Proxy URL Sources](/full-bars/meso-miner/wiki/Proxy-URL-Sources)) |
 | `URNETWORK_PROXY_BENCHMARK=true` | Enables per-proxy latency probes (TCP connect every 5m, SOCKS5 every 15m) |
 | `URNETWORK_PROXY_BENCHMARK_ENDPOINT` | Target for SOCKS5 CONNECT probe (default `connect.bringyour.com:443`) |
 
@@ -194,7 +194,7 @@ docker run -d \
 
 For another single-container deployment on the same host, copy your `docker-compose.yml` to a new folder and replace the `urfix` prefix with a unique name in `container_name`, `volumes`, and the top-level `volumes:` section.
 
-For 3, 5, or 10 nodes in one Compose file, use the [Multi-Container Scaling](Multi-Container-Scaling.md) guide.
+For 3, 5, or 10 nodes in one Compose file, use the [Multi-Container Scaling](/full-bars/meso-miner/wiki/Multi-Container-Scaling) guide.
 
 ### 🔐 JWT Auth
 
@@ -325,7 +325,7 @@ docker exec -it <container> provider proxy summary
 
 ## ♻️ Hot-Restart
 
-Client JWTs are reused across restarts by default (no env var needed since v3.23.0-fix.26). The write path has been un-gated since v25.15, so JWTs were already being saved on every auth cycle, and the read path now follows suit. What is stored, how to inspect it, and what mints a new identity: [Hot-Restart.md](Hot-Restart.md).
+Client JWTs are reused across restarts by default (no env var needed since v3.23.0-fix.26). The write path has been un-gated since v25.15, so JWTs were already being saved on every auth cycle, and the read path now follows suit. What is stored, how to inspect it, and what mints a new identity: [Hot-Restart.md](/full-bars/meso-miner/wiki/Hot-Restart).
 
 **Disabling:**
 ```bash
@@ -564,7 +564,7 @@ This brings up:
 
 The metrics endpoint is enabled by default — no environment variables are needed. To disable it on a specific container, add `-e URNETWORK_METRICS=0`.
 
-See also the [Configuration](Configuration.md#-monitoring--telemetry) reference for the full list of telemetry variables.
+See also the [Configuration](/full-bars/meso-miner/wiki/Configuration#-monitoring--telemetry) reference for the full list of telemetry variables.
 
 ## 🐦 Pelican Panel
 
@@ -616,7 +616,7 @@ The egg ships with automated CI checks (`docker/scripts/test_pelican_gates.sh` f
 
 ## Letting the Thrash Watchdog Restart the Container's Provider
 
-The swap-thrash watchdog ([details](Configuration.md#swap-thrash-watchdog)) restarts the provider by exiting with status 75. Inside a container that is allowed only when you opt in, because only you know that the container restarts the provider afterwards:
+The swap-thrash watchdog ([details](/full-bars/meso-miner/wiki/Configuration#swap-thrash-watchdog)) restarts the provider by exiting with status 75. Inside a container that is allowed only when you opt in, because only you know that the container restarts the provider afterwards:
 
 ```yaml
 services:

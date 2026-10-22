@@ -51,7 +51,7 @@ systemctl --user show urnetwork.service -p Type,NotifyAccess   # drop --user for
 
 ## Metrics counters across a swap
 
-The cumulative `urnet_*_total` counters live in `~/.urnetwork/metrics_counters.json`. The new process restores the stored totals but does not write while the old one is still serving. At takeover it catches up to whatever the old process wrote, and then starts the periodic write. The old process writes its final totals at the end of its drain, and the new one catches up again once the drain window has passed. If the new process dies during the drain, the old process writes its totals before it exits for the supervisor. A scrape therefore continues the series across the swap; see [Monitoring](Monitoring.md) for the dashboards' restart gate.
+The cumulative `urnet_*_total` counters live in `~/.urnetwork/metrics_counters.json`. The new process restores the stored totals but does not write while the old one is still serving. At takeover it catches up to whatever the old process wrote, and then starts the periodic write. The old process writes its final totals at the end of its drain, and the new one catches up again once the drain window has passed. If the new process dies during the drain, the old process writes its totals before it exits for the supervisor. A scrape therefore continues the series across the swap; see [Monitoring](/full-bars/meso-miner/wiki/Monitoring) for the dashboards' restart gate.
 
 ## What you will see
 
@@ -101,5 +101,5 @@ Set `URNETWORK_PPROF=127.0.0.1:6060` to expose pprof on loopback. During a swap 
 
 ## Related
 
-- [Troubleshooting: HotSwap declines on an existing node](Troubleshooting.md#5-hotswap-declines-on-an-existing-node)
-- [Monitoring: `urnet_hotswap_outcomes_total`](Monitoring.md)
+- [Troubleshooting: HotSwap declines on an existing node](/full-bars/meso-miner/wiki/Troubleshooting#5-hotswap-declines-on-an-existing-node)
+- [Monitoring: `urnet_hotswap_outcomes_total`](/full-bars/meso-miner/wiki/Monitoring)
