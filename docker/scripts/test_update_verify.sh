@@ -262,8 +262,17 @@ t "start_update.sh selects the fat tarball through the shared picker" \
     grep -q 'upd_pick_fat_tarball_name' "$HERE/start_update.sh"
 t "nightly updater calls the shared arch picker" \
     grep -q 'upd_pick_arch_tarball_name' "$HERE/provider_common.sh"
-t "stale inline darwin/linux/windows OS list is gone from docker/scripts" \
-    test -z "$(grep -rlE -- '-darwin-\|-linux-\|-windows-' "$HERE")"
+# The old deny-list was an alternation string inside a jq test(). Match it as a
+# fixed string: grep -E treats a backslash-pipe as a literal pipe, so the
+# previous pattern silently missed variants. Then catch any other shape of
+# inline per-arch deny-list, comment lines aside: the arch picker is shared, so
+# no script may carry its own darwin/linux/windows token list (this test's
+# fixtures name real asset filenames and are excluded).
+t "stale inline per-arch OS alternation is gone from docker/scripts" \
+    test -z "$(grep -rFl -- '-darwin-|-linux-|-windows-' "$HERE" | grep -v 'test_update_verify.sh')"
+t "no per-arch OS token outside comments in docker/scripts" \
+    test -z "$(grep -rn -- '-darwin-' "$HERE" | grep -v '/test_update_verify\.sh:' \
+        | grep -vE ':[0-9]+: *#')"
 
 # Nightly asset mapping: URL->name match-back finds the API name even when
 # the URL layout changes above the filename segment.

@@ -28,7 +28,34 @@ extract_func() {
 common="$REPO/docker/scripts/provider_common.sh"
 
 # the harness: the real helpers around a supervision loop shaped like the
-# provider loops, so a stop during the run or between runs both end it
+# provider loops, so a stop during the run or between runs both end it.
+# APP_DIR is a private temp path on purpose: func_exit_if_stopping polls
+# `pgrep -f "^$APP_DIR/urnetwork_... provide"`, and a host-wide /app would let
+# any leftover container or host process answer that poll and stretch the stop
+# far past the window asserted below. The container scenario keeps /app
+# because it owns its PID namespace.
+mkdir -p "$tmp/app"
+{
+    echo '#!/bin/sh'
+    echo 'set -eu'
+    echo "APP_DIR=\"$tmp/app\""
+    echo 'PROVIDER_CHILD_PID=""'
+    echo 'PROVIDER_STOPPING=0'
+    for fn in log func_forward_stop func_install_stop_trap func_exit_if_stopping func_sleep func_run_provider; do
+        extract_func "$common" "$fn"
+    done
+    cat <<'EOF'
+func_install_stop_trap
+while :; do
+    func_exit_if_stopping
+    func_run_provider "$STUB"
+    echo "provider exited code=$code; restarting" >>"$OUT/supervisor.log"
+done
+EOF
+} >"$tmp/harness.sh"
+
+# the container harness keeps APP_DIR=/app and the supervisor loop verbatim, so
+# the docker scenario still exercises the production path shape
 {
     echo '#!/bin/sh'
     echo 'set -eu'
@@ -46,26 +73,26 @@ while :; do
     echo "provider exited code=$code; restarting" >>"$OUT/supervisor.log"
 done
 EOF
-} >"$tmp/harness.sh"
+} >"$tmp/harness-container.sh"
 
 # the stub provider: exits on SIGTERM after a short shutdown, like the provider
-cat >"$tmp/stub.sh" <<'EOF'
+cat >"$tmp/app/urnetwork_stub" <<'EOF'
 #!/bin/sh
 trap 'echo TERM >"$OUT/stub.signal"; sleep 1; exit 0' TERM
 echo $$ >"$OUT/stub.pid"
 while :; do sleep 1; done
 EOF
-chmod +x "$tmp/harness.sh" "$tmp/stub.sh"
+chmod +x "$tmp/harness.sh" "$tmp/harness-container.sh" "$tmp/app/urnetwork_stub"
 
 wait_file() {
-    local f="$1" i=0
-    while [ ! -s "$f" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i+1)); done
+    local f="$1" tries="${2:-50}" i=0
+    while [ ! -s "$f" ] && [ "$i" -lt "$tries" ]; do sleep 0.1; i=$((i+1)); done
     [ -s "$f" ]
 }
 
 # 1. Local: SIGTERM to the supervisor reaches the provider and ends the loop.
 out="$tmp/local"; mkdir -p "$out"
-OUT="$out" STUB="$tmp/stub.sh" sh "$tmp/harness.sh" >"$out/stdout" 2>&1 &
+OUT="$out" STUB="$tmp/app/urnetwork_stub" sh "$tmp/harness.sh" >"$out/stdout" 2>&1 &
 sup=$!
 if wait_file "$out/stub.pid"; then
     kill -TERM "$sup"
@@ -93,18 +120,28 @@ fi
 
 # 2. set -e parity: production runs these helpers under `set -e`, so a
 # provider crash (wait returns non-zero) must not abort the supervisor, and
-# the crash must be logged with its real exit code. Also pins pelican's
-# standalone helper copies to stay byte-identical with provider_common's:
-# they drift silently otherwise, since pelican is the copy that runs as
-# PID 1 under the Pelican egg.
+# the crash must be logged with its real exit code.
 out="$tmp/crash"; mkdir -p "$out"
-for fn in func_forward_stop func_install_stop_trap func_exit_if_stopping func_sleep func_run_provider; do
-    diff <(extract_func "$common" "$fn") \
-         <(extract_func "$REPO/docker/scripts/pelican_panel.sh" "$fn") >/dev/null 2>&1 \
-        && ok "pelican helper copy matches provider_common: $fn" \
-        || bad "pelican helper copy drifted from provider_common: $fn"
+# helper-copy drift guard: provider_common.sh is the canonical copy, and
+# pelican_panel.sh carries a standalone copy because the Pelican egg sources
+# it directly; the copies drift silently otherwise. Every script that defines
+# the helpers itself is discovered here and diffed against provider_common.sh,
+# so a new copy or a file left out of a helper change fails this gate instead
+# of diverging at container runtime.
+carriers="$(grep -l '^func_forward_stop() {' "$HERE"/*.sh \
+    | grep -v '/test_' | grep -v '/provider_common\.sh$')"
+[ -n "$carriers" ] \
+    && ok "standalone helper copies found: $(printf '%s ' $carriers | sed 's#.*/##g')" \
+    || bad "no standalone helper copy discovered; the drift guard would pass vacuously"
+for other in $carriers; do
+    for fn in func_forward_stop func_install_stop_trap func_exit_if_stopping func_sleep func_run_provider; do
+        diff <(extract_func "$common" "$fn") \
+             <(extract_func "$other" "$fn") >/dev/null 2>&1 \
+            && ok "$(basename "$other" .sh) helper copy matches provider_common: $fn" \
+            || bad "$(basename "$other" .sh) helper copy drifted from provider_common: $fn"
+    done
 done
-cat >"$tmp/crash_stub.sh" <<'EOF'
+cat >"$tmp/app/urnetwork_crash" <<'EOF'
 #!/bin/sh
 echo $$ >"$OUT/stub.pid"
 if [ -f "$OUT/crashed" ]; then
@@ -113,8 +150,8 @@ fi
 touch "$OUT/crashed"
 exit 5
 EOF
-chmod +x "$tmp/crash_stub.sh"
-OUT="$out" STUB="$tmp/crash_stub.sh" sh "$tmp/harness.sh" >"$out/stdout" 2>&1 &
+chmod +x "$tmp/app/urnetwork_crash"
+OUT="$out" STUB="$tmp/app/urnetwork_crash" sh "$tmp/harness.sh" >"$out/stdout" 2>&1 &
 sup=$!
 if wait_file "$out/stub.pid"; then
     sleep 2
@@ -135,14 +172,18 @@ fi
 
 # 3. Docker: the same shell as PID 1, stopped with `docker stop` (default 10s
 # timeout). Without the trap PID 1 ignores SIGTERM and the stop takes the full
-# timeout. Skipped when docker is not available.
+# timeout. The container harness is a separate file with APP_DIR=/app: inside
+# its own PID namespace /app cannot be answered by a host process, so the
+# production path shape is kept there. Skipped when docker is not available.
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     name="urnet-stop-test-$$"
     # --user keeps everything in the mount owned by the invoking user, so the
     # EXIT trap can rm -rf $tmp without hitting root-owned leftovers.
-    if docker run -d --name "$name" --user "$(id -u)" -v "$tmp:/t" -e OUT=/t/docker -e STUB=/t/stub.sh \
-        alpine:latest sh -c 'mkdir -p /t/docker && exec sh /t/harness.sh' >/dev/null 2>&1 &&
-        wait_file "$tmp/docker/stub.pid"; then
+    if docker run -d --name "$name" --user "$(id -u)" -v "$tmp:/t" -e OUT=/t/docker -e STUB=/t/app/urnetwork_stub \
+        alpine:latest sh -c 'mkdir -p /t/docker && exec sh /t/harness-container.sh' >/dev/null 2>&1 &&
+        # a cold image pull or a loaded host can spend the local 5s window on
+        # container start alone, so give this one wait 15s
+        wait_file "$tmp/docker/stub.pid" 150; then
         t0=$(date +%s)
         docker stop "$name" >/dev/null 2>&1
         elapsed=$(( $(date +%s) - t0 ))
