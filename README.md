@@ -7,17 +7,18 @@
 ![Language](https://img.shields.io/github/languages/top/full-bars/meso-miner?labelColor=171717&color=FF570A)
 ![Activity](https://img.shields.io/github/commit-activity/m/full-bars/meso-miner?labelColor=171717&color=FF570A)
 
-meso-miner runs a URnetwork provider: a small program on your server or home computer that shares your bandwidth with the network and earns for it. This is the meso-miner build, a production-focused fork made for people who run many proxies and many machines. It installs as a normal background service and updates itself with one command.
+meso-miner runs a URnetwork provider: a small program on your server or home computer that shares your bandwidth with the network and earns for it. This is the meso-miner build, a production-focused fork made for people who run many proxies and many machines. It installs as a normal background service and updates itself with one command. It also supports Bittensor Subnet 25: sign one wallet message and your earnings can be paid there (see the [Bittensor Quick Start](docs/Bittensor-Quick-Start.md)).
 
 ## 🚦 Start here
 
-New to this? Three steps:
+New to this? Three steps to run a provider, then one optional step to get paid on Bittensor:
 
 1. **Get an auth code** from [app.ur.network](https://app.ur.network), [ur.io](https://ur.io/), or the URnetwork mobile app.
 2. **Install** with the one-liner for your system (see [Install](#install) below), then run `urnetwork auth` and paste the code.
 3. **Check it works** with `urnet-tools status`.
+4. **Get paid on Bittensor (optional).** Sign one wallet message, once, from your own computer. Your nodes do not change. See the [Bittensor Quick Start](docs/Bittensor-Quick-Start.md).
 
-That is all you need to start. Nothing has to be opened on your firewall, because the provider only makes outbound connections.
+Steps 1 to 3 are all you need to start. Nothing has to be opened on your firewall, because the provider only makes outbound connections.
 
 Not sure which guide to read? Pick your level:
 
