@@ -13,6 +13,14 @@ Legend: **[redeploy]** needs the built artifact redeployed. **[installer]** need
 - **The updater picks this platform's asset** **[redeploy]** (<https://github.com/full-bars/meso-miner/pull/258>). The nightly path could select another architecture's tarball. It now matches the architecture first.
 - **The drift guard matches the old deny-list as a fixed string** **[no redeploy]** (<https://github.com/full-bars/meso-miner/pull/263>). The guard used a regex with a backslash-pipe, which matches a literal pipe, so a reintroduced inline list in another spelling passed. It now fails on the real text.
 
+## Security
+
+- **The CFAA and IP blocker tables refreshed** **[no redeploy]**. 41,202 to 46,733 IPv4 entries and 593 to 597 IPv6 entries, with blocked hosts moving from 163,972 to 164,212. Data only.
+
+## Documentation
+
+- **The Bittensor cost pages show the chain's numbers** **[no redeploy]** (<https://github.com/full-bars/meso-miner/pull/256>). The snapshot carries the time it was taken and links to the live copy.
+
 ## Observability
 
 - **PQE handshake stages and negotiated curves** **[redeploy]** (<https://github.com/full-bars/meso-miner/pull/259>, <https://github.com/full-bars/meso-miner/pull/261>). The `[pqe]` line reports attempts, tls_ok, verified and identity_failed, plus a per-curve histogram. `/metrics` carries `urnet_sessions_handshake_total{stage=...}` and `urnet_sessions_curve_total{curve=...}`, and two dashboard panels show both rates. This answers why a classical count sits at zero.
