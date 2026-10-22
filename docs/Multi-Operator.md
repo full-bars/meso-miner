@@ -69,7 +69,7 @@ docker run -d \
   ghcr.io/full-bars/meso-miner:latest
 ```
 
-`auto` is meant for the first start on a fresh volume. Once `operators/` exists, an operator added later needs `ALLOW_CLIENT_REGISTRATION=Y` to let its child create a new client identity. Leave `AUTH` unset: it selects the single account login, which the operator supervisor does not use. See [Docker Deployment](/full-bars/meso-miner/wiki/Docker-Deployment#-multi-operator-flags) for the full variable table.
+`auto` is meant for the first start on a fresh volume. Once `operators/` exists, an operator added later needs `ALLOW_CLIENT_REGISTRATION=Y` to let its child create a new client identity. Leave `AUTH` unset: it selects the single account login, which the operator supervisor does not use. See [Docker Deployment](/full-bars/meso-miner/wiki/Docker-Deployment) for the full variable table.
 
 ## State layout
 
