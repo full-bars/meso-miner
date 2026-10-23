@@ -972,6 +972,7 @@ Once the `✓ done` line is logged, the `paceMonitor` goroutine exits. No furthe
 | `⚠ warmup: X/Y up (Z%), N connecting` | Fewer than 50% of proxies are up and more than 10 are still connecting — slow warmup. |
 | `warmup: X/Y up (Z%), N connecting` | Normal warmup progress. |
 | `✓ warmup: X/Y up (Z%), N connecting — done` | More than 90% of proxies are up and fewer than 5 are still connecting. Logged once, then the goroutine exits. |
+| `warmup: X/Y up (Z%), N connecting — forced done after 60m` | The bar was still unmet after an hour, usually because a fixed tail of file proxies never auths. Warmup is declared done so the goroutine exits. The URL-sourced hold is not affected: it opens at five minutes regardless (`urlWarmupLaunchGrace`). |
 
 ---
 
