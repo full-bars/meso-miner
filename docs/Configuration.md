@@ -67,6 +67,14 @@ Quick jump:
 | `PROXY_DEAD_CLEANUP_INTERVAL` | `6h` | Base cadence of the automatic cleanup job, when scope is not `none` (shrinks under pressure when self-heal is on). The reaper runs this often to sweep dead proxies from the allowed sources. |
 | `URNETWORK_PROXY_TARGET_FAMILY` | `v4` | Startup default for the `proxy_target_family` control key: `v4` resolves a proxied target here with an A-only query and sends the proxy an IPv4 literal; `proxy` sends the hostname to the proxy so its resolver picks A or AAAA. The control key wins at runtime. See [Dual-Stack](/full-bars/meso-miner/wiki/Dual-Stack#the-one-gap-the-providers-egress-through-a-proxy). |
 
+### 🌐 Extender Serving Role
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `URNETWORK_EXTENDER` | `off` | Set to `on` to serve the extender role from the provider's direct (unproxied) slot: tcp 443 first, then quic 443 and dns 4053. The role keeps its own identity at `~/.urnetwork/.provider.extender.key` (0600, created on first use). Binding 443 needs `CAP_NET_BIND_SERVICE` or root; without it the tcp and quic carriers stay unavailable while dns 4053 still serves, and the role reports it in the `[extender] state=` line and the `urnet_extender_*` metrics. Opt-in and off by default. |
+| `URNETWORK_EXTENDER_ALLOWED_HOSTS` | - | Comma-separated forward allow list, exact hosts or `*.domain` wildcards. This is the forward authorization: an empty list refuses every forward request. The provider logs a warning at start when the list is empty. |
+| `URNETWORK_EXTENDER_DNS53` | `off` | Set to `on` to also bind the dns carrier on port 53 beside 4053. Needs the same privilege as 443. |
+
 ### 🩹 Self-Healing & Resource Pressure
 
 | Variable | Default | Description |
