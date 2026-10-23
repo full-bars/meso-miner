@@ -231,6 +231,126 @@ The provider failed to authenticate a transport connection to the URnetwork plat
 - This is normal during platform outages or high load. The provider retries automatically.
 - Seeing this occasionally is expected. Seeing it continuously for many minutes indicates a platform-side issue.
 
+
+---
+
+## 🛰️ Proxy UDP Relay Check (`[proxy][udp]`)
+
+Before a proxy is allowed to carry H3, the provider checks that UDP actually relays through it and that it exits where TCP does. One line is printed **per change of answer for an identity**, so a fleet of proxies produces one line each rather than one per attempt.
+
+```
+[proxy][udp] proxy[12] (198.51.100.7:1080) udp relay ok, exit 198.51.100.7 matches tcp; h3 allowed
+[proxy][udp] proxy[12] (198.51.100.7:1080) udp exits from 203.0.113.9 but tcp from 198.51.100.7; h3 not used for this proxy
+[proxy][udp] proxy[12] (198.51.100.7:1080) no udp relay (socks5: udp not supported); h3 not used for this proxy, tcp modes only
+[proxy][udp] proxy[12] (198.51.100.7:1080) udp relay works (exit 198.51.100.7) but the tcp exit could not be learned (timeout); h3 allowed, checking again soon
+```
+
+| Line | Meaning |
+|---|---|
+| `udp relay ok, exit X matches tcp; h3 allowed` | The proxy relays UDP and both protocols leave by the same address. H3 may be used through it. |
+| `udp exits from X but tcp from Y; h3 not used for this proxy` | UDP relays, but to a different exit than TCP. H3 is withheld: the two protocols would present different addresses, so a client that prefers H3 would appear to change identity. |
+| `no udp relay (<reason>); h3 not used for this proxy, tcp modes only` | UDP does not relay at all, usually a SOCKS or upstream that does not support it. The proxy still serves, on the TCP transports only. |
+| `udp relay works (exit X) but the tcp exit could not be learned (<error>); h3 allowed, checking again soon` | The UDP side is fine and TCP could not be measured at that moment, so H3 is allowed provisionally and the check repeats. Not a refusal. |
+
+None of these is an error, and none stops the proxy serving: a proxy that fails the check is simply not offered for H3, which is the intended fallback. A proxy that flips between lines is one whose UDP path is intermittent, and the last line is the common one on a slow or filtered network.
+
+---
+
+## 🔌 H3 (QUIC) Beside H1 (beta, `URNETWORK_H3` or the `h3` key)
+
+Only a box that runs H3 logs these, and only for the direct identity. H3 is off by default. It starts when `URNETWORK_H3` is set at startup, or when the `h3` control key is switched on live with `urnet-tools set h3 on`.
+
+```
+[t]h3 eligible for the direct identity, currently on (urnet-tools set h3 on|off or URNETWORK_H3): H3 runs beside H1 and falls back to H1 quietly
+[c]h3 connect to 203.0.113.10:443 (api.example.net)
+[t]h3 unavailable, staying on h1 (retrying quietly): <error>
+⚙️ [control] applied h3=on (was off)
+```
+
+- `[t]h3 eligible for the direct identity, currently <on|off>` is logged once for a direct identity that is allowed to run H3. It says whether H3 is currently on, and names the two ways to change it.
+- `[c]h3 connect to <address> (<server>)` is one H3 connection attempt to the platform. It is expected at start and on each retry.
+- `[t]h3 unavailable, staying on h1 (retrying quietly)` appears once per transport when H3 cannot connect, for example because UDP is filtered. It is not an error: H1 carries the node, the failure is not counted as a backend or proxy auth failure, and H3 retries with a backoff that doubles up to 10 minutes. The same failure is logged again only at verbose level 2 as `[t]h3 unavailable: <error>`.
+- `[c]h3 connect err = <error>` is the transport-level detail behind a failed attempt.
+- `⚙️ [control] applied h3=<on|off>` is the control-socket confirmation when the `h3` key changes. The datagram keys log `applied h3_datagram=...` and `applied h3_datagram_send=...`. A change of any of the three is not counted as an H3 drop.
+- What to watch while testing it: the `[t]auth error` rate and the backend-degraded state must not rise, and billable per hour must not fall against a box without it. Any of those is a reason to turn it off (`urnet-tools set h3 off` or unset `URNETWORK_H3` and restart).
+
+### Widening or narrowing the `h3` key relaunches proxies
+
+The `h3` setting names a transport set, not only on or off: `off`, `direct`, `on`, `auto`, a proxy count, or `all`. Widening or narrowing it changes which proxies may carry H3, so the affected proxies are relaunched.
+
+```
+[h3] on: relaunching 3 proxies whose transport set changed
+[h3] on: 2 proxies have clients, retrying in 1m0s
+[h3] auto: 16 -> 20 proxies get the fallback transports (memory pressure 0.12, capacity 64)
+```
+
+- `[h3] <setting>: relaunching N proxies whose transport set changed` is logged when the setting changes and N running proxies need a restart to pick it up. The setting is named as written, so `on`, `all`, `auto` and a count are distinguishable.
+- `[h3] <setting>: N proxies have clients, retrying in 1m0s` means N of them were carrying client traffic at that moment and were left alone rather than cut off. The relaunch is retried a minute later, so a busy proxy is moved only once it is quiet. Both lines are expected during a setting change and neither is an error. A proxy that never goes quiet keeps its clients and stays on its current transport set.
+- `[h3] auto: N -> M proxies get the fallback transports (memory pressure X, capacity C)` is the auto controller moving its target. The first number is the previous target, the second the new one; `capacity` is what the effective memory limit allows (0 to 64). It logs at most once per 30 s pressure sample and only when the ranked set actually changes, so a pool smaller than the target does not produce a line per step. A rising target while `memory pressure` is low is normal; a drop to 16 or 0 means the memory tiers fired. The tiers are on [H3 Auto](docs/H3-Auto.md).
+
+### What H3 adds to the `[health]` line
+
+Once H3 has been attempted, the health heartbeat line gains these fields. A box that never enables H3 sees none of them.
+
+```
+[health] ... h3_up=1 h3_tx_share=42% h3_drops=0 h3_conn_fail=1
+```
+
+- `h3_up` is 1 while an H3 connection is up, 0 otherwise.
+- `h3_tx_share` is the share of the direct identity's outbound payload frames that H3 carried. `n/a` means no frames were sent yet.
+- `h3_drops` counts H3 connections that ended while the transport was still wanted. Switching `h3` is not one.
+- `h3_conn_fail` counts H3 connect attempts that failed.
+
+With `h3_datagram` on and a server that accepted the offer, the line also carries `h3_dg=accepted/offered dg_rx=<n> dg_rx_drop=<n>`. With `h3_datagram_send` on, it adds `dg_tx`, `dg_tx_stream`, `dg_tx_err` and `dg_blackhole`.
+
+---
+
+## 🧬 TLS ClientHello (`tls_hello` key, `URNETWORK_TLS_HELLO`)
+
+Which ClientHello the normal and resilient dialers present is a control key. It is off by default (Go's hello); `urnet-tools set tls-hello on` switches new connections to Chrome's hello. The switch logs one line per change, and nothing else: a hello is not a connection event, so there is no start, drop or failure line of its own.
+
+```
+⚙️ [control] applied tls_hello=on (was off)
+```
+
+- `⚙️ [control] applied tls_hello=<on|off> (was <old>)` is the control-socket confirmation when the `tls_hello` key is applied live. `was off` on a first `on` is expected: an unset gate presents Go's hello, so it reads as off.
+- It applies to new connections only. A connection already open keeps the handshake it made, so changing the key neither drops a session nor re-handshakes one; the next dial of each path follows the new value. Nothing is counted as a drop.
+- A dial whose tls configuration the Chrome hello cannot carry exactly keeps Go's hello even with `tls_hello on`, and logs nothing: a client certificate, an ECH configuration, a restricted cipher, group or version set, or an `h2` offer on a net/http before Go 1.27.
+- The provider also accepts `clear` on the socket for this key, which hands the decision back to `URNETWORK_TLS_HELLO`. The CLI's `set tls-hello off` is a real value, not a clear, so a box whose unit sets `URNETWORK_TLS_HELLO=on` keeps Go's hello across a restart and only a clear (or removing the variable) returns it to the Chrome hello.
+
+---
+
+## 📡 STUN Success Aggregate
+
+The provider reports the result of its STUN probe as one low-noise line. The probe follows the active ICE settings and adds a probe-only Cloudflare endpoint, so a filtered or broken STUN path shows up without turning on verbose logging.
+
+```
+📡 [stun] ok=12 fail=0 | google: v4=ok v6=ok · meteredca: v4=ok v6=fail
+```
+
+- `ok` and `fail` count the probe results in the current window. The line is written on a low-volume interval and moves to a shorter interval when activity is high, so a busy host reports more often and a quiet one stays quiet.
+- The part after `|` lists each STUN provider and the result for the IPv4 and IPv6 families. `ok` means the binding request was answered, `fail` means it was not, and a family the host cannot reach is reported as such.
+- The first line of a run measures from the first pulse, not from process start, so a long idle period is not read as a burst of failures.
+
+---
+
+## 🧭 Smart Dialer and Give-up Lines
+
+```text
+[smart-dialer][proxy] measured connect cost of 4 transports
+[proxy][auth] proxy[12] (203.0.113.7:1080) attempts=4 admit_wait=1.2s attempt=15.0s cut_short=true err=context deadline exceeded
+[proxy][auth] direct attempts=4 admit_wait=0.0s attempt=1.8s cut_short=false err=tls: handshake failure
+```
+
+| Message | Meaning |
+|---|---|
+| `[smart-dialer][proxy]` / `[smart-dialer][direct]` `measured connect cost of N transports` | A background probe round measured N transports for a proxy's client strategy (`proxy`) or the provider's own connection (`direct`). The first round runs 20 to 80 seconds after start, then a check runs every 5 minutes. A round that attempted nothing logs nothing, so silence is normal: everything is already measured, the smart dialer is off (the default), or custom extenders are configured. Probes are connect-only, never carry a request, and a failed probe never demotes a transport that has real successes. |
+| `[proxy][auth] ... attempts=` | One line per auth give-up. `attempts` counts the ladder's attempts, genuine failures and slow ones together. `admit_wait` is the time spent waiting for an admission slot and `attempt` is how long the last attempt ran, so latency can be told apart from a refusal. `err` is the raw error. `direct` is the provider's own non-proxy connection. |
+| `cut_short=true` | The last attempt was cut off by the connect deadline: the proxy is slow, not refused. A slow give-up does not count toward URL eviction or the 14-day drop and does not move the shared auth rate limiter, so latency cannot spiral into a failure cascade. `cut_short=false` is a genuine failure. |
+
+> [!NOTE]
+> Turn the smart dialer on or off with `urnet-tools smart-dialer [status|on|off]`. It is live, persisted and off by default. With it off, transport scoring and ordering are exactly what they were before it existed.
+
 ---
 
 ## ⏳ OOB Contract Backoff
