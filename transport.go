@@ -3396,7 +3396,10 @@ func (self *PlatformTransport) runH3(
 		// can miss context.Canceled when it was snapshotted before the cancel.
 		if !self.h3GatedFor(ptMode) && !self.pinned() {
 			if err == nil || (ctx.Err() == nil && attemptCtx.Err() == nil) {
-				connectGov.recordAttempt(classifyConnectError(err, attemptStats), attemptStats)
+				// the class is read without the stats on purpose: a QUIC timeout stays
+				// ambiguous (a proxy's UDP relay can answer a little and still be
+				// the thing that is broken). Only the bytes are new.
+				connectGov.recordAttempt(classifyConnectError(err, nil), attemptStats)
 			} else {
 				connectGov.recordCanceledBytes(attemptStats)
 			}
