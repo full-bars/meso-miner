@@ -109,6 +109,16 @@ The CFAA egress blocklist is refreshed twice in this window and now holds 41,425
 - **The normal strategy dial is pinned to the same egress control** (`egress_dial_sites_test.go`, test only): dropping `NetDialer`'s `Control` field now fails the build.
 - **Docker public-IP detection no longer masks curl's exit status** (`docker/scripts/provider_common.sh`): the declaration and the assignment are separate, so the exit status the script can see is curl's. The detected address and the log line are unchanged.
 
+## 14. The open PRs that merge before the cut (PR #294, #297, #298, #299, #300, #301, #302)
+
+- **A silent platform edge no longer drains egress through proxied H3** ([#302](https://github.com/full-bars/meso-miner/pull/302)). With `h3` set to `all`, a count or `auto`, every proxy identity runs the H3, H3-over-dns and dns-pump carriers beside its H1. When the edge answers nothing, each carrier redials on its own 30 to 60 second timer and every dial runs the whole QUIC retransmit ladder, about 33 KB. One node on `h3 all` spent a flat 15.5 to 16.4 Mbit/s for about 15 hours of the 2026-10-23 outage, roughly 30 times more tx than rx, while the governor read `verdict=ok rate=200.0/s`. Three things hid it, and each is fixed: QUIC bytes were never charged to the connect attempt, so the failed-byte breaker saw zero; a canceled dial (two of every three, because the per-transport H3 gate cancels a lower-priority carrier when a better one waits) was dropped with its bytes; and H3 dials never waited on the attempt budget. The handshake's wire bytes are now charged once, a canceled attempt's bytes count toward the breaker without counting as an attempt, and a proxied identity's H3 waits on the shared budget like its H1. The direct identity, proxy index 0 and family-pinned transports never wait. One conflict was resolved on the way in: meso-miner lacked the carve-out that local teardown is not a backend outcome at the H3 `recordAttempt` call, and this release takes the superset.
+- **A failed OOM-cap state write is reported, not discarded** ([#301](https://github.com/full-bars/meso-miner/pull/301)). The startup OOM-cap decision wrote its state with the result discarded. That state carries the cap and the clean-window clock, so a lost write could let the next start read a stale window and relax the cap straight after a fresh OOM kill, and the applied path could ledger a cap that nothing enforces. Both branches now report the failure in the warnings, and the applied path leaves the timeline to the last cap that really was persisted.
+- **The memory-headroom warning fires at the cap on a host whose RAM is unreadable** ([#298](https://github.com/full-bars/meso-miner/pull/298)). `EffectiveRAMLimit()` returns 850 MiB with the source `fallback default, host memory unreadable` when it cannot read host memory, which the headroom threshold turned into its 150 MiB floor, so the warning fired far too late on such a host. The limit is now classified by its source, never its value: an unreadable host gets the 400 MiB cap, a real 850 MiB host keeps the floor, and the note explaining the threshold goes to the persisted log once.
+- **The degraded reaper holds off when the scores cannot rank the pool** ([#294](https://github.com/full-bars/meso-miner/pull/294)). `scoreDegradedProxies` ranks by lifetime bytes and contracts, and when the platform is unreachable neither moves, so every candidate tied and the reaper still dropped half the pool (249 of 498 proxies on one node in the 2026-10-23 outage). A round where every candidate scored the same, or there are too few to rank, now holds off instead of culling.
+- **The smart dialer costs nothing while it is off** ([#297](https://github.com/full-bars/meso-miner/pull/297)). The idle preference's off state still cost a goroutine, a context and a timer per proxy, so a node with thousands of proxies carried thousands of idle goroutines. The start function is gated, so while the preference is off there is none. Because the loop now only exists when the preference was on at start, `smart_dialer` is reclassified restart-required: `set smart_dialer on` is persisted and takes effect at the next start, the CLI says so, and `set` now prints the same "takes effect at the next start" wording for `profile` and `ramlogs`, which never applied live. The default is unchanged: off.
+- **The disk benchmark samples by time, not a fixed 16 MiB** ([#300](https://github.com/full-bars/meso-miner/pull/300)). The benchmark stopped at a fixed 16 MiB, which an NVMe writes in about 20 ms, so the rate reported at startup and in `urnet_disk_*` was a burst figure that moved between runs. The 3 s budget now governs, up to 256 MiB: microSD is unchanged at about 20 MiB, eMMC samples about 240 MiB, NVMe the 256 MiB ceiling in about 85 ms. The result carries its duration, so the log reads `900.0 MB/s (256 MB written in 85 ms)`. The container guard, IO-pressure skip, space cap, per-device cache and hung-write watchdog are unchanged.
+- **The installer PATH-hint test runs in CI** ([#299](https://github.com/full-bars/meso-miner/pull/299)). `scripts/test_provider_install_shellrc_symlink.sh` proves the installer's PATH hint never writes through a name the service user controls, and it never ran in CI. It now runs with full history, and the script fails, not skips, when its falsification pin is missing under `REQUIRE_FALSIFICATION`, so a shallow checkout cannot turn it into a silent pass.
+
 ## 13. What is behaviour, what is inert, what is test only
 
 | Item | Status |
@@ -120,6 +130,11 @@ The CFAA egress blocklist is refreshed twice in this window and now holds 41,425
 | `h3 auto`, `h3` counts and `all` | Behaviour only when the `h3` key selects them |
 | Direct-only H3 default, `h3_datagram` / `h3_datagram_send` defaults | Behaviour on direct-only nodes and on any box running H3 |
 | Network refresh with terminal 401 | Behaviour, hourly |
+| QUIC dial accounting and proxied-H3 admission (#302) | Behaviour, automatic; changes only nodes with `h3` set to `all`, a count or `auto` |
+| OOM-cap write failure reporting (#301), headroom classification (#298), reaper tie hold (#294) | Behaviour, automatic |
+| Smart dialer gate (#297) | Behaviour: `smart_dialer` is now restart-required; default still off |
+| Disk benchmark sampled by time (#300) | Behaviour: a representative rate on fast media |
+| Installer shellrc symlink test in CI (#299) | Test and CI only |
 | Receive window advertisement (#219) | Behaviour, wire-compatible |
 | Shared UDP socket lifecycle (`SocketReadShardCount`) | Inert: no shipped setting sets it |
 | Transfer memory budget core | Inert: no default builds a budget |
@@ -138,6 +153,9 @@ The CFAA egress blocklist is refreshed twice in this window and now holds 41,425
 7. **The CFAA refresh is data only.** Policy and verdicts are unchanged. No action.
 8. **Rollback is the usual one.** Keep the previous provider binary and a state tarball, stop the unit, restore the binary, start. A rollback also drops the dual-stack group and the H1+ carrier, both of which the older binary never asks for.
 9. **Docs.** The dual-stack story and the resolver rotation sentence are in [Dual-Stack](../docs/Dual-Stack.md). The `h3 auto`, `h3` and `h3_datagram` rows are in [Configuration](../docs/Configuration.md) and the sizing detail is in [H3 Auto](../docs/H3-Auto.md). The new log lines are in [LOG_REFERENCE.md](../LOG_REFERENCE.md) and the new series in [Monitoring](../docs/Monitoring.md). The upgrade row and version markers are in [advanced](../docs/guides/advanced.md), [Installation](../docs/Installation.md), [Docker Deployment](../docs/Docker-Deployment.md) and [urnet-tools (Go)](../docs/urnet-tools-go.md).
+10. **`smart_dialer` is now restart-required.** `urnet-tools set smart_dialer on` is persisted and takes effect at the next start, and the CLI says so. The default is still off.
+11. **Only nodes with `h3` set to `all`, a count or `auto` change for the H3 fix.** In an outage they log `[govern] budget cut ... reason=bytes`, which was silent before. Not yet run against a live outage, and the budget floor still spends about 0.5 Mbit/s.
+12. **The first disk benchmark after the update reports the new sample.** On fast media the rate is a representative figure and no longer a 20 ms burst that moved between runs.
 
 ## What's Changed
 
@@ -161,3 +179,10 @@ The CFAA egress blocklist is refreshed twice in this window and now holds 41,425
 - test(net): pin the normal strategy dial to the egress control
 
 **Full Changelog**: <https://github.com/full-bars/meso-miner/compare/v2026.10.19-1075696970-meso...<computed-tag>>
+- fix(governor): price QUIC dials in bytes and admit proxied H3 under the attempt budget (#302)
+- fix(provider): report an oom cap state write that fails (#301)
+- perf(provider): size the disk sample by time instead of 16 MiB (#300)
+- ci: run the installer shellrc symlink test, and fail if its pin is missing (#299)
+- Classify unreadable host RAM by source so the headroom warning fires at the cap (#298)
+- Stop the smart dialer spawning an idle goroutine per proxy (#297)
+- fix(provider): hold the reaper when the scores cannot rank the pool (#294)
