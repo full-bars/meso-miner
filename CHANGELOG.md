@@ -106,6 +106,39 @@ Everything merged after `v2026.10.24-1080497440-meso`.
 - **The v2026.10.21 changes are documented where operators look** ([#253](https://github.com/full-bars/meso-miner/pull/253)): `FORK_CHANGES.md`, `LOG_REFERENCE.md`, the HotSwap page and the install docs now carry the counter persistence, the swap behaviour and the install detail.
 - **Release notes for this release** ([#264](https://github.com/full-bars/meso-miner/pull/264), [#267](https://github.com/full-bars/meso-miner/pull/267), [#273](https://github.com/full-bars/meso-miner/pull/273)).
 
+## [v2026.10.22-1078651310-meso] — 2026-10-22
+
+### Added
+
+- **Cumulative monitoring counters survive restarts and handoffs** ([#236](https://github.com/full-bars/meso-miner/pull/236), [#240](https://github.com/full-bars/meso-miner/pull/240), [#241](https://github.com/full-bars/meso-miner/pull/241)): monotonic `/metrics` totals are restored before the listener serves, retained across proxy churn and flushed by the HotSwap parent before it exits. Process-start data lets dashboards avoid reading a restored total as a traffic spike.
+- **PQE handshake stages and negotiated curves are exposed** ([#259](https://github.com/full-bars/meso-miner/pull/259), [#261](https://github.com/full-bars/meso-miner/pull/261)): the log and `/metrics` distinguish attempts, completed TLS, verified identities and identity failures, and report the negotiated curve; Grafana gains panels for both series.
+
+### Fixed
+
+- **`docker stop` now reaches the provider** ([#258](https://github.com/full-bars/meso-miner/pull/258)): the supervisor forwards termination signals and waits for a HotSwap successor instead of letting Docker kill the container at its grace timeout.
+- **The updater selects a stable asset for this platform** ([#258](https://github.com/full-bars/meso-miner/pull/258)): asset selection matches the operating system and architecture, and stable-release lookup no longer stalls on a docs-only or unflagged release.
+- **The exported DoH failure counter no longer resets on scrape** ([#236](https://github.com/full-bars/meso-miner/pull/236)): the scrape now reads a cumulative total while the health heartbeat keeps its interval count.
+
+### Removed
+
+- **The retired hub's reporting commands and settings** ([#245](https://github.com/full-bars/meso-miner/pull/245)): bandwidth and heartbeat reporters, their CLI commands and configuration keys are gone; existing saved report URLs are ignored so old state still loads.
+
+### Security
+
+- **Go 1.27.3 is required for release builds** ([#238](https://github.com/full-bars/meso-miner/pull/238)): the toolchain includes the certificate-verifier fix for the compromised eMudhra intermediates; already-built binaries need a rebuild to pick it up.
+- **The CFAA and IP blocker tables were refreshed together** ([#235](https://github.com/full-bars/meso-miner/pull/235), [#252](https://github.com/full-bars/meso-miner/pull/252), [#265](https://github.com/full-bars/meso-miner/pull/265)): the final sync carries 46,733 IPv4 and 597 IPv6 CFAA entries and 164,212 blocked hosts. The scheduled workflow now checks both generated tables for drift ([#262](https://github.com/full-bars/meso-miner/pull/262)).
+
+### CI
+
+- **The installer matrix gates publication**: the real installer runs against a fake release on four distributions, and the release waits for that tier.
+- **The artifact scan reports incomplete coverage** ([#237](https://github.com/full-bars/meso-miner/pull/237)): the scanner retries rate limits, handles large artifacts and reports a per-file error instead of a false pass when a scan is incomplete.
+- **Restart checks now restart the provider and compare identities** ([#270](https://github.com/full-bars/meso-miner/pull/270), [#272](https://github.com/full-bars/meso-miner/pull/272)): soak and smoke tests use the same state directory and fail if a proxy identity changes.
+
+### Documentation
+
+- **Bittensor operator guidance was refreshed** ([#239](https://github.com/full-bars/meso-miner/pull/239), [#249](https://github.com/full-bars/meso-miner/pull/249), [#251](https://github.com/full-bars/meso-miner/pull/251), [#260](https://github.com/full-bars/meso-miner/pull/260)): the quick start, head-tier and operations pages clarify claim versions, consent scope and current rollout caveats.
+- **Live SN25 costs and Hot-Restart behavior are documented** ([#256](https://github.com/full-bars/meso-miner/pull/256), [#268](https://github.com/full-bars/meso-miner/pull/268)): the cost snapshot is refreshed from chain data, and the new guide explains client identity reuse and the supported toggle command.
+
 ## [v2026.10.21-1077734740-meso] — 2026-10-21 (`urfoundation/meso-miner` tag)
 
 ### Added
