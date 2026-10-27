@@ -2,7 +2,7 @@
 
 This page is the complete guide to running the URnetwork provider on FreeBSD (amd64 and arm64): install, the `rc.d` service, updates, the required sysctl tuning, and the platform differences you will run into. For the other platforms and the general installer, see the [Installation Guide](/full-bars/meso-miner/wiki/Installation).
 
-The provider runs as an `rc.d` service named `urnetwork` under an unprivileged user. There is no hosted one-line installer for FreeBSD: you fetch the installer script and run it, and it downloads the FreeBSD release archive for your architecture.
+The provider runs as an `rc.d` service named `urnetwork` under an unprivileged user. There is no hosted one-liner for this fork: `https://install.fullbars.xyz` serves the 3.23 fork's FreeBSD script, which resolves that repository's releases, so on meso you fetch this repository's script and run it, and it downloads the FreeBSD release archive for your architecture.
 
 The provider lives in a **root-owned** tree at `/usr/local/libexec/urnetwork-provider`, while the state directory stays in the service user's home. The service user runs the provider but cannot rewrite the binary that root executes.
 
@@ -49,19 +49,19 @@ The provider must not run as root, and the installer refuses to set that up. It 
 5. `logname`, the owner of the login session, unless it is `root`.
 6. `id -un`, the current user.
 
-If the result is `root` (a genuine root login with none of the above), the install stops before downloading anything:
+If the result is `root` (a genuine root login with none of the above), the install stops with exit status 1 before downloading anything:
 
 ```text
 refusing to install a service that runs as root
 ```
 
-From a root shell, name the account:
+From a root shell, name a non-root account that already exists:
 
 ```sh
 SERVICE_USER_OVERRIDE=urnet sh urnet-install.sh install
 ```
 
-The account must already exist. Create one with `pw useradd urnet -m -s /bin/sh` if you want a dedicated user. The state directory comes from that user's home, read from the passwd database (`getent passwd`, then `pw usershow`), not from `$HOME`, which under `sudo` can still be root's. The install tree does not: it is at a fixed root-owned path.
+The installer does not create the account. Create it first, once, with `pw useradd urnet -m -s /bin/sh`, or name any other existing non-root account. Nothing validates the name: the state directory comes from that user's home, read from the passwd database (`getent passwd`, then `pw usershow`), and when the account is missing that lookup falls back to `$HOME`, which under a root shell is root's. The install tree does not: it is at a fixed root-owned path.
 
 ### What the installer does
 
