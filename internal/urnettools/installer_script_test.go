@@ -332,3 +332,33 @@ func skipWithoutPOSIXShell(t *testing.T) {
 		t.Skipf("no /bin/sh on this host: %v", err)
 	}
 }
+
+// The installer puts the provider in a ROOT-owned tree outside the service
+// user's home, so the account that runs the binary cannot rewrite it. Both
+// sides carry that path as a literal: the shell script, and the FreeBSD
+// discovery fallback that has to find a stopped install. This fails when one
+// moves without the other, which is what the script's "keep the two in step"
+// comment promises.
+func TestFreeBSDRootOwnedInstallPathMatchesDiscovery(t *testing.T) {
+	const installPath = "/usr/local/libexec/urnetwork-provider"
+	b, err := os.ReadFile("../../scripts/Provider_Install_FreeBSD.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := strings.ReplaceAll(string(b), "\r\n", "\n")
+	if !strings.Contains(script, `install_path="`+installPath+`"`) {
+		t.Errorf("installer does not install into the root-owned tree %s", installPath)
+	}
+	// The old per-user tree must not be where a NEW install writes: it left
+	// the service user owning a binary root executes.
+	if strings.Contains(script, `install_path="$service_home/`) {
+		t.Error("installer still installs under the service user's home")
+	}
+	d, err := os.ReadFile("discover_freebsd.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(d), `"`+installPath+`/bin/urnetwork"`) {
+		t.Errorf("discovery fallback does not look in %s/bin/urnetwork; a stopped install would be undiscoverable", installPath)
+	}
+}
