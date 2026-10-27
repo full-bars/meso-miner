@@ -7,7 +7,7 @@ The provider runs as an `rc.d` service named `urnetwork` under an unprivileged u
 The provider lives in a **root-owned** tree at `/usr/local/libexec/urnetwork-provider`, while the state directory stays in the service user's home. The service user runs the provider but cannot rewrite the binary that root executes.
 
 > [!IMPORTANT]
-> **Upgrading from an install made before this layout change?** Older meso-miner installers put the provider in `~/.local/share/urnetwork-provider` inside the service user's home, which left that user owning a binary root executes. Re-run the installer (`sudo sh urnet-install.sh install`) to move the provider to `/usr/local/libexec/urnetwork-provider` and rewrite the `rc.d` script, then remove the old tree by hand (`rm -rf ~/.local/share/urnetwork-provider`). The state directory `~/.urnetwork` is untouched by the move, so the login token and proxy state survive.
+> **Upgrading from an install made before this layout change?** Older meso-miner installers put the provider in `~/.local/share/urnetwork-provider` inside the service user's home, which left that user owning a binary root executes. Stop the service first (`sudo service urnetwork onestop`): the installer rewrites the `rc.d` script, and a provider still running from the old tree does not match the new script's pid, argv and pidfile checks, so the install can leave a second provider running. Then re-run the installer (`sudo sh urnet-install.sh install`) to move the provider to `/usr/local/libexec/urnetwork-provider` and rewrite the `rc.d` script, then remove the old tree by hand (`rm -rf ~/.local/share/urnetwork-provider`). The state directory `~/.urnetwork` is untouched by the move, so the login token and proxy state survive.
 
 ## Before you start
 
