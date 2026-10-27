@@ -13,10 +13,12 @@ The provider runs as an `rc.d` service named `urnetwork` under an unprivileged u
 
 ## Before you start
 
-The base system has no `jq` and no `python3`. The installer works without them, but they change one thing: they are what lets it verify and install the Go `urnet-tools` binary (see [What the installer does](#what-the-installer-does)). Install `curl`, `sudo` and, recommended, `jq`:
+FreeBSD's base system has no `jq` and no `python3`, and a host that has never installed a package has no `curl` either. None of the three is required to install: the release tag is read with `jq`, then `python3`, then a `sed` extraction that needs only the base system. `jq` is still worth installing, because it is what lets the installer verify and install the Go `urnet-tools` binary (see [What the installer does](#what-the-installer-does)).
+
+Nothing is installed for you on FreeBSD: the installer never touches `pkg`. `sudo` is needed for the `rc.d` and `sysrc` steps unless you are root.
 
 ```sh
-pkg install -y curl sudo jq
+pkg install -y sudo jq
 ```
 
 Run the installer as the account the provider should run as, with `sudo`, or as root with an explicit account (see [Service user](#service-user)).
