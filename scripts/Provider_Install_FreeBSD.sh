@@ -284,8 +284,11 @@ install_wrapper_tool() {
     priv mv -f "$_td/urnet-tools.wrapper" "$install_path/bin/urnet-tools"
     # mv keeps the invoker's ownership when the temp dir is on the same
     # filesystem, so the owner must be set explicitly: see do_install.
-    priv chown root:wheel "$install_path/bin/urnet-tools" 2>/dev/null || \
-        pr_warn "could not chown %s to root:wheel; a non-root owner can rewrite a binary root runs" "$install_path/bin/urnet-tools"
+    if ! priv chown root:wheel "$install_path/bin/urnet-tools" 2>/dev/null; then
+        priv_rm "$install_path/bin/urnet-tools"
+        pr_warn "could not chown %s to root:wheel; removed it rather than leave a binary root runs under another owner" "$install_path/bin/urnet-tools"
+        return 1
+    fi
     priv chmod 755 "$install_path/bin/urnet-tools"
 }
 
@@ -731,9 +734,12 @@ print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
                 # SUDO_USER-owned copy would let the service user rewrite a
                 # binary root executes. The chown -R below is deliberately
                 # gated on id -u 0 and does not run on this sudo path.
-                priv chown root:wheel "$install_path/bin/urnet-tools" 2>/dev/null || \
-                    pr_warn "could not chown %s to root:wheel; a non-root owner can rewrite a binary root runs" "$install_path/bin/urnet-tools"
-                priv chmod 755 "$install_path/bin/urnet-tools"
+                if priv chown root:wheel "$install_path/bin/urnet-tools" 2>/dev/null; then
+                    priv chmod 755 "$install_path/bin/urnet-tools"
+                else
+                    priv_rm "$install_path/bin/urnet-tools"
+                    pr_warn "could not chown %s to root:wheel; removed it rather than leave a binary root runs under another owner" "$install_path/bin/urnet-tools"
+                fi
             else
                 pr_warn "urnet-tools sha256 mismatch, falling back to shell wrapper"
                 install_wrapper_tool "$tmpdir" || true
