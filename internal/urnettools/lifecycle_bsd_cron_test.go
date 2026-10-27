@@ -37,3 +37,25 @@ func TestBSDCronMarkerMatchesWholeServiceName(t *testing.T) {
 		}
 	}
 }
+
+// The swapped binary in the root-owned FreeBSD tree must not be chowned to the
+// service user: root executes it afterwards. Paths outside the tree, and names
+// that merely share its prefix, are not in the tree.
+func TestBSDTreeOwnedByRoot(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/usr/local/libexec/urnetwork-provider/bin/urnetwork", true},
+		{"/usr/local/libexec/urnetwork-provider/bin/urnet-tools", true},
+		{"/usr/local/libexec/urnetwork-provider", true},
+		{"/usr/local/libexec/urnetwork-provider-evil/bin/urnetwork", false},
+		{"/home/alice/.local/share/urnetwork-provider/bin/urnetwork", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := bsdTreeOwnedByRoot(c.path); got != c.want {
+			t.Errorf("bsdTreeOwnedByRoot(%q) = %v, want %v", c.path, got, c.want)
+		}
+	}
+}
