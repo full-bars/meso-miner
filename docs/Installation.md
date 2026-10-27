@@ -26,7 +26,7 @@ curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/mai
 | Platform | Needs | Missing tools |
 |---|---|---|
 | Linux (systemd or OpenRC) | a downloader (`curl` or `wget`) and a JSON parser (`jq` or `python3`) | installed through the host package manager: `apt`, `dnf`, `yum`, `zypper`, `pacman` or `apk`, with `sudo` when you are not root. Amazon Linux 2 has no `dnf`, so `yum` is used there |
-| FreeBSD | `fetch`, and root or `sudo` to run the installer | nothing is installed for you; `jq` is optional and only lets the installer verify the Go `urnet-tools` asset, because the release tag is read with `jq`, then `python3`, then a `sed` extraction that needs only the base system. `sudo` is not in the base system, so either `pkg install -y sudo` or run the commands from a root shell (`su -`) |
+| FreeBSD | `fetch`, and root or `sudo` to run the installer | nothing is installed for you; `jq` is optional and only lets the installer verify the Go `urnet-tools` asset, because the release tag is read with `jq`, then `python3`, then a `sed` extraction that needs only the base system. `sudo` is not in the base system, so either `pkg install -y sudo` or run the installer from a root shell (`su -`) |
 
 To keep the Linux installer from touching packages at all:
 
@@ -60,7 +60,7 @@ This fork publishes no hosted `install.sh` dispatcher, so nothing detects the pl
 - **Linux with systemd** — `curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh`. Installs a systemd user unit; see the sections above.
 - **Linux with OpenRC (Alpine and friends)** — the same Linux installer, run from a root shell. It uses `rc-service` and `supervise-daemon` instead of `systemctl`. See the [Alpine Linux (OpenRC) guide](https://github.com/full-bars/meso-miner/wiki/OpenRC).
 - **macOS** — `curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh`. `launchd` instead of systemd; see [macOS Installation](#-macos-installation).
-- **FreeBSD** — download the script with the base system's `fetch`, then run it under `sudo`: `fetch -qo urnet-install.sh https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_FreeBSD.sh && sudo sh urnet-install.sh install`. Installs an `rc.d` service. On standard FreeBSD 13/14 `fetch(1)` is in the base system, so nothing has to be installed first; curl and wget are optional. See the [FreeBSD guide](https://github.com/full-bars/meso-miner/wiki/FreeBSD).
+- **FreeBSD** — download the script with the base system's `fetch`, then run it from a root shell (`su -`), where no `sudo` is needed: `fetch -qo urnet-install.sh https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_FreeBSD.sh && sh urnet-install.sh install`. Installs an `rc.d` service. As a normal user, install `sudo` first (`pkg install -y sudo`) and prefix the second command with it. On standard FreeBSD 13/14 `fetch(1)` is in the base system, so nothing has to be installed first; curl and wget are optional. See the [FreeBSD guide](https://github.com/full-bars/meso-miner/wiki/FreeBSD).
 - **Windows** — `irm https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Win32.ps1 | iex` in PowerShell, no admin required; see [Windows Installation](#-windows-installation).
 
 ## 🍎 macOS Installation
