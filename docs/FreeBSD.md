@@ -21,6 +21,8 @@ Nothing is installed for you on FreeBSD: the installer never touches `pkg`. `sud
 pkg install -y sudo jq
 ```
 
+FreeBSD's base system ships `fetch`, and the installer uses it when `curl` is not installed, so a bare host needs nothing added first. `curl` is preferred when it is present, and `wget` covers hosts that have neither.
+
 Run the installer as the account the provider should run as, with `sudo`, or as root with an explicit account (see [Service user](#service-user)).
 
 ## Install

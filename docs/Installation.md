@@ -53,10 +53,15 @@ urnet-tools proxy refresh
 
 > Full proxy-loading walkthrough (including Windows): [Adding Proxies](/full-bars/meso-miner/wiki/Adding-Proxies).
 
-## 🧭 Other Platforms (Quick install)
+## 🧭 Install on each platform
 
-- **Alpine Linux (OpenRC):** the same install command, run from a root shell, installs a system service under `supervise-daemon`. See the [Alpine Linux (OpenRC) guide](https://github.com/full-bars/meso-miner/wiki/OpenRC).
-- **FreeBSD:** installs an `rc.d` service from the FreeBSD installer script. See the [FreeBSD guide](https://github.com/full-bars/meso-miner/wiki/FreeBSD).
+This fork publishes no hosted `install.sh` dispatcher, so nothing detects the platform for you: each platform has its own script, and the commands below fetch it from `main`. Pick the one that matches the host.
+
+- **Linux with systemd** — `curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh`. Installs a systemd user unit; see the sections above.
+- **Linux with OpenRC (Alpine and friends)** — the same Linux installer, run from a root shell. It uses `rc-service` and `supervise-daemon` instead of `systemctl`. See the [Alpine Linux (OpenRC) guide](https://github.com/full-bars/meso-miner/wiki/OpenRC).
+- **macOS** — `curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh`. `launchd` instead of systemd; see [macOS Installation](#-macos-installation).
+- **FreeBSD** — fetch the script, then run it with `sudo`: `curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_FreeBSD.sh -o urnet-install.sh && sudo sh urnet-install.sh install`. Installs an `rc.d` service, and the base system's `fetch` is enough when `curl` is absent. See the [FreeBSD guide](https://github.com/full-bars/meso-miner/wiki/FreeBSD).
+- **Windows** — `irm https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Win32.ps1 | iex` in PowerShell, no admin required; see [Windows Installation](#-windows-installation).
 
 ## 🍎 macOS Installation
 
