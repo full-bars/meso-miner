@@ -75,7 +75,7 @@ Everything merged after `v2026.10.24-1080497440-meso`.
 - **The v2026.10.22 release notes were corrected** ([#274](https://github.com/full-bars/meso-miner/pull/274), [#279](https://github.com/full-bars/meso-miner/pull/279), [#281](https://github.com/full-bars/meso-miner/pull/281)): duplicated sections merged, the previous release named, and the stop caveat now cites the container stop harness and the shakedown's X3 check.
 - **Release notes for this release** ([#303](https://github.com/full-bars/meso-miner/pull/303)).
 
-## [v2026.10.22-1078667370-meso] — 2026-10-22
+## [v2026.10.22-1078667370-meso] — 2026-10-22 (`urfoundation/meso-miner` tag)
 
 ### Added
 
@@ -106,7 +106,7 @@ Everything merged after `v2026.10.24-1080497440-meso`.
 - **The v2026.10.21 changes are documented where operators look** ([#253](https://github.com/full-bars/meso-miner/pull/253)): `FORK_CHANGES.md`, `LOG_REFERENCE.md`, the HotSwap page and the install docs now carry the counter persistence, the swap behaviour and the install detail.
 - **Release notes for this release** ([#264](https://github.com/full-bars/meso-miner/pull/264), [#267](https://github.com/full-bars/meso-miner/pull/267), [#273](https://github.com/full-bars/meso-miner/pull/273)).
 
-## [v2026.10.21-1077734740-meso] — 2026-10-21
+## [v2026.10.21-1077734740-meso] — 2026-10-21 (`urfoundation/meso-miner` tag)
 
 ### Added
 - **Cumulative metrics counters persist across restarts**: the counters behind `/metrics` (`urnet_*_total`) are stored in `~/.urnetwork/metrics_counters.json` and restored before the listener serves, so a restart, reboot or update no longer resets a 24-hour attribution window to zero. The store is separate from `lifetime_metrics.json`; writes are atomic, every 45 seconds and on shutdown, and skipped when nothing changed. The bundled dashboard gates its rate panels for one window after a start-time change so a restored total is not read as a spike.
@@ -314,7 +314,7 @@ Everything merged after `v2026.10.24-1080497440-meso`.
 
 ---
 
-## [v2026.09.21-1790052822-meso] — 2026-09-22
+## [v2026.09.21-1790052822-meso] — 2026-09-22 (tag belongs to `full-bars/sn`; the work below is meso's)
 
 ### Added
 
