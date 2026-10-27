@@ -186,15 +186,23 @@ func TestFreeBSDInstallerNeverCopiesOntoRunningBinary(t *testing.T) {
 	if !rootOwned {
 		t.Error("do_install does not keep the install tree root-owned")
 	}
-	// The chown runs on '.' inside a `cd "$state_dir"` subshell. -h is main's
-	// no-follow form: a symlink that appears under the state dir must not be
-	// dereferenced by a recursive chown. The cd pins the directory the chown
-	// actually operates on, so a symlink swapped in at state_dir after the
-	// check above cannot redirect it; dropping the cd must fail this test.
+	// The chown runs on '.' after a `cd "$state_dir"` in the SAME subshell. A cd
+	// in its own `if ( cd ... )` subshell leaves the installer's working
+	// directory unchanged, so the chown would hit wherever the operator ran the
+	// script from. The entered directory must match the service home by
+	// pwd -P, and the chown must not recurse: -h guards symlinks, not hard
+	// links the service user can plant to root-owned files.
 	stateOwned := strings.Contains(body, `cd "$state_dir"`) &&
-		strings.Contains(body, `chown -R -h "$service_user" .`)
+		strings.Contains(body, `pwd -P`) &&
+		strings.Contains(body, `chown -h "$service_user" .`)
 	if !stateOwned {
-		t.Error(`do_install does not hand the state directory to the service user (want cd "$state_dir" plus chown -R -h "$service_user" .)`)
+		t.Error(`do_install does not hand the state directory to the service user (want cd "$state_dir", a pwd -P check and chown -h "$service_user" .)`)
+	}
+	if strings.Contains(body, `if ( cd "$state_dir"`) {
+		t.Error("the state dir cd is in its own subshell, so the chown runs in the installer's working directory")
+	}
+	if strings.Contains(body, `chown -R -h "$service_user"`) {
+		t.Error("do_install recurses a root chown through the service user's tree")
 	}
 	// The service must not be started when a failure to start would be
 	// reported as success: the start/restart outcome is checked.
