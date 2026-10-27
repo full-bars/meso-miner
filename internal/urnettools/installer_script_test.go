@@ -157,7 +157,7 @@ func TestFreeBSDInstallerNeverCopiesOntoRunningBinary(t *testing.T) {
 			if refusalIdx < 0 {
 				refusalIdx = i
 			}
-		case strings.Contains(line, "curl -fsSL") && firstFetch < 0:
+		case (strings.Contains(line, "http_fetch ") || strings.Contains(line, "curl -fsSL")) && firstFetch < 0:
 			firstFetch = i
 		}
 		// Any copy whose destination is the live binary is the ETXTBSY bug,
