@@ -88,6 +88,13 @@ func TestRenderBSDServiceScriptShape(t *testing.T) {
 	if !strings.Contains(script, `urnetwork_running_pid`) {
 		t.Error("script has no pidfile-based running check; start/status cannot be reliable")
 	}
+	// A pidfile pid that does not identify as the provider yet is only the
+	// boot window if its argv is still this service's daemon command line.
+	// Accepting any live pid makes a stale file with a reused pid report
+	// "already running", and start then skips a real start.
+	if !strings.Contains(script, `"$daemon"*" -t urnetwork "*`) {
+		t.Error("script accepts an unidentified live pidfile pid as running; a reused pid would skip a real start")
+	}
 	// daemon(8) defaults to sending both streams to -o. A mask of 0 sends
 	// neither, which silently discards everything the provider logs.
 	if strings.Contains(script, "-m 0") {
@@ -116,8 +123,43 @@ func TestRenderBSDServiceScriptShape(t *testing.T) {
 	if strings.Contains(script, `\${urnetwork_user}`) {
 		t.Error("script escapes ${urnetwork_user}; sh would pass it literally, not expand it")
 	}
-	if !strings.Contains(script, `chown ${urnetwork_user} "$logdir"`) {
-		t.Error("script does not chown the log dir to the rc.conf user")
+	// The log dir stays root-owned and world-readable. The previous form
+	// chowned it to the service user, which let that user replace the log
+	// path with a symlink that root's daemon then wrote through.
+	if !strings.Contains(script, `chown root:wheel "$logdir"`) {
+		t.Error("script does not keep the log dir root-owned")
+	}
+	// The log has to survive a restart: install(1) truncates its target, so
+	// the file is created only when it is missing, and a creation that fails
+	// must stop the start instead of being swallowed. Pinning the command
+	// alone would pass while every restart erased the previous run.
+	scriptLines := strings.Split(script, "\n")
+	logGuard, logCreate := -1, -1
+	for i, line := range scriptLines {
+		if strings.Contains(line, `if [ ! -e "$logdir/stdout.log" ]; then`) {
+			logGuard = i
+		}
+		if strings.Contains(line, `install -o ${urnetwork_user} -m 640 /dev/null "$logdir/stdout.log"`) {
+			logCreate = i
+		}
+	}
+	if logGuard < 0 {
+		t.Fatal(`script creates stdout.log unconditionally; a restart would truncate the previous run`)
+	}
+	if logCreate < 0 {
+		t.Fatal(`script does not pre-create the log file as a regular file owned by the service user`)
+	}
+	if logCreate < logGuard || logCreate-logGuard > 3 {
+		t.Errorf("stdout.log creation sits outside the missing-file guard (guard line %d, install line %d)", logGuard, logCreate)
+	}
+	if !strings.Contains(scriptLines[logCreate], "|| return 1") {
+		t.Errorf("a failed stdout.log creation does not fail the start: %q", strings.TrimSpace(scriptLines[logCreate]))
+	}
+	if strings.Contains(scriptLines[logCreate], "|| true") {
+		t.Errorf("stdout.log creation failure is swallowed: %q", strings.TrimSpace(scriptLines[logCreate]))
+	}
+	if !strings.Contains(script, `is a symlink (privilege escalation risk)`) {
+		t.Error("script does not refuse a symlinked log file")
 	}
 	// $flags must reach the provider expanded, not as a literal ${...} or a
 	// bare backslash followed by the value.

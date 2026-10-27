@@ -68,11 +68,32 @@ logdir="/var/log/%[1]s"
 %[1]s_running_pid()
 {
     # Print the live provider pid, or nothing when it is not running.
-    [ -f "$pidfile" ] || return 1
-    _pid="$(cat "$pidfile" 2>/dev/null)"
-    [ -n "$_pid" ] || return 1
-    kill -0 "$_pid" 2>/dev/null || return 1
-    echo "$_pid"
+    _pf_pid=""
+    if [ -f "$pidfile" ] && [ -r "$pidfile" ]; then
+        _pf_pid="$(cat "$pidfile" 2>/dev/null)"
+        _pid="$_pf_pid"
+        if [ -n "$_pid" ] && ps -p "$_pid" -o args= 2>/dev/null | awk -v b='%[4]s' '$1 == b && $2 == "provide" {found=1} END {exit !found}'; then
+            echo "$_pid"
+            return 0
+        fi
+    fi
+    _pid="$(ps -U "${%[1]s_user}" -o pid=,args= 2>/dev/null | awk -v b='%[4]s' '$2 == b && $3 == "provide" {print $1; exit}')"
+    if [ -n "$_pid" ]; then
+        echo "$_pid"
+        return 0
+    fi
+    # daemon(8) writes the child pid before the child has exec'd the provider,
+    # so an alive pidfile pid that does not identify yet can still be this
+    # service starting, not a stale file. Accept it only while its argv is
+    # still daemon(8)'s command line FOR THIS SERVICE: the -t title and the
+    # provider command must both be there. A pid reused by an unrelated
+    # process has neither, so it no longer makes start report "already
+    # running" and skip a real start.
+    _pargs="$(ps -p "$_pf_pid" -o args= 2>/dev/null)"
+    case "$_pargs" in
+        "$daemon"*" -t %[1]s "*"%[4]s provide"*) echo "$_pf_pid"; return 0 ;;
+    esac
+    return 1
 }
 
 %[1]s_start()
@@ -83,7 +104,24 @@ logdir="/var/log/%[1]s"
     fi
     rm -f "$pidfile"
     mkdir -p "$logdir"
-    chown ${%[1]s_user} "$logdir"
+    chown root:wheel "$logdir" 2>/dev/null || true
+    chmod 0755 "$logdir" 2>/dev/null || true
+    if [ -L "$logdir/stdout.log" ]; then
+        echo "Refusing to start: $logdir/stdout.log is a symlink (privilege escalation risk)."
+        return 1
+    fi
+    # daemon(8) opens this path as root, so an existing log is kept only while
+    # it is a plain file with a single link that the service user owns. A fifo,
+    # a hard link or a foreign owner is replaced: removing the name leaves the
+    # inode it pointed at alone.
+    if [ -e "$logdir/stdout.log" ] && [ "$(stat -f '%%HT %%l %%Su' "$logdir/stdout.log" 2>/dev/null)" != "Regular File 1 ${%[1]s_user}" ]; then
+        rm -f "$logdir/stdout.log" || return 1
+    fi
+    # Create the log only when it is missing: installing over an existing
+    # file truncates it, so every restart would erase the previous run.
+    if [ ! -e "$logdir/stdout.log" ]; then
+        install -o ${%[1]s_user} -m 640 /dev/null "$logdir/stdout.log" 2>/dev/null || return 1
+    fi
     echo "Starting %[1]s."
     $daemon -f -t %[1]s -p "$pidfile" -o "$logdir/stdout.log" \
         -u ${%[1]s_user} \
