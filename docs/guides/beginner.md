@@ -8,9 +8,9 @@ This guide gets you from zero to a running provider in about five minutes. No ja
 
 ## 1️⃣ What you need
 
-- A computer or server running **Linux, macOS, or Windows** with internet access
+- A computer or server running **Linux, macOS, Windows, or FreeBSD** with internet access
 - An **auth code** (generate one from the [web dashboard](https://app.ur.network), the [ur.io site](https://ur.io/), or the URnetwork mobile app)
-- A terminal (macOS/Linux) or PowerShell (Windows)
+- A terminal (macOS/Linux/FreeBSD) or PowerShell (Windows)
 
 That's it.
 
@@ -30,6 +30,13 @@ curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/mai
 ```sh
 curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh
 ```
+
+**FreeBSD:**
+```sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_FreeBSD.sh | sudo sh -s -- install
+```
+
+`curl` is not in the FreeBSD base system, so either `pkg install -y curl` first or fetch the script with the base system's `fetch`. Full details, including the `rc.d` service and the tuning FreeBSD needs: [FreeBSD guide](../FreeBSD.md).
 
 **Windows (PowerShell, no admin required):**
 ```powershell
@@ -62,7 +69,7 @@ Windows Defender may flag this one-liner. See the note below.
 
 </details>
 
-It will download the provider binary and set it up as a background service (systemd on Linux, launchd on macOS, a Task Scheduler task on Windows).
+It will download the provider binary and set it up as a background service (systemd on Linux, launchd on macOS, a Task Scheduler task on Windows, an `rc.d` service on FreeBSD).
 
 > [!NOTE]
 > Download time varies by connection speed. You'll see progress messages as it runs.
@@ -120,7 +127,7 @@ When you see a client ID logged, the provider has successfully authenticated wit
 
 - **Add your own proxy list** → see the [Intermediate Guide](intermediate.md)
 - **Tune for performance** → see the [Advanced Guide](advanced.md)
-- **Just let it run** → auto-update is on by default on Linux (systemd timer; `urnet-tools auto-update` to check or change the schedule) and Windows (`urnet-tools auto-update daily|weekly|monthly|off`). On macOS there's no auto-update yet — run `urnet-tools update` yourself when a new version ships.
+- **Just let it run** → auto-update is on by default on Linux (systemd timer; `urnet-tools auto-update` to check or change the schedule) and Windows (`urnet-tools auto-update daily|weekly|monthly|off`). On FreeBSD, `urnet-tools auto-update weekly|monthly|off` maintains a crontab entry. On macOS there's no auto-update yet — run `urnet-tools update` yourself when a new version ships.
 
 ---
 
