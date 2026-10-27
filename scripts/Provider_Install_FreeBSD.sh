@@ -777,11 +777,19 @@ print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
             [ -d "$state_dir" ] || mkdir "$state_dir" 2>/dev/null || true
             # Enter the directory before re-owning it, for the same reason as
             # the check above: cd resolves the entry once, and the relative
-            # '.' cannot be redirected by a symlink swapped in afterwards.
-            if ( cd "$state_dir" 2>/dev/null ); then
+            # '.' cannot be redirected by a symlink swapped in afterwards. The
+            # cd and the writes share ONE subshell: a cd in its own subshell
+            # leaves the installer's working directory unchanged, and the
+            # recursive chown would then run on wherever it was started from.
+            # The directory entered must also be the one the name should
+            # reach, or a symlink swapped in after the check above lands root
+            # in an arbitrary directory.
+            (
+                cd "$state_dir" 2>/dev/null || exit 1
+                [ "$(pwd -P)" = "$(cd "$service_home" 2>/dev/null && pwd -P)/.urnetwork" ] || exit 2
                 chown -R -h "$service_user" . 2>/dev/null || true
                 chmod 700 . 2>/dev/null || true
-            fi
+            ) || pr_warn "left %s alone: it could not be entered, or it resolves outside %s" "$state_dir" "$service_home"
         fi
         chown -R root:wheel "$install_path" 2>/dev/null || \
             chown -R root "$install_path" 2>/dev/null || true
