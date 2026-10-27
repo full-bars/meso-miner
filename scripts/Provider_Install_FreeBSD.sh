@@ -787,8 +787,14 @@ print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
             (
                 cd "$state_dir" 2>/dev/null || exit 1
                 [ "$(pwd -P)" = "$(cd "$service_home" 2>/dev/null && pwd -P)/.urnetwork" ] || exit 2
-                chown -R -h "$service_user" . 2>/dev/null || true
+                # Not recursive: the service user owns this tree, and a hard
+                # link it plants to a root-owned file would be re-owned by a
+                # recursive root chown (-h guards symlinks, not links).
+                chown -h "$service_user" . 2>/dev/null || true
                 chmod 700 . 2>/dev/null || true
+                if [ -n "$(find . ! -user "$service_user" -print 2>/dev/null | head -n 1)" ]; then
+                    pr_warn "%s holds files not owned by %s; fix them by hand" "$state_dir" "$service_user"
+                fi
             ) || pr_warn "left %s alone: it could not be entered, or it resolves outside %s" "$state_dir" "$service_home"
         fi
         chown -R root:wheel "$install_path" 2>/dev/null || \
