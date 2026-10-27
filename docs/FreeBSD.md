@@ -2,14 +2,12 @@
 
 This page is the complete guide to running the URnetwork provider on FreeBSD (amd64 and arm64): install, the `rc.d` service, updates, the required sysctl tuning, and the platform differences you will run into. For the other platforms and the general installer, see the [Installation Guide](/full-bars/meso-miner/wiki/Installation).
 
-The provider runs as an `rc.d` service named `urnetwork` under an unprivileged user. There is no hosted one-line installer for FreeBSD: you fetch the installer script and run it, and it downloads the release for your architecture.
+The provider runs as an `rc.d` service named `urnetwork` under an unprivileged user. There is no hosted one-line installer for FreeBSD: you fetch the installer script and run it, and it downloads the FreeBSD release archive for your architecture.
 
-> [!WARNING]
-> **Release artifacts on meso-miner:** as of `v2026.10.6-1064547980-meso`, meso-miner releases do
-> not yet ship the FreeBSD provider binary or the `urnet-tools-freebsd-*` assets. The installer,
-> the rc.d service and the tuning below are all real in this repo, but `install` cannot fetch
-> FreeBSD binaries until the release pipeline publishes them (tracked follow-up). Everything on
-> this page applies as soon as that lands.
+The provider lives in a **root-owned** tree at `/usr/local/libexec/urnetwork-provider`, while the state directory stays in the service user's home. The service user runs the provider but cannot rewrite the binary that root executes.
+
+> [!IMPORTANT]
+> **Upgrading from an install made before this layout change?** Older meso-miner installers put the provider in `~/.local/share/urnetwork-provider` inside the service user's home, which left that user owning a binary root executes. Re-run the installer (`sudo sh urnet-install.sh install`) to move the provider to `/usr/local/libexec/urnetwork-provider` and rewrite the `rc.d` script, then remove the old tree by hand (`rm -rf ~/.local/share/urnetwork-provider`). The state directory `~/.urnetwork` is untouched by the move, so the login token and proxy state survive.
 
 ## Before you start
 
@@ -38,16 +36,18 @@ To install a specific release instead of the latest:
 sudo sh urnet-install.sh install v2026.10.6-1064547980-meso
 ```
 
-The installer takes `latest` by default, resolves the tag through the GitHub API, falling back to the `/releases/latest` redirect when the API is rate limited. It supports `amd64` and `arm64`; any other architecture stops the install.
+The installer takes `latest` by default, resolves the tag through the GitHub API, falling back to the `/releases/latest` redirect when the API is rate limited (that fallback needs `curl`, since only it reports the redirect target). It supports `amd64` and `arm64`; any other architecture stops the install.
 
 ### Service user
 
 The provider must not run as root, and the installer refuses to set that up. It picks the account in this order:
 
 1. `SERVICE_USER_OVERRIDE`, if set.
-2. `SUDO_USER`, the account that ran `sudo`.
-3. `logname`, the owner of the login session, unless it is `root`.
-4. `id -un`, the current user.
+2. `URNETWORK_USER`, if set.
+3. An existing `urnetwork` account, if the host already has one.
+4. `SUDO_USER`, the account that ran `sudo`.
+5. `logname`, the owner of the login session, unless it is `root`.
+6. `id -un`, the current user.
 
 If the result is `root` (a genuine root login with none of the above), the install stops before downloading anything:
 
@@ -61,23 +61,23 @@ From a root shell, name the account:
 SERVICE_USER_OVERRIDE=urnet sh urnet-install.sh install
 ```
 
-The account must already exist. Create one with `pw useradd urnet -m -s /bin/sh` if you want a dedicated user. All paths below come from that user's home directory, read from the passwd database (`getent passwd`, then `pw usershow`), not from `$HOME`, which under `sudo` can still be root's.
+The account must already exist. Create one with `pw useradd urnet -m -s /bin/sh` if you want a dedicated user. The state directory comes from that user's home, read from the passwd database (`getent passwd`, then `pw usershow`), not from `$HOME`, which under `sudo` can still be root's. The install tree does not: it is at a fixed root-owned path.
 
 ### What the installer does
 
 | What | Where |
 |---|---|
-| Provider binary | `~/.local/share/urnetwork-provider/bin/urnetwork` (service user's home) |
-| Installed version tag | `~/.local/share/urnetwork-provider/version` |
-| `urnet-tools` | `~/.local/share/urnetwork-provider/bin/urnet-tools` |
-| State, including the login token | `~/.urnetwork` (service user's home) |
+| Provider binary | `/usr/local/libexec/urnetwork-provider/bin/urnetwork` (root-owned) |
+| Installed version tag | `/usr/local/libexec/urnetwork-provider/version` |
+| `urnet-tools` | `/usr/local/libexec/urnetwork-provider/bin/urnet-tools` |
+| State, including the login token | `~/.urnetwork` (service user's home, owned by that user) |
 | `rc.d` script | `/usr/local/etc/rc.d/urnetwork` |
 | Service output | `/var/log/urnetwork/stdout.log` |
 | PID file | `/var/run/urnetwork.pid` |
 
 The steps, in order:
 
-1. Downloads `urnetwork-provider-<tag>.tar.gz` from the GitHub release and extracts `freebsd/<arch>/provider` from it.
+1. Downloads `urnetwork-provider-<tag>-freebsd-<arch>.tar.gz` from the GitHub release and extracts `provider` from the archive's top level. The archive for the other architecture is never fetched, and the universal `urnetwork-provider-<tag>.tar.gz` (which nests the binary under `freebsd/<arch>/`) is not used by the installer.
 2. Installs the binary by staging it beside the target and renaming it, so an update over a running provider never fails with "Text file busy".
 3. Installs `urnet-tools`. It downloads the `urnet-tools-freebsd-<arch>` release asset and installs it only if its SHA-256 matches the digest GitHub publishes for the asset (read with `jq`, or with `python3` when `jq` is absent). `sha256(1)` from the base system does the check, with `openssl` as a fallback. If there is no digest to compare (neither `jq` nor `python3`), the download fails, or the sum does not match, it installs the installer script itself as a shell `urnet-tools` instead. The shell version covers `start`, `stop`, `restart`, `status`, `update`, `version`, `hot-restart`, `self-heal`, `session`, `proxy refresh|remove-dead|summary`, `auth` and `logs`. Install `jq` and re-run `update` to get the full Go tool.
 4. Writes the `rc.d` script and, with `sysrc`, sets `urnetwork_enable=YES` and `urnetwork_user=<service user>` only if they are not already set, so an operator's choice survives every update.
@@ -86,12 +86,14 @@ The steps, in order:
 
 When the installer is run as an ordinary user, the `rc.d` and `sysrc` steps go through `sudo`; without `sudo` it prints the commands to finish by hand.
 
+The install tree stays root-owned: the installer `chown`s it to `root:wheel`, removes group and other write permission, and makes only `bin` and the binaries executable for the service user. The account the provider runs as therefore cannot rewrite the binary that root executes on every start and restart. The state directory is the one thing handed to the service user, because that is where its config and login token live; it is created `0700` and owned by that user.
+
 ## Authenticate
 
 The login token has to land in the service user's `~/.urnetwork`. Get an auth code from <https://ur.io> and run the authentication as the service user:
 
 ```sh
-su -l urnet -c '$HOME/.local/share/urnetwork-provider/bin/urnetwork auth <code>'
+su -l urnet -c '/usr/local/libexec/urnetwork-provider/bin/urnetwork auth <code>'
 ```
 
 If you installed as your own account with `sudo`, that account is the service user and you can run `urnet-tools auth <code>` directly. Restart the service so the provider picks up the token:
@@ -115,11 +117,11 @@ service urnetwork status
 
 The script does not use `rc.subr`'s own process tracking, which keys off `procname` and `command` and would report "not running" for this service. It manages a pidfile directly:
 
-- **start** launches the provider through `daemon(8)` and returns. If the pidfile points at a live process it prints `urnetwork is already running as pid <pid>; not starting a second copy.` and does nothing, so a double start cannot create two providers.
+- **start** launches the provider through `daemon(8)` and returns. It first looks for a running provider: a readable pidfile whose pid is alive **and** is this provider running as the service user, then a `ps` scan of the process table for `<binary> provide`, then — for the moment between `daemon(8)` writing the pid and the child exec'ing the provider — an alive pidfile pid whose argv is still `daemon(8)`'s command line for this service. Only then does it print `urnetwork is already running as pid <pid>; not starting a second copy.` A stale pidfile whose pid was reused by an unrelated process matches none of these, so a real start still happens.
 - **stop** sends `SIGTERM` to the pid and polls `kill -0` once a second for up to 30 seconds. If the provider is still alive after that it sends `SIGKILL`, then removes the pidfile. The 30 seconds covers the provider's connection drain.
 - **status** (`status_cmd`) prints `urnetwork is running as pid <pid>.` and exits 0, or `urnetwork is not running.` and exits 1.
 
-`kill -0` on a process owned by another user fails with `EPERM`, so the installer's own status check runs through `sudo`. Run `service urnetwork status` as root, or through `sudo`, when you are not the service user.
+The running check uses `ps`, not `kill -0`, because `kill -0` returns `EPERM` — indistinguishable from "no such process" — for a process owned by another user. `service urnetwork status` therefore works for any user, while `start` and `stop` still need root, which is why `urnet-tools` runs those through `sudo`.
 
 Boot start is controlled by `rc.conf`:
 
@@ -144,7 +146,7 @@ tail -f /var/log/urnetwork/stdout.log
 - **`-p`** writes the pid of the provider (the child), not of the `daemon` process, so `stop` and `status` act on the provider itself.
 - **`-u`** runs the child as the service user and sets its `HOME`, `USER` and `SHELL`, which is why the state directory lands in that user's home.
 
-The log directory is created and handed to the service user on every start.
+The log directory is created root-owned and `0755` on every start, and `stdout.log` is pre-created as a regular file owned by the service user. A symlink at that path stops the start with `Refusing to start: ... is a symlink (privilege escalation risk).`, because `daemon(8)` runs as root and would otherwise write through a link the service user planted.
 
 ## Updates and auto-update
 
@@ -244,9 +246,9 @@ Each release publishes, for both `amd64` and `arm64`:
 
 | Asset | Contents |
 |---|---|
-| `urnetwork-provider-<tag>.tar.gz` | The universal tarball. The FreeBSD provider is at `freebsd/<arch>/provider`. The installer reads it from here. |
-| `urnet-tools-freebsd-<arch>` | The Go `urnet-tools` binary, verified by SHA-256 at install. |
-| `urnetwork-provider-<tag>-freebsd-<arch>.tar.gz` | A flat per-platform tarball with `provider` and the installer script as `urnet-tools`. |
+| `urnetwork-provider-<tag>-freebsd-<arch>.tar.gz` | The flat per-platform tarball the installer fetches: exactly `provider` and `urnet-tools` at the top level. |
+| `urnet-tools-freebsd-<arch>` | The Go `urnet-tools` binary as a loose asset, verified by SHA-256 at install. |
+| `urnetwork-provider-<tag>.tar.gz` | The universal tarball, carrying every platform. The FreeBSD provider is at `freebsd/<arch>/provider` inside it. The installer does not use this one. |
 
 If the installer reports `FreeBSD/<arch> binary not found in release tarball`, the release it fetched has no FreeBSD build; install a newer tag.
 
@@ -259,7 +261,7 @@ sudo service urnetwork stop
 sudo sysrc -x urnetwork_enable urnetwork_user
 sudo rm -f /usr/local/etc/rc.d/urnetwork
 urnet-tools auto-update off
-rm -rf ~/.local/share/urnetwork-provider
+sudo rm -rf /usr/local/libexec/urnetwork-provider
 sudo rm -rf /var/log/urnetwork
 ```
 
