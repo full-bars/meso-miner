@@ -11,7 +11,7 @@ The provider lives in a **root-owned** tree at `/usr/local/libexec/urnetwork-pro
 
 ## Before you start
 
-FreeBSD's base system has no `jq` and no `python3`, and a host that has never installed a package has no `curl` either. None of the three is required to install: the release tag is read with `jq`, then `python3`, then a `sed` extraction that needs only the base system. `jq` is still worth installing, because it is what lets the installer verify and install the Go `urnet-tools` binary (see [What the installer does](#what-the-installer-does)).
+FreeBSD's base system has no `jq` and no `python3`, and neither is required to install: the release tag is read with `jq`, then `python3`, then a `sed` extraction that needs only the base system. `jq` is still worth installing, because it is what lets the installer verify and install the Go `urnet-tools` binary (see [What the installer does](#what-the-installer-does)).
 
 Nothing is installed for you on FreeBSD: the installer never touches `pkg`. `sudo` is needed for the `rc.d` and `sysrc` steps unless you are root.
 
@@ -19,14 +19,14 @@ Nothing is installed for you on FreeBSD: the installer never touches `pkg`. `sud
 pkg install -y sudo jq
 ```
 
-FreeBSD's base system ships `fetch`, and the installer uses it when `curl` is not installed, so a bare host needs nothing added first. `curl` is preferred when it is present, and `wget` covers hosts that have neither.
+On standard FreeBSD 13/14, `fetch(1)` is in the base system, so you do not need to install curl first. curl and wget are optional: the installer prefers curl when it is there, falls back to fetch, then wget.
 
 Run the installer as the account the provider should run as, with `sudo`, or as root with an explicit account (see [Service user](#service-user)).
 
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_FreeBSD.sh -o urnet-install.sh
+fetch -qo urnet-install.sh https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_FreeBSD.sh
 sudo sh urnet-install.sh install
 ```
 
@@ -36,7 +36,7 @@ To install a specific release instead of the latest:
 sudo sh urnet-install.sh install v2026.10.6-1064547980-meso
 ```
 
-The installer takes `latest` by default, resolves the tag through the GitHub API, falling back to the `/releases/latest` redirect when the API is rate limited (that fallback needs `curl`, since only it reports the redirect target). It supports `amd64` and `arm64`; any other architecture stops the install.
+The installer takes `latest` by default, resolves the tag through the GitHub API, and falls back to the `/releases/latest` redirect when the API is rate limited. That fallback reads the redirect target, which only `curl` reports, so on a host without curl the API result is the only source of the tag. It supports `amd64` and `arm64`; any other architecture stops the install.
 
 ### Service user
 

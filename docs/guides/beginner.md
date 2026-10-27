@@ -33,10 +33,10 @@ curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/mai
 
 **FreeBSD:**
 ```sh
-curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_FreeBSD.sh | sudo sh -s -- install
+fetch -qo urnet-install.sh https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_FreeBSD.sh && sudo sh urnet-install.sh install
 ```
 
-`curl` is not in the FreeBSD base system, so either `pkg install -y curl` first or fetch the script with the base system's `fetch`. Full details, including the `rc.d` service and the tuning FreeBSD needs: [FreeBSD guide](../FreeBSD.md).
+On standard FreeBSD 13/14, `fetch(1)` is in the base system, so you do not need to install curl first. curl and wget are optional. Full details, including the `rc.d` service and the tuning FreeBSD needs: [FreeBSD guide](../FreeBSD.md).
 
 **Windows (PowerShell, no admin required):**
 ```powershell
