@@ -525,33 +525,58 @@ assert_state_path_safe() {
 enforce_install_tree_perms() {
     _tree="$1"
     _bin="$2"
+    _tree_conforms() {
+        _dirs=$(find "$_tree" -type d -print) || return 1
+        for _path in $_dirs; do
+            [ "$(stat -f %u "$_path" 2>/dev/null)" = 0 ] || return 1
+            [ "$(stat -f %Lp "$_path" 2>/dev/null)" = 755 ] || return 1
+        done
+        [ "$(stat -f %u "$_bin" 2>/dev/null)" = 0 ] || return 1
+        [ "$(stat -f %Lp "$_bin" 2>/dev/null)" = 755 ]
+    }
     # :wheel is the FreeBSD convention, not what makes the tree safe, so retry
     # with root alone before failing: the boundary is the OWNER, not the group.
     if ! chown -R root:wheel "$_tree" 2>/dev/null; then
         if ! chown -R root "$_tree" 2>/dev/null; then
-            pr_err "could not make %s root-owned: chown -R root:wheel and chown -R root both failed" "$_tree"
-            return 1
+            if _tree_conforms; then
+                pr_info "chown -R root:wheel and chown -R root both failed; %s already conformed" "$_tree"
+            else
+                pr_err "could not make %s root-owned: chown -R root:wheel and chown -R root both failed" "$_tree"
+                return 1
+            fi
         fi
     fi
     # Group/other write on a binary root executes is the boundary itself, so
     # this is required rather than convenient.
     if ! chmod -R go-w "$_tree" 2>/dev/null; then
-        pr_err "could not remove group/other write access from %s: chmod -R go-w failed" "$_tree"
-        return 1
+        if _tree_conforms; then
+            pr_info "chmod -R go-w failed; %s already conformed" "$_tree"
+        else
+            pr_err "could not remove group/other write access from %s: chmod -R go-w failed" "$_tree"
+            return 1
+        fi
     fi
     # One path per call so the message names the directory that failed: 0755 on
     # bin/ is no use while the tree above it is still 0700.
     for _dir in "$_tree" "$_tree/bin"; do
         if ! chmod 755 "$_dir" 2>/dev/null; then
-            pr_err "could not make %s traversable by the service user: chmod 755 failed" "$_dir"
-            return 1
+            if _tree_conforms; then
+                pr_info "chmod 755 failed for %s; %s already conformed" "$_dir" "$_tree"
+            else
+                pr_err "could not make %s traversable by the service user: chmod 755 failed" "$_dir"
+                return 1
+            fi
         fi
     done
     # The binary was renamed into place by this run, so an absent or
     # unexecutable image is a broken install rather than an optional repair.
     if ! chmod 755 "$_bin" 2>/dev/null; then
-        pr_err "could not make %s executable by the service user: chmod 755 failed" "$_bin"
-        return 1
+        if _tree_conforms; then
+            pr_info "chmod 755 failed for %s; %s already conformed" "$_bin" "$_tree"
+        else
+            pr_err "could not make %s executable by the service user: chmod 755 failed" "$_bin"
+            return 1
+        fi
     fi
     return 0
 }

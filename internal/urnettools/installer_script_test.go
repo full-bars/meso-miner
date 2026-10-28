@@ -318,6 +318,21 @@ func TestFreeBSDInstallTreePermsGateAborts(t *testing.T) {
     fmt="$1"; shift
     printf 'ERR: '"$fmt"'\n' "$@" >&2
 }
+pr_info() {
+    fmt="$1"; shift
+    printf 'INFO: '"$fmt"'\n' "$@"
+}
+stat() {
+    if [ "$1" = -f ]; then
+        case "$2" in
+            %u) [ "${STAT_ROOT:-0}" = 1 ] && { printf '0\n'; return; }; /usr/bin/stat -c %u "$3" ;;
+            %Lp) /usr/bin/stat -c %a "$3" ;;
+            *) return 1 ;;
+        esac
+        return
+    fi
+    /usr/bin/stat "$@"
+}
 chown() {
     case "${FAIL_CHOWN:-none}" in
         all) return 1 ;;
@@ -383,6 +398,23 @@ enforce_install_tree_perms "$TREE" "$BIN"
 		want := "ERR: could not make " + tree + " root-owned: chown -R root:wheel and chown -R root both failed"
 		if !strings.Contains(out, want) {
 			t.Errorf("the abort does not name the path and the failure\n want: %s\n  got: %s", want, out)
+		}
+	})
+
+	t.Run("failed chown continues when tree already conforms", func(t *testing.T) {
+		tree, bin := setup(t)
+		for _, p := range []string{tree, filepath.Join(tree, "bin"), bin} {
+			if err := os.Chmod(p, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		out, err := run(t, tree, bin, "FAIL_CHOWN=all", "STAT_ROOT=1")
+		if err != nil {
+			t.Fatalf("gate aborted although the tree already conforms: %v (%s)", err, out)
+		}
+		want := "INFO: chown -R root:wheel and chown -R root both failed; " + tree + " already conformed"
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing already-conformed diagnostic\n want: %s\n  got: %s", want, out)
 		}
 	})
 
