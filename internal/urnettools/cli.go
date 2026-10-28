@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -667,7 +669,11 @@ func printProxyStatus(p Provider) {
 	// URL sources from proxy_url.json (sources list).
 	urlSrc := readProxyURLSources(p.StateDir)
 	if len(urlSrc) > 0 {
-		fmt.Printf("  %-*s %s\n", keyW+1, "URL sources:", strings.Join(urlSrc, ", "))
+		safe := make([]string, len(urlSrc))
+		for i, src := range urlSrc {
+			safe[i] = sanitizeSourceForDisplay(src)
+		}
+		fmt.Printf("  %-*s %s\n", keyW+1, "URL sources:", strings.Join(safe, ", "))
 	} else {
 		fmt.Printf("  %-*s none\n", keyW+1, "URL sources:")
 	}
@@ -733,6 +739,33 @@ var statusUpRe = regexp.MustCompile(`\b(?:up|ok|healthy)\b`)
 // "upstream" or "oklahoma" are not treated as up/ok).
 func statusLineUp(low string) bool {
 	return statusUpRe.MatchString(low)
+}
+
+// sanitizeSourceForDisplay retains only a source URL's scheme and host.
+func sanitizeSourceForDisplay(raw string) string {
+	if u, err := url.Parse(raw); err == nil && u.Scheme != "" && u.Host != "" && !strings.Contains(u.Opaque, "@") {
+		return u.Scheme + "://" + u.Host
+	}
+	// A non-URL can contain another '@' in its query or fragment.
+	out := raw
+	if q := strings.IndexAny(out, "?#"); q >= 0 {
+		out = out[:q]
+	}
+	at := strings.LastIndex(out, "@")
+	if at >= 0 {
+		out = out[at+1:]
+	}
+	out = strings.TrimSpace(out)
+	if out == "" || strings.ContainsAny(out, "@ /") {
+		return "<unparsed source>"
+	}
+	if strings.Contains(out, ":") {
+		_, port, err := net.SplitHostPort(out)
+		if err != nil || port == "" || (at < 0 && strings.Trim(port, "0123456789") != "") {
+			return "<unparsed source>"
+		}
+	}
+	return out
 }
 
 func readProxyURLSources(stateDir string) []string {

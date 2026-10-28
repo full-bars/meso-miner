@@ -6348,6 +6348,51 @@ func readProxySettings() []*connect.ProxySettings {
 	return allProxySettings
 }
 
+// redactProxySource describes the address and credential presence without
+// printing userinfo or URL paths, queries and fragments.
+func redactProxySource(line string) string {
+	line = strings.TrimSpace(line)
+	scheme, rest := "", line
+	if idx := strings.Index(line, "://"); idx >= 0 {
+		if regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*$`).MatchString(line[:idx]) {
+			scheme = line[:idx]
+		}
+		rest = line[idx+3:]
+	}
+	if end := strings.IndexAny(rest, "?#/"); end >= 0 {
+		rest = rest[:end]
+	}
+	address, user, password := parseProxyAddress(rest)
+	unparsed := strings.Contains(rest, "@") && user == "" && password == ""
+	// Keep bracketed IPv6 intact; the generic colon-form redactor is IPv4-only.
+	if _, _, err := net.SplitHostPort(address); err != nil || !strings.HasPrefix(address, "[") {
+		address = redactProxyLine(address)
+	}
+	if !strings.Contains(rest, "@") && user == "" && password == "" && (scheme == "" || strings.Contains(address, ":")) {
+		_, port, err := net.SplitHostPort(address)
+		if err != nil || port == "" || !isDigits(port) {
+			address = "<unparsed address>"
+		}
+	}
+	if address == "" {
+		address = "<no address>"
+	}
+	uStr, pStr := "absent", "absent"
+	if user != "" {
+		uStr = "present"
+	}
+	if password != "" {
+		pStr = "present"
+	}
+	if unparsed {
+		uStr, pStr = "unparsed", "unparsed"
+	}
+	if scheme != "" {
+		address = scheme + "://" + address
+	}
+	return fmt.Sprintf("%s (user=%s, password=%s)", address, uStr, pStr)
+}
+
 // readProxySettingsFromFile reads proxy settings directly from an external file
 // where each non-blank, non-comment line is ip:port:user:pass. Entries missing
 // credentials are rejected (Workflow A requires authenticated proxies).
@@ -6366,7 +6411,7 @@ func readProxySettingsFromFile(path string) ([]*connect.ProxySettings, error) {
 		}
 		address, user, password := parseProxyAddress(line)
 		if user == "" || password == "" {
-			tlog("[proxy] error: proxy %q missing credentials — required format ip:port:user:pass; skipping\n", line)
+			tlog("[proxy] error: proxy %q missing credentials — required format ip:port:user:pass; skipping\n", redactProxySource(line))
 			continue
 		}
 		all = append(all, &connect.ProxySettings{
