@@ -1,0 +1,89 @@
+//go:build freebsd
+
+package urnettools
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// useWritableBSDProviderRoot points the root-owned candidate at a writable tree
+// with the same shape and restores the real path afterwards. The installer's
+// tree is owned by root, so its file modes cannot be exercised as an
+// unprivileged test user.
+func useWritableBSDProviderRoot(t *testing.T) string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "urnetwork-provider", "bin", "urnetwork")
+	previous := bsdLibexecProviderPath
+	bsdLibexecProviderPath = root
+	t.Cleanup(func() { bsdLibexecProviderPath = previous })
+	return root
+}
+
+func writeBSDProviderFile(t *testing.T, path string, mode os.FileMode) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), mode); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+	// WriteFile's mode is masked by the umask, so set it explicitly.
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatalf("chmod %s: %v", path, err)
+	}
+}
+
+// A stale or half-written file in the root-owned tree exists but cannot run.
+// Accepting it hides a working per-user install that comes later in the list.
+func TestFreeBSDInstalledProviderSkipsNonExecutableLibexec(t *testing.T) {
+	root := useWritableBSDProviderRoot(t)
+	writeBSDProviderFile(t, root, 0o644)
+	home := t.TempDir()
+	legacy := filepath.Join(home, ".local", "share", "urnetwork-provider", "bin", "urnetwork")
+	writeBSDProviderFile(t, legacy, 0o755)
+
+	if got := installedBSDProviderIn(home); got != legacy {
+		t.Fatalf("installed provider = %q, want the legacy per-user binary %q", got, legacy)
+	}
+}
+
+// A directory satisfies os.Stat as well, and running it is impossible.
+func TestFreeBSDInstalledProviderSkipsDirectoryAtLibexec(t *testing.T) {
+	root := useWritableBSDProviderRoot(t)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", root, err)
+	}
+	home := t.TempDir()
+	legacy := filepath.Join(home, ".urnetwork", "urnetwork")
+	writeBSDProviderFile(t, legacy, 0o755)
+
+	if got := installedBSDProviderIn(home); got != legacy {
+		t.Fatalf("installed provider = %q, want the legacy per-user binary %q", got, legacy)
+	}
+}
+
+// Tightening the check must not demote a healthy root-owned install, which is
+// the location the current installer writes and keeps its priority.
+func TestFreeBSDInstalledProviderPrefersExecutableLibexec(t *testing.T) {
+	root := useWritableBSDProviderRoot(t)
+	writeBSDProviderFile(t, root, 0o755)
+	home := t.TempDir()
+	writeBSDProviderFile(t, filepath.Join(home, ".urnetwork", "urnetwork"), 0o755)
+
+	if got := installedBSDProviderIn(home); got != root {
+		t.Fatalf("installed provider = %q, want the root-owned binary %q", got, root)
+	}
+}
+
+// An unknown home is the reason the root-owned tree is listed first, so the
+// search must continue without a home instead of giving up.
+func TestFreeBSDInstalledProviderFindsLibexecWithoutAHome(t *testing.T) {
+	root := useWritableBSDProviderRoot(t)
+	writeBSDProviderFile(t, root, 0o755)
+
+	if got := installedBSDProviderIn(""); got != root {
+		t.Fatalf("installed provider = %q, want the root-owned binary %q", got, root)
+	}
+}
