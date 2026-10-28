@@ -3,10 +3,39 @@
 package urnettools
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+// The installer writes the provider to a root-owned tree that is not derived
+// from a home directory. A candidate list built only from $HOME cannot find a
+// stopped provider installed there, which is every install the current script
+// makes.
+func TestBSDProviderCandidatesPrefersTheRootOwnedTree(t *testing.T) {
+	got := bsdProviderCandidates("/home/urnet")
+	want := []string{
+		"/usr/local/libexec/urnetwork-provider/bin/urnetwork",
+		"/home/urnet/.local/share/urnetwork-provider/bin/urnetwork",
+		"/home/urnet/.urnetwork/urnetwork",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("candidates = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("candidate %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestBSDProviderCandidatesKeepTheRootTreeWithoutAHome(t *testing.T) {
+	got := bsdProviderCandidates("")
+	if len(got) != 1 || got[0] != "/usr/local/libexec/urnetwork-provider/bin/urnetwork" {
+		t.Fatalf("candidates for an unknown home = %v, want only the root-owned tree", got)
+	}
+}
 
 // useWritableBSDProviderRoot points the root-owned candidate at a writable tree
 // with the same shape and restores the real path afterwards. The installer's
@@ -49,6 +78,19 @@ func TestFreeBSDInstalledProviderSkipsNonExecutableLibexec(t *testing.T) {
 	}
 }
 
+// A root-owned candidate must be executable by the unprivileged service user.
+func TestFreeBSDInstalledProviderSkipsLibexecWithoutOtherExecute(t *testing.T) {
+	root := useWritableBSDProviderRoot(t)
+	writeBSDProviderFile(t, root, 0o700)
+	home := t.TempDir()
+	legacy := filepath.Join(home, ".local", "share", "urnetwork-provider", "bin", "urnetwork")
+	writeBSDProviderFile(t, legacy, 0o700)
+
+	if got := installedBSDProviderIn(home); got != legacy {
+		t.Fatalf("installed provider = %q, want the per-user binary %q", got, legacy)
+	}
+}
+
 // A directory satisfies os.Stat as well, and running it is impossible.
 func TestFreeBSDInstalledProviderSkipsDirectoryAtLibexec(t *testing.T) {
 	root := useWritableBSDProviderRoot(t)
@@ -82,8 +124,11 @@ func TestFreeBSDInstalledProviderPrefersExecutableLibexec(t *testing.T) {
 func TestFreeBSDInstalledProviderFindsLibexecWithoutAHome(t *testing.T) {
 	root := useWritableBSDProviderRoot(t)
 	writeBSDProviderFile(t, root, 0o755)
+	previous := bsdUserHomeDir
+	bsdUserHomeDir = func() (string, error) { return "", errors.New("home unavailable") }
+	t.Cleanup(func() { bsdUserHomeDir = previous })
 
-	if got := installedBSDProviderIn(""); got != root {
+	if got := installedBSDProvider(); got != root {
 		t.Fatalf("installed provider = %q, want the root-owned binary %q", got, root)
 	}
 }
