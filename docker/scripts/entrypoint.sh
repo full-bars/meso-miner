@@ -52,6 +52,14 @@ elif [ -f "/app/jwt_verify.sh" ]; then
   . "/app/jwt_verify.sh"
 fi
 
+# Validate provider modes before auth or stored-session changes.
+if [ -f "$SCRIPT_DIR/provider_env.sh" ]; then
+  . "$SCRIPT_DIR/provider_env.sh"
+elif [ -f "$APP_DIR/provider_env.sh" ]; then
+  . "$APP_DIR/provider_env.sh"
+fi
+provider_env_validate "$STATE_DIR" || exit 1
+
 # Accept AUTHCODE as an alias for URNETWORK_AUTH_CODE
 if [ -z "${URNETWORK_AUTH_CODE:-}" ] && [ -n "${AUTHCODE:-}" ]; then
   export URNETWORK_AUTH_CODE="$AUTHCODE"

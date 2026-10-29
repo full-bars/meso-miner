@@ -996,6 +996,11 @@ func_start_provider() {
 
 # === Bootstrap Sequence ===
 func_bootstrap() {
+    if ! provider_env_validate "$STATE_DIR"; then
+        log "[ERROR] Invalid provider environment; fix the setting logged above and restart"
+        exit 1
+    fi
+
     case "$PROVIDER_MODE" in
       stable)
         # sh /app/urnetwork_ipinfo.sh

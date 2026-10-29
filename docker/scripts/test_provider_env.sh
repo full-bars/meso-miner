@@ -1,9 +1,7 @@
 #!/bin/bash
-# test_provider_env.sh: verifies the mapping from the v33 operator environment
-# variables (ALL_OPERATORS, AUTO_REGISTER, HOTKEY_SEED_FILE,
-# ALLOW_CLIENT_REGISTRATION, MAX_MEMORY, PROVIDER_ARGS) to `provider provide`
-# flags, and that the Docker start scripts pass those flags to the binary.
-# Offline only: a stub provider binary records its arguments.
+# test_provider_env.sh: verifies boolean parsing, operator-mode validation and
+# the mapping from Docker environment variables to `provider provide` flags.
+# Offline only: provider commands are stubbed, and no credentials or network are used.
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -37,6 +35,13 @@ flags() {
         sh -c '. "$0"; provider_env_flags "$STATE_DIR"' "$HELPER"
 }
 
+validate() {
+    local state_dir="$1"
+    shift
+    env -i PATH="$PATH" HOME="$tmp/home" STATE_DIR="$state_dir" "$@" \
+        sh -c '. "$0"; provider_env_validate "$STATE_DIR"' "$HELPER"
+}
+
 expect_flags() {
     local name="$1"
     local want="$2"
@@ -56,6 +61,12 @@ expect_flags "no variables: no flags" "" "$tmp/state"
 expect_flags "ALL_OPERATORS=1" "--all-operators" "$tmp/state" ALL_OPERATORS=1
 expect_flags "ALL_OPERATORS=true (case-insensitive)" "--all-operators" "$tmp/state" ALL_OPERATORS=TRUE
 expect_flags "ALL_OPERATORS=0 turns it off" "" "$tmp/state" ALL_OPERATORS=0
+for spelling in y Y yes true on 1; do
+    expect_flags "ALL_OPERATORS=$spelling is true" "--all-operators" "$tmp/state" "ALL_OPERATORS=$spelling"
+done
+for spelling in n N no false off 0; do
+    expect_flags "ALL_OPERATORS=$spelling is false" "" "$tmp/state" "ALL_OPERATORS=$spelling"
+done
 out="$(flags "$tmp/state" ALL_OPERATORS=maybe 2>&1)"; rc=$?
 t "ALL_OPERATORS=maybe fails" test "$rc" -ne 0
 t "ALL_OPERATORS=maybe names the variable" grep -q "ALL_OPERATORS must be" <<<"$out"
@@ -65,6 +76,8 @@ expect_flags "ALLOW_CLIENT_REGISTRATION=Y" "--allow-client-registration" "$tmp/s
 expect_flags "ALLOW_CLIENT_REGISTRATION=y (lowercase)" "--allow-client-registration" "$tmp/state" ALLOW_CLIENT_REGISTRATION=y
 expect_flags "ALLOW_CLIENT_REGISTRATION=N" "" "$tmp/state" ALLOW_CLIENT_REGISTRATION=N
 expect_flags "ALLOW_CLIENT_REGISTRATION=n (lowercase)" "" "$tmp/state" ALLOW_CLIENT_REGISTRATION=n
+expect_flags "ALLOW_CLIENT_REGISTRATION=on" "--allow-client-registration" "$tmp/state" ALLOW_CLIENT_REGISTRATION=on
+expect_flags "ALLOW_CLIENT_REGISTRATION=off" "" "$tmp/state" ALLOW_CLIENT_REGISTRATION=off
 
 fresh="$tmp/fresh"
 mkdir -p "$fresh"
@@ -86,7 +99,7 @@ expect_flags "auto with both markers adds nothing" "" "$both" ALLOW_CLIENT_REGIS
 
 out="$(flags "$tmp/state" ALLOW_CLIENT_REGISTRATION=maybe 2>&1)"; rc=$?
 t "ALLOW_CLIENT_REGISTRATION=maybe fails" test "$rc" -ne 0
-t "ALLOW_CLIENT_REGISTRATION=maybe names the values" grep -q "must be auto, Y or N" <<<"$out"
+t "ALLOW_CLIENT_REGISTRATION=maybe names the values" rg -q "ALLOW_CLIENT_REGISTRATION must be true/1/yes/y/on or false/0/no/n/off.*or auto" <<<"$out"
 
 # --- HOTKEY_SEED_FILE and AUTO_REGISTER ------------------------------------
 expect_flags "ALL_OPERATORS with hotkey seed, no auto-register" \
@@ -120,11 +133,33 @@ out="$(flags "$tmp/state" MAX_MEMORY="2 gib" 2>&1)"; rc=$?
 t "MAX_MEMORY with whitespace fails" test "$rc" -ne 0
 t "MAX_MEMORY with whitespace names the cause" grep -q "MAX_MEMORY must not contain whitespace" <<<"$out"
 
-# --- PROVIDER_ARGS ----------------------------------------------------------
-expect_flags "PROVIDER_ARGS splits on whitespace" \
-    $'--operators-url=https://example.test/ops.yml\n--operators-refresh=30m' "$tmp/state" \
-    PROVIDER_ARGS="--operators-url=https://example.test/ops.yml --operators-refresh=30m"
+# --- PROVIDER_ARGS and operator URL gates ----------------------------------
+expect_flags "PROVIDER_ARGS splits on whitespace" $'--one\n--two' "$tmp/state" \
+    PROVIDER_ARGS="--one --two"
 expect_flags "PROVIDER_ARGS does not glob" "--file=/tmp/*.txt" "$tmp/state" PROVIDER_ARGS="--file=/tmp/*.txt"
+out="$(flags "$tmp/state" PROVIDER_ARGS="--operators-url=https://example.test/ops.yml" 2>&1)"; rc=$?
+t "PROVIDER_ARGS operators URL without ALL_OPERATORS fails" test "$rc" -ne 0
+t "PROVIDER_ARGS operators URL refusal names ALL_OPERATORS" rg -q "PROVIDER_ARGS operator-list flags require ALL_OPERATORS=true" <<<"$out"
+expect_flags "PROVIDER_ARGS operator URL is allowed with ALL_OPERATORS" \
+    $'--all-operators\n--operators-url=https://example.test/ops.yml' "$tmp/state" \
+    ALL_OPERATORS=true PROVIDER_ARGS="--operators-url=https://example.test/ops.yml"
+out="$(flags "$tmp/state" OPERATORS_URL=https://example.test/ops.yml 2>&1)"; rc=$?
+t "OPERATORS_URL without ALL_OPERATORS fails" test "$rc" -ne 0
+t "OPERATORS_URL refusal names ALL_OPERATORS" rg -q "OPERATORS_URL requires ALL_OPERATORS=true" <<<"$out"
+expect_flags "OPERATORS_URL maps to provide with ALL_OPERATORS" \
+    $'--all-operators\n--operators-url=https://example.test/ops.yml' "$tmp/state" \
+    ALL_OPERATORS=on OPERATORS_URL=https://example.test/ops.yml
+out="$(flags "$tmp/state" ALL_OPERATORS=1 OPERATORS_URL=https://example.test/ops.yml \
+    PROVIDER_ARGS="--operators-url=https://example.test/ops.yml" 2>&1)"; rc=$?
+t "duplicate operators URLs are rejected" test "$rc" -ne 0
+t "duplicate operators URL error names both settings" rg -q "set OPERATORS_URL or PROVIDER_ARGS --operators-url" <<<"$out"
+
+out="$(validate "$tmp/state" OPERATOR=example.invalid 2>&1)"; rc=$?
+t "OPERATOR without ALL_OPERATORS is refused" test "$rc" -ne 0
+t "OPERATOR refusal names the missing provide mode" rg -q "OPERATOR alone cannot provide:.*no single-operator provide mode" <<<"$out"
+out="$(validate "$tmp/state" ALL_OPERATORS=true OPERATOR=example.invalid 2>&1)"; rc=$?
+t "unsupported OPERATOR auth is refused even in all-operators mode" test "$rc" -ne 0
+t "OPERATOR auth refusal explains the provider startup limitation" rg -q "OPERATOR-scoped authentication is not supported" <<<"$out"
 
 # --- Full combination and order --------------------------------------------
 expect_flags "all flags: exact order, PROVIDER_ARGS last" \
@@ -251,6 +286,42 @@ t "start_jwt.sh: mapped flags reach provide" test "$(provide_args "$dir")" = "--
 dir="$(run_provide_case start_stable.sh ALLOW_CLIENT_REGISTRATION=auto)"
 t "start_stable.sh: auto adds the flag on a fresh state dir" \
     test "$(provide_args "$dir")" = "--allow-client-registration"
+
+# Both entrypoint and direct starts must reject OPERATOR before any login or provider call.
+case_dir="$tmp/operator-entrypoint"
+mkdir -p "$case_dir/home" "$case_dir/app" "$case_dir/state"
+printf '%s\n' stale-jwt > "$case_dir/state/jwt"
+entry_log="$case_dir/dispatch"
+entry_out="$case_dir/out"
+if env -i PATH="$PATH" HOME="$case_dir/home" APP_DIR="$case_dir/app" DISPATCH_LOG="$entry_log" \
+    AUTH=authcode URNETWORK_AUTH_CODE=fake-code OPERATOR=example.invalid \
+    URNETWORK_STATE_DIR="$case_dir/state" sh "$REPO/docker/scripts/entrypoint.sh" > "$entry_out" 2>&1; then rc=0; else rc=$?; fi
+t "entrypoint refuses OPERATOR without ALL_OPERATORS" test "$rc" -ne 0
+t "entrypoint names the missing single-operator provide mode" rg -q "OPERATOR alone cannot provide:.*no single-operator provide mode" "$entry_out"
+t "entrypoint refuses before dispatching auth" test ! -e "$entry_log"
+t "entrypoint validates operator settings before touching the stored session" rg -Fqx stale-jwt "$case_dir/state/jwt"
+
+case_dir="$tmp/operators-url-entrypoint"
+mkdir -p "$case_dir/home" "$case_dir/app"
+entry_log="$case_dir/dispatch"
+entry_out="$case_dir/out"
+if env -i PATH="$PATH" HOME="$case_dir/home" APP_DIR="$case_dir/app" DISPATCH_LOG="$entry_log" \
+    AUTH=authcode URNETWORK_AUTH_CODE=fake-code \
+    PROVIDER_ARGS=--operators-url=https://example.test/ops.yml \
+    URNETWORK_STATE_DIR="$case_dir/state" sh "$REPO/docker/scripts/entrypoint.sh" > "$entry_out" 2>&1; then rc=0; else rc=$?; fi
+t "entrypoint refuses operators URL before auth without ALL_OPERATORS" test "$rc" -ne 0
+t "entrypoint names the required operator mode" rg -q "PROVIDER_ARGS operator-list flags require ALL_OPERATORS=true" "$entry_out"
+t "operators URL refusal happens before startup dispatch" test ! -e "$entry_log"
+
+case_dir="$tmp/operator-direct-start"
+mkdir -p "$case_dir/home" "$case_dir/app"
+start_out="$case_dir/out"
+if env -i PATH="$PATH" HOME="$case_dir/home" APP_DIR="$case_dir/app" \
+    OPERATOR=example.invalid URNETWORK_STATE_DIR="$case_dir/state" \
+    sh "$REPO/docker/scripts/start_stable.sh" > "$start_out" 2>&1; then rc=0; else rc=$?; fi
+t "direct start refuses OPERATOR without ALL_OPERATORS before credential checks" test "$rc" -ne 0 &&
+    rg -q "OPERATOR alone cannot provide:.*no single-operator provide mode" "$start_out" &&
+    ! rg -q "USER_AUTH or PASSWORD not set" "$start_out"
 
 echo ""
 echo "Results: $pass passed, $fail failed"
