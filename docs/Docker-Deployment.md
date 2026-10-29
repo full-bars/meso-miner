@@ -435,6 +435,41 @@ docker run -d \
 > [!NOTE]
 > **Pelican Panel deployments**: When the image runs under a [Pelican panel](#-pelican-panel) with `PELICAN=yes`, the self-update scripts are disabled. The panel manages updates by re-pulling the published image. Runtime fetches are blocked to prevent silently replacing the audited fork binary mid-flight.
 
+## 🧾 Startup Checks and Debug Output
+
+These checks apply to `ghcr.io/full-bars/meso-miner:latest`. The default container state directory is `/root/.urnetwork`; an optional mounted proxy list is read from `/app/proxy.txt`.
+
+### Proxy configuration
+
+A start without `/app/proxy.txt` leaves the saved proxy configuration on the state volume alone. When a file is mounted, the script imports it in a temporary home, validates that the staged list is non-empty, then replaces the saved configuration. A malformed existing configuration is moved aside before replacement.
+
+```text
+[INFO] Checking proxy configuration
+[INFO] No proxy.txt found; kept existing proxy configuration
+```
+
+When nothing was saved, the second line reads `[INFO] No proxy.txt found; none configured`. With a mounted file, the script logs `[INFO] proxy.txt found; adding proxy` and, after a successful import, `[INFO] Proxy configuration replaced from proxy.txt`.
+
+### Login diagnostics
+
+With `DEBUG=true`, password-login startup shows whether each credential is set and its length, plus the auth command's exit code. It does not print the credentials. If captured auth output contains either credential, the output line is `DEBUG: AUTH_OUTPUT=[redacted]`. Other auth output can still appear when it contains neither value, so review a debug log before sharing it. This applies to the shared login loop and the Pelican login.
+
+### IP checker
+
+`ENABLE_IP_CHECKER=true` opts in to the external public-IP checker. The script downloads it to a temporary file before running it, so a failed download does not send an empty script to `sh`. The log distinguishes fetch failure from script failure:
+
+```text
+[WARN] IP checker fetch failed
+[WARN] IP checker script failed
+[INFO] IP checker script ran successfully
+```
+
+### Nightly startup
+
+The nightly bootstrap checks for the provider update before applying `UR_API_URL` and `UR_CONNECT_URL`. A new nightly container therefore downloads its provider binary before the custom network command needs it. The updater selects a Linux archive for the container architecture, with the multi-architecture archive as a fallback. See [Automatic Updates](#-automatic-updates) for the update behavior.
+
+Nightly mode reuses a valid JWT from the persistent state directory, just like stable mode. An expired or invalid token is removed and the startup script authenticates again. Keep `/root/.urnetwork` on a persistent volume if the container is recreated. If `URNETWORK_STATE_DIR` is set, the entrypoint and provider use that same resolved directory for the JWT, proxy settings, network settings and restart markers.
+
 ## ⏳ Idle Update
 
 As of `v3.23.0-fix.26.5`, `urnet-tools idle-update` lets you apply a pending provider update without interrupting active client sessions — it waits for a quiet traffic window before swapping the binary, instead of updating immediately and cutting off whatever's in flight:

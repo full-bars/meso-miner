@@ -1,6 +1,6 @@
 ## [Unreleased]
 
-Everything merged after `v2026.10.24-1080497440-meso`.
+Everything merged after `v2026.10.24-1080497440-meso`, plus the pending Docker startup fixes.
 
 ### Added
 
@@ -8,7 +8,7 @@ Everything merged after `v2026.10.24-1080497440-meso`.
 
 ### Changed
 
-- **The CFAA and IP blocker tables refreshed** ([#306](https://github.com/full-bars/meso-miner/pull/306), [#308](https://github.com/full-bars/meso-miner/pull/308)): 45,570 blocked prefixes after the two upstream syncs, with the provenance comment recording each feed's digest and parse counts. Data only; it takes effect once a node runs this release.
+- **The CFAA and IP blocker tables refreshed.** The compiled tables now contain 45,570 CFAA prefixes and 164,781 blocked host entries. The generated provenance records feed digests and parse counts, so operators can trace the data refresh. Data only; it takes effect once a node runs this release ([#306](https://github.com/full-bars/meso-miner/pull/306), [#308](https://github.com/full-bars/meso-miner/pull/308); 5ab047a45, 38b23bf57).
 
 ### Fixed
 
@@ -17,10 +17,17 @@ Everything merged after `v2026.10.24-1080497440-meso`.
 - **The RAM log trim stays off the writer's lock, and the descriptor swap is retried** ([#307](https://github.com/full-bars/meso-miner/pull/307)): a failed reopen left the reader on an unlinked file that nothing would trim, and the fixed temp name could be blocked in a shared `/dev/shm`. The swap is retried every pass, the temp file is unique, and the tail hints use `-F` so they follow the name after a rename.
 - **The paste prompt names the key that ends input on Windows** ([#311](https://github.com/full-bars/meso-miner/pull/311)): the hint hardcoded Ctrl+D, which does nothing in a native Windows console where stdin ends on Ctrl+Z then Enter. It names both on Windows, because a pty there (Git Bash, MSYS) still ends on Ctrl+D and Ctrl+Z only suspends the process, and a unit test pins both branches.
 - **An extender source that asks again at once is answered** (db1abbcc): the in-flight slot was freed after the answer was written, so a source that answered and asked again immediately was refused as already having a query in flight. The slot is freed before the answer goes on the wire, the deferred release stays for early returns, and a test observes the slot at write time.
+- **The Docker auth-code path forwards the code to the provider.** It formerly passed an empty argument, which reopened an interactive prompt and panicked on EOF in a container. Both initial authentication and re-authentication now pass `URNETWORK_AUTH_CODE` (7e5924604).
+- **A container without `proxy.txt` keeps its saved proxy list.** The startup script no longer removes `~/.urnetwork/proxy` before checking `/app/proxy.txt`; a mounted list is staged separately and installed only after validation, so a failed or empty import does not wipe the working list (a4db76b00, e49c6cb38, ca28220c8).
+- **The IP checker distinguishes a failed download from a failed script.** It saves the download before running it, so a fetch failure does not feed an empty script to `sh`; the log now separates fetch failure, script failure and success (a4db76b00).
+- **Nightly container starts reuse a valid saved JWT.** Nightly login now uses the stable validation path and removes the token only when it is expired or invalid, so a restart does not discard a working session during a temporary platform failure (e1a1c7ca1).
+- **Docker startup uses one resolved state directory.** The entrypoint and provider share `URNETWORK_STATE_DIR` for sessions, proxy settings, network settings and restart markers, so a custom volume is no longer read at one path and written at another (0ee2d3087).
+- **Invalid provider environment settings fail before authentication.** Startup validates those settings first and exits with the configuration error instead of entering the login loop with an unusable mode (15abf2951).
 
 ### Security
 
 - **The FreeBSD installer's root writes are fenced** ([#309](https://github.com/full-bars/meso-miner/pull/309)): the state-directory `chown -R -h` recursed into a tree the service user owns, where a hard link to a root-owned file would have been handed to that user — `-h` only guards symlinks. The chown now owns the top directory only and warns about anything inside owned by someone else. The `cd` also sat in its own subshell, so the recursive chown and chmod ran as root in whatever directory the installer was started from; the `cd` and both writes now happen in one subshell that requires `pwd -P` to match the service home before touching anything. `urnet-tools` is removed, and the failure reported, when it cannot be chowned to `root` instead of leaving a root-executed binary owned by the invoker, and `urnet-tools update` no longer hands the libexec tree back to the service user after a swap. Root's auto-update cron now schedules only the root-owned staged tool and logs under `/var/log/urnetwork`, because the old line ran the invoker's executable and logged into the service user's home. The running check scans only the service user's processes, so a local user cannot fake the provider's argv and make `start` report already running while `stop` signals the fake. `stdout.log` is kept only when `stat -f '%HT %l %Su'` says it is a regular file with one link owned by the service user; a fifo, a hard link or a foreign owner is removed before `daemon(8)` opens it as root.
+- **Docker login debug output no longer prints credentials.** With `DEBUG=true`, provider and Pelican login logs show whether each credential is set and its length; auth output is replaced with `[redacted]` when it contains either value, while the exit code stays visible (a4db76b00, ca28220c8).
 
 ### Documentation
 

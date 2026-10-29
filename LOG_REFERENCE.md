@@ -893,20 +893,65 @@ instance_id: 019e2d67-5a73-4bb3-6661-df9b5c595003
 
 ---
 
-## 🔄 Startup — Proxy Loading
+## 🔗 Proxy URL Fetch Failure
 
+A failed URL source also gets a per-source line with the cause. The cycle summary only counts failures:
+
+```text
+[proxy][url] fetch failed for raw.githubusercontent.com/x/y/socks5.txt: fetch: context deadline exceeded (skipping this cycle)
 ```
+
+The text after the colon is the fetch error, such as a timeout or DNS failure. The source label shows the host and path, not query strings or userinfo; credential-looking path segments are redacted too. This line is kept in the important log buffer, so the cause remains available after the main log rolls over.
+
+## 🔄 Startup: Proxy Loading
+
+```text
+[INFO] Checking proxy configuration
 [INFO] proxy.txt found; adding proxy
 added server 203.0.113.22:1081 (91***rn/cf***9m)
 Using 1000 proxy servers:
   proxy[0] 203.0.113.18:1081 (91***rn/cf***9m)
   proxy[1] 203.0.113.12:1081 (91***rn/cf***9m)
-  ...
+[INFO] Proxy configuration replaced from proxy.txt
+```
+
+The `proxy.txt found; adding proxy` line is still emitted by this image. The replacement line follows a successful staged import. Without `/app/proxy.txt`, startup logs `[INFO] No proxy.txt found; kept existing proxy configuration`, or `[INFO] No proxy.txt found; none configured` when the state directory has no saved list.
+
+A failed stage or import does not replace a readable saved list. The script stages the new list separately, validates it, and only then starts the replacement; if an existing configuration is malformed, it is moved aside before replacement.
+
+```text
+[WARN] Proxy staging failed; kept existing configuration
+[WARN] Proxy replacement failed: provider import command failed; kept existing configuration
+[WARN] Proxy replacement failed: staged configuration is invalid or has no servers; kept existing configuration
 ```
 
 - Each `added server` line confirms a proxy was registered successfully
 - Credentials are partially redacted in logs (`***`)
 - `Using N proxy servers:` summarizes the loaded pool with index assignments
+- `Proxy configuration replaced from proxy.txt` appears after the staged import succeeds
+- `Proxy staging failed` and `Proxy replacement failed` lines explain why a mounted list was not installed
+
+### Container login diagnostics and IP checker
+
+With `DEBUG=true`, password-login startup reports whether each credential is set and its length, plus the auth command's exit code. It prints `DEBUG: AUTH_OUTPUT=[redacted]` when the captured output contains either credential. If the output contains neither credential, the remaining auth output is still printed.
+
+With `ENABLE_IP_CHECKER=true`, the script downloads the checker to a temporary file before running it. The startup lines distinguish a download failure from a script failure:
+
+```text
+[INFO] Checking current public IP...
+[WARN] IP checker fetch failed
+[WARN] IP checker fetch failed: could not create temporary file
+[WARN] IP checker script failed
+[INFO] IP checker script ran successfully
+```
+
+A failed download is not passed to `sh`. The checker is opt-in; with it disabled the script logs `[INFO] IP checker disabled`.
+
+### Nightly session reuse
+
+Nightly login uses the same stored-JWT check as stable mode. A valid session logs a line beginning `[INFO] Existing JWT found at` and ending `- skipping authentication`; `$JWT_FILE` expands to the token path.
+
+An invalid or expired token logs `[WARN] Stored JWT expired or invalid - removing stale token`, then the container enters the authentication flow. Keep `/root/.urnetwork` on a persistent volume to reuse the session after the container is recreated.
 
 ### `proxy.state` reconciliation
 
