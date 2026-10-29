@@ -215,7 +215,6 @@ STUB_EOF
         echo "APP_DIR='$test_dir/app'"
         echo "A_SYS_ARCH='amd64'"
         echo "HOME='$test_dir/home'"
-        echo "STATE_DIR='$test_dir/home/.urnetwork'"
         echo "JWT_FILE='$test_dir/home/.urnetwork/jwt'"
         echo "USER_AUTH=''"
         echo "PASSWORD=''"
@@ -289,17 +288,17 @@ t "start_stable.sh: auto adds the flag on a fresh state dir" \
 
 # Both entrypoint and direct starts must reject OPERATOR before any login or provider call.
 case_dir="$tmp/operator-entrypoint"
-mkdir -p "$case_dir/home" "$case_dir/app" "$case_dir/state"
-printf '%s\n' stale-jwt > "$case_dir/state/jwt"
+mkdir -p "$case_dir/home/.urnetwork" "$case_dir/app"
+printf '%s\n' stale-jwt > "$case_dir/home/.urnetwork/jwt"
 entry_log="$case_dir/dispatch"
 entry_out="$case_dir/out"
 if env -i PATH="$PATH" HOME="$case_dir/home" APP_DIR="$case_dir/app" DISPATCH_LOG="$entry_log" \
     AUTH=authcode URNETWORK_AUTH_CODE=fake-code OPERATOR=example.invalid \
-    URNETWORK_STATE_DIR="$case_dir/state" sh "$REPO/docker/scripts/entrypoint.sh" > "$entry_out" 2>&1; then rc=0; else rc=$?; fi
+    sh "$REPO/docker/scripts/entrypoint.sh" > "$entry_out" 2>&1; then rc=0; else rc=$?; fi
 t "entrypoint refuses OPERATOR without ALL_OPERATORS" test "$rc" -ne 0
 t "entrypoint names the missing single-operator provide mode" rg -q "OPERATOR alone cannot provide:.*no single-operator provide mode" "$entry_out"
 t "entrypoint refuses before dispatching auth" test ! -e "$entry_log"
-t "entrypoint validates operator settings before touching the stored session" rg -Fqx stale-jwt "$case_dir/state/jwt"
+t "entrypoint validates operator settings before touching the stored session" rg -Fqx stale-jwt "$case_dir/home/.urnetwork/jwt"
 
 case_dir="$tmp/operators-url-entrypoint"
 mkdir -p "$case_dir/home" "$case_dir/app"
@@ -308,7 +307,7 @@ entry_out="$case_dir/out"
 if env -i PATH="$PATH" HOME="$case_dir/home" APP_DIR="$case_dir/app" DISPATCH_LOG="$entry_log" \
     AUTH=authcode URNETWORK_AUTH_CODE=fake-code \
     PROVIDER_ARGS=--operators-url=https://example.test/ops.yml \
-    URNETWORK_STATE_DIR="$case_dir/state" sh "$REPO/docker/scripts/entrypoint.sh" > "$entry_out" 2>&1; then rc=0; else rc=$?; fi
+    sh "$REPO/docker/scripts/entrypoint.sh" > "$entry_out" 2>&1; then rc=0; else rc=$?; fi
 t "entrypoint refuses operators URL before auth without ALL_OPERATORS" test "$rc" -ne 0
 t "entrypoint names the required operator mode" rg -q "PROVIDER_ARGS operator-list flags require ALL_OPERATORS=true" "$entry_out"
 t "operators URL refusal happens before startup dispatch" test ! -e "$entry_log"
@@ -317,7 +316,7 @@ case_dir="$tmp/operator-direct-start"
 mkdir -p "$case_dir/home" "$case_dir/app"
 start_out="$case_dir/out"
 if env -i PATH="$PATH" HOME="$case_dir/home" APP_DIR="$case_dir/app" \
-    OPERATOR=example.invalid URNETWORK_STATE_DIR="$case_dir/state" \
+    OPERATOR=example.invalid \
     sh "$REPO/docker/scripts/start_stable.sh" > "$start_out" 2>&1; then rc=0; else rc=$?; fi
 t "direct start refuses OPERATOR without ALL_OPERATORS before credential checks" test "$rc" -ne 0 &&
     rg -q "OPERATOR alone cannot provide:.*no single-operator provide mode" "$start_out" &&

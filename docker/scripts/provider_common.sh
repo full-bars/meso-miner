@@ -21,7 +21,8 @@ PROVIDER_FLAVOR="${PROVIDER_FLAVOR:-stable}"
 
 # === Configuration Variables ===
 export TZ="America/Tijuana"
-APP_DIR="${APP_DIR:-/app}"
+APP_DIR="/app"
+JWT_FILE="$HOME/.urnetwork/jwt"
 ENABLE_VNSTAT="${ENABLE_VNSTAT:-}"
 ENABLE_IP_CHECKER="${ENABLE_IP_CHECKER:-false}"
 IP_CHECKER_URL="https://raw.githubusercontent.com/techroy23/IP-Checker/refs/heads/main/app.sh"
@@ -57,30 +58,6 @@ fi
 log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') >>> UrNetwork >>> $*"
 }
-
-# Resolve once before any state paths are used, including by child binaries.
-resolve_state_dir() {
-    STATE_DIR=$(printf '%s' "${URNETWORK_STATE_DIR:-}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-    STATE_DIR=${STATE_DIR:-${HOME:-/root}/.urnetwork}
-    case "$STATE_DIR" in /*) ;; *) STATE_DIR="$PWD/$STATE_DIR" ;; esac
-    if ! mkdir -p "$STATE_DIR"; then
-        log "ERROR: Cannot create state directory '$STATE_DIR' (see mkdir error above)" >&2
-        exit 1
-    fi
-    if ! resolved_state_dir=$(cd "$STATE_DIR" && pwd -P); then
-        log "ERROR: Cannot access state directory '$STATE_DIR'" >&2
-        exit 1
-    fi
-    STATE_DIR=$resolved_state_dir
-    export URNETWORK_STATE_DIR="$STATE_DIR"
-    if [ "${URNETWORK_STATE_DIR_LOGGED:-}" != 1 ]; then
-        log "State directory: $STATE_DIR"
-        export URNETWORK_STATE_DIR_LOGGED=1
-    fi
-}
-
-resolve_state_dir
-JWT_FILE="$STATE_DIR/jwt"
 
 # === Stop Forwarding ===
 # `docker stop` sends SIGTERM to PID 1, which is this shell. A shell running as
@@ -177,7 +154,7 @@ func_run_provider() {
 # variables set the result is empty and the command line stays exactly
 # `provide`.
 resolve_provider_env_args() {
-    if ! PROVIDER_ENV_ARGS="$(provider_env_flags "$STATE_DIR")"; then
+    if ! PROVIDER_ENV_ARGS="$(provider_env_flags "$HOME/.urnetwork")"; then
         log "[ERROR] Invalid provider environment; fix the setting logged above and restart"
         exit 1
     fi
@@ -209,7 +186,7 @@ func_check_credentials() {
 # === Proxy Setup ===
 func_check_proxy() {
     log "[INFO] Checking proxy configuration"
-    proxy_dir="$STATE_DIR"
+    proxy_dir="$HOME/.urnetwork"
     proxy_config="$proxy_dir/proxy"
     if [ ! -f "/app/proxy.txt" ]; then
         if [ -f "$proxy_config" ]; then
@@ -220,9 +197,8 @@ func_check_proxy() {
         return 0
     fi
 
-    # Stage on the state filesystem so a failed import cannot damage live state.
-    # Preserve named auth entries while replacing the server list.
-    if ! mkdir -p "$proxy_dir" || ! proxy_stage=$(mktemp -d "$proxy_dir/.proxy-import.XXXXXX"); then
+    # Stage the import under a temporary HOME so failures cannot damage live state.
+    if ! mkdir -p "$proxy_dir"; then
         if [ -f "$proxy_config" ]; then
             log "[WARN] Proxy staging failed; kept existing configuration"
         else
@@ -230,23 +206,38 @@ func_check_proxy() {
         fi
         return 1
     fi
-    if [ -f "$proxy_config" ]; then
-        if ! jq -c 'select(type == "object") | .servers = {}' "$proxy_config" > "$proxy_stage/proxy" || [ ! -s "$proxy_stage/proxy" ]; then
-            log "[WARN] Cannot read existing proxy configuration; kept it unchanged"
-            rm -rf "$proxy_stage"
-            return 1
-        fi
-    else
-        if ! printf '%s\n' '{"servers":{}}' > "$proxy_stage/proxy"; then
+    if ! proxy_stage_home=$(mktemp -d "$proxy_dir/.proxy-import.XXXXXX"); then
+        if [ -f "$proxy_config" ]; then
+            log "[WARN] Proxy staging failed; kept existing configuration"
+        else
             log "[WARN] Proxy staging failed; none configured"
-            rm -rf "$proxy_stage"
+        fi
+        return 1
+    fi
+    proxy_stage_dir="$proxy_stage_home/.urnetwork"
+    proxy_stage_config="$proxy_stage_dir/proxy"
+    if ! mkdir -p "$proxy_stage_dir"; then
+        log "[WARN] Proxy staging failed; kept existing configuration"
+        rm -rf "$proxy_stage_home"
+        return 1
+    fi
+    if [ -f "$proxy_config" ]; then
+        if ! jq -c 'select(type == "object") | .servers = {}' "$proxy_config" > "$proxy_stage_config" || [ ! -s "$proxy_stage_config" ]; then
+            log "[WARN] Cannot read existing proxy configuration; kept it unchanged"
+            rm -rf "$proxy_stage_home"
             return 1
         fi
+    elif ! printf '%s\n' '{"servers":{}}' > "$proxy_stage_config"; then
+        log "[WARN] Proxy staging failed; none configured"
+        rm -rf "$proxy_stage_home"
+        return 1
     fi
+
+    log "[INFO] proxy.txt found; adding proxy"
     PROVIDER_BIN="$APP_DIR/urnetwork_${A_SYS_ARCH}_${PROVIDER_FLAVOR}"
-    if URNETWORK_STATE_DIR="$proxy_stage" "$PROVIDER_BIN" proxy add --proxy_file="/app/proxy.txt" -f &&
-       [ -f "$proxy_stage/proxy" ] && chmod 600 "$proxy_stage/proxy" &&
-       mv -f "$proxy_stage/proxy" "$proxy_config"; then
+    if HOME="$proxy_stage_home" "$PROVIDER_BIN" proxy add --proxy_file="/app/proxy.txt" -f &&
+       [ -f "$proxy_stage_config" ] && chmod 600 "$proxy_stage_config" &&
+       mv -f "$proxy_stage_config" "$proxy_config"; then
         log "[INFO] Proxy configuration replaced from proxy.txt"
     else
         if [ -f "$proxy_config" ]; then
@@ -254,10 +245,10 @@ func_check_proxy() {
         else
             log "[WARN] Proxy replacement failed; none configured"
         fi
-        rm -rf "$proxy_stage"
+        rm -rf "$proxy_stage_home"
         return 1
     fi
-    rm -rf "$proxy_stage"
+    rm -rf "$proxy_stage_home"
 }
 
 # === Architecture Detection ===
@@ -277,7 +268,7 @@ func_get_architecture() {
 # custom API + connect backend without a custom-built binary, using
 # the `provider choose_network` command. Both must be set together
 # (the binary's choose_network requires both positional args). Saved
-# to the state directory as network.json, so — like the JWT — it survives
+# to ~/.urnetwork/network.json, so — like the JWT — it survives
 # restarts if that directory is on a mounted volume.
 func_choose_network() {
     if [ -n "$UR_API_URL" ] && [ -n "$UR_CONNECT_URL" ]; then
@@ -657,8 +648,8 @@ func_check_update() {
         rm -rf "$UPDATE_TMP"
         return 0
     fi
-    mkdir -p "$STATE_DIR"
-    if ! touch "$STATE_DIR/update-pending"; then
+    mkdir -p "$HOME/.urnetwork"
+    if ! touch "$HOME/.urnetwork/update-pending"; then
         log "[ERROR] Failed to set restart marker." >&2
         log "[INFO] Update installed; restart marker not set, so the provider was not restarted."
         rm -rf "$UPDATE_TMP"
@@ -694,14 +685,14 @@ func_start_provider_stable(){
         func_run_provider "$PROVIDER_BIN" provide $PROVIDER_ENV_ARGS
         set +f
         if [ "$code" -eq 0 ]; then
-            if [ -f "$STATE_DIR/update-pending" ]; then
-                rm -f "$STATE_DIR/update-pending"
+            if [ -f "$HOME/.urnetwork/update-pending" ]; then
+                rm -f "$HOME/.urnetwork/update-pending"
                 log "[INFO] Binary updated — restarting provider."
                 failures=0
                 continue
             fi
-            if [ -f "$STATE_DIR/hotswap-pending" ] || pgrep -f "urnetwork.*provide" >/dev/null 2>&1; then
-                rm -f "$STATE_DIR/hotswap-pending"
+            if [ -f "$HOME/.urnetwork/hotswap-pending" ] || pgrep -f "urnetwork.*provide" >/dev/null 2>&1; then
+                rm -f "$HOME/.urnetwork/hotswap-pending"
                 log "[INFO] UrNetwork hotswap successor active; continuing supervision."
                 failures=0
                 while pgrep -f "urnetwork.*provide" >/dev/null 2>&1; do
@@ -765,14 +756,14 @@ func_start_provider_nightly(){
         func_run_provider "$PROVIDER_BIN" provide $PROVIDER_ENV_ARGS
         set +f
         if [ "$code" -eq 0 ]; then
-            if [ -f "$STATE_DIR/update-pending" ]; then
-                rm -f "$STATE_DIR/update-pending"
+            if [ -f "$HOME/.urnetwork/update-pending" ]; then
+                rm -f "$HOME/.urnetwork/update-pending"
                 log "[INFO] Binary updated — restarting provider."
                 failures=0
                 continue
             fi
-            if [ -f "$STATE_DIR/hotswap-pending" ] || pgrep -f "urnetwork.*provide" >/dev/null 2>&1; then
-                rm -f "$STATE_DIR/hotswap-pending"
+            if [ -f "$HOME/.urnetwork/hotswap-pending" ] || pgrep -f "urnetwork.*provide" >/dev/null 2>&1; then
+                rm -f "$HOME/.urnetwork/hotswap-pending"
                 log "[INFO] UrNetwork hotswap successor active; continuing supervision."
                 failures=0
                 while pgrep -f "urnetwork.*provide" >/dev/null 2>&1; do
@@ -890,15 +881,15 @@ func_start_provider_jwt(){
         func_run_provider "$PROVIDER_BIN" provide $PROVIDER_ENV_ARGS
         set +f
         if [ "$code" -eq 0 ]; then
-            if [ -f "$STATE_DIR/update-pending" ]; then
-                rm -f "$STATE_DIR/update-pending"
+            if [ -f "$HOME/.urnetwork/update-pending" ]; then
+                rm -f "$HOME/.urnetwork/update-pending"
                 log "[INFO] Binary updated — restarting provider."
                 failures=0
                 reauth_attempts=0
                 continue
             fi
-            if [ -f "$STATE_DIR/hotswap-pending" ] || pgrep -f "urnetwork.*provide" >/dev/null 2>&1; then
-                rm -f "$STATE_DIR/hotswap-pending"
+            if [ -f "$HOME/.urnetwork/hotswap-pending" ] || pgrep -f "urnetwork.*provide" >/dev/null 2>&1; then
+                rm -f "$HOME/.urnetwork/hotswap-pending"
                 log "[INFO] UrNetwork hotswap successor active; continuing supervision."
                 failures=0
                 reauth_attempts=0
