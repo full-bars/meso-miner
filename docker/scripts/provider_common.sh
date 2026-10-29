@@ -194,9 +194,9 @@ func_check_proxy_import() {
     # A staging directory outlives the container process if it is killed
     # mid-import, so sweep the leftovers before making another one.
     if [ -d "$proxy_dir" ]; then
-        for stale in "$proxy_dir"/.proxy-import.*; do
-            [ -d "$stale" ] && rm -rf "$stale"
-        done
+        # Only sweep directories old enough to belong to a dead container: a
+        # sibling sharing this volume may be importing right now.
+        find "$proxy_dir" -maxdepth 1 -name '.proxy-import.*' -type d -mmin +10 -exec rm -rf {} + 2>/dev/null || true
     fi
     if [ ! -f "/app/proxy.txt" ]; then
         if [ -f "$proxy_config" ]; then
@@ -464,7 +464,8 @@ func_login_retry_loop() {
             auth_output_sensitive=no
             auth_output_lower=$(printf '%s' "$AUTH_OUTPUT" | tr '[:upper:]' '[:lower:]')
             if [ -n "$USER_AUTH" ]; then
-                user_auth_lower=$(printf '%s' "$USER_AUTH" | tr '[:upper:]' '[:lower:]')
+                user_auth_trimmed=$(printf '%s' "$USER_AUTH" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+                user_auth_lower=$(printf '%s' "$user_auth_trimmed" | tr '[:upper:]' '[:lower:]')
                 case "$auth_output_lower" in *"$user_auth_lower"*) auth_output_sensitive=yes ;; esac
             fi
             if [ -n "$PASSWORD" ]; then

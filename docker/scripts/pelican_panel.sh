@@ -145,7 +145,8 @@ func_do_login() {
             auth_output_sensitive=no
             auth_output_lower=$(printf '%s' "$AUTH_OUTPUT" | tr '[:upper:]' '[:lower:]')
             if [ -n "$USER_AUTH" ]; then
-                user_auth_lower=$(printf '%s' "$USER_AUTH" | tr '[:upper:]' '[:lower:]')
+                user_auth_trimmed=$(printf '%s' "$USER_AUTH" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+                user_auth_lower=$(printf '%s' "$user_auth_trimmed" | tr '[:upper:]' '[:lower:]')
                 case "$auth_output_lower" in *"$user_auth_lower"*) auth_output_sensitive=yes ;; esac
             fi
             if [ -n "$PASSWORD" ]; then
