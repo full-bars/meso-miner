@@ -12,7 +12,7 @@ python3 - "$REPO/docker/scripts/provider_common.sh" "$REPO/docker/scripts/pelica
 import pathlib, re, sys
 common, pelican, dest = map(pathlib.Path, sys.argv[1:])
 for source, funcs, name in (
-    (common, ('func_check_proxy_import', 'func_check_proxy', 'func_ip_checker', 'func_login_retry_loop'), 'common'),
+    (common, ('func_check_proxy_import', 'func_check_proxy', 'func_bootstrap', 'func_ip_checker', 'func_login_retry_loop'), 'common'),
     (pelican, ('func_do_login',), 'pelican'),
 ):
     text = source.read_text()
@@ -304,19 +304,59 @@ done
 # The nightly bootstrap must download the binary before the proxy import runs it,
 # and a failed import must not abort startup. The function-level cases above cannot
 # see either, because they run func_check_proxy outside the real sequence.
-bootstrap_order() {
-  block=$(sed -n '/^      nightly)/,/^        ;;/p' "$HERE/provider_common.sh")
-  update_line=$(printf '%s\n' "$block" | grep -n 'func_check_update' | head -1 | cut -d: -f1)
-  proxy_line=$(printf '%s\n' "$block" | grep -n 'func_check_proxy' | head -1 | cut -d: -f1)
+# Execute func_bootstrap instead of reading it as text. The static checks this
+# replaces could pass on a commented-out line, and they could not see what
+# `set -e` does with a failing import at all.
+bootstrap_driver="$tmp/bootstrap-driver"
+cat > "$bootstrap_driver" <<'DRIVER'
+#!/bin/sh
+set -e
+. "$FUNCTIONS"
+log() { :; }
+func_sleep() { :; }
+provider_env_validate() { return 0; }
+for f in func_get_architecture func_choose_network func_check_dir func_check_credentials \
+         func_report_identity func_ip_checker func_start_vnstat func_do_login func_start_provider; do
+  eval "$f() { echo $f >> \"\$ORDER\"; }"
+done
+func_check_update() { echo func_check_update >> "$ORDER"; }
+func_check_proxy() {
+  echo func_check_proxy >> "$ORDER"
+  [ "${PROXY_RC:-0}" = 0 ] || return 1
+}
+func_bootstrap
+DRIVER
+
+run_bootstrap() {
+  : > "$2"
+  env -i PATH="$PATH" ORDER="$2" FUNCTIONS="$tmp/functions/common.sh" \
+    PROVIDER_MODE="$1" PROXY_RC="$3" timeout 5 sh "$bootstrap_driver" >/dev/null 2>&1
+}
+
+bootstrap_order_executed() {
+  order="$tmp/order-nightly"
+  run_bootstrap nightly "$order" 0 || true
+  update_line=$(grep -n '^func_check_update$' "$order" | head -1 | cut -d: -f1)
+  proxy_line=$(grep -n '^func_check_proxy$' "$order" | head -1 | cut -d: -f1)
   [ -n "$update_line" ] && [ -n "$proxy_line" ] && [ "$update_line" -lt "$proxy_line" ]
 }
-report 'nightly downloads the binary before importing proxies' bootstrap_order
+report 'nightly runs the download before the proxy import' bootstrap_order_executed
 
-bootstrap_proxy_fatal() {
-  block=$(sed -n '/^      nightly)/,/^        ;;/p' "$HERE/provider_common.sh")
-  printf '%s\n' "$block" | grep -q '^        func_check_proxy$'
+bootstrap_fatal_propagates() {
+  order="$tmp/order-jwt"
+  run_bootstrap jwt "$order" 1
+  rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  grep -qx 'func_check_proxy' "$order" && ! grep -q 'func_report_identity' "$order"
 }
-report 'nightly lets a fatal proxy failure reach startup' bootstrap_proxy_fatal
+report 'a fatal proxy failure stops the bootstrap before the next step' bootstrap_fatal_propagates
+
+bootstrap_survives_kept_config() {
+  order="$tmp/order-jwt-ok"
+  run_bootstrap jwt "$order" 0
+  grep -qx 'func_report_identity' "$order" && grep -qx 'func_start_provider' "$order"
+}
+report 'a kept proxy configuration lets the bootstrap continue' bootstrap_survives_kept_config
 
 echo "Results: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
