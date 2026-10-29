@@ -4801,6 +4801,7 @@ func provide(opts docopt.Opts) {
 
 	printReadyUnlessCondensed()
 
+	quiesceForRun(ctx, reloader)
 	wg.Wait()
 
 	// All goroutines have finished. Log final status before exit.
