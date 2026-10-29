@@ -12,7 +12,7 @@ python3 - "$REPO/docker/scripts/provider_common.sh" "$REPO/docker/scripts/pelica
 import pathlib, re, sys
 common, pelican, dest = map(pathlib.Path, sys.argv[1:])
 for source, funcs, name in (
-    (common, ('func_check_proxy', 'func_ip_checker', 'func_login_retry_loop'), 'common'),
+    (common, ('func_check_proxy_import', 'func_check_proxy', 'func_ip_checker', 'func_login_retry_loop'), 'common'),
     (pelican, ('func_do_login',), 'pelican'),
 ):
     text = source.read_text()
@@ -126,8 +126,15 @@ proxy_kept_without_mount() {
     rg -q 'kept existing proxy configuration' "$out" && [ ! -e "$argv" ]
 }
 proxy_kept_after_failure() {
+  [ "$rc" -eq 0 ] && cmp -s "$state/proxy" "$original" &&
+    rg -q 'kept the existing configuration' "$out" && rg -qx 'proxy' "$argv" && rg -qx 'add' "$argv" && no_proxy_staging_left
+}
+
+# A corrupt saved config is not a fallback: the provider cannot load it, so the
+# container would end up sending traffic direct and must stop instead.
+proxy_corrupt_fatal() {
   [ "$rc" -ne 0 ] && cmp -s "$state/proxy" "$original" &&
-    rg -q 'kept existing configuration' "$out" && rg -qx 'proxy' "$argv" && rg -qx 'add' "$argv" && no_proxy_staging_left
+    rg -q 'refusing to start without the mounted proxy' "$out" && no_proxy_staging_left
 }
 proxy_replaced_atomically() {
   [ "$rc" -eq 0 ] && rg -q 'configuration replaced' "$out" &&
@@ -210,7 +217,7 @@ report 'null existing proxy config is backed up and healed' proxy_corrupt_healed
 home="$tmp/home-invalid-fail"; state="$home/.urnetwork"; mkdir -p "$state"; original="$tmp/proxy-original-invalid-fail"
 printf '%s\n' '{not-json' > "$state/proxy"; cp "$state/proxy" "$original"
 run common proxy "$home" "$state" silent
-report 'failed import keeps corrupt original in place' proxy_empty_rejected
+report 'failed import keeps corrupt original in place' proxy_corrupt_fatal
 
 state="$tmp/home-fail/.urnetwork"; home="$tmp/home-fail"; mkdir -p "$state"; original="$tmp/proxy-original-fail"
 printf '%s\n' '{"servers":{"old:1080":""},"auths":{"keep":{"user":"alice","password":"secret"}}}' > "$state/proxy"
@@ -305,11 +312,11 @@ bootstrap_order() {
 }
 report 'nightly downloads the binary before importing proxies' bootstrap_order
 
-bootstrap_proxy_nonfatal() {
+bootstrap_proxy_fatal() {
   block=$(sed -n '/^      nightly)/,/^        ;;/p' "$HERE/provider_common.sh")
-  printf '%s\n' "$block" | grep -q 'func_check_proxy || true'
+  printf '%s\n' "$block" | grep -q '^        func_check_proxy$'
 }
-report 'a failed proxy import does not abort nightly startup' bootstrap_proxy_nonfatal
+report 'nightly lets a fatal proxy failure reach startup' bootstrap_proxy_fatal
 
 echo "Results: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
