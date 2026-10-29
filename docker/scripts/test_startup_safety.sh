@@ -48,6 +48,9 @@ case "$1" in
       # the server may echo the address normalized and nothing else; the
       # redaction must catch it on the address alone
       printf 'echoed %s\n' "$(printf '%s' "$USER_AUTH" | tr '[:upper:]' '[:lower:]')"
+    elif [ "${AUTH_ECHO:-yes}" = password ]; then
+      # same question for the password, with the address left out entirely
+      printf 'echoed %s\n' "$(printf '%s' "$PASSWORD" | tr '[:upper:]' '[:lower:]')"
     else
       printf '%s\n' 'diagnostic output without credentials'
     fi
@@ -166,6 +169,10 @@ credentials_remaining_redacted() {
   [ "$rc" -eq 0 ] && rg -q 'AUTH_OUTPUT=\[redacted\]' "$out" &&
     ! rg -Fq 'private-user-123' "$out" && ! rg -Fq 'private-password-456' "$out"
 }
+credentials_password_redacted() {
+  [ "$rc" -eq 0 ] && rg -q 'AUTH_OUTPUT=\[redacted\]' "$out" &&
+    ! rg -Fq 'private-password-456' "$out"
+}
 proxy_first_imported() {
   [ "$rc" -eq 0 ] && jq -e '.servers == {"new:1080":""}' "$state/proxy" >/dev/null &&
     [ "$(stat -c %a "$state/proxy")" = 600 ] && no_proxy_staging_left
@@ -277,6 +284,11 @@ report 'a case-normalized credential echo is still redacted' credentials_remaini
 rm -f "$state/jwt"
 run pelican pelican-login "$home" "$state" no fetch-fail 'Private-User-123' 'private-password-456' normalized
 report 'Pelican redacts a case-normalized credential echo' credentials_remaining_redacted
+
+# Same question for the password, with the address left out entirely.
+rm -f "$state/jwt"
+run common login "$home" "$state" no fetch-fail 'private-user-123' 'Private-Password-456' password
+report 'a case-normalized password echo is still redacted' credentials_password_redacted
 
 visible_and_redacted() {
   [ "$visible" = yes ] && credentials_remaining_redacted
