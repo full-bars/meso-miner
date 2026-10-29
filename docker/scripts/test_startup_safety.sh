@@ -35,11 +35,18 @@ case "$1" in
       printf '%s\n' partial > "$HOME/.urnetwork/proxy"
       exit 17
     fi
+    [ "${PROXY_FAIL:-no}" != silent ] || exit 0
+    rg -q '^[[:space:]]*[^[:space:]#]' "$TEST_APP/proxy.txt" || exit 0
     jq '.servers = {"new:1080":""}' "$HOME/.urnetwork/proxy" > "$HOME/.urnetwork/new" || exit 1
     mv "$HOME/.urnetwork/new" "$HOME/.urnetwork/proxy"
     ;;
   auth)
-    printf 'Jwt written to %s\nechoed %s %s\n' "$JWT_FILE" "$USER_AUTH" "$PASSWORD"
+    printf 'Jwt written to %s\n' "$JWT_FILE"
+    if [ "${AUTH_ECHO:-yes}" = yes ]; then
+      printf 'echoed %s %s\n' "$USER_AUTH" "$PASSWORD"
+    else
+      printf '%s\n' 'diagnostic output without credentials'
+    fi
     printf '%s\n' jwt-token > "$JWT_FILE"
     ;;
   *) exit 1 ;;
@@ -72,10 +79,12 @@ out="$tmp/out"
 argv="$tmp/argv"
 run() {
   local funcs="$1" action="$2" home="$3" state="$4" proxy_fail="${5:-no}" curl_mode="${6:-fetch-fail}"
+  local user_auth="${7-private-user-123}" password="${8-private-password-456}" auth_echo="${9:-yes}"
+  rm -f "$argv"
   if env -i PATH="$tmp/bin:$PATH" HOME="$home" STATE_DIR="$state" \
       TEST_APP="$tmp/app" FUNCTIONS="$tmp/functions/$funcs.sh" ACTION="$action" \
       PROXY_FAIL="$proxy_fail" ARGV_LOG="$argv" JWT_FILE="$state/jwt" \
-      USER_AUTH='private-user-123' PASSWORD='private-password-456' DEBUG=true \
+      USER_AUTH="$user_auth" PASSWORD="$password" AUTH_ECHO="$auth_echo" DEBUG=true \
       ENABLE_IP_CHECKER=true IP_CHECKER_URL=https://invalid.example/check \
       CURL_MODE="$curl_mode" CURL_MARKER="$tmp/executed" TMPDIR="$tmp/ip-tmp" \
       bash -c '
@@ -124,9 +133,27 @@ proxy_replaced_atomically() {
 proxy_none_without_mount() {
   [ "$rc" -eq 0 ] && [ ! -e "$state" ] && rg -q 'none configured' "$out" && [ ! -e "$argv" ]
 }
-proxy_invalid_kept() {
-  [ "$rc" -ne 0 ] && cmp -s "$state/proxy" "$original" &&
-    rg -q 'kept it unchanged' "$out" && [ ! -e "$argv" ] && no_proxy_staging_left
+proxy_corrupt_healed() {
+  local backup
+  local -a backups=("$state"/proxy.corrupt.*)
+  [ "${#backups[@]}" -eq 1 ] || return 1
+  backup="${backups[0]}"
+  [ "$rc" -eq 0 ] && cmp -s "$backup" "$original" &&
+    jq -e '.servers == {"new:1080":""}' "$state/proxy" >/dev/null &&
+    rg -Fq "$state/proxy" "$out" && rg -Fq "$backup" "$out" &&
+    rg -q 'WARN.*corrupt' "$out" && no_proxy_staging_left
+}
+proxy_empty_rejected() {
+  proxy_kept_after_failure && rg -q 'empty|no servers' "$out" &&
+    ! rg -q 'configuration replaced' "$out"
+}
+credentials_diagnostic_visible() {
+  [ "$rc" -eq 0 ] && rg -q 'diagnostic output without credentials' "$out" &&
+    ! rg -q 'AUTH_OUTPUT=\[redacted\]' "$out"
+}
+credentials_remaining_redacted() {
+  [ "$rc" -eq 0 ] && rg -q 'AUTH_OUTPUT=\[redacted\]' "$out" &&
+    ! rg -Fq 'private-user-123' "$out" && ! rg -Fq 'private-password-456' "$out"
 }
 proxy_first_imported() {
   [ "$rc" -eq 0 ] && jq -e '.servers == {"new:1080":""}' "$state/proxy" >/dev/null &&
@@ -169,7 +196,17 @@ home="$tmp/home-invalid"; state="$home/.urnetwork"; mkdir -p "$state"; original=
 printf '%s\n' '{not-json' > "$state/proxy"; cp "$state/proxy" "$original"
 printf '%s\n' 'server:port:user:pass' > "$tmp/app/proxy.txt"
 run common proxy "$home" "$state"
-report 'invalid existing proxy config remains unchanged' proxy_invalid_kept
+report 'malformed existing proxy config is backed up and healed' proxy_corrupt_healed
+
+home="$tmp/home-null"; state="$home/.urnetwork"; mkdir -p "$state"; original="$tmp/proxy-original-null"
+printf '%s\n' 'null' > "$state/proxy"; cp "$state/proxy" "$original"
+run common proxy "$home" "$state"
+report 'null existing proxy config is backed up and healed' proxy_corrupt_healed
+
+home="$tmp/home-invalid-fail"; state="$home/.urnetwork"; mkdir -p "$state"; original="$tmp/proxy-original-invalid-fail"
+printf '%s\n' '{not-json' > "$state/proxy"; cp "$state/proxy" "$original"
+run common proxy "$home" "$state" silent
+report 'failed import keeps corrupt original in place' proxy_empty_rejected
 
 state="$tmp/home-fail/.urnetwork"; home="$tmp/home-fail"; mkdir -p "$state"; original="$tmp/proxy-original-fail"
 printf '%s\n' '{"servers":{"old:1080":""},"auths":{"keep":{"user":"alice","password":"secret"}}}' > "$state/proxy"
@@ -177,6 +214,20 @@ cp "$state/proxy" "$original"
 printf '%s\n' 'server:port:user:pass' > "$tmp/app/proxy.txt"
 run common proxy "$home" "$state" yes
 report 'failed proxy import leaves live config unchanged' proxy_kept_after_failure
+
+for scenario in silent empty comments; do
+  home="$tmp/home-$scenario"; state="$home/.urnetwork"; mkdir -p "$state"; original="$tmp/proxy-original-$scenario"
+  printf '%s\n' '{"servers":{"old:1080":""},"auths":{"keep":{"user":"alice"}}}' > "$state/proxy"
+  cp "$state/proxy" "$original"
+  case "$scenario" in
+    silent) printf '%s\n' 'server:port:user:pass' > "$tmp/app/proxy.txt" ;;
+    empty) : > "$tmp/app/proxy.txt" ;;
+    comments) printf '%s\n' '# comment' '  # another comment' '' > "$tmp/app/proxy.txt" ;;
+  esac
+  run common proxy "$home" "$state" "$scenario"
+  report "proxy $scenario import rejects empty staging and preserves live bytes" proxy_empty_rejected
+done
+printf '%s\n' 'server:port:user:pass' > "$tmp/app/proxy.txt"
 
 state="$tmp/home-success/.urnetwork"; home="$tmp/home-success"; mkdir -p "$state"; original="$tmp/proxy-original-success"
 printf '%s\n' '{"servers":{"old:1080":""},"auths":{"keep":{"user":"alice","password":"secret"}}}' > "$state/proxy"
@@ -207,6 +258,29 @@ report 'provider login debug output never prints credentials' credentials_redact
 rm -f "$state/jwt"
 run pelican pelican-login "$home" "$state"
 report 'Pelican login debug output never prints credentials' credentials_redacted
+
+visible_and_redacted() {
+  [ "$visible" = yes ] && credentials_remaining_redacted
+}
+for path in common pelican; do
+  case "$path" in common) action=login ;; pelican) action=pelican-login ;; esac
+  for empty in user password both; do
+    case "$empty" in
+      user) user_auth=''; password='private-password-456' ;;
+      password) user_auth='private-user-123'; password='' ;;
+      both) user_auth=''; password='' ;;
+    esac
+    run "$path" "$action" "$home" "$state" no fetch-fail "$user_auth" "$password" no
+    visible=no
+    if credentials_diagnostic_visible; then visible=yes; fi
+    if [ "$empty" = both ]; then
+      report "$path login shows diagnostics with both credentials empty" test "$visible" = yes
+    else
+      run "$path" "$action" "$home" "$state" no fetch-fail "$user_auth" "$password" yes
+      report "$path login shows diagnostics with empty $empty and redacts the other" visible_and_redacted
+    fi
+  done
+done
 
 echo "Results: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
