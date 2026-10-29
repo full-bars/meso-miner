@@ -140,13 +140,17 @@ func_do_login() {
             echo "DEBUG: USER_AUTH set=$user_auth_set length=${#USER_AUTH}"
             echo "DEBUG: PASSWORD set=$password_set length=${#PASSWORD}"
             echo "DEBUG: AUTH_EXIT_CODE=$AUTH_EXIT_CODE"
-            # Empty credentials must not match every output string.
+            # Empty credentials must not match every output string, and the
+            # match ignores case: the server may echo the address normalized.
             auth_output_sensitive=no
+            auth_output_lower=$(printf '%s' "$AUTH_OUTPUT" | tr '[:upper:]' '[:lower:]')
             if [ -n "$USER_AUTH" ]; then
-                case "$AUTH_OUTPUT" in *"$USER_AUTH"*) auth_output_sensitive=yes ;; esac
+                user_auth_lower=$(printf '%s' "$USER_AUTH" | tr '[:upper:]' '[:lower:]')
+                case "$auth_output_lower" in *"$user_auth_lower"*) auth_output_sensitive=yes ;; esac
             fi
             if [ -n "$PASSWORD" ]; then
-                case "$AUTH_OUTPUT" in *"$PASSWORD"*) auth_output_sensitive=yes ;; esac
+                password_lower=$(printf '%s' "$PASSWORD" | tr '[:upper:]' '[:lower:]')
+                case "$auth_output_lower" in *"$password_lower"*) auth_output_sensitive=yes ;; esac
             fi
             if [ "$auth_output_sensitive" = yes ]; then
                 echo "DEBUG: AUTH_OUTPUT=[redacted]"

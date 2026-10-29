@@ -44,6 +44,10 @@ case "$1" in
     printf 'Jwt written to %s\n' "$JWT_FILE"
     if [ "${AUTH_ECHO:-yes}" = yes ]; then
       printf 'echoed %s %s\n' "$USER_AUTH" "$PASSWORD"
+    elif [ "${AUTH_ECHO:-yes}" = normalized ]; then
+      # the server may echo the address normalized and nothing else; the
+      # redaction must catch it on the address alone
+      printf 'echoed %s\n' "$(printf '%s' "$USER_AUTH" | tr '[:upper:]' '[:lower:]')"
     else
       printf '%s\n' 'diagnostic output without credentials'
     fi
@@ -258,6 +262,14 @@ report 'provider login debug output never prints credentials' credentials_redact
 rm -f "$state/jwt"
 run pelican pelican-login "$home" "$state"
 report 'Pelican login debug output never prints credentials' credentials_redacted
+
+# A server that echoes the address normalized must still be redacted.
+rm -f "$state/jwt"
+run common login "$home" "$state" no fetch-fail 'Private-User-123' 'private-password-456' normalized
+report 'a case-normalized credential echo is still redacted' credentials_remaining_redacted
+rm -f "$state/jwt"
+run pelican pelican-login "$home" "$state" no fetch-fail 'Private-User-123' 'private-password-456' normalized
+report 'Pelican redacts a case-normalized credential echo' credentials_remaining_redacted
 
 visible_and_redacted() {
   [ "$visible" = yes ] && credentials_remaining_redacted

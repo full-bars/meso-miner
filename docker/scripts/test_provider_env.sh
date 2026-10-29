@@ -318,9 +318,9 @@ start_out="$case_dir/out"
 if env -i PATH="$PATH" HOME="$case_dir/home" APP_DIR="$case_dir/app" \
     OPERATOR=example.invalid \
     sh "$REPO/docker/scripts/start_stable.sh" > "$start_out" 2>&1; then rc=0; else rc=$?; fi
-t "direct start refuses OPERATOR without ALL_OPERATORS before credential checks" test "$rc" -ne 0 &&
-    rg -q "OPERATOR alone cannot provide:.*no single-operator provide mode" "$start_out" &&
-    ! rg -q "USER_AUTH or PASSWORD not set" "$start_out"
+t "direct start refuses OPERATOR without ALL_OPERATORS before credential checks" test "$rc" -ne 0
+t "direct start names the missing single-operator mode" rg -q "OPERATOR alone cannot provide:.*no single-operator provide mode" "$start_out"
+t "direct start fails before the credential check" sh -c '! rg -q "USER_AUTH or PASSWORD not set" "$1"' _ "$start_out"
 
 echo ""
 echo "Results: $pass passed, $fail failed"
