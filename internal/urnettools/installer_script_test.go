@@ -177,7 +177,7 @@ func TestFreeBSDInstallerNeverCopiesOntoRunningBinary(t *testing.T) {
 	// moved into enforce_install_tree_perms, which is a checked gate (see
 	// TestFreeBSDInstallTreePermsGate*), so what do_install must still do is
 	// route through it before the rc.d script is written.
-	if !strings.Contains(body, `enforce_install_tree_perms "$install_path" "$provider_bin"`) {
+	if !strings.Contains(body, `enforce_install_tree_perms "$install_path" "$staged"`) {
 		t.Error("do_install does not enforce the install tree's ownership and traversal")
 	}
 	// The chown runs on '.' after a `cd "$state_dir"` in the SAME subshell. A cd
@@ -314,7 +314,8 @@ func TestFreeBSDInstallTreePermsGateAborts(t *testing.T) {
 	// needs root and only one repair may fail per case. chmod wraps the real
 	// one so the success case leaves a genuinely traversable tree; everything
 	// between is the function lifted verbatim out of the installer.
-	harness := `pr_err() {
+	harness := `priv() { "$@"; }
+pr_err() {
     fmt="$1"; shift
     printf 'ERR: '"$fmt"'\n' "$@" >&2
 }
@@ -323,10 +324,11 @@ pr_info() {
     printf 'INFO: '"$fmt"'\n' "$@"
 }
 stat() {
+    [ "${STAT_FAIL:-0}" = 1 ] && return 1
     if [ "$1" = -f ]; then
         case "$2" in
-            %u) [ "${STAT_ROOT:-0}" = 1 ] && { printf '0\n'; return; }; /usr/bin/stat -c %u "$3" ;;
-            %Lp) /usr/bin/stat -c %a "$3" ;;
+            %u) [ "${STAT_ROOT:-0}" = 1 ] && { printf '0\n'; return; }; /usr/bin/stat -c %u "$3" 2>/dev/null || /usr/bin/stat -f %u "$3" ;;
+            %Lp) /usr/bin/stat -c %a "$3" 2>/dev/null || /usr/bin/stat -f %Lp "$3" ;;
             *) return 1 ;;
         esac
         return
@@ -418,9 +420,17 @@ enforce_install_tree_perms "$TREE" "$BIN"
 		}
 	})
 
+	t.Run("undetermined ownership aborts after successful repairs", func(t *testing.T) {
+		tree, bin := setup(t)
+		out, err := run(t, tree, bin, "STAT_FAIL=1")
+		if err == nil || !strings.Contains(out, "could not verify ownership and permissions") {
+			t.Fatalf("gate must refuse when ownership cannot be determined: %v (%s)", err, out)
+		}
+	})
+
 	t.Run("failed root:wheel chown falls back to root", func(t *testing.T) {
 		tree, bin := setup(t)
-		out, err := run(t, tree, bin, "FAIL_CHOWN=group")
+		out, err := run(t, tree, bin, "FAIL_CHOWN=group", "STAT_ROOT=1")
 		if err != nil {
 			t.Fatalf("gate aborted although chown -R root succeeds: %v (%s)", err, out)
 		}
@@ -483,7 +493,7 @@ enforce_install_tree_perms "$TREE" "$BIN"
 	// this pins the repaired shape rather than the absence of an error.
 	t.Run("successful repair leaves the tree startable", func(t *testing.T) {
 		tree, bin := setup(t)
-		out, err := run(t, tree, bin)
+		out, err := run(t, tree, bin, "STAT_ROOT=1")
 		if err != nil {
 			t.Fatalf("gate aborted with every repair succeeding: %v (%s)", err, out)
 		}
@@ -540,7 +550,7 @@ func TestFreeBSDInstallTreePermsGateGatesTheInstall(t *testing.T) {
 	}
 	// Repairs must name this install's tree and binary: a bare `$install_path`
 	// read from a global can be repointed by an earlier assignment.
-	if !strings.Contains(gateLine, `"$install_path" "$provider_bin"`) {
+	if !strings.Contains(gateLine, `"$install_path" "$staged"`) {
 		t.Errorf("the gate is not called on the install tree and binary: %q", gateLine)
 	}
 	if exitIdx < 0 {
@@ -620,7 +630,7 @@ func TestFreeBSDToolDigestLookup(t *testing.T) {
 	}
 	script := strings.ReplaceAll(string(b), "\r\n", "\n")
 	i := strings.Index(script, `tool_digest="$(printf`)
-	j := strings.Index(script, `if [ -n "$tool_digest" ]`)
+	j := strings.Index(script, `if [ -z "$tool_digest" ]`)
 	if i < 0 || j < 0 || j <= i {
 		t.Fatal("could not locate the tool digest lookup in the FreeBSD installer")
 	}
