@@ -11,14 +11,15 @@
 #     *and* root's chown into a file of their choosing);
 #   - the whole edit happens as that user, so a name swapped between the check
 #     and the use cannot make root follow a link;
+#   - the edit never calls `su` when the installer already runs as the service
+#     user: `su` there stops to ask for a password, and a prompt inside an
+#     unattended install is a hang. An installer that is neither root nor the
+#     service user warns and skips instead of prompting;
 #   - a commented-out PATH line does not suppress the append, a missing final
 #     newline does not glue the entry onto the last line, and a file that ends
 #     with one does not gain a blank line;
-#   - a non-root run edits the rc as itself and never calls su (which would
-#     stop the install at a password prompt), and an account that is neither
-#     root nor the service user is warned off rather than su-ing;
-#   - the falsification case runs the installer as it stood BEFORE the fix,
-#     pinned by commit, not by a moving ref that the fix itself will update;
+#   - a failed append leaves the rc untouched instead of renaming a half-written
+#     temp over it.
 #
 # The block under test is inline inside do_install(), so this lifts the exact
 # bytes out of the installer with awk and evals them with a stubbed install
@@ -28,6 +29,15 @@ set -u
 
 here="$(cd "$(dirname "$0")" && pwd)"
 installer="$here/Provider_Install_FreeBSD.sh"
+
+# The falsification run needs the PRE-FIX installer, so it is pinned to the
+# commit this branch started from — the parent of the fix. Reading it from
+# origin/main worked only until merge: after this lands origin/main IS the fixed
+# version, the old code is unreachable, and the block passes without testing
+# anything. This SHA is that parent commit and does not move.
+prefix_commit="775101264f75581fa743cc148e425681a3fa1c7e"
+prefix_short="$(printf '%.12s' "$prefix_commit")"
+
 fails=0
 skipped=0
 
@@ -97,26 +107,27 @@ new_box() { # dir
     mkdir -p "$1" && own_svc "$1"
 }
 
-# run_variant <installer> <sandbox> <expect> [write-limit] [svc-user] [id-user]
-# — expect is "guard" for the fixed file (must refuse symlinks) or "append" for
+# run_variant <installer> <sandbox> <expect> [write-limit] [su-mode] [svc-name]
+# expect is "guard" for the fixed file (must refuse symlinks) or "append" for
 # the old one (must not). write-limit=1 squeezes RLIMIT_FSIZE so the PATH
-# append itself fails. svc-user is the account the block installs for (default
-# $svc); id-user makes `id -un` answer for another account WITHOUT changing the
-# real uid, so the branch that keys on "am I the service user?" is reachable
-# from a suite that re-exec'd itself under sudo. $su_log, when set, names a file
-# the su stub records its argv in before failing: the non-root cases use it to
-# prove su was never invoked at all.
+# append itself fails. su-mode says how a `su` call by the block is answered:
+#   switch    (default) stub that switches user for real when this suite runs
+#             as root against another account;
+#   forbid    stub that records the call and fails, so a case can prove the
+#             block never reached for su;
+#   downgrade run the whole block as the service user, which is what the
+#             installer itself does when it is not root.
+# svc-name overrides the account the block sees as the service user.
 run_variant() {
-    local inst="$1" box="$2" expect="$3" limit="${4:-0}" box_svc="${5:-$svc}" id_user="${6:-}"
-    local lib="$2/.lib.sh" blk="$2/.block.sh"
+    local inst="$1" box="$2" expect="$3" limit="${4:-0}" su_mode="${5:-switch}" \
+        svc_name="${6:-$svc}" lib="$2/.lib.sh" blk="$2/.block.sh"
     sed '/^case "$operation" in/,$d' "$inst" > "$lib"
     # From the shell_rc assignment to the `rm -rf "$tmpdir"` that follows the
-    # UPDATING block. The lift stops short of the 8-space `fi` that closes the
-    # PATH block and the 4-space `fi` that closes UPDATING (their openers are
-    # outside the lift, so including them would leave the fragment unbalanced),
-    # along with the blank line before the rm. Ending on the rm instead of on a
-    # bare `fi` keeps this working while the block contains its own nested `fi`
-    # at 8-space indent, as the heredoc does.
+    # UPDATING block. The lift stops short of the 4-space `fi` that closes that
+    # block (its opener is outside the lift, so including it would leave the
+    # fragment unbalanced), along with the blank line before the rm. Ending on
+    # the rm instead of on a bare `fi` keeps this working while the block
+    # contains its own nested `fi` at 4-space indent, as the heredoc does.
     if ! awk '
         index($0, "_shell=\"$(user_shell") > 0 { on = 1 }
         on && $0 == "    rm -rf \"$tmpdir\"" { exit }
@@ -150,6 +161,38 @@ run_variant() {
         return 1
     fi
 
+    if [ "$su_mode" = downgrade ]; then
+        # The block picks its execution mode from its own `id` checks, so the
+        # only honest way to reach the direct path from a root suite is to run
+        # the block as the service user for real. The driver gets a `su` stub
+        # that records and fails if the block reaches for it anyway.
+        local drv="$box/.run-as-svc.sh"
+        cat > "$drv" <<'DRIVER'
+set -u
+drv_lib="$1"; drv_blk="$2"; drv_box="$3"; drv_svc="${4:-$(id -un)}"; drv_limit="${5:-0}"
+. "$drv_lib"
+user_shell() { echo /bin/sh; }
+su() { printf 'su-called\n' >> "$drv_box/.su-called"; return 97; }
+install_path="$drv_box/install"
+service_user="$drv_svc"
+service_home="$drv_box"
+UPDATING=0
+# The write limit has to be applied inside the switched-to shell: su resets
+# resource limits from the target's login class.
+if [ "$drv_limit" = 1 ]; then ulimit -f 0 2>/dev/null; fi
+eval "$(cat "$drv_blk")"
+DRIVER
+        chmod 644 "$drv" "$lib" "$blk"
+        # -s /bin/sh: the test accounts have nologin shells, which util-linux
+        # refuses to run. FreeBSD's -s is a MAC label rather than a shell, so
+        # the override is only wanted (and only correct) elsewhere.
+        case "$(uname -s)" in
+            FreeBSD) command su -m "$svc" -c "/bin/sh '$drv' '$lib' '$blk' '$box' '$svc_name' '$limit'" 2>&1 ;;
+            *)       command su -m -s /bin/sh "$svc" -c "/bin/sh '$drv' '$lib' '$blk' '$box' '$svc_name' '$limit'" 2>&1 ;;
+        esac
+        return
+    fi
+
     (
         . "$lib"
         # The stripped tail ends with `[ -n "$operation" ] && shift`, which
@@ -157,71 +200,60 @@ run_variant() {
         # like a failed source.
         :
         user_shell() { printf '%s\n' "${SHELLRC_TEST_USER_SHELL:-/bin/sh}"; }
-        install_path="$box/install"
-        service_user="$box_svc"
-        service_home="$box"
-        UPDATING=0
-        SHELLRC_TEST_WRITE_LIMIT="$limit"
-        export SHELLRC_TEST_WRITE_LIMIT
-        if [ -n "$id_user" ]; then
-            # The block chooses its execution mode from `id`. A suite that
-            # re-exec'd itself under sudo IS root and cannot become an ordinary
-            # account in-process, so answer for the account instead; -u has to
-            # agree with -un or the root branch would win anyway. Anything else
-            # (the stub su reads -u/-un too) falls through to the real tool.
-            id() {
-                case "$1" in
-                    -u)  printf '1000\n' ;;
-                    -un) printf '%s\n' "$id_user" ;;
-                    *)   command id "$@" ;;
-                esac
-            }
-        fi
-        # The block runs the edit either through `su` (root, crossing into the
-        # user's account) or through /bin/sh directly (that user editing their
-        # own rc); su cannot authenticate in a test. This stub keeps the real
+        # When the installer is root it hands the whole edit to `su`, which
+        # cannot authenticate in a test. The switch stub keeps the real
         # invocation's shape — `-m`, login name, then `-c CMD`, with the script
         # on stdin — and still switches user for real when the suite runs as
         # root against an unprivileged service account, so the ownership
         # assertions stay honest. Note the login name comes BEFORE -c, which is
         # what FreeBSD's su needs (there -c before the login name would be a
-        # login class). When $su_log is set the stub records the call and fails
-        # instead: a case that must never reach su asserts that file is absent.
-        su() {
-            if [ -n "${su_log:-}" ]; then
-                printf 'su %s\n' "$*" >> "$su_log"
-                return 42
-            fi
-            _su_user=""; _su_cmd=""
-            while [ $# -gt 0 ]; do
-                case "$1" in
-                    -m|-l|-f) shift ;;
-                    -c) _su_cmd="$2"; shift 2 ;;
-                    *) _su_user="$1"; shift ;;
-                esac
-            done
-            # RLIMIT_FSIZE=0: mktemp still creates an empty file, every write
-            # fails, so the append-failure path can be exercised. su resets
-            # resource limits from the target's login class, so when a real
-            # switch happens the limit has to ride inside the command.
-            _su_payload="$(su_payload "${SHELLRC_TEST_WRITE_LIMIT:-0}" "$_su_cmd")"
-            if [ -n "$_su_user" ] && [ "$_su_user" != "$(id -un)" ] && [ "$(id -u)" = 0 ]; then
-                # The test accounts have nologin shells, which util-linux
-                # refuses to run. FreeBSD's -s is a MAC label rather than a
-                # shell, and its -m already runs the caller's shell, so the
-                # override is only wanted (and only correct) elsewhere.
-                case "$(uname -s)" in
-                    FreeBSD) command su -m "$_su_user" -c "$_su_payload" ;;
-                    *)       command su -m -s /bin/sh "$_su_user" -c "$_su_payload" ;;
-                esac
-            else
-                if [ "${SHELLRC_TEST_WRITE_LIMIT:-0}" = 1 ]; then ulimit -f 0 2>/dev/null; fi
-                sh -c "$_su_cmd"
-            fi
-        }
-        # The direct mode never passes through the stub above, so the limit has
-        # to be in force here before the block starts as well.
-        if [ "$limit" = 1 ]; then ulimit -f 0 2>/dev/null; fi
+        # login class). The forbid stub is the opposite: any call is a failure,
+        # because the direct path must not reach for su at all.
+        if [ "$su_mode" = forbid ]; then
+            su() { printf 'su-called\n' >> "$box/.su-called"; return 97; }
+        else
+            su() {
+                _su_user=""; _su_cmd=""
+                while [ $# -gt 0 ]; do
+                    case "$1" in
+                        -m|-l|-f) shift ;;
+                        -c) _su_cmd="$2"; shift 2 ;;
+                        *) _su_user="$1"; shift ;;
+                    esac
+                done
+                # RLIMIT_FSIZE=0: mktemp still creates an empty file, every
+                # write fails, so the append-failure path can be exercised. su
+                # resets resource limits from the target's login class, so when
+                # a real switch happens the limit has to ride inside the command.
+                _su_payload="$(su_payload "${SHELLRC_TEST_WRITE_LIMIT:-0}" "$_su_cmd")"
+                if [ -n "$_su_user" ] && [ "$_su_user" != "$(id -un)" ] && [ "$(id -u)" = 0 ]; then
+                    # The test accounts have nologin shells, which util-linux
+                    # refuses to run. FreeBSD's -s is a MAC label rather than a
+                    # shell, and its -m already runs the caller's shell, so the
+                    # override is only wanted (and only correct) elsewhere.
+                    case "$(uname -s)" in
+                        FreeBSD) command su -m "$_su_user" -c "$_su_payload" ;;
+                        *)       command su -m -s /bin/sh "$_su_user" -c "$_su_payload" ;;
+                    esac
+                else
+                    if [ "${SHELLRC_TEST_WRITE_LIMIT:-0}" = 1 ]; then ulimit -f 0 2>/dev/null; fi
+                    sh -c "$_su_cmd"
+                fi
+            }
+        fi
+        install_path="$box/install"
+        service_user="$svc_name"
+        service_home="$box"
+        UPDATING=0
+        SHELLRC_TEST_WRITE_LIMIT="$limit"
+        export SHELLRC_TEST_WRITE_LIMIT
+        # RLIMIT_FSIZE=0 squeezes the append itself: mktemp still creates the
+        # file, every write to it fails. When the block runs `su`, that call
+        # resets limits from the target's login class, so the switch stub
+        # carries the limit inside the command instead of from here.
+        if [ "$limit" = 1 ] && [ "$(id -u)" != 0 ]; then
+            ulimit -f 0 2>/dev/null
+        fi
         eval "$(cat "$blk")"
     ) 2>&1
 }
@@ -344,54 +376,69 @@ else
     fail "temp left behind: $(ls "$box"/.profile.new.*)"
 fi
 
-printf '\n-- a non-root run does not call su\n'
-# The mode is chosen before the heredoc: root su's to the service user, that
-# user runs /bin/sh directly, anyone else is warned off. Only a non-root su can
-# prompt for a password, so a run that has to edit its own rc must never get
-# there. `id` is stubbed because the branch keys on it (a sudo'd suite cannot
-# drop privileges in-process) and `su` fails on contact and records the call:
-# the absence of that record is the assertion.
-su_log="$tmpd/nonroot.su"
-box="$tmpd/nonroot"; new_box "$box"
+printf '\n-- the service user edits their own rc without su\n'
+box="$tmpd/direct"; new_box "$box"
 printf 'export KEEP=1\n' > "$box/.profile"
 own_svc "$box/.profile"
-out="$(run_variant "$installer" "$box" guard 0 "$svc" "$svc")"; rc=$?
-if [ -s "$su_log" ]; then
-    fail "su was invoked while not root: $(tr '\n' ' ' < "$su_log")"
+if [ "$(id -u)" = 0 ] && [ "$svc" = root ]; then
+    skip "no unprivileged account to run the direct path as"
 else
-    pass "the service user's own run never invokes su"
+    # Not root: this suite IS the service user, which is exactly the case
+    # CodeRabbit flagged — the block used to call `su` there and stop at a
+    # password prompt. Root: drop to the service account for real, since the
+    # block's own id checks pick the mode.
+    if [ "$(id -u)" = 0 ]; then _mode=downgrade; else _mode=forbid; fi
+    out="$(run_variant "$installer" "$box" guard 0 "$_mode")"; rc=$?
+    assert_eq 0 "$rc" "the direct path does not fail the install"
+    if [ -e "$box/.su-called" ]; then
+        fail "the block invoked su as $svc (that is the password prompt)"
+    else
+        pass "no su call when the installer already is the service user"
+    fi
+    assert_eq 1 "$(grep -cF "$box/install/bin" "$box/.profile")" \
+        "the direct path still adds the PATH line"
+    assert_eq 'export KEEP=1' "$(head -1 "$box/.profile")" "the direct path keeps existing content"
+    case "$out" in
+        *"Could not update"*|*Skipping*)
+            fail "the direct path warned instead of writing: $out" ;;
+        *) pass "the direct path reports success" ;;
+    esac
+    if [ -z "$(ls "$box"/.profile.new.* 2>/dev/null)" ]; then
+        pass "no temp file left behind"
+    else
+        fail "temp file left behind: $(ls "$box"/.profile.new.*)"
+    fi
 fi
-assert_eq 0 "$rc" "the direct edit does not fail the install"
-assert_eq 1 "$(grep -cF "$box/install/bin" "$box/.profile")" "the PATH line is still written"
-assert_eq 'export KEEP=1' "$(head -1 "$box/.profile")" "existing content is preserved"
-case "$out" in
-    *"Could not update"*|*"Not editing"*) fail "the direct edit did not run: $out" ;;
-    *) pass "the edit reported success" ;;
-esac
 
-printf '\n-- an account that is neither root nor the service user is warned off\n'
-# Writing another user's rc is not ours to do, and su-ing to them is exactly the
-# password prompt this fix removes, so the only safe move is warn and skip — and
-# leave the install successful, since the provider is already installed.
-su_log="$tmpd/thirdparty.su"
-box="$tmpd/thirdparty"; new_box "$box"
-out="$(run_variant "$installer" "$box" guard 0 "someone-else" "$svc")"; rc=$?
-if [ -s "$su_log" ]; then
-    fail "su was invoked for a third-party rc: $(tr '\n' ' ' < "$su_log")"
+printf '\n-- neither root nor the service user: warn and skip, never prompt\n'
+box="$tmpd/other"; new_box "$box"
+printf 'export KEEP=1\n' > "$box/.profile"
+own_svc "$box/.profile"
+other=""
+for candidate in nobody nfsnobody daemon; do
+    case "$candidate" in
+        ''|"$(id -un)"|"$svc") continue ;;
+    esac
+    if id "$candidate" > /dev/null 2>&1; then other="$candidate"; break; fi
+done
+if [ -z "$other" ]; then
+    skip "no second account to pose as the service user"
 else
-    pass "no su prompt for an account that cannot write the rc anyway"
+    if [ "$(id -u)" = 0 ]; then _mode=downgrade; else _mode=forbid; fi
+    out="$(run_variant "$installer" "$box" guard 0 "$_mode" "$other")"; rc=$?
+    assert_eq 0 "$rc" "the skipped PATH edit does not fail the install"
+    assert_eq 0 "$(grep -cF "$box/install/bin" "$box/.profile")" "nothing was written"
+    assert_eq 'export KEEP=1' "$(cat "$box/.profile")" "the rc is untouched"
+    case "$out" in
+        *Skipping*"$other"*) pass "the skip is reported and names the service user" ;;
+        *) fail "no skip warning naming $other: $out" ;;
+    esac
+    if [ -e "$box/.su-called" ]; then
+        fail "the block invoked su instead of skipping"
+    else
+        pass "the skip does not reach for su"
+    fi
 fi
-assert_eq 0 "$rc" "skipping the PATH edit does not fail the install"
-if [ -e "$box/.profile" ] || [ -L "$box/.profile" ]; then
-    fail "the rc was written anyway: $(ls -l "$box/.profile" 2>&1)"
-else
-    pass "the rc is left alone"
-fi
-case "$out" in
-    *"Not editing"*) pass "the skip is reported, not silent" ;;
-    *) fail "no skip warning in output: $out" ;;
-esac
-su_log=""
 
 printf '\n-- a tcsh login shell with a space in its home gets a quoted setenv\n'
 box="$tmpd/tcsh space"; new_box "$box"
@@ -442,38 +489,30 @@ assert_eq '0STDIN-OK' \
     "$(printf 'ulimit -f\necho STDIN-OK\n' | sh -c "$payload" 2>/dev/null | tr -d '[:space:]')" \
     "the wrapped shell keeps the limit and still reads stdin"
 
-printf '\n-- falsification: the pre-fix version must still write through\n'
-# PINNED BY COMMIT, not by origin/main. Once this fix merges, origin/main IS
-# the fixed installer, so a differential against it would run the fixed code
-# against itself and pass without testing anything — the suite would look like
-# it had teeth while proving nothing. This SHA is the fix commit's parent
-# (git rev-parse HEAD^ when the fix was written) and is the last installer that
-# still appended and chowned through the planted link. Leave it pinned: pointing
-# this at a moving ref is exactly how the block goes vacuous.
-old_sha=609948fca84ac761dc6aeea09332909dec310178
+printf '\n-- falsification: the pre-fix commit must still write through\n'
 old="$tmpd/old.sh"
-if git -C "$here/.." show "$old_sha:scripts/$(basename "$installer")" > "$old" 2>/dev/null; then
+if git -C "$here/.." show "$prefix_commit:scripts/$(basename "$installer")" > "$old" 2>/dev/null; then
     box="$tmpd/old"; new_box "$box"
     printf 'SENTINEL: must not change\n' > "$box/secret"
     ln -s "$box/secret" "$box/.profile"
     run_variant "$old" "$box" append > /dev/null
 
     if grep -qF "$box/install/bin" "$box/secret" 2>/dev/null; then
-        pass "pre-fix $old_sha appends through the planted symlink (bug reproduced)"
+        pass "$prefix_short appends through the planted symlink (bug reproduced)"
     else
-        fail "pre-fix $old_sha did NOT write through the symlink; this test proves nothing"
+        fail "$prefix_short did NOT write through the symlink; this test proves nothing"
     fi
     if [ "$(id -u)" = 0 ]; then
         assert_eq "$svc" "$(owner_of "$box/secret")" \
-            "pre-fix $old_sha chowns the link target (bug reproduced)"
+            "$prefix_short chowns the link target (bug reproduced)"
     else
         skip "chown-through-symlink needs root to observe"
     fi
 else
     if [ "${REQUIRE_FALSIFICATION:-0}" = 1 ]; then
-        fail "pre-fix commit $old_sha is unavailable; refusing to pass without the falsification run (shallow clone? check out with fetch-depth: 0)"
+        fail "pre-fix commit $prefix_short is unavailable; refusing to pass without the falsification run (shallow clone? check out with fetch-depth: 0)"
     else
-        skip "pre-fix commit $old_sha not available for the falsification run"
+        skip "pre-fix commit $prefix_short not available (shallow clone?)"
     fi
 fi
 
