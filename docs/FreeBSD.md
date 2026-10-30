@@ -11,9 +11,9 @@ The provider lives in a **root-owned** tree at `/usr/local/libexec/urnetwork-pro
 
 ## Before you start
 
-FreeBSD's base system has no `jq` and no `python3`, and neither is required to install: the release tag is read with `jq`, then `python3`, then a `sed` extraction that needs only the base system. `jq` is still worth installing, because it is what lets the installer verify and install the Go `urnet-tools` binary (see [What the installer does](#what-the-installer-does)).
+FreeBSD's base system has no `jq` and no `python3`, and the installer needs one of them. The release tag can be read without either (`jq`, then `python3`, then a `sed` extraction that needs only the base system), but the SHA-256 digest of the `urnet-tools` release asset can only be read with `jq` or `python3`, and the installer refuses to install `urnet-tools` without it. On a host with neither, the install stops with `Cannot verify urnet-tools: release digest is unavailable` before it replaces anything. Install `jq` first (see [What the installer does](#what-the-installer-does)). This is read from the installer script; it has not been run on a bare FreeBSD host.
 
-Nothing is installed for you on FreeBSD: the installer never touches `pkg`. `sudo` is needed for the `rc.d` and `sysrc` steps unless you are root.
+Nothing is installed for you on FreeBSD: the installer never touches `pkg`, so a JSON reader (`jq`, or `python3`) has to be there already. `sudo` is needed for the `rc.d` and `sysrc` steps unless you are root.
 
 ```sh
 pkg install -y sudo jq
@@ -79,10 +79,14 @@ The steps, in order:
 
 1. Downloads `urnetwork-provider-<tag>-freebsd-<arch>.tar.gz` from the GitHub release and extracts `provider` from the archive's top level. The archive for the other architecture is never fetched, and the universal `urnetwork-provider-<tag>.tar.gz` (which nests the binary under `freebsd/<arch>/`) is not used by the installer.
 2. Installs the binary by staging it beside the target and renaming it, so an update over a running provider never fails with "Text file busy".
-3. Installs `urnet-tools`. It downloads the `urnet-tools-freebsd-<arch>` release asset and installs it only if its SHA-256 matches the digest GitHub publishes for the asset (read with `jq`, or with `python3` when `jq` is absent). `sha256(1)` from the base system does the check, with `openssl` as a fallback. If there is no digest to compare (neither `jq` nor `python3`), the download fails, or the sum does not match, it installs the installer script itself as a shell `urnet-tools` instead. The shell version covers `start`, `stop`, `restart`, `status`, `update`, `version`, `hot-restart`, `self-heal`, `session`, `proxy refresh|remove-dead|summary`, `auth` and `logs`. Install `jq` and re-run `update` to get the full Go tool.
+3. Installs `urnet-tools`, only when it can be verified. It downloads the `urnet-tools-freebsd-<arch>` release asset and installs it only if its SHA-256 matches the digest GitHub publishes for the asset, read with `jq` or, when `jq` is absent, `python3`. `sha256(1)` from the base system does the check, with `openssl` as a fallback. There is no fallback to a shell `urnet-tools` any more: if there is no digest (neither `jq` nor `python3`, or the release publishes none), the download fails, or the sum does not match, the installer stops with an error. The provider binary has been staged but is not renamed into place until the check passes, so a running install is left as it was. The provider archive itself is not checked against a digest by this installer.
 4. Writes the `rc.d` script and, with `sysrc`, sets `urnetwork_enable=YES` and `urnetwork_user=<service user>` only if they are not already set, so an operator's choice survives every update.
 5. Starts the service. On a fresh install it always starts; on `update` it restarts only a service that was already running, so a provider you stopped on purpose is not resurrected by an unattended update.
 6. Adds the install `bin` directory to the service user's shell profile once (`.profile`, `.zshrc`, `.bash_profile` or `.cshrc`, by the user's login shell).
+
+Before either binary is renamed into place, the installer checks the install tree. It makes the tree root-owned and takes group and other write access away, and it stops with an error naming the path if a repair cannot be made or does not hold. **A symlink anywhere inside the tree is not removed or repaired: the install stops with `symlink in install tree; refusing to repair` and lists the links**, leaving the live binaries untouched. Remove the link by hand and run the install again. The same applies to the install directory itself, which must not be a symlink.
+
+`urnet-tools` discovery on FreeBSD only accepts a provider file the invoking user can execute (an `access(2)` `X_OK` check, which honours owner, group and other bits), so a file with a stray execute bit that belongs to someone else is skipped, and the `libexec` binary must also carry the other-execute bit, because the service user is not its owner. This is read from the code and the test is skipped when run as root; it has not been run on a FreeBSD host.
 
 When the installer is run as an ordinary user, the `rc.d` and `sysrc` steps go through `sudo`; without `sudo` it prints the commands to finish by hand.
 
@@ -233,7 +237,7 @@ EOF
 
 ## Platform notes
 
-- **No `jq` or `python3` in the base system.** Install `jq` for the installer's digest check (see step 3 above).
+- **No `jq` or `python3` in the base system.** The installer needs one of them to read the `urnet-tools` digest and stops without it (see step 3 above); `pkg install jq` fixes that.
 - **User database fields differ.** The installer reads home and shell with `getent passwd` and falls back to `pw usershow`, whose fields are numbered differently (home is field 9 and shell field 10, against 6 and 7 for `getent`). Use whichever your tooling expects.
 - **Swap comes from `swapinfo -k`.** The provider's memory-pressure checks read swap usage by running `swapinfo -k`, because FreeBSD does not expose a swap-used sysctl.
 - **ZFS ARC understates available memory.** The host's available memory is estimated from the free, inactive, cache and laundry page counters (`vm.stats.vm.v_*_count`). Memory held by the ZFS ARC is wired and is not counted, so on a ZFS host `top` can show plenty of reclaimable memory while the provider sees less. Cap the ARC with `vfs.zfs.arc_max` in `/boot/loader.conf` if memory headroom matters on a small box.

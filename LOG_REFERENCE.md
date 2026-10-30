@@ -316,7 +316,7 @@ Which ClientHello the normal and resilient dialers present is a control key. It 
 - `⚙️ [control] applied tls_hello=<on|off> (was <old>)` is the control-socket confirmation when the `tls_hello` key is applied live. `was off` on a first `on` is expected: an unset gate presents Go's hello, so it reads as off.
 - It applies to new connections only. A connection already open keeps the handshake it made, so changing the key neither drops a session nor re-handshakes one; the next dial of each path follows the new value. Nothing is counted as a drop.
 - A dial whose tls configuration the Chrome hello cannot carry exactly keeps Go's hello even with `tls_hello on`, and logs nothing: a client certificate, an ECH configuration, a restricted cipher, group or version set, or an `h2` offer on a net/http before Go 1.27.
-- The provider also accepts `clear` on the socket for this key, which hands the decision back to `URNETWORK_TLS_HELLO`. The CLI's `set tls-hello off` is a real value, not a clear, so a box whose unit sets `URNETWORK_TLS_HELLO=on` keeps Go's hello across a restart and only a clear (or removing the variable) returns it to the Chrome hello.
+- The provider also accepts `clear` on the socket for this key, which hands the decision back to `URNETWORK_TLS_HELLO`. The CLI's `set tls-hello off` is a real value, not a clear, so a box whose unit sets `URNETWORK_TLS_HELLO=on` keeps Go's hello across a restart and only a socket `clear` returns it to the environment setting.
 
 ---
 
@@ -829,10 +829,12 @@ Persists the current billable transfer rate to `~/.urnetwork/billable_rate` on a
 ## 📑 Contract Lifecycle
 
 ```
-[contract] acquired size=256 KiB destination=0142...c3a9
-[contract] denied = insufficient allowance destination=0142...c3a9
-[contract] closed acked=198 KiB allotted=256 KiB util=77% destination=0142...c3a9
+[contract] acquired | proxy[3] (203.0.113.22:1081) size=256 KiB destination=0142...c3a9
+[contract] denied | proxy[3] (203.0.113.22:1081) = insufficient allowance destination=0142...c3a9
+[contract] closed | proxy[3] (203.0.113.22:1081) acked=198 KiB allotted=256 KiB util=77% destination=0142...c3a9
 ```
+
+The provider names the proxy a contract belongs to after a vertical bar, set off from the verb: `acquired`, `denied`, `closed` and `checkpointed` (the line a close report prints when it is sent as a checkpoint instead of a final close) all read `[contract] <verb> | proxy[<index>] (<address>)`, and a direct slot reads `proxy[0] (direct)`. The bar is the only change from earlier releases, which joined the proxy to the verb with a space. A contract manager with no proxy description prints no bar and no proxy.
 
 A contract is the platform's bandwidth grant for relaying a client's traffic. These lines bracket a contract's life:
 
@@ -896,7 +898,9 @@ instance_id: 019e2d67-5a73-4bb3-6661-df9b5c595003
 ## 🔄 Startup — Proxy Loading
 
 ```
+[INFO] Checking proxy configuration
 [INFO] proxy.txt found; adding proxy
+[INFO] Proxy configuration replaced from proxy.txt
 added server 203.0.113.22:1081 (91***rn/cf***9m)
 Using 1000 proxy servers:
   proxy[0] 203.0.113.18:1081 (91***rn/cf***9m)
@@ -904,6 +908,9 @@ Using 1000 proxy servers:
   ...
 ```
 
+- Without a mounted `/app/proxy.txt` a container logs `[INFO] No proxy.txt found; kept existing proxy configuration` (the saved configuration on the state volume is untouched) or `[INFO] No proxy.txt found; none configured`.
+- A proxy import that could not complete logs a `[WARN]` line. Examples include `Proxy staging failed; kept existing configuration` and `Proxy staging failed; none configured`. For example, a failed provider import logs `[WARN] Proxy replacement failed: provider import command failed; kept existing configuration` or `[WARN] Proxy replacement failed: provider import command failed; none configured`. With a usable saved configuration the start then logs `[WARN] Proxy import failed; kept the existing configuration` and carries on. With none, it logs `[ERROR] Proxy import failed and no configuration is saved; refusing to start without the mounted proxy` and the container stops.
+- A source that cannot be fetched also gets `[proxy][url] fetch failed for <host/path>: <cause> (skipping this cycle)`, where the cause is the error itself (a timeout, a DNS failure, an unexpected status) with the request URL removed. The cycle headline only counts `N failed`, so this line is the only record of why; it is kept in the important buffer, so it survives the main log rolling over.
 - Each `added server` line confirms a proxy was registered successfully
 - Credentials are partially redacted in logs (`***`)
 - `Using N proxy servers:` summarizes the loaded pool with index assignments

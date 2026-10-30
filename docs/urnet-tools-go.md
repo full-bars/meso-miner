@@ -1,6 +1,6 @@
 # urnet-tools (Go) — Provider-Aware Fleet Ops
 
-> Applies to v3.23.0-fix.27.0+ (updated through the 2026-10-21 release). The legacy shell tool (POSIX `Provider_Install_Linux.sh` + Windows `urnet-tools.ps1`) is replaced by a single provider-aware Go binary. Subcommand names and usage are preserved and expanded; what changed is **how the tool decides which provider it operates on**.
+> Applies to v3.23.0-fix.27.0+ (updated through the 2026-10-24 release). The legacy shell tool (POSIX `Provider_Install_Linux.sh` + Windows `urnet-tools.ps1`) is replaced by a single provider-aware Go binary. Subcommand names and usage are preserved and expanded; what changed is **how the tool decides which provider it operates on**.
 
 ## Why this exists
 
@@ -47,7 +47,7 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | `usage [graphs\|graph <view>] [target]` | Display traffic & billing accounting: billable relay bytes vs control-plane protocol overhead, with rolling time-series summaries. Available across `urnet-tools` and `urnet-docker`. |
 | `choose-network <api> <connect> [target]` | Point provider to custom API and WebSocket signaling endpoints. Use `--reset` to restore default bringyour endpoints. |
 | `fast-auth [on\|off\|status] [target]` | Toggle or check `~/.urnetwork/fast_auth` marker to bypass auth rate limiter. Confirm-gated. |
-| `set [help \| <key> <val> \| <key> off \| <key>] [target]` | Get, set, or clear runtime provider state overrides (`node-name`, `proxy-url-max`, `proxy-url-refresh`, `cleanup-scope`, `cleanup-interval`, `fast-auth`, `ip-version`, `proxy-target-family`, `h1-plus`, `h3`, `h3-datagram`, `h3-datagram-send`). `h3` accepts `off`, `direct`, `on`, a positive proxy count, `all` or `auto`; `ip-version` accepts `dual`, `ipv4`, `ipv6` or `legacy`; `proxy-target-family` accepts `v4` or `proxy`. Sent live over the provider control socket, or queued to `pending_overrides.json` if the provider is stopped. Confirm-gated. |
+| `set [help \| <key> <val> \| <key> off \| <key>] [target]` | Get, set, or clear runtime provider state overrides (`node-name`, `proxy-url-max`, `proxy-url-refresh`, `cleanup-scope`, `cleanup-interval`, `fast-auth`, `ip-version`, `proxy-target-family`, `h1-plus`, `h3`, `h3-datagram`, `h3-datagram-send`, `tls-hello`). `h3` accepts `off`, `direct`, `on`, a positive proxy count, `all` or `auto`; `ip-version` accepts `dual`, `ipv4`, `ipv6` or `legacy`; `proxy-target-family` accepts `v4` or `proxy`; `tls-hello` accepts `on` or `off` and selects Chrome's or Go's hello for new connections; open ones keep their handshake. Its `off` is a stored value, not a clear: it survives restarts and takes precedence over `URNETWORK_TLS_HELLO=on`. A control socket `clear` returns the key to `URNETWORK_TLS_HELLO` ([ef3508eee](https://github.com/full-bars/meso-miner/commit/ef3508eeee806477c36686431331e884a0061bfa), [27664c9fd](https://github.com/full-bars/meso-miner/commit/27664c9fdafbd7cf5d1f4ab937bd528cf0c90f6f)). Sent live over the provider control socket, or queued to `pending_overrides.json` if the provider is stopped. Confirm-gated. |
 | `rename <name> [target]` | Set the dashboard identity label on the backend. Alias for `set node-name <name>`. Writes `~/.urnetwork/node_name`, re-read on next tick — no restart. Use `off` to clear. Available across `urnet-tools` and `urnet-docker`. |
 | `session save <file> [target]` | Export encrypted AES-256-CBC bundle of provider JWT identity and state. Prompts for passphrase. |
 | `session load <file> [target] [--allow-different-account]` | Decrypt and load identity bundle into provider. Automatically backs up current state first. Verifies account identity unless bypassed. |
@@ -87,6 +87,7 @@ On a host where OpenRC is the running init system, the lifecycle commands (`star
 | `turbo [v4\|v8\|off]` | Enable Turbo V4 or Turbo V8 high-throughput modes. |
 | `ramlogs [on\|off]` | Enable or disable RAM-disk logging (`/dev/shm`). |
 | `profile [name]` | **(New in 31.0)** Show or set the memory and GC tuning profile (`auto`, `turbo-v4`, `turbo-v8`, `eco`, `lowmem`; `v4` and `v8` are accepted aliases). With no argument, prints the current profile and what each one is for. |
+| `smart-dialer [status\|on\|off]` | Show or change the measured-cost transport preference. Changes are persisted and take effect on the provider's next start ([7b01ef217](https://github.com/full-bars/meso-miner/commit/7b01ef217f1f7a245602d97bba1e708b239fb23e)). |
 | `metrics [status\|on\|off\|listen <ip:port\|auto>]` | Show where the Prometheus `/metrics` endpoint listens and the address to scrape, turn it on or off, or choose its listen address. Live, no restart, and persisted. See [Monitoring](/full-bars/meso-miner/wiki/Monitoring). |
 
 
