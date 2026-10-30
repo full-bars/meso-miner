@@ -973,6 +973,7 @@ type installerHarnessOpts struct {
 	failRestart bool
 	failCpToDst bool
 	failMv      bool
+	failBackup  bool
 	operation   string
 	// parserless runs the FreeBSD installer with no jq or python3 on PATH, so
 	// the release metadata is read by release_asset_scan alone.
@@ -1117,7 +1118,16 @@ http_fetch() {
         return 0
     fi
 }
+ln() {
+    if [ "${FAIL_BACKUP:-0}" = "1" ]; then
+        case "$*" in *"/bin/.urnetwork.bak."*) return 1;; esac
+    fi
+    command ln "$@"
+}
 cp() {
+    if [ "${FAIL_BACKUP:-0}" = "1" ]; then
+        case "$*" in *"/bin/.urnetwork.bak."*) return 1;; esac
+    fi
     if [ "${FAIL_CP:-0}" = "1" ]; then
         case "$*" in
             *"/bin/.urnetwork"*|*"/bin/urnetwork"*)
@@ -1169,6 +1179,9 @@ do_install "$version"
 	fullScript := harness + "\n" + fnListsAsset + "\n" + fnScan + "\n" + fnDigest + "\n" + fnCompute + "\n" + fnVerify + "\n" + fnDoInstall + "\n" + driver
 	cmd := exec.Command("/bin/sh", "-c", fullScript)
 	cmd.Env = []string{pathEnv}
+	if opts.failBackup {
+		cmd.Env = append(cmd.Env, "FAIL_BACKUP=1")
+	}
 	out, err := cmd.CombinedOutput()
 
 	var exitCode int
@@ -1869,5 +1882,18 @@ func TestInstallerVersionMarkerOnlyAfterServiceStarts(t *testing.T) {
 				t.Errorf("version marker written (%q) for a release whose service did not start", res.versionMarker)
 			}
 		})
+	}
+}
+
+// A backup that cannot be made must stop the update before the live binary is
+// replaced. Without a backup a failed start has nothing to roll back to.
+func TestInstallerBackupFailurePreservesLiveBinary(t *testing.T) {
+	const tag = "v2026.10.27"
+	const old = "pre-existing-working-binary"
+	sum := sha256.Sum256([]byte("payload"))
+	release := fmt.Sprintf(`{"tag_name":%q,"assets":[{"name":%q,"digest":"sha256:%x"}]}`, tag, "urnetwork-provider-"+tag+"-freebsd-amd64.tar.gz", sum)
+	res := runFreeBSDInstaller(t, installerHarnessOpts{tag: tag, operation: "update", releaseJSON: release, tarballData: []byte("payload"), existingBin: old, failBackup: true})
+	if res.exitCode == 0 || res.finalBin != old || !strings.Contains(res.stdout, "Could not back up") {
+		t.Fatalf("backup failure did not abort before replacing live binary: exit=%d binary=%q output=%s", res.exitCode, res.finalBin, res.stdout)
 	}
 }
