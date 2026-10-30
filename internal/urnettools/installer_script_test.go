@@ -934,6 +934,9 @@ type installerHarnessOpts struct {
 	failCpToDst bool
 	failMv      bool
 	operation   string
+	// parserless runs the FreeBSD installer with no jq or python3 on PATH, so
+	// the release metadata is read by release_asset_scan alone.
+	parserless bool
 }
 
 type installerHarnessResult struct {
@@ -983,6 +986,12 @@ func runFreeBSDInstaller(t *testing.T, opts installerHarnessOpts) installerHarne
 	fnCompute := extractShellFunc(t, script, "compute_sha256_file")
 	fnVerify := extractShellFunc(t, script, "verify_sha256_file")
 	fnDoInstall := extractShellFunc(t, script, "do_install")
+	fnScan := ""
+	pathEnv := "PATH=/usr/bin:/bin"
+	if opts.parserless {
+		fnScan = extractShellFunc(t, script, "release_asset_scan")
+		pathEnv = "PATH=" + baseToolsPath(t)
+	}
 	if fnListsAsset == "" {
 		t.Fatal("could not extract release_lists_asset from FreeBSD script")
 	}
@@ -1093,9 +1102,9 @@ FAIL_MV=%q
 do_install "$version"
 `, tag, installPath, stateDir, rcScript, failRestartVal, failCpVal, failMvVal)
 
-	fullScript := harness + "\n" + fnListsAsset + "\n" + fnDigest + "\n" + fnCompute + "\n" + fnVerify + "\n" + fnDoInstall + "\n" + driver
+	fullScript := harness + "\n" + fnListsAsset + "\n" + fnScan + "\n" + fnDigest + "\n" + fnCompute + "\n" + fnVerify + "\n" + fnDoInstall + "\n" + driver
 	cmd := exec.Command("/bin/sh", "-c", fullScript)
-	cmd.Env = []string{"PATH=/usr/bin:/bin"}
+	cmd.Env = []string{pathEnv}
 	out, err := cmd.CombinedOutput()
 
 	var exitCode int
@@ -1458,6 +1467,66 @@ func TestInstallerProviderTarballNoDigestWarnsAndProceeds(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A FreeBSD host without jq or python3 cannot read the provider digest from the
+// release metadata. That is not the same as the release publishing none, so the
+// installer must refuse before extraction rather than install unverified.
+func TestFreeBSDInstallerRefusesUnreadableDigestWithoutParser(t *testing.T) {
+	tag := "v2026.10.27"
+	asset := "urnetwork-provider-" + tag + "-freebsd-amd64.tar.gz"
+	releaseJSON := fmt.Sprintf(`{
+		"tag_name": %q,
+		"assets": [
+			{"name": %q, "browser_download_url": "https://example.invalid/%s"}
+		]
+	}`, tag, asset, asset)
+	res := runFreeBSDInstaller(t, installerHarnessOpts{
+		tag:         tag,
+		releaseJSON: releaseJSON,
+		tarballData: []byte("tarball-listed-without-readable-digest"),
+		parserless:  true,
+	})
+	combined := res.stdout + "\n" + res.stderr
+	if res.exitCode == 0 {
+		t.Fatalf("expected refusal without a parser (exit 0):\n%s", combined)
+	}
+	if len(res.tarCalls) != 0 {
+		t.Fatalf("tar ran (%v) with an unverified provider digest", res.tarCalls)
+	}
+	if strings.Contains(combined, "continuing without verification") {
+		t.Errorf("parser-less host still installs unverified:\n%s", combined)
+	}
+	for _, want := range []string{asset, "jq", "python3", "unverified", "refusing"} {
+		if !strings.Contains(combined, want) {
+			t.Errorf("refusal output missing %q:\n%s", want, combined)
+		}
+	}
+}
+
+// baseToolsPath returns a PATH directory holding every system tool except the
+// JSON parsers, so `command -v jq` and `command -v python3` fail exactly as they
+// do on a FreeBSD base system. A fixed list of tools would miss what do_install
+// needs, so every entry from /bin and /usr/bin is linked except jq and python*.
+func baseToolsPath(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, src := range []string{"/bin", "/usr/bin"} {
+		entries, err := os.ReadDir(src)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			name := e.Name()
+			if name == "jq" || strings.HasPrefix(name, "python") {
+				continue
+			}
+			// A name already linked from /bin is skipped, so /usr/bin does not
+			// shadow it.
+			_ = os.Symlink(filepath.Join(src, name), filepath.Join(dir, name))
+		}
+	}
+	return dir
 }
 
 // 4. An interrupted replacement (stub mv/cp to fail at the right moment)

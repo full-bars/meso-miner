@@ -818,6 +818,14 @@ do_install() {
         fi
         pr_info "Provider asset sha256 verified (%s)" "$provider_asset"
     else
+        # With no parser the digest could not be read at all, which is not the
+        # same as the release publishing none. Refuse rather than install an
+        # unverified binary on exactly the hosts that cannot check it.
+        if ! command -v jq > /dev/null 2>&1 && ! command -v python3 > /dev/null 2>&1; then
+            pr_err "Cannot read the sha256 digest for '%s' without jq or python3, so the install would be unverified; refusing. Install one with 'pkg install jq' or 'pkg install python3' and re-run." "$provider_asset"
+            rm -rf "$tmpdir"
+            exit 1
+        fi
         pr_warn "Release %s has no sha256 digest for '%s'; continuing without verification" "$tag" "$provider_asset"
     fi
 
