@@ -5,6 +5,7 @@ package main
 // the atomic write of network.json. Ported from sn's miner/network_test.go.
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,9 +78,9 @@ func TestChooseNetworkShowFlagPrintsAndDoesNotChangeTheConfig(t *testing.T) {
 	if err := writeNetworkConfig("https://api.example.com", "wss://connect.example.com"); err != nil {
 		t.Fatal(err)
 	}
-	out := captureOutput(t, func() {
-		chooseNetworkCmd(docopt.Opts{"choose_network": true, "--show": true})
-	})
+	var output bytes.Buffer
+	chooseNetworkCmd(docopt.Opts{"choose_network": true, "--show": true}, &output)
+	out := output.String()
 	if !strings.Contains(out, "api_url: https://api.example.com") {
 		t.Errorf("--show output missing the saved api_url:\n%s", out)
 	}
@@ -174,9 +175,9 @@ func TestChooseNetworkPrintsTheNoticesAfterASave(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "jwt"), []byte("x"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	out := captureOutput(t, func() {
-		chooseNetworkCmd(docopt.Opts{"choose_network": true, "<api_url>": "http://127.0.0.1:1", "<connect_url>": "ws://127.0.0.1:2"})
-	})
+	var output bytes.Buffer
+	chooseNetworkCmd(docopt.Opts{"choose_network": true, "<api_url>": "http://127.0.0.1:1", "<connect_url>": "ws://127.0.0.1:2"}, &output)
+	out := output.String()
 	if !strings.Contains(out, "network saved:") || !strings.Contains(out, "warning: api_url uses http") ||
 		!strings.Contains(out, "previously selected network") {
 		t.Errorf("save output must carry the saved line, the plaintext warning and the switch notice:\n%s", out)
@@ -257,9 +258,9 @@ func TestChooseNetworkStaysQuietWhenTheEffectiveNetworkDoesNotChange(t *testing.
 
 	t.Run("main preset with no saved network", func(t *testing.T) {
 		newHomeWithJwt(t)
-		out := captureOutput(t, func() {
-			chooseNetworkCmd(docopt.Opts{"choose_network": true, "<api_url>": "main"})
-		})
+		var output bytes.Buffer
+		chooseNetworkCmd(docopt.Opts{"choose_network": true, "<api_url>": "main"}, &output)
+		out := output.String()
 		if !strings.Contains(out, "network saved (preset)") {
 			t.Errorf("missing the saved line:\n%s", out)
 		}
@@ -268,9 +269,9 @@ func TestChooseNetworkStaysQuietWhenTheEffectiveNetworkDoesNotChange(t *testing.
 
 	t.Run("reset with no saved network", func(t *testing.T) {
 		newHomeWithJwt(t)
-		out := captureOutput(t, func() {
-			chooseNetworkCmd(docopt.Opts{"choose_network": true, "--reset": true})
-		})
+		var output bytes.Buffer
+		chooseNetworkCmd(docopt.Opts{"choose_network": true, "--reset": true}, &output)
+		out := output.String()
 		if !strings.Contains(out, "network reset to the main network") {
 			t.Errorf("missing the reset line:\n%s", out)
 		}
@@ -282,9 +283,9 @@ func TestChooseNetworkStaysQuietWhenTheEffectiveNetworkDoesNotChange(t *testing.
 		if err := writeNetworkConfig("https://api.example.com", "wss://connect.example.com"); err != nil {
 			t.Fatal(err)
 		}
-		out := captureOutput(t, func() {
-			chooseNetworkCmd(docopt.Opts{"choose_network": true, "<api_url>": "https://api.example.com", "<connect_url>": "wss://connect.example.com"})
-		})
+		var output bytes.Buffer
+		chooseNetworkCmd(docopt.Opts{"choose_network": true, "<api_url>": "https://api.example.com", "<connect_url>": "wss://connect.example.com"}, &output)
+		out := output.String()
 		if !strings.Contains(out, "network saved:") {
 			t.Errorf("missing the saved line:\n%s", out)
 		}
@@ -304,9 +305,9 @@ func TestChooseNetworkResetToADifferentNetworkKeepsTheNotice(t *testing.T) {
 	if err := writeNetworkConfig("https://api.example.com", "wss://connect.example.com"); err != nil {
 		t.Fatal(err)
 	}
-	out := captureOutput(t, func() {
-		chooseNetworkCmd(docopt.Opts{"choose_network": true, "--reset": true})
-	})
+	var output bytes.Buffer
+	chooseNetworkCmd(docopt.Opts{"choose_network": true, "--reset": true}, &output)
+	out := output.String()
 	if !strings.Contains(out, "previously selected network") || !strings.Contains(out, "provider auth") {
 		t.Errorf("a reset off a custom network must keep the switch notice:\n%s", out)
 	}

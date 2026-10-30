@@ -198,7 +198,7 @@ docker run -d \
   --cap-add=NET_ADMIN \
   --cap-add=NET_RAW \
   --sysctl net.ipv4.ip_forward=1 \
-  -e BUILD=jwt \
+  -e AUTH=authcode \
   -e URNETWORK_PROFILE=auto \
   -e URNETWORK_RAMLOGS=1 \
   -e HOST_HOSTNAME=$(hostname) \

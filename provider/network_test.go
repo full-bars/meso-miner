@@ -315,7 +315,7 @@ func TestChooseNetworkCmdSaves(t *testing.T) {
 		"<api_url>":      "https://example.com",
 		"<connect_url>":  "wss://example.com",
 	}
-	chooseNetworkCmd(opts)
+	chooseNetworkCmd(opts, os.Stdout)
 
 	cfg, ok, err := readNetworkConfig()
 	if err != nil {
@@ -357,7 +357,7 @@ func TestChooseNetworkCmdReset(t *testing.T) {
 		"choose_network": true,
 		"--reset":        true,
 	}
-	chooseNetworkCmd(opts)
+	chooseNetworkCmd(opts, os.Stdout)
 
 	_, ok, err := readNetworkConfig()
 	if err != nil {
