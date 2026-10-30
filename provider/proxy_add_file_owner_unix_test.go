@@ -37,6 +37,11 @@ func writeOwnerSource(t *testing.T) string {
 	if err := os.WriteFile(sourcePath, []byte("1.1.1.1:1080:alice:old\n"), 0640); err != nil {
 		t.Fatal(err)
 	}
+	// The mode is part of the assertion below: a 077 umask turns WriteFile's 0640
+	// into 0600, so set it explicitly instead of inheriting the runner's umask.
+	if err := os.Chmod(sourcePath, 0640); err != nil {
+		t.Fatal(err)
+	}
 	if err := writeProxyState(&ProxyState{Source: sourcePath, Proxies: map[string]ProxyEntry{}}); err != nil {
 		t.Fatal(err)
 	}
