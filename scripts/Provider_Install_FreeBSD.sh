@@ -83,6 +83,8 @@ for asset in doc.get("assets", []):
 val = val.replace("sha256:", "")
 print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
 ' "$_ast" 2>/dev/null || true)"
+    else
+        _dig="$(release_asset_scan "$_rel" "$_ast" digest 2>/dev/null || true)"
     fi
     printf '%s' "$_dig"
 }
@@ -97,8 +99,35 @@ try:
  d=json.load(sys.stdin); sys.exit(0 if any(a.get("name")==sys.argv[1] for a in d.get("assets",[])) else 1)
 except Exception: sys.exit(1)' "$2" >/dev/null 2>&1
     else
-        return 1
+        release_asset_scan "$1" "$2" list
     fi
+}
+
+# release_asset_scan reads the release metadata with awk alone: FreeBSD ships
+# neither jq nor python3 in the base system, and this installer installs no
+# packages, so a clean host still has to be able to check the asset and its
+# digest. Records are comma separated, which holds for both the pretty-printed
+# API response and a compact one. Mode "list" answers whether the release
+# lists the asset; mode "digest" prints its 64-hex sha256 (empty when absent).
+release_asset_scan() {
+    printf '%s' "$1" | A="$2" M="$3" awk '
+        BEGIN { RS = ","; a = ENVIRON["A"]; m = ENVIRON["M"]; cur = ""; found = 0 }
+        {
+            if (match($0, /"name"[ \t\r\n]*:[ \t\r\n]*"[^"]*"/)) {
+                v = substr($0, RSTART, RLENGTH)
+                sub(/^"name"[ \t\r\n]*:[ \t\r\n]*"/, "", v)
+                sub(/"$/, "", v)
+                cur = v
+                if (cur == a) found = 1
+            }
+            if (m == "digest" && cur == a && match($0, /"digest"[ \t\r\n]*:[ \t\r\n]*"(sha256:)?[0-9a-fA-F]+"/)) {
+                v = substr($0, RSTART, RLENGTH)
+                sub(/^"digest"[ \t\r\n]*:[ \t\r\n]*"(sha256:)?/, "", v)
+                sub(/"$/, "", v)
+                if (length(v) == 64) { print v; exit }
+            }
+        }
+        END { if (m == "list") exit(found ? 0 : 1) }'
 }
 
 compute_sha256_file() {
@@ -751,10 +780,11 @@ do_install() {
     # metadata, so the tarball is fetched only when that metadata lists it.
     # An unreachable or rate-limited API used to leave the digest empty and
     # install the tarball unverified.
-    if ! command -v jq >/dev/null 2>&1 && ! command -v python3 >/dev/null 2>&1; then
-        pr_err "Neither jq nor python3 is installed; cannot read release metadata for %s (%s). Refusing to install. Install jq (pkg install jq) or python3 and retry." "$tag" "$provider_asset"
-        exit 1
-    fi
+    #
+    # No parser prerequisite: jq and python3 are not in the FreeBSD base
+    # system and this installer installs no packages, so both helpers fall
+    # back to release_asset_scan. Refusing here made the documented install
+    # fail on a clean host instead of verifying it.
     _rel_extra=""
     if ! release_lists_asset "$release_json" "$provider_asset"; then
         _rel_extra="$(http_fetch "$github_api/releases/tags/$tag" 2>/dev/null || true)"
