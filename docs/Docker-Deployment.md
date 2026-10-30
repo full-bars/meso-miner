@@ -614,6 +614,25 @@ Under Pelican (`PELICAN=yes`), the self-update checks in `start_nightly.sh` and 
 
 The egg ships with automated CI checks (`docker/scripts/test_pelican_gates.sh` for egg JSON structure, variable contracts, and PELICAN-gate behavior; `docker/scripts/test_pelican_smoke.sh` for a full boot smoke test against a fake provider binary). For a real-panel import walkthrough and log output to expect, see `pelican/README.md`.
 
+## 🧾 Startup Checks and Debug Output
+
+These checks apply to `ghcr.io/full-bars/meso-miner:latest`. The state directory in the container is `$HOME/.urnetwork` (`/root/.urnetwork`), and an optional proxy list is read from `/app/proxy.txt`.
+
+**The saved proxy configuration survives a start without `proxy.txt`.** The start script no longer deletes `~/.urnetwork/proxy` before it looks at `/app/proxy.txt`:
+
+```
+[INFO] Checking proxy configuration
+[INFO] No proxy.txt found; kept existing proxy configuration
+```
+
+When nothing was saved either, the second line reads `No proxy.txt found; none configured`. When the file is mounted, it is imported into a staging directory and replaces the saved configuration only if the import produced valid servers; a malformed existing configuration is moved aside first. A failed import keeps a usable saved configuration and the container carries on with it (`[WARN] Proxy import failed; kept the existing configuration`). If there is none, the container stops with `[ERROR] Proxy import failed and no configuration is saved; refusing to start without the mounted proxy`, rather than start sending traffic from its own address.
+
+**`DEBUG=true` does not print your credentials.** The password-login path prints whether each of the account email and password is set and its length, plus the auth command's exit code. The auth output is replaced with `DEBUG: AUTH_OUTPUT=[redacted]` when it contains either value (the match ignores case); other auth output is still printed, so read a debug log before you share it. This applies to the shared login loop and to the Pelican login.
+
+**The IP checker reports a failed download as a failure.** With `ENABLE_IP_CHECKER=true` the script downloads the checker to a temporary file and runs it only if the download succeeded. A failed download logs `[WARN] IP checker fetch failed` and nothing is run, a checker that runs and fails logs `[WARN] IP checker script failed`, and success logs `[INFO] IP checker script ran successfully`.
+
+**Nightly starts check for the update before they import the proxy list.** The nightly bootstrap runs the update check, then the proxy check, then `choose_network`, so a fresh nightly container has its provider binary before the import and before `UR_API_URL` and `UR_CONNECT_URL` are applied. Nightly reuses a valid saved JWT the same way stable does.
+
 ## Letting the Thrash Watchdog Restart the Container's Provider
 
 The swap-thrash watchdog ([details](/full-bars/meso-miner/wiki/Configuration#swap-thrash-watchdog)) restarts the provider by exiting with status 75. Inside a container that is allowed only when you opt in, because only you know that the container restarts the provider afterwards:
