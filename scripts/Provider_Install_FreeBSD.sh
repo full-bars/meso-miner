@@ -946,9 +946,7 @@ do_install() {
         if [ "$service_user" != "root" ]; then
             # Re-check here, not only at the top of do_install: the service user
             # controls this directory and can replace it with a symlink between
-            # the two, and these are the root writes that would follow it. -h
-            # keeps the recursive chown from dereferencing anything that
-            # appears.
+            # the two, and these are the root writes that would follow it.
             if [ -L "$state_dir" ]; then
                 pr_err "%s became a symlink during install; refusing to write through it" "$state_dir"
                 rm -rf "$tmpdir"; exit 1
@@ -1100,48 +1098,50 @@ RCSCRIPT
         if [ -L "$shell_rc" ]; then
             pr_warn "Refusing to edit %s: it is a symlink. Add %s/bin to PATH by hand" "$shell_rc" "$install_path"
         else
-            # Everything below runs AS THE SERVICE USER. Root must not reopen a
-            # path inside a directory that user owns: between the check above
-            # and any root cat/chmod/chown/mv the name can be swapped for a
-            # link, and root would follow it. The owner editing their own rc
-            # crosses no privilege boundary, so the whole edit — copy, append,
-            # mode, rename — is handed over and root only reports on it.
-            #
-            # WHO runs it is chosen here, before the heredoc, because `su` is
-            # not free: as root it is the hop that keeps root out of the user's
-            # directory, but for any other caller it stops the install at a
-            # password prompt. Root su's to the service user; that user — the
-            # only other account allowed to write the file — runs /bin/sh
-            # directly; anyone else gets a warning and the rc is left alone.
-            # The provider is already installed at this point, so never fail.
-            shellrc_how=skip
-            if [ "$(id -u)" = 0 ]; then
-                shellrc_how=su
-            elif [ "$(id -un)" = "$service_user" ]; then
-                shellrc_how=direct
-            fi
             case "$_shell" in
                 */tcsh|*/csh) rc_line="setenv PATH \"$install_path/bin:\$PATH\"" ;;
                 *)      rc_line="export PATH=\"$install_path/bin:\$PATH\"" ;;
             esac
-            # The script goes in on stdin and is run by /bin/sh explicitly.
-            # `su -c` would otherwise hand it to the login shell, and a tcsh
-            # service user cannot parse POSIX sh. The login name must come
-            # BEFORE -c: FreeBSD reads an earlier -c as a login class, not as
-            # the command (its -m keeps the environment, so the exported values
-            # reach the script). One copy of the script, two ways to start it.
-            run_shellrc_edit() { # mode; the script itself arrives on stdin
-                case "$1" in
-                    su) su -m "$service_user" -c '/bin/sh -s' ;;
-                    *)  /bin/sh -s ;;
-                esac
-            }
-            if [ "$shellrc_how" = skip ]; then
-                pr_warn "Not editing %s: %s is not root and not %s. Add %s/bin to PATH by hand" \
-                    "$shell_rc" "$(id -un)" "$service_user" "$install_path"
+            # How to reach the service user is settled BEFORE the script is fed
+            # in. `su` from a caller that is neither root nor that user stops to
+            # ask for a password, and a prompt during an unattended install is a
+            # hang, not a hint. Root switches user; the service user edits their
+            # own rc directly; anyone else is told to add the line by hand.
+            shellrc_mode=""
+            if [ "$(id -u)" = "0" ]; then
+                shellrc_mode=su
+            elif [ "$(id -un)" = "$service_user" ]; then
+                shellrc_mode=direct
+            fi
+            if [ -z "$shellrc_mode" ]; then
+                pr_warn "Skipping the PATH update in %s: it belongs to %s, but this install is running as %s. Add %s/bin to PATH by hand" \
+                    "$shell_rc" "$service_user" "$(id -un)" "$install_path"
             else
-                export SHELLRC_RC="$shell_rc" SHELLRC_LINE="$rc_line" SHELLRC_BIN="$install_path/bin"
-                run_shellrc_edit "$shellrc_how" <<'SHELLRC_END'
+                # Everything below runs AS THE SERVICE USER. Root must not
+                # reopen a path inside a directory that user owns: between the
+                # check above and any root cat/chmod/chown/mv the name can be
+                # swapped for a link, and root would follow it. The owner
+                # editing their own rc crosses no privilege boundary, so the
+                # whole edit — copy, append, mode, rename — is handed over and
+                # the installer only reports on it.
+                #
+                # The script goes in on stdin and is run by /bin/sh explicitly.
+                # `su -c` would otherwise hand it to the login shell, and a tcsh
+                # service user cannot parse POSIX sh. The login name must come
+                # BEFORE -c: FreeBSD reads an earlier -c as a login class, not
+                # as the command (its -m keeps the environment, so these
+                # assignments reach the script).
+                (
+                    # One script, one environment, two ways in: root has to
+                    # become the owner, the owner just runs it.
+                    if [ "$shellrc_mode" = su ]; then
+                        SHELLRC_RC="$shell_rc" SHELLRC_LINE="$rc_line" SHELLRC_BIN="$install_path/bin" \
+                            su -m "$service_user" -c '/bin/sh -s'
+                    else
+                        SHELLRC_RC="$shell_rc" SHELLRC_LINE="$rc_line" SHELLRC_BIN="$install_path/bin" \
+                            /bin/sh -s
+                    fi
+                ) <<'SHELLRC_END'
 # Runs as the service user, who owns both the rc file and its directory.
 # Exit: 0 wrote it, 10 already active, anything else failed and left the rc
 # byte-for-byte alone (the temp is removed on every failure path).
@@ -1184,9 +1184,7 @@ mode="$(stat -c '%a' "$rc" 2>/dev/null || stat -f '%Lp' "$rc" 2>/dev/null)"
 chmod "${mode:-644}" "$tmp" 2>/dev/null || { rm -f "$tmp"; exit 6; }
 mv -f "$tmp" "$rc" || { rm -f "$tmp"; exit 6; }
 SHELLRC_END
-                _shellrc_status=$?
-                unset SHELLRC_RC SHELLRC_LINE SHELLRC_BIN
-                case "$_shellrc_status" in
+                case "$?" in
                     0)  pr_info "Added %s to PATH in %s" "$install_path/bin" "$shell_rc" ;;
                     10) : ;;
                     *)  pr_warn "Could not update %s; add %s/bin to PATH by hand" "$shell_rc" "$install_path" ;;

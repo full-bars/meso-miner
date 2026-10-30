@@ -3092,12 +3092,26 @@ show_logs ()
     # high-value lines (profit/earn/health/outage/evictions), so the earnings
     # signal survives for hours even when the main ramlog floods.
     if [ "$mode" = "important" ] || [ "$mode" = "--important" ] || [ "$mode" = "-i" ]; then
-        if [ ! -f "/dev/shm/urnetwork-important.log" ]; then
+        # The important log is on disk in the SERVICE user's state dir (the OpenRC
+        # service user's home when urnet-tools runs as someone else; the RAM file
+        # is the fallback for a box with no usable state dir). Take the newest.
+        important_state="$HOME/.urnetwork"
+        if [ "$has_openrc" -eq 1 ] && [ -f /etc/init.d/urnetwork ]; then
+            important_state="$(openrc_user_home)/.urnetwork"
+        fi
+        important_log=""
+        for candidate in "$important_state/important.log" /dev/shm/urnetwork-important.log; do
+            if [ -f "$candidate" ] && { [ -z "$important_log" ] || [ "$candidate" -nt "$important_log" ]; }; then
+                important_log="$candidate"
+            fi
+        done
+        if [ -z "$important_log" ]; then
             pr_err "Important log not found. Is the provider running with RAM logs (urnet-tools ramlogs on)?"
             exit 1
         fi
-        pr_info "Streaming high-value lines (/dev/shm/urnetwork-important.log)"
-        tail -n 1000 -f /dev/shm/urnetwork-important.log
+        pr_info "Streaming high-value lines ($important_log)"
+        # -F follows the name, so the follow survives the provider rotating the file
+        tail -n 1000 -F "$important_log"
         return
     fi
 

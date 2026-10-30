@@ -423,7 +423,7 @@ enforce_install_tree_perms "$TREE" "$BIN"
 		}
 	})
 
-	t.Run("undetermined ownership aborts after successful repairs", func(t *testing.T) {
+	t.Run("undetermined ownership aborts even after successful repairs", func(t *testing.T) {
 		tree, bin := setup(t)
 		out, err := run(t, tree, bin, "STAT_FAIL=1")
 		if err == nil || !strings.Contains(out, "could not verify ownership and permissions") {
@@ -439,6 +439,33 @@ enforce_install_tree_perms "$TREE" "$BIN"
 		}
 		if strings.Contains(out, "ERR:") {
 			t.Errorf("a recoverable chown reported an error: %s", out)
+		}
+	})
+
+	// The fallback accepts a tree that already conforms, so the conformance check
+	// has to cover every regular file root runs, not only the directories and the
+	// daemon binary. bin/urnet-tools is root-executed and sits beside the daemon.
+	t.Run("fallback rejects a group-writable sibling binary", func(t *testing.T) {
+		tree, bin := setup(t)
+		tool := filepath.Join(tree, "bin", "urnet-tools")
+		if err := os.WriteFile(tool, []byte("#!/bin/sh\n"), 0o775); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(tool, 0o775); err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range []string{tree, filepath.Join(tree, "bin"), bin} {
+			if err := os.Chmod(p, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		out, err := run(t, tree, bin, "FAIL_GOW=1", "STAT_ROOT=1")
+		if err == nil {
+			t.Fatalf("gate accepted a group-writable urnet-tools after chmod -R go-w failed (%s)", out)
+		}
+		want := "ERR: could not remove group/other write access from " + tree + ": chmod -R go-w failed"
+		if !strings.Contains(out, want) {
+			t.Errorf("the abort does not name the path and the failure\n want: %s\n  got: %s", want, out)
 		}
 	})
 
@@ -583,6 +610,85 @@ func TestFreeBSDInstallTreePermsGateGatesTheInstall(t *testing.T) {
 		if strings.Contains(script, swallowed) {
 			t.Errorf("installer still swallows the permission repair: %q", swallowed)
 		}
+	}
+}
+
+// Run the real install body with a failing permission gate and local release
+// stubs. The fake uid exercises the non-root branch even on a root test host.
+func freeBSDGateFailure(t *testing.T) (string, string, string) {
+	t.Helper()
+	skipWithoutPOSIXShell(t)
+	b, err := os.ReadFile("../../scripts/Provider_Install_FreeBSD.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := extractShellFunc(t, strings.ReplaceAll(string(b), "\r\n", "\n"), "do_install")
+	if body == "" {
+		t.Fatal("missing do_install")
+	}
+	dir := t.TempDir()
+	tree := filepath.Join(dir, "tree")
+	if err := os.MkdirAll(filepath.Join(tree, "bin"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	for path, value := range map[string]string{"bin/urnetwork": "old binary", "version": "old version"} {
+		if err := os.WriteFile(filepath.Join(tree, path), []byte(value), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	harness := `install_path="$1"
+ provider_bin="$install_path/bin/urnetwork"
+ state_dir="$install_path/state"
+ service_user=testuser
+ github_api=example
+ me=test
+ id() { if [ "$1" = -u ]; then printf '1000\n'; else command id "$@"; fi; }
+ priv() { "$@"; }
+ priv_rm() { [ -z "$1" ] || rm -f "$1"; }
+ install_cleanup() { priv_rm "${staged_bin:-}"; priv_rm "${staged_tool:-}"; }
+ assert_state_path_safe() { :; }
+ pr_info() { :; }
+ pr_warn() { :; }
+ pr_err() { :; }
+ http_fetch() { if [ "$#" -gt 1 ]; then printf 'tool' > "$2"; else printf '{"assets":[{"name":"urnet-tools-freebsd-amd64","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}'; fi; }
+ jq() { case "$*" in *tag_name*) printf 'test-tag\n' ;; *) printf '%064d\n' 0 | tr 0 a ;; esac; }
+ uname() { printf 'amd64\n'; }
+ sha256() { printf '%064d\n' 0 | tr 0 a; }
+ tar() { printf 'new binary' > "$4/provider"; }
+ install_wrapper_tool() { :; }
+ enforce_install_tree_perms() { printf '%s\n%s\n' "$(id -u)" "$2" > "$install_path/gate-called"; return 1; }
+ ` + body + `
+ do_install test-tag
+ `
+	h := filepath.Join(dir, "harness.sh")
+	if err := os.WriteFile(h, []byte(harness), 0755); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("/bin/sh", h, tree).CombinedOutput()
+	if err == nil {
+		t.Fatalf("install succeeded despite failed gate: %s", out)
+	}
+	read := func(path string) string {
+		b, err := os.ReadFile(filepath.Join(tree, path))
+		if err != nil {
+			t.Fatalf("read %s: %v; output: %s", path, err, out)
+		}
+		return string(b)
+	}
+	return read("gate-called"), read("bin/urnetwork"), read("version")
+}
+
+func TestFreeBSDNonRootInstallReachesPermissionGate(t *testing.T) {
+	gate, _, _ := freeBSDGateFailure(t)
+	if !strings.HasPrefix(gate, "1000\n") || !strings.Contains(gate, "/bin/.urnetwork.new.") {
+		t.Fatalf("gate did not receive non-root staged binary: %q", gate)
+	}
+}
+
+func TestFreeBSDGateFailurePreservesBinaryAndVersion(t *testing.T) {
+	_, binary, version := freeBSDGateFailure(t)
+	if binary != "old binary" || version != "old version" {
+		t.Fatalf("gate failure changed installed binary/version: %q / %q", binary, version)
 	}
 }
 

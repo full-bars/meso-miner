@@ -451,11 +451,19 @@ jobs:
             ../out/provider.test -test.v -test.run 'TestVerifyPeerCredentials' > /tmp/t1.log 2>&1 || failures=1
             tail -30 /tmp/t1.log
             echo "--- provider peercred tests done ---"
+            ../out/provider.test -test.v -test.run 'Wallet|FamilyServiceUrl|UseFamilyTransports|ProbeIpv6|NewProviderPlatformTransport' > /tmp/t1b.log 2>&1 || failures=1
+            tail -30 /tmp/t1b.log
+            echo "--- provider wallet and family tests done ---"
 
             cd .. || exit 1
             out/root.test -test.v -test.run 'TestFreeBSDHostMemory|TestHostMemoryReaders|TestEffectiveRAMLimit' > /tmp/t2.log 2>&1 || failures=1
             tail -30 /tmp/t2.log
             echo "--- root sysmem tests done ---"
+
+            # ip layer: fragments, reassembly, dial-failure answers, packet parse
+            out/root.test -test.v -test.run 'Fragment|Reassembl|DialFailure|DialErrno|IcmpParse|IpPacket|DualStack|ParseIpPath|NatFragment' > /tmp/t2b.log 2>&1 || failures=1
+            tail -30 /tmp/t2b.log
+            echo "--- root ip tests done ---"
 
             cd internal/urnettools || exit 1
             ../../out/urnettools.test -test.v -test.run 'TestRenderBSD|TestBSDTemplateParity|TestBSDRcServiceName|TestParseProcstat|TestParseUIDField|TestBSDSysctl|TestFreeBSD|TestEffectiveBSDValue|TestBSDSysctlWritesRaisesSockbufFirst|TestTarRelPath|TestOptimizeForDispatch' > /tmp/t3.log 2>&1 || failures=1

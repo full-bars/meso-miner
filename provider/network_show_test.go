@@ -312,3 +312,23 @@ func TestChooseNetworkResetToADifferentNetworkKeepsTheNotice(t *testing.T) {
 		t.Errorf("a reset off a custom network must keep the switch notice:\n%s", out)
 	}
 }
+
+func TestChooseNetworkPresetSwitchKeepsTheNotice(t *testing.T) {
+	home := withTempHome(t)
+	dir := filepath.Join(home, ".urnetwork")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "jwt"), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeNetworkConfig("https://api.example.com", "wss://connect.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	chooseNetworkCmd(docopt.Opts{"choose_network": true, "<api_url>": "beta"}, &output)
+	out := output.String()
+	if !strings.Contains(out, "network saved (preset)") || !strings.Contains(out, "previously selected network") {
+		t.Errorf("switching to a preset must keep the switch notice, the jwt came from another network:\n%s", out)
+	}
+}
