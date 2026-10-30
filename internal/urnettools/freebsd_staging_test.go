@@ -79,9 +79,14 @@ http_fetch() {
     if [ "$#" = 1 ]; then printf '{}'; else printf 'new tool' > "$2"; fi
 }
 jq() { case "$*" in *tag_name*) printf 'test-tag\n' ;; *) [ "$DIGEST" = missing ] || printf '%064d\n' 0 | tr 0 a ;; esac; }
+release_lists_asset() { return 0; }
+get_asset_digest_from_api_response() {
+    case "$2" in urnet-tools-*) [ "$DIGEST" = missing ] || printf '%064d\n' 0 | tr 0 a ;; *) printf '%064d\n' 0 | tr 0 a ;; esac
+}
+verify_sha256_file() { [ "$(sha256 -q "$1")" = "$2" ]; }
 tar() { printf 'new provider' > "$4/provider"; }
 uname() { printf 'amd64\n'; }
-sha256() { if [ "$DIGEST" = match ]; then printf '%064d\n' 0 | tr 0 a; else printf '%064d\n' 0 | tr 0 b; fi; }
+sha256() { case "$2" in *urnet-tools*) [ "$DIGEST" = mismatch ] && printf '%064d\n' 0 | tr 0 b || printf '%064d\n' 0 | tr 0 a ;; *) printf '%064d\n' 0 | tr 0 a ;; esac; }
 enforce_install_tree_perms() {
     [ "$(cat "$provider_bin")" = 'old provider' ] && [ "$(cat "$install_path/bin/urnet-tools")" = 'old tool' ] || { printf 'live file changed before gate\n' >&2; return 1; }
     printf 'gate\n' > "$install_path/gate-called"
@@ -135,6 +140,11 @@ enforce_install_tree_perms() {
 					t.Fatal(err)
 				}
 				for _, entry := range entries {
+					// This harness stops immediately after the two renames, before
+					// the normal post-service backup cleanup can run.
+					if tc.success && strings.HasPrefix(entry.Name(), ".urnetwork.bak.") {
+						continue
+					}
 					if strings.HasPrefix(entry.Name(), ".urnet") {
 						t.Errorf("staged file left behind: %s", entry.Name())
 					}

@@ -1,6 +1,9 @@
 package urnettools
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -603,18 +606,74 @@ func shellExecLines(body string) []string {
 // definition line to the closing brace at column 0. Used so assertions can
 // target ONE function instead of the whole file, which is how a string present
 // in a sibling function satisfied a check about do_install.
+// extractShellFunc returns the body of a top-level shell function, from its
+// definition line to the closing brace at column 0. Used so assertions can
+// target ONE function instead of the whole file, which is how a string present
+// in a sibling function satisfied a check about do_install.
 func extractShellFunc(t *testing.T, script, name string) string {
 	t.Helper()
-	start := strings.Index(script, name+"() {")
+	// The script declares functions in two styles: `name() {` and
+	// `name ()` with the brace on the following line. Match either and take
+	// the earliest, so a rename-vs-decl drift cannot silently empty the body.
+	start := -1
+	for _, cand := range []string{name + "()", name + " ()"} {
+		if i := strings.Index(script, cand); i >= 0 && (start < 0 || i < start) {
+			start = i
+		}
+	}
 	if start < 0 {
 		return ""
 	}
 	rest := script[start:]
-	end := strings.Index(rest, "\n}\n")
-	if end < 0 {
+	lines := strings.Split(rest, "\n")
+	var heredocTag string
+	endIdx := -1
+	charCount := 0
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if heredocTag != "" {
+			if trimmed == heredocTag {
+				heredocTag = ""
+			}
+		} else {
+			if idx := strings.Index(line, "<<"); idx >= 0 && !strings.HasPrefix(trimmed, "#") {
+				rem := line[idx+2:]
+				if !strings.HasPrefix(rem, "<") { // ignore here-strings <<<
+					rem = strings.TrimPrefix(rem, "-")
+					rem = strings.TrimSpace(rem)
+					var tag string
+					if strings.HasPrefix(rem, "'") {
+						if closeIdx := strings.Index(rem[1:], "'"); closeIdx >= 0 {
+							tag = rem[1 : 1+closeIdx]
+						}
+					} else if strings.HasPrefix(rem, "\"") {
+						if closeIdx := strings.Index(rem[1:], "\""); closeIdx >= 0 {
+							tag = rem[1 : 1+closeIdx]
+						}
+					} else {
+						end := strings.IndexAny(rem, " \t;<>|&)")
+						if end >= 0 {
+							tag = rem[:end]
+						} else {
+							tag = rem
+						}
+					}
+					tag = strings.Trim(tag, "'\"\\")
+					if tag != "" {
+						heredocTag = tag
+					}
+				}
+			} else if i > 0 && line == "}" {
+				endIdx = charCount + len(line)
+				break
+			}
+		}
+		charCount += len(line) + 1
+	}
+	if endIdx < 0 {
 		return ""
 	}
-	return rest[:end+2]
+	return rest[:endIdx]
 }
 
 // A release asset with no digest must read as ABSENT. jq prints the string
@@ -629,12 +688,10 @@ func TestFreeBSDToolDigestLookup(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := strings.ReplaceAll(string(b), "\r\n", "\n")
-	i := strings.Index(script, `tool_digest="$(printf`)
-	j := strings.Index(script, `if [ -z "$tool_digest" ]`)
-	if i < 0 || j < 0 || j <= i {
-		t.Fatal("could not locate the tool digest lookup in the FreeBSD installer")
+	block := extractShellFunc(t, script, "get_asset_digest_from_api_response")
+	if block == "" || !strings.Contains(script, `tool_digest="$(get_asset_digest_from_api_response "$release_json" "$tool_asset")"`) {
+		t.Fatal("tool digest lookup does not use the shared helper")
 	}
-	block := script[i:j]
 
 	const hex64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	cases := []struct {
@@ -673,13 +730,13 @@ func TestFreeBSDToolDigestLookup(t *testing.T) {
 	// A missing marker is a FAILURE, not a skip: the previous version wrapped
 	// this in `if found {`, so adding one space to the expression made every
 	// jq subtest vanish while the test reported success (mutation-proved).
-	jqStart := strings.Index(block, "jq -r --arg a \"$tool_asset\" '")
+	jqStart := strings.Index(block, "jq -r --arg a \"$_ast\" '")
 	if !haveJq {
 		t.Log("jq not installed here; exercising only the python path")
 	} else if jqStart < 0 {
 		t.Error("could not find the jq digest expression in the installer; the marker moved and this test would otherwise pass vacuously")
 	} else {
-		expr := block[jqStart+len("jq -r --arg a \"$tool_asset\" '"):]
+		expr := block[jqStart+len("jq -r --arg a \"$_ast\" '"):]
 		if end := strings.Index(expr, "' 2>/dev/null"); end >= 0 {
 			expr = expr[:end]
 			for _, c := range cases {
@@ -709,7 +766,7 @@ func TestFreeBSDToolDigestLookup(t *testing.T) {
 		t.Error("could not find the python digest expression in the installer; the marker moved and this test would otherwise pass vacuously")
 	} else {
 		py := block[pyStart+len("python3 -c '"):]
-		pyEnd := strings.Index(py, "' \"$tool_asset\"")
+		pyEnd := strings.Index(py, "' \"$_ast\"")
 		if pyEnd < 0 {
 			t.Error("could not find the end of the python digest expression; the marker moved")
 		} else {
@@ -727,6 +784,138 @@ func TestFreeBSDToolDigestLookup(t *testing.T) {
 					}
 				})
 			}
+		}
+	}
+}
+
+// The release metadata path must work on a clean FreeBSD host: jq and python3
+// are packages there, and this installer never installs packages. The base
+// fallback is exercised by pointing PATH at a directory that holds only base
+// tools, so `command -v jq` and `command -v python3` fail exactly as they do
+// on a base-only box. A parser-dependent harness would skip here instead of
+// proving the install still verifies.
+func TestFreeBSDDigestAndAssetListOnBaseToolsOnly(t *testing.T) {
+	skipWithoutPOSIXShell(t)
+	b, err := os.ReadFile("../../scripts/Provider_Install_FreeBSD.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := strings.ReplaceAll(string(b), "\r\n", "\n")
+	digestFn := extractShellFunc(t, script, "get_asset_digest_from_api_response")
+	listFn := extractShellFunc(t, script, "release_lists_asset")
+	scanFn := extractShellFunc(t, script, "release_asset_scan")
+	if digestFn == "" || listFn == "" || scanFn == "" {
+		t.Fatal("could not extract the FreeBSD digest, asset-list and base-scan helpers")
+	}
+
+	// A base-only PATH: no jq, no python3, nothing the fallback may lean on
+	// beyond what FreeBSD ships. Resolve from the system directories rather
+	// than LookPath: installer tests earlier in this package prepend stub
+	// directories to PATH, and a stub that their cleanup already removed
+	// would leave a dangling symlink and a 127 in the child shell.
+	bin := t.TempDir()
+	for _, tool := range []string{"tr", "awk", "sed", "grep", "cat"} {
+		path := ""
+		for _, dir := range []string{"/bin", "/usr/bin", "/usr/local/bin", "/sbin", "/usr/sbin"} {
+			candidate := filepath.Join(dir, tool)
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+				path = candidate
+				break
+			}
+		}
+		if path == "" {
+			t.Skipf("no %s in the system directories to build a base-only PATH", tool)
+		}
+		if err := os.Symlink(path, filepath.Join(bin, tool)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	basePath := []string{"PATH=" + bin}
+
+	const hex64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	// Pretty-printed like the GitHub API, which is what the installer actually
+	// receives — the digest is not on the same line as the name.
+	release := `{
+  "assets": [
+    {
+      "name": "urnetwork-provider-v1-freebsd-amd64.tar.gz",
+      "size": 123,
+      "digest": "sha256:` + hex64 + `",
+      "browser_download_url": "https://example.invalid/urnetwork-provider-v1-freebsd-amd64.tar.gz"
+    },
+    {
+      "name": "other.txt",
+      "digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  ]
+}`
+	basePath = append(basePath, "RELEASE="+release, "ASSET=urnetwork-provider-v1-freebsd-amd64.tar.gz")
+
+	run := func(expr string) (string, error) {
+		cmd := exec.Command("/bin/sh", "-c", scanFn+"\n"+digestFn+"\n"+listFn+"\n"+expr)
+		cmd.Env = basePath
+		out, err := cmd.CombinedOutput()
+		return strings.TrimSpace(string(out)), err
+	}
+
+	if got, err := run(`command -v jq || command -v python3 || echo none`); err != nil || got != "none" {
+		t.Fatalf("base-only PATH still has a parser (%q, %v); the fallback is not being exercised", got, err)
+	}
+	if got, err := run(`get_asset_digest_from_api_response "$RELEASE" "$ASSET"`); err != nil || got != hex64 {
+		t.Errorf("digest on base tools = %q (%v), want %q", got, err, hex64)
+	}
+	if _, err := run(`release_lists_asset "$RELEASE" "$ASSET"`); err != nil {
+		t.Errorf("release_lists_asset rejected a listed asset: %v", err)
+	}
+	if _, err := run(`release_lists_asset "$RELEASE" "absent.tar.gz"`); err == nil {
+		t.Error("release_lists_asset accepted an asset the release does not list")
+	}
+	// The download URL repeats the filename; a listing must come from "name".
+	if _, err := run(`release_lists_asset '{"assets":[{"url":"https://x/urnetwork-provider-v1-freebsd-amd64.tar.gz","name":"other.txt"}]}' "$ASSET"`); err == nil {
+		t.Error("release_lists_asset matched a browser_download_url instead of a name")
+	}
+	if got, err := run(`get_asset_digest_from_api_response '{"assets":[{"name":"urnetwork-provider-v1-freebsd-amd64.tar.gz","digest":null}]}' "$ASSET"`); err != nil || got != "" {
+		t.Errorf("null digest on base tools = %q (%v), want empty", got, err)
+	}
+	// A following asset must never lend its digest to the requested asset.
+	if got, err := run(`get_asset_digest_from_api_response '{"assets":[{"name":"urnetwork-provider-v1-freebsd-amd64.tar.gz"},{"digest":"sha256:` + hex64 + `","name":"other"}]}' "$ASSET"`); err != nil || got != "" {
+		t.Errorf("digest leaked across assets: %q (%v)", got, err)
+	}
+	// GitHub may emit nested uploader objects and digest before name.
+	if got, err := run(`get_asset_digest_from_api_response '{"assets":[{"digest":"sha256:` + hex64 + `","uploader":{"name":"other"},"name":"urnetwork-provider-v1-freebsd-amd64.tar.gz"}]}' "$ASSET"`); err != nil || got != hex64 {
+		t.Errorf("reordered nested asset digest = %q (%v), want %q", got, err, hex64)
+	}
+	// Two assets in either list order, and with digest before name in one
+	// object: each must resolve to its own digest, never the neighbour's.
+	const hexTool = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+	const prov = "urnetwork-provider-v1-freebsd-amd64.tar.gz"
+	const tool = "urnet-tools-freebsd-amd64"
+	for _, doc := range []struct{ name, json string }{
+		{"provider first", `{"assets":[{"name":"` + prov + `","digest":"sha256:` + hex64 + `"},{"name":"` + tool + `","digest":"sha256:` + hexTool + `"}]}`},
+		{"tool first", `{"assets":[{"name":"` + tool + `","digest":"sha256:` + hexTool + `"},{"name":"` + prov + `","digest":"sha256:` + hex64 + `"}]}`},
+		{"digest before name", `{"assets":[{"digest":"sha256:` + hexTool + `","name":"` + tool + `"},{"digest":"sha256:` + hex64 + `","name":"` + prov + `"}]}`},
+		{"tool without digest first", `{"assets":[{"name":"` + tool + `"},{"digest":"sha256:` + hex64 + `","name":"` + prov + `"}]}`},
+	} {
+		wantTool := hexTool
+		if doc.name == "tool without digest first" {
+			wantTool = ""
+		}
+		if got, err := run(`get_asset_digest_from_api_response '` + doc.json + `' ` + prov); err != nil || got != hex64 {
+			t.Errorf("%s: provider digest = %q (%v), want %q", doc.name, got, err, hex64)
+		}
+		if got, err := run(`get_asset_digest_from_api_response '` + doc.json + `' ` + tool); err != nil || got != wantTool {
+			t.Errorf("%s: tool digest = %q (%v), want %q", doc.name, got, err, wantTool)
+		}
+	}
+	for _, malformed := range []string{
+		`{"name":"urnetwork-provider-v1-freebsd-amd64.tar.gz","assets":[]}`,
+		`{"assets":[{"name":"urnetwork-provider-v1-freebsd-amd64.tar.gz"},{"name":"urnetwork-provider-v1-freebsd-amd64.tar.gz"}]}`,
+		`{"assets":[{"name":"urnetwork-provider-v1-freebsd-amd64.tar.gz"}]`,
+	} {
+		cmd := exec.Command("/bin/sh", "-c", scanFn+"\n"+listFn+"\nrelease_lists_asset \"$RELEASE_CASE\" \"$ASSET\"")
+		cmd.Env = append(basePath, "RELEASE_CASE="+malformed)
+		if out, err := cmd.CombinedOutput(); err == nil {
+			t.Errorf("accepted absent, duplicate or malformed asset metadata %q: %s", malformed, out)
 		}
 	}
 }
@@ -773,5 +962,938 @@ func TestFreeBSDRootOwnedInstallPathMatchesDiscovery(t *testing.T) {
 	}
 	if !strings.Contains(string(d), `"`+installPath+`/bin/urnetwork"`) {
 		t.Errorf("discovery fallback does not look in %s/bin/urnetwork; a stopped install would be undiscoverable", installPath)
+	}
+}
+
+type installerHarnessOpts struct {
+	tag         string
+	releaseJSON string
+	tarballData []byte
+	existingBin string
+	failRestart bool
+	failCpToDst bool
+	failMv      bool
+	failBackup  bool
+	operation   string
+	// parserless runs the FreeBSD installer with no jq or python3 on PATH, so
+	// the release metadata is read by release_asset_scan alone.
+	parserless bool
+}
+
+type installerHarnessResult struct {
+	exitCode int
+	stdout   string
+	stderr   string
+	tarCalls []string
+	finalBin string
+	// versionWritten reports whether the installer left its version marker
+	// (.version on Linux, version on FreeBSD) in the install tree, and
+	// versionMarker is its content.
+	versionWritten bool
+	versionMarker  string
+}
+
+func runFreeBSDInstaller(t *testing.T, opts installerHarnessOpts) installerHarnessResult {
+	t.Helper()
+	skipWithoutPOSIXShell(t)
+	b, err := os.ReadFile("../../scripts/Provider_Install_FreeBSD.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := strings.ReplaceAll(string(b), "\r\n", "\n")
+
+	tempDir := t.TempDir()
+	installPath := filepath.Join(tempDir, "install")
+	stateDir := filepath.Join(tempDir, "state")
+	rcScript := filepath.Join(tempDir, "rc.d", "urnetwork")
+	tarballPath := filepath.Join(tempDir, "provider.tar.gz")
+	releaseJSONPath := filepath.Join(tempDir, "release.json")
+	logDir := filepath.Join(tempDir, "logs")
+	_ = os.MkdirAll(logDir, 0o755)
+
+	if err := os.WriteFile(tarballPath, opts.tarballData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Valid metadata needs the separately verified urnet-tools release asset.
+	releaseJSON := opts.releaseJSON
+	var release map[string]json.RawMessage
+	if json.Unmarshal([]byte(releaseJSON), &release) == nil {
+		var assets []json.RawMessage
+		if json.Unmarshal(release["assets"], &assets) == nil {
+			sum := sha256.Sum256(opts.tarballData)
+			tool, err := json.Marshal(map[string]string{"name": "urnet-tools-freebsd-amd64", "digest": "sha256:" + hex.EncodeToString(sum[:])})
+			if err != nil {
+				t.Fatal(err)
+			}
+			assets = append(assets, tool)
+			release["assets"], err = json.Marshal(assets)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(release)
+			if err != nil {
+				t.Fatal(err)
+			}
+			releaseJSON = string(data)
+		}
+	}
+	if err := os.WriteFile(releaseJSONPath, []byte(releaseJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if opts.existingBin != "" {
+		_ = os.MkdirAll(filepath.Join(installPath, "bin"), 0o755)
+		_ = os.WriteFile(filepath.Join(installPath, "bin", "urnetwork"), []byte(opts.existingBin), 0o755)
+	}
+
+	fnListsAsset := extractShellFunc(t, script, "release_lists_asset")
+	fnDigest := extractShellFunc(t, script, "get_asset_digest_from_api_response")
+	fnCompute := extractShellFunc(t, script, "compute_sha256_file")
+	fnVerify := extractShellFunc(t, script, "verify_sha256_file")
+	fnDoInstall := extractShellFunc(t, script, "do_install")
+	fnScan := ""
+	pathEnv := "PATH=/usr/bin:/bin"
+	if opts.parserless {
+		fnScan = extractShellFunc(t, script, "release_asset_scan")
+		pathEnv = "PATH=" + baseToolsPath(t)
+	}
+	if fnListsAsset == "" {
+		t.Fatal("could not extract release_lists_asset from FreeBSD script")
+	}
+	if fnDoInstall == "" {
+		t.Fatal("could not extract do_install from FreeBSD script")
+	}
+
+	tag := opts.tag
+	if tag == "" {
+		tag = "v2026.10.27"
+	}
+	failRestartVal := "0"
+	if opts.failRestart {
+		failRestartVal = "1"
+	}
+	failCpVal := "0"
+	if opts.failCpToDst {
+		failCpVal = "1"
+	}
+	failMvVal := "0"
+	if opts.failMv {
+		failMvVal = "1"
+	}
+
+	harness := fmt.Sprintf(`
+pr_err() { printf "[ERROR] %%s\n" "$*" >&2; }
+pr_warn() { printf "[WARN] %%s\n" "$*" >&2; }
+pr_info() { printf "[INFO] %%s\n" "$*"; }
+priv() { "$@"; }
+sudo() { "$@"; }
+user_shell() { echo "/bin/sh"; }
+assert_state_path_safe() { return 0; }
+enforce_install_tree_perms() { return 0; }
+set_rc_conf_default() { return 0; }
+write_rc_script_body() { echo "# rc"; }
+install_wrapper_tool() { return 0; }
+install_cleanup() { return 0; }
+resolve_service_user() { echo "testuser"; }
+service_running() { return 0; }
+restart_service() {
+    if [ "${FAIL_RESTART:-0}" = "1" ]; then
+        return 1
+    fi
+    return 0
+}
+load_service() {
+    if [ "${FAIL_RESTART:-0}" = "1" ]; then
+        return 1
+    fi
+    return 0
+}
+http_fetch() {
+    _url="$1"
+    _out="${2:-}"
+    if [ -n "$_out" ]; then
+        cp %q "$_out"
+        return 0
+    else
+        cat %q
+        return 0
+    fi
+}
+ln() {
+    if [ "${FAIL_BACKUP:-0}" = "1" ]; then
+        case "$*" in *"/bin/.urnetwork.bak."*) return 1;; esac
+    fi
+    command ln "$@"
+}
+cp() {
+    if [ "${FAIL_BACKUP:-0}" = "1" ]; then
+        case "$*" in *"/bin/.urnetwork.bak."*) return 1;; esac
+    fi
+    if [ "${FAIL_CP:-0}" = "1" ]; then
+        case "$*" in
+            *"/bin/.urnetwork"*|*"/bin/urnetwork"*)
+                echo "simulated cp failure" >&2
+                return 1
+                ;;
+        esac
+    fi
+    command cp "$@"
+}
+mv() {
+    if [ "${FAIL_MV:-0}" = "1" ]; then
+        case "$*" in
+            *"-f "*"$install_path/bin/urnetwork")
+                echo "simulated mv failure" >&2
+                return 1
+                ;;
+        esac
+    fi
+    command mv "$@"
+}
+tar() {
+    echo "tar $*" >> %q
+    if [ -d "$tmpdir" ]; then
+        mkdir -p "$tmpdir/freebsd/amd64"
+        echo "extracted-new-binary" > "$tmpdir/freebsd/amd64/provider"
+        echo "extracted-new-binary" > "$tmpdir/provider"
+        chmod 755 "$tmpdir/provider" "$tmpdir/freebsd/amd64/provider"
+    fi
+    return 0
+}
+`, tarballPath, releaseJSONPath, filepath.Join(logDir, "tar.log"))
+
+	driver := fmt.Sprintf(`
+service_user="testuser"
+version=%q
+install_path=%q
+provider_bin="$install_path/bin/urnetwork"
+state_dir=%q
+rc_script=%q
+me="urnet-tools"
+github_api="http://mock"
+FAIL_RESTART=%q
+FAIL_CP=%q
+FAIL_MV=%q
+do_install "$version"
+`, tag, installPath, stateDir, rcScript, failRestartVal, failCpVal, failMvVal)
+
+	fullScript := harness + "\n" + fnListsAsset + "\n" + fnScan + "\n" + fnDigest + "\n" + fnCompute + "\n" + fnVerify + "\n" + fnDoInstall + "\n" + driver
+	cmd := exec.Command("/bin/sh", "-c", fullScript)
+	cmd.Env = []string{pathEnv}
+	if opts.failBackup {
+		cmd.Env = append(cmd.Env, "FAIL_BACKUP=1")
+	}
+	out, err := cmd.CombinedOutput()
+
+	var exitCode int
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			exitCode = 1
+		}
+	}
+
+	var tarCalls []string
+	if tarLogBytes, rerr := os.ReadFile(filepath.Join(logDir, "tar.log")); rerr == nil {
+		for _, line := range strings.Split(strings.TrimSpace(string(tarLogBytes)), "\n") {
+			if strings.TrimSpace(line) != "" {
+				tarCalls = append(tarCalls, line)
+			}
+		}
+	}
+
+	finalBinBytes, _ := os.ReadFile(filepath.Join(installPath, "bin", "urnetwork"))
+	versionBytes, verr := os.ReadFile(filepath.Join(installPath, "version"))
+
+	return installerHarnessResult{
+		exitCode:       exitCode,
+		stdout:         string(out),
+		stderr:         string(out),
+		tarCalls:       tarCalls,
+		finalBin:       string(finalBinBytes),
+		versionWritten: verr == nil,
+		versionMarker:  string(versionBytes),
+	}
+}
+
+func runLinuxInstaller(t *testing.T, opts installerHarnessOpts) installerHarnessResult {
+	t.Helper()
+	skipWithoutPOSIXShell(t)
+	b, err := os.ReadFile("../../scripts/Provider_Install_Linux.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := strings.ReplaceAll(string(b), "\r\n", "\n")
+
+	tempDir := t.TempDir()
+	installPath := filepath.Join(tempDir, "install")
+	tarballPath := filepath.Join(tempDir, "provider.tar.gz")
+	releaseJSONPath := filepath.Join(tempDir, "release.json")
+	logDir := filepath.Join(tempDir, "logs")
+	_ = os.MkdirAll(logDir, 0o755)
+
+	if err := os.WriteFile(tarballPath, opts.tarballData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(releaseJSONPath, []byte(opts.releaseJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if opts.existingBin != "" {
+		_ = os.MkdirAll(filepath.Join(installPath, "bin"), 0o755)
+		_ = os.WriteFile(filepath.Join(installPath, "bin", "urnetwork"), []byte(opts.existingBin), 0o755)
+	}
+
+	fnGetVersion := extractShellFunc(t, script, "get_version_from_api_response")
+	fnGetDate := extractShellFunc(t, script, "get_release_date_from_api_response")
+	fnListsAsset := extractShellFunc(t, script, "release_lists_asset")
+	if fnListsAsset == "" {
+		t.Fatal("could not extract release_lists_asset from Linux script")
+	}
+	fnDigest := extractShellFunc(t, script, "get_asset_digest_from_api_response")
+	fnCompute := extractShellFunc(t, script, "compute_sha256_file")
+	fnVerify := extractShellFunc(t, script, "verify_sha256_file")
+	fnSanitize := extractShellFunc(t, script, "sanitize_restart_dropins")
+	fnInstallSystemd := extractShellFunc(t, script, "install_systemd_units")
+	fnDoInstall := extractShellFunc(t, script, "do_install")
+	if fnDoInstall == "" {
+		t.Fatal("could not extract do_install from Linux script")
+	}
+
+	tag := opts.tag
+	if tag == "" {
+		tag = "v2026.10.27"
+	}
+	op := opts.operation
+	if op == "" {
+		op = "install"
+	}
+	failRestartVal := "0"
+	if opts.failRestart {
+		failRestartVal = "1"
+	}
+	failCpVal := "0"
+	if opts.failCpToDst {
+		failCpVal = "1"
+	}
+	failMvVal := "0"
+	if opts.failMv {
+		failMvVal = "1"
+	}
+
+	harness := fmt.Sprintf(`
+pr_err() { printf "[ERROR] %%s\n" "$*" >&2; }
+pr_warn() { printf "[WARN] %%s\n" "$*" >&2; }
+pr_info() { printf "[INFO] %%s\n" "$*"; }
+sudo() { "$@"; }
+install_downloader() { return 0; }
+install_json_parser() { return 0; }
+openrc_maybe_redirect_install_path() { return 0; }
+stop_systemd_units() { return 0; }
+stop_openrc_units() { return 0; }
+ensure_tools_on_path() { return 0; }
+add_path_blocks() { return 0; }
+func_root_guard() { return 0; }
+network_fetch() {
+    cat %q
+}
+download_asset() {
+    _src="$1"
+    _dst="$2"
+    cp %q "$_dst"
+}
+cp() {
+    if [ "${FAIL_CP:-0}" = "1" ]; then
+        case "$*" in
+            *"/bin/.urnetwork"*|*"/bin/urnetwork"*)
+                echo "simulated cp failure" >&2
+                return 1
+                ;;
+        esac
+    fi
+    command cp "$@"
+}
+mv() {
+    if [ "${FAIL_MV:-0}" = "1" ]; then
+        case "$*" in
+            *"-f "*"$install_path/bin/urnetwork")
+                echo "simulated mv failure" >&2
+                return 1
+                ;;
+        esac
+    fi
+    command mv "$@"
+}
+tar() {
+    echo "tar $*" >> %q
+    if [ -d "$workdir" ]; then
+        mkdir -p "$workdir/linux/amd64"
+        echo "extracted-new-binary" > "$workdir/linux/amd64/provider"
+        chmod 755 "$workdir/linux/amd64/provider"
+    fi
+    return 0
+}
+systemctl() {
+    if [ "$1" = "--user" ] && [ "$2" = "start" ]; then
+        if [ "${FAIL_RESTART:-0}" = "1" ]; then
+            return 1
+        fi
+    fi
+    return 0
+}
+`, releaseJSONPath, tarballPath, filepath.Join(logDir, "tar.log"))
+
+	driver := fmt.Sprintf(`
+tag=%q
+operation=%q
+install_path=%q
+script_rundir=%q
+api_base="http://mock"
+urnet_github_dl_base="http://mock"
+urnet_dl_base="http://mock"
+api_url="http://mock/releases/tags/$tag"
+arch="amd64"
+has_systemd=1
+has_openrc=0
+FAIL_RESTART=%q
+FAIL_CP=%q
+FAIL_MV=%q
+systemd_service="%s/urnetwork.service"
+systemd_update_service="%s/urnetwork-update.service"
+systemd_update_timer="%s/urnetwork-update.timer"
+systemd_userdir="%s"
+systemd_units_stopped=1
+do_install
+`, tag, op, installPath, tempDir, failRestartVal, failCpVal, failMvVal, tempDir, tempDir, tempDir, tempDir)
+
+	fullScript := harness + "\n" + fnGetVersion + "\n" + fnGetDate + "\n" + fnListsAsset + "\n" + fnDigest + "\n" + fnCompute + "\n" + fnVerify + "\n" + fnSanitize + "\n" + fnInstallSystemd + "\n" + fnDoInstall + "\n" + driver
+	cmd := exec.Command("/bin/sh", "-c", fullScript)
+	cmd.Env = []string{"PATH=/usr/bin:/bin"}
+	out, err := cmd.CombinedOutput()
+
+	var exitCode int
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			exitCode = 1
+		}
+	}
+
+	var tarCalls []string
+	if tarLogBytes, rerr := os.ReadFile(filepath.Join(logDir, "tar.log")); rerr == nil {
+		for _, line := range strings.Split(strings.TrimSpace(string(tarLogBytes)), "\n") {
+			if strings.TrimSpace(line) != "" {
+				tarCalls = append(tarCalls, line)
+			}
+		}
+	}
+
+	finalBinBytes, _ := os.ReadFile(filepath.Join(installPath, "bin", "urnetwork"))
+	versionBytes, verr := os.ReadFile(filepath.Join(installPath, ".version"))
+
+	return installerHarnessResult{
+		exitCode:       exitCode,
+		stdout:         string(out),
+		stderr:         string(out),
+		tarCalls:       tarCalls,
+		finalBin:       string(finalBinBytes),
+		versionWritten: verr == nil,
+		versionMarker:  string(versionBytes),
+	}
+}
+
+// 1. A provider tarball whose digest does not match: the install aborts before
+// extraction and the error names the asset and digests.
+func TestInstallerProviderTarballDigestMismatchAborts(t *testing.T) {
+	tarballContent := []byte("actual-tarball-payload-bytes")
+	sum := sha256.Sum256(tarballContent)
+	actualDigest := hex.EncodeToString(sum[:])
+	expectedDigest := strings.Repeat("d", 64)
+
+	tag := "v2026.10.27"
+
+	for _, tc := range []struct {
+		name      string
+		assetName string
+		run       func(*testing.T, installerHarnessOpts) installerHarnessResult
+	}{
+		{"FreeBSD", "urnetwork-provider-" + tag + "-freebsd-amd64.tar.gz", runFreeBSDInstaller},
+		{"Linux", "urnetwork-provider-" + tag + ".tar.gz", runLinuxInstaller},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			releaseJSON := fmt.Sprintf(`{
+		"tag_name": %q,
+		"published_at": "2026-10-27T00:00:00Z",
+		"assets": [
+			{"name": %q, "digest": "sha256:%s"}
+		]
+	}`, tag, tc.assetName, expectedDigest)
+			res := tc.run(t, installerHarnessOpts{
+				tag:         tag,
+				releaseJSON: releaseJSON,
+				tarballData: tarballContent,
+			})
+			if res.exitCode == 0 {
+				t.Fatalf("expected install to abort on digest mismatch, got exit 0 (out:\n%s)", res.stdout)
+			}
+			if len(res.tarCalls) != 0 {
+				t.Fatalf("tar was invoked (%v); must abort before extraction", res.tarCalls)
+			}
+			combinedOut := res.stdout + "\n" + res.stderr
+			if !strings.Contains(combinedOut, tc.assetName) {
+				t.Errorf("error output missing asset name %q:\n%s", tc.assetName, combinedOut)
+			}
+			if !strings.Contains(combinedOut, expectedDigest) {
+				t.Errorf("error output missing expected digest %q:\n%s", expectedDigest, combinedOut)
+			}
+			if !strings.Contains(combinedOut, actualDigest) {
+				t.Errorf("error output missing actual digest %q:\n%s", actualDigest, combinedOut)
+			}
+		})
+	}
+}
+
+// 2. A matching digest: extraction proceeds.
+func TestInstallerProviderTarballDigestMatchProceeds(t *testing.T) {
+	tarballContent := []byte("valid-matching-tarball-bytes")
+	sum := sha256.Sum256(tarballContent)
+	actualDigest := hex.EncodeToString(sum[:])
+
+	tag := "v2026.10.27"
+
+	for _, tc := range []struct {
+		name      string
+		assetName string
+		run       func(*testing.T, installerHarnessOpts) installerHarnessResult
+	}{
+		{"FreeBSD", "urnetwork-provider-" + tag + "-freebsd-amd64.tar.gz", runFreeBSDInstaller},
+		{"Linux", "urnetwork-provider-" + tag + ".tar.gz", runLinuxInstaller},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			releaseJSON := fmt.Sprintf(`{
+		"tag_name": %q,
+		"published_at": "2026-10-27T00:00:00Z",
+		"assets": [
+			{"name": %q, "digest": "sha256:%s"}
+		]
+	}`, tag, tc.assetName, actualDigest)
+			res := tc.run(t, installerHarnessOpts{
+				tag:         tag,
+				releaseJSON: releaseJSON,
+				tarballData: tarballContent,
+			})
+			if res.exitCode != 0 {
+				t.Fatalf("expected matching digest install to succeed, got exit %d (out:\n%s)", res.exitCode, res.stdout)
+			}
+			if len(res.tarCalls) == 0 {
+				t.Fatal("expected tar extraction to proceed, but tar was never invoked")
+			}
+			if strings.Contains(res.stdout+res.stderr, "mismatch") {
+				t.Errorf("unexpected mismatch message in output:\n%s", res.stdout)
+			}
+		})
+	}
+}
+
+// 3. A release with no provider digest. FreeBSD refuses before extraction: an
+// asset whose digest cannot be established is never installed, whichever JSON
+// parser the host has. Linux still warns once and proceeds.
+func TestInstallerProviderTarballNoDigestPolicy(t *testing.T) {
+	tarballContent := []byte("tarball-without-release-digest")
+	tag := "v2026.10.27"
+
+	for _, tc := range []struct {
+		name      string
+		assetName string
+		run       func(*testing.T, installerHarnessOpts) installerHarnessResult
+		refuses   bool
+	}{
+		{"FreeBSD", "urnetwork-provider-" + tag + "-freebsd-amd64.tar.gz", runFreeBSDInstaller, true},
+		{"Linux", "urnetwork-provider-" + tag + ".tar.gz", runLinuxInstaller, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			releaseJSON := fmt.Sprintf(`{
+		"tag_name": %q,
+		"published_at": "2026-10-27T00:00:00Z",
+		"assets": [
+			{"name": %q}
+		]
+	}`, tag, tc.assetName)
+			res := tc.run(t, installerHarnessOpts{
+				tag:         tag,
+				releaseJSON: releaseJSON,
+				tarballData: tarballContent,
+			})
+			if tc.refuses {
+				out := res.stdout + "\n" + res.stderr
+				if res.exitCode == 0 || len(res.tarCalls) != 0 {
+					t.Fatalf("FreeBSD installed a provider with no digest (exit %d, tar %v):\n%s", res.exitCode, res.tarCalls, out)
+				}
+				if strings.Contains(out, "continuing without verification") || strings.Contains(out, "mismatch") {
+					t.Errorf("refusal must say the digest is missing, not warn or report a mismatch:\n%s", out)
+				}
+				if !strings.Contains(out, tc.assetName) || !strings.Contains(out, "refusing") {
+					t.Errorf("refusal does not name %q and say it is refusing:\n%s", tc.assetName, out)
+				}
+				return
+			}
+			if res.exitCode != 0 {
+				t.Fatalf("expected missing digest install to proceed, got exit %d (out:\n%s)", res.exitCode, res.stdout)
+			}
+			if len(res.tarCalls) == 0 {
+				t.Fatal("expected tar extraction to proceed for undigested release")
+			}
+			combinedOut := res.stdout + "\n" + res.stderr
+			if strings.Contains(combinedOut, "mismatch") {
+				t.Errorf("missing digest must not be treated as a mismatch:\n%s", combinedOut)
+			}
+			// stdout and stderr are the same combined stream in the harness,
+			// so count the warnings in one of them only.
+			providerWarns := 0
+			for _, line := range strings.Split(res.stdout, "\n") {
+				if strings.Contains(line, "[WARN]") && strings.Contains(line, tc.assetName) {
+					providerWarns++
+				}
+			}
+			if providerWarns != 1 {
+				t.Errorf("expected exactly one warning naming unverified asset %q, got %d:\n%s", tc.assetName, providerWarns, res.stdout)
+			}
+		})
+	}
+}
+
+// A release that publishes no digest for the provider is refused before
+// extraction on a host with no jq or python3, exactly as with a parser: the
+// base-system scanner reads the metadata, finds no digest, and the installer
+// never installs what it cannot verify.
+func TestFreeBSDInstallerRefusesUnreadableDigestWithoutParser(t *testing.T) {
+	tag := "v2026.10.27"
+	asset := "urnetwork-provider-" + tag + "-freebsd-amd64.tar.gz"
+	releaseJSON := fmt.Sprintf(`{
+		"tag_name": %q,
+		"assets": [
+			{"name": %q, "browser_download_url": "https://example.invalid/%s"}
+		]
+	}`, tag, asset, asset)
+	res := runFreeBSDInstaller(t, installerHarnessOpts{
+		tag:         tag,
+		releaseJSON: releaseJSON,
+		tarballData: []byte("tarball-listed-without-readable-digest"),
+		parserless:  true,
+	})
+	combined := res.stdout + "\n" + res.stderr
+	if res.exitCode == 0 {
+		t.Fatalf("expected refusal without a parser (exit 0):\n%s", combined)
+	}
+	if len(res.tarCalls) != 0 {
+		t.Fatalf("tar ran (%v) with an unverified provider digest", res.tarCalls)
+	}
+	if strings.Contains(combined, "continuing without verification") {
+		t.Errorf("parser-less host still installs unverified:\n%s", combined)
+	}
+	for _, want := range []string{asset, "digest", "unverified", "refusing"} {
+		if !strings.Contains(combined, want) {
+			t.Errorf("refusal output missing %q:\n%s", want, combined)
+		}
+	}
+}
+
+// Exercise both provider and tool digest verification in the full installer
+// with no jq or python3, not just the standalone metadata helpers.
+func TestFreeBSDInstallVerifiedAssetsWithBaseTools(t *testing.T) {
+	tag := "v2026.10.27"
+	asset := "urnetwork-provider-" + tag + "-freebsd-amd64.tar.gz"
+	payload := []byte("verified-base-only-payload")
+	sum := sha256.Sum256(payload)
+	metadata := fmt.Sprintf(`{"tag_name":%q,"assets":[{"name":%q,"digest":"sha256:%x"}]}`, tag, asset, sum)
+	res := runFreeBSDInstaller(t, installerHarnessOpts{tag: tag, releaseJSON: metadata, tarballData: payload, parserless: true})
+	if res.exitCode != 0 || len(res.tarCalls) == 0 || res.finalBin != "extracted-new-binary\n" {
+		t.Fatalf("base-only install did not verify and install both assets: exit=%d, tar=%v, binary=%q\n%s", res.exitCode, res.tarCalls, res.finalBin, res.stdout)
+	}
+}
+
+// baseToolsPath returns a PATH directory holding every system tool except the
+// JSON parsers, so `command -v jq` and `command -v python3` fail exactly as they
+// do on a FreeBSD base system. A fixed list of tools would miss what do_install
+// needs, so every entry from /bin and /usr/bin is linked except jq and python*.
+func baseToolsPath(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	_, opensslErr := exec.LookPath("openssl")
+	hideSha256sum := opensslErr == nil
+	for _, src := range []string{"/bin", "/usr/bin"} {
+		entries, err := os.ReadDir(src)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			name := e.Name()
+			if name == "jq" || strings.HasPrefix(name, "python") {
+				continue
+			}
+			// FreeBSD has no sha256sum; hide it where openssl can stand in so
+			// the installer's own digest fallback is what runs, not a GNU tool.
+			if name == "sha256sum" && hideSha256sum {
+				continue
+			}
+			// A name already linked from /bin is skipped, so /usr/bin does not
+			// shadow it.
+			_ = os.Symlink(filepath.Join(src, name), filepath.Join(dir, name))
+		}
+	}
+	return dir
+}
+
+// 4. An interrupted replacement (stub mv/cp to fail at the right moment)
+// leaves the configured ExecPath present or restores the backup — never absent.
+func TestInstallerInterruptedReplacementLeavesBinaryIntact(t *testing.T) {
+	existingPayload := "pre-existing-working-binary"
+	tarballContent := []byte("new-tarball-payload")
+	tag := "v2026.10.27"
+	sum := sha256.Sum256(tarballContent)
+	actualDigest := hex.EncodeToString(sum[:])
+
+	for _, tc := range []struct {
+		name      string
+		assetName string
+		run       func(*testing.T, installerHarnessOpts) installerHarnessResult
+	}{
+		{"FreeBSD", "urnetwork-provider-" + tag + "-freebsd-amd64.tar.gz", runFreeBSDInstaller},
+		{"Linux", "urnetwork-provider-" + tag + ".tar.gz", runLinuxInstaller},
+	} {
+		releaseJSON := fmt.Sprintf(`{
+		"tag_name": %q,
+		"published_at": "2026-10-27T00:00:00Z",
+		"assets": [
+			{"name": %q, "digest": "sha256:%s"}
+		]
+	}`, tag, tc.assetName, actualDigest)
+		t.Run(tc.name+"/cp_failure", func(t *testing.T) {
+			res := tc.run(t, installerHarnessOpts{
+				tag:         tag,
+				operation:   "update",
+				releaseJSON: releaseJSON,
+				tarballData: tarballContent,
+				existingBin: existingPayload,
+				failCpToDst: true,
+			})
+			if res.finalBin == "" {
+				t.Fatalf("interrupted replacement left executable absent! out:\n%s", res.stdout)
+			}
+			if res.finalBin != existingPayload {
+				t.Errorf("interrupted replacement changed binary, want %q, got %q", existingPayload, res.finalBin)
+			}
+		})
+		t.Run(tc.name+"/mv_failure", func(t *testing.T) {
+			res := tc.run(t, installerHarnessOpts{
+				tag:         tag,
+				operation:   "update",
+				releaseJSON: releaseJSON,
+				tarballData: tarballContent,
+				existingBin: existingPayload,
+				failMv:      true,
+			})
+			if res.finalBin == "" {
+				t.Fatalf("interrupted replacement left executable absent! out:\n%s", res.stdout)
+			}
+			if res.finalBin != existingPayload {
+				t.Errorf("interrupted replacement changed binary, want %q, got %q", existingPayload, res.finalBin)
+			}
+		})
+	}
+}
+
+// 5. A failed restart after install restores the previous binary.
+func TestInstallerFailedRestartRestoresBackup(t *testing.T) {
+	existingPayload := "pre-existing-working-binary"
+	tarballContent := []byte("new-tarball-payload")
+	tag := "v2026.10.27"
+	sum := sha256.Sum256(tarballContent)
+	actualDigest := hex.EncodeToString(sum[:])
+
+	for _, tc := range []struct {
+		name      string
+		assetName string
+		run       func(*testing.T, installerHarnessOpts) installerHarnessResult
+	}{
+		{"FreeBSD", "urnetwork-provider-" + tag + "-freebsd-amd64.tar.gz", runFreeBSDInstaller},
+		{"Linux", "urnetwork-provider-" + tag + ".tar.gz", runLinuxInstaller},
+	} {
+		releaseJSON := fmt.Sprintf(`{
+		"tag_name": %q,
+		"published_at": "2026-10-27T00:00:00Z",
+		"assets": [
+			{"name": %q, "digest": "sha256:%s"}
+		]
+	}`, tag, tc.assetName, actualDigest)
+		t.Run(tc.name, func(t *testing.T) {
+			res := tc.run(t, installerHarnessOpts{
+				tag:         tag,
+				operation:   "update",
+				releaseJSON: releaseJSON,
+				tarballData: tarballContent,
+				existingBin: existingPayload,
+				failRestart: true,
+			})
+			if res.exitCode == 0 {
+				t.Fatalf("expected install to fail when restart fails, got exit 0 (out:\n%s)", res.stdout)
+			}
+			if res.finalBin != existingPayload {
+				t.Errorf("failed restart did not restore previous binary: got %q, want %q (out:\n%s)", res.finalBin, existingPayload, res.stdout)
+			}
+			combined := res.stdout + "\n" + res.stderr
+			if !strings.Contains(combined, "Restored") && !strings.Contains(combined, "restored") {
+				t.Errorf("expected message indicating rollback/restoration of previous binary:\n%s", combined)
+			}
+		})
+	}
+}
+
+// assertInstallRefused checks the fail-closed contract shared by both
+// installers: a non-zero exit, no tarball extraction, and an error that names
+// the tag and the provider asset it could not verify.
+func assertInstallRefused(t *testing.T, res installerHarnessResult, tag, assetName string) {
+	t.Helper()
+	combined := res.stdout + "\n" + res.stderr
+	if res.exitCode == 0 {
+		t.Fatalf("expected refusal (non-zero exit), got exit 0:\n%s", combined)
+	}
+	if len(res.tarCalls) != 0 {
+		t.Fatalf("tar ran (%v) before the release metadata was verified", res.tarCalls)
+	}
+	if !strings.Contains(strings.ToLower(combined), "refusing") {
+		t.Errorf("refusal message does not say it refused:\n%s", combined)
+	}
+	for _, want := range []string{tag, assetName} {
+		if !strings.Contains(combined, want) {
+			t.Errorf("refusal output missing %q:\n%s", want, combined)
+		}
+	}
+}
+
+// 6. Release metadata unavailable (API unreachable or rate-limited, empty body,
+// no tag fallback): the installer refuses before download and extraction. An
+// unreadable release used to leave the digest empty and install unverified.
+func TestInstallerRefusesWithoutReleaseMetadata(t *testing.T) {
+	tag := "v2026.10.27"
+
+	for _, tc := range []struct {
+		name      string
+		assetName string
+		run       func(*testing.T, installerHarnessOpts) installerHarnessResult
+	}{
+		{"FreeBSD", "urnetwork-provider-" + tag + "-freebsd-amd64.tar.gz", runFreeBSDInstaller},
+		{"Linux", "urnetwork-provider-" + tag + ".tar.gz", runLinuxInstaller},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := tc.run(t, installerHarnessOpts{
+				tag:         tag,
+				releaseJSON: "",
+				tarballData: []byte("tarball-with-no-verifiable-release"),
+			})
+			assertInstallRefused(t, res, tag, tc.assetName)
+		})
+	}
+}
+
+// 7. Release metadata readable but the named provider asset absent (an error
+// body or a release without the tarball): refuse, naming the asset.
+func TestInstallerRefusesWhenProviderAssetAbsent(t *testing.T) {
+	tag := "v2026.10.27"
+
+	for _, tc := range []struct {
+		name      string
+		assetName string
+		run       func(*testing.T, installerHarnessOpts) installerHarnessResult
+	}{
+		{"FreeBSD", "urnetwork-provider-" + tag + "-freebsd-amd64.tar.gz", runFreeBSDInstaller},
+		{"Linux", "urnetwork-provider-" + tag + ".tar.gz", runLinuxInstaller},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			releaseJSON := fmt.Sprintf(`{
+		"tag_name": %q,
+		"published_at": "2026-10-27T00:00:00Z",
+		"assets": [
+			{"name": "urnet-tools-unrelated.tar.gz", "digest": "sha256:%s"}
+		]
+	}`, tag, strings.Repeat("e", 64))
+			res := tc.run(t, installerHarnessOpts{
+				tag:         tag,
+				releaseJSON: releaseJSON,
+				tarballData: []byte("tarball-absent-from-release"),
+			})
+			assertInstallRefused(t, res, tag, tc.assetName)
+		})
+	}
+}
+
+// 8. The version marker is written only once the units are installed and the
+// service has started. A failed start leaves no marker, so a rollback never
+// leaves the file naming the release that did not run.
+func TestInstallerVersionMarkerOnlyAfterServiceStarts(t *testing.T) {
+	tarballContent := []byte("marker-ordering-tarball")
+	tag := "v2026.10.27"
+	sum := sha256.Sum256(tarballContent)
+	actualDigest := hex.EncodeToString(sum[:])
+
+	for _, tc := range []struct {
+		name      string
+		assetName string
+		run       func(*testing.T, installerHarnessOpts) installerHarnessResult
+	}{
+		{"FreeBSD", "urnetwork-provider-" + tag + "-freebsd-amd64.tar.gz", runFreeBSDInstaller},
+		{"Linux", "urnetwork-provider-" + tag + ".tar.gz", runLinuxInstaller},
+	} {
+		releaseJSON := fmt.Sprintf(`{
+		"tag_name": %q,
+		"published_at": "2026-10-27T00:00:00Z",
+		"assets": [
+			{"name": %q, "digest": "sha256:%s"}
+		]
+	}`, tag, tc.assetName, actualDigest)
+
+		t.Run(tc.name+"/started", func(t *testing.T) {
+			res := tc.run(t, installerHarnessOpts{
+				tag:         tag,
+				releaseJSON: releaseJSON,
+				tarballData: tarballContent,
+			})
+			if res.exitCode != 0 {
+				t.Fatalf("expected install to succeed, got exit %d (out:\n%s)", res.exitCode, res.stdout)
+			}
+			if !res.versionWritten {
+				t.Fatalf("version marker not written after a successful start (out:\n%s)", res.stdout)
+			}
+			if !strings.Contains(res.versionMarker, "2026.10.27") {
+				t.Errorf("version marker %q does not name the installed release", res.versionMarker)
+			}
+		})
+		t.Run(tc.name+"/start_fails", func(t *testing.T) {
+			res := tc.run(t, installerHarnessOpts{
+				tag:         tag,
+				releaseJSON: releaseJSON,
+				tarballData: tarballContent,
+				failRestart: true,
+			})
+			if res.exitCode == 0 {
+				t.Fatalf("expected install to fail when the service does not start, got exit 0 (out:\n%s)", res.stdout)
+			}
+			if res.versionWritten {
+				t.Errorf("version marker written (%q) for a release whose service did not start", res.versionMarker)
+			}
+		})
+	}
+}
+
+// A backup that cannot be made must stop the update before the live binary is
+// replaced. Without a backup a failed start has nothing to roll back to.
+func TestInstallerBackupFailurePreservesLiveBinary(t *testing.T) {
+	const tag = "v2026.10.27"
+	const old = "pre-existing-working-binary"
+	sum := sha256.Sum256([]byte("payload"))
+	release := fmt.Sprintf(`{"tag_name":%q,"assets":[{"name":%q,"digest":"sha256:%x"}]}`, tag, "urnetwork-provider-"+tag+"-freebsd-amd64.tar.gz", sum)
+	res := runFreeBSDInstaller(t, installerHarnessOpts{tag: tag, operation: "update", releaseJSON: release, tarballData: []byte("payload"), existingBin: old, failBackup: true})
+	if res.exitCode == 0 || res.finalBin != old || !strings.Contains(res.stdout, "Could not back up") {
+		t.Fatalf("backup failure did not abort before replacing live binary: exit=%d binary=%q output=%s", res.exitCode, res.finalBin, res.stdout)
 	}
 }
