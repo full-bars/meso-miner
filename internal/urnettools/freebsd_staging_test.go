@@ -80,11 +80,13 @@ http_fetch() {
 }
 jq() { case "$*" in *tag_name*) printf 'test-tag\n' ;; *) [ "$DIGEST" = missing ] || printf '%064d\n' 0 | tr 0 a ;; esac; }
 release_lists_asset() { return 0; }
-get_asset_digest_from_api_response() { printf '%064d\n' 0 | tr 0 a; }
-verify_sha256_file() { return 0; }
+get_asset_digest_from_api_response() {
+    case "$2" in urnet-tools-*) [ "$DIGEST" = missing ] || printf '%064d\n' 0 | tr 0 a ;; *) printf '%064d\n' 0 | tr 0 a ;; esac
+}
+verify_sha256_file() { [ "$(sha256 -q "$1")" = "$2" ]; }
 tar() { printf 'new provider' > "$4/provider"; }
 uname() { printf 'amd64\n'; }
-sha256() { if [ "$DIGEST" = match ]; then printf '%064d\n' 0 | tr 0 a; else printf '%064d\n' 0 | tr 0 b; fi; }
+sha256() { case "$2" in *urnet-tools*) [ "$DIGEST" = mismatch ] && printf '%064d\n' 0 | tr 0 b || printf '%064d\n' 0 | tr 0 a ;; *) printf '%064d\n' 0 | tr 0 a ;; esac; }
 enforce_install_tree_perms() {
     [ "$(cat "$provider_bin")" = 'old provider' ] && [ "$(cat "$install_path/bin/urnet-tools")" = 'old tool' ] || { printf 'live file changed before gate\n' >&2; return 1; }
     printf 'gate\n' > "$install_path/gate-called"

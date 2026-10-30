@@ -829,8 +829,7 @@ do_install() {
     #
     # No parser prerequisite: jq and python3 are not in the FreeBSD base
     # system and this installer installs no packages, so both helpers fall
-    # back to release_asset_scan. Refusing here made the documented install
-    # fail on a clean host instead of verifying it.
+    # back to release_asset_scan.
     _rel_extra=""
     if ! release_lists_asset "$release_json" "$provider_asset"; then
         _rel_extra="$(http_fetch "$github_api/releases/tags/$tag" 2>/dev/null || true)"
@@ -845,6 +844,10 @@ do_install() {
         exit 1
     fi
     provider_digest="$(get_asset_digest_from_api_response "$release_json" "$provider_asset")"
+    if [ -z "$provider_digest" ]; then
+        pr_err "Cannot establish a sha256 digest for provider asset '%s' in release %s (the release publishes none or the metadata is unreadable); refusing to install an unverified binary." "$provider_asset" "$tag"
+        exit 1
+    fi
 
     pr_info "Downloading %s..." "$tarball_url"
 
@@ -855,25 +858,13 @@ do_install() {
         exit 1
     fi
 
-    if [ -n "$provider_digest" ]; then
-        if ! verify_sha256_file "$tmpdir/provider.tar.gz" "$provider_digest"; then
-            actual="$(compute_sha256_file "$tmpdir/provider.tar.gz")"
-            pr_err "SHA-256 digest mismatch for provider asset '%s': expected %s, got %s" "$provider_asset" "$provider_digest" "${actual:-<unknown>}"
-            rm -rf "$tmpdir"
-            exit 1
-        fi
-        pr_info "Provider asset sha256 verified (%s)" "$provider_asset"
-    else
-        # With no parser the digest could not be read at all, which is not the
-        # same as the release publishing none. Refuse rather than install an
-        # unverified binary on exactly the hosts that cannot check it.
-        if ! command -v jq > /dev/null 2>&1 && ! command -v python3 > /dev/null 2>&1; then
-            pr_err "Cannot read the sha256 digest for '%s' without jq or python3, so the install would be unverified; refusing. Install one with 'pkg install jq' or 'pkg install python3' and re-run." "$provider_asset"
-            rm -rf "$tmpdir"
-            exit 1
-        fi
-        pr_warn "Release %s has no sha256 digest for '%s'; continuing without verification" "$tag" "$provider_asset"
+    if ! verify_sha256_file "$tmpdir/provider.tar.gz" "$provider_digest"; then
+        actual="$(compute_sha256_file "$tmpdir/provider.tar.gz")"
+        pr_err "SHA-256 digest mismatch for provider asset '%s': expected %s, got %s" "$provider_asset" "$provider_digest" "${actual:-<unknown>}"
+        rm -rf "$tmpdir"
+        exit 1
     fi
+    pr_info "Provider asset sha256 verified (%s)" "$provider_asset"
 
     tar -xzf "$tmpdir/provider.tar.gz" -C "$tmpdir" || {
         pr_err "Extract failed"
@@ -917,39 +908,14 @@ do_install() {
     staged_bin="$staged"
     priv cp "$provider_src" "$staged" || { pr_err "Failed to stage binary"; priv_rm "$staged"; rm -rf "$tmpdir"; exit 1; }
     priv chmod 755 "$staged"
-    # The release tool is installed only when its digest can be verified.
+    # The release tool is installed only when its digest can be verified, and
+    # a release that publishes none is a release bug: refuse, never skip. The
+    # digest comes from the same metadata document as the provider's, not a
+    # second fetch that could disagree with it or fail after staging began.
     tool_asset="urnet-tools-freebsd-$goarch"
-    # jq prints "null" for a missing field, so accept only a real hex digest.
-    tool_digest=""
-    release_json="$(http_fetch "$github_api/releases/tags/$tag" 2>/dev/null)"
-    if command -v jq > /dev/null 2>&1; then
-        tool_digest="$(printf '%s' "$release_json" | jq -r --arg a "$tool_asset" '
-            (.assets[]? | select(.name == $a) | .digest)
-            | select(type == "string")
-            | sub("^sha256:"; "")
-            | select(test("^[0-9a-fA-F]{64}$"))
-        ' 2>/dev/null || true)"
-    elif command -v python3 > /dev/null 2>&1; then
-        tool_digest="$(printf '%s' "$release_json" | python3 -c '
-import sys, json, re
-try:
-    doc = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-val = ""
-for asset in doc.get("assets", []):
-    if asset.get("name") == sys.argv[1]:
-        val = asset.get("digest") or ""
-        break
-val = val.replace("sha256:", "")
-print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
-' "$tool_asset" 2>/dev/null || true)"
-    else
-        tool_digest="$(get_asset_digest_from_api_response "$release_json" "$tool_asset")"
-    fi
-
+    tool_digest="$(get_asset_digest_from_api_response "$release_json" "$tool_asset")"
     if [ -z "$tool_digest" ]; then
-        pr_err "Cannot verify urnet-tools: release digest is unavailable"
+        pr_err "Cannot verify urnet-tools: release %s publishes no readable sha256 digest for '%s'" "$tag" "$tool_asset"
         exit 1
     fi
     if ! http_fetch "https://github.com/full-bars/meso-miner/releases/download/$tag/$tool_asset" "$tmpdir/$tool_asset" 2>/dev/null; then
@@ -959,14 +925,8 @@ print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
     staged_tool="$install_path/bin/.urnet-tools.new.$$"
     priv cp "$tmpdir/$tool_asset" "$staged_tool" || { pr_err "Failed to stage urnet-tools"; exit 1; }
     priv chmod 755 "$staged_tool" || { pr_err "Failed to make urnet-tools executable"; exit 1; }
-    if command -v sha256 > /dev/null 2>&1; then
-        actual="$(priv sha256 -q "$staged_tool")"
-    elif command -v openssl > /dev/null 2>&1; then
-        actual="$(priv openssl dgst -sha256 "$staged_tool" | awk '{print $NF}')"
-    else
-        actual=""
-    fi
-    if [ -z "$actual" ] || [ "$actual" != "$tool_digest" ]; then
+    # Verify the staged file itself, not only the downloaded source.
+    if ! verify_sha256_file "$staged_tool" "$tool_digest"; then
         pr_err "Cannot verify urnet-tools: digest mismatch or no checksum tool"
         exit 1
     fi

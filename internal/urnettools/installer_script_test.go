@@ -688,12 +688,10 @@ func TestFreeBSDToolDigestLookup(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := strings.ReplaceAll(string(b), "\r\n", "\n")
-	i := strings.Index(script, `tool_digest="$(printf`)
-	j := strings.Index(script, `if [ -z "$tool_digest" ]`)
-	if i < 0 || j < 0 || j <= i {
-		t.Fatal("could not locate the tool digest lookup in the FreeBSD installer")
+	block := extractShellFunc(t, script, "get_asset_digest_from_api_response")
+	if block == "" || !strings.Contains(script, `tool_digest="$(get_asset_digest_from_api_response "$release_json" "$tool_asset")"`) {
+		t.Fatal("tool digest lookup does not use the shared helper")
 	}
-	block := script[i:j]
 
 	const hex64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	cases := []struct {
@@ -732,13 +730,13 @@ func TestFreeBSDToolDigestLookup(t *testing.T) {
 	// A missing marker is a FAILURE, not a skip: the previous version wrapped
 	// this in `if found {`, so adding one space to the expression made every
 	// jq subtest vanish while the test reported success (mutation-proved).
-	jqStart := strings.Index(block, "jq -r --arg a \"$tool_asset\" '")
+	jqStart := strings.Index(block, "jq -r --arg a \"$_ast\" '")
 	if !haveJq {
 		t.Log("jq not installed here; exercising only the python path")
 	} else if jqStart < 0 {
 		t.Error("could not find the jq digest expression in the installer; the marker moved and this test would otherwise pass vacuously")
 	} else {
-		expr := block[jqStart+len("jq -r --arg a \"$tool_asset\" '"):]
+		expr := block[jqStart+len("jq -r --arg a \"$_ast\" '"):]
 		if end := strings.Index(expr, "' 2>/dev/null"); end >= 0 {
 			expr = expr[:end]
 			for _, c := range cases {
@@ -768,7 +766,7 @@ func TestFreeBSDToolDigestLookup(t *testing.T) {
 		t.Error("could not find the python digest expression in the installer; the marker moved and this test would otherwise pass vacuously")
 	} else {
 		py := block[pyStart+len("python3 -c '"):]
-		pyEnd := strings.Index(py, "' \"$tool_asset\"")
+		pyEnd := strings.Index(py, "' \"$_ast\"")
 		if pyEnd < 0 {
 			t.Error("could not find the end of the python digest expression; the marker moved")
 		} else {
@@ -886,6 +884,28 @@ func TestFreeBSDDigestAndAssetListOnBaseToolsOnly(t *testing.T) {
 	// GitHub may emit nested uploader objects and digest before name.
 	if got, err := run(`get_asset_digest_from_api_response '{"assets":[{"digest":"sha256:` + hex64 + `","uploader":{"name":"other"},"name":"urnetwork-provider-v1-freebsd-amd64.tar.gz"}]}' "$ASSET"`); err != nil || got != hex64 {
 		t.Errorf("reordered nested asset digest = %q (%v), want %q", got, err, hex64)
+	}
+	// Two assets in either list order, and with digest before name in one
+	// object: each must resolve to its own digest, never the neighbour's.
+	const hexTool = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+	const prov = "urnetwork-provider-v1-freebsd-amd64.tar.gz"
+	const tool = "urnet-tools-freebsd-amd64"
+	for _, doc := range []struct{ name, json string }{
+		{"provider first", `{"assets":[{"name":"` + prov + `","digest":"sha256:` + hex64 + `"},{"name":"` + tool + `","digest":"sha256:` + hexTool + `"}]}`},
+		{"tool first", `{"assets":[{"name":"` + tool + `","digest":"sha256:` + hexTool + `"},{"name":"` + prov + `","digest":"sha256:` + hex64 + `"}]}`},
+		{"digest before name", `{"assets":[{"digest":"sha256:` + hexTool + `","name":"` + tool + `"},{"digest":"sha256:` + hex64 + `","name":"` + prov + `"}]}`},
+		{"tool without digest first", `{"assets":[{"name":"` + tool + `"},{"digest":"sha256:` + hex64 + `","name":"` + prov + `"}]}`},
+	} {
+		wantTool := hexTool
+		if doc.name == "tool without digest first" {
+			wantTool = ""
+		}
+		if got, err := run(`get_asset_digest_from_api_response '` + doc.json + `' ` + prov); err != nil || got != hex64 {
+			t.Errorf("%s: provider digest = %q (%v), want %q", doc.name, got, err, hex64)
+		}
+		if got, err := run(`get_asset_digest_from_api_response '` + doc.json + `' ` + tool); err != nil || got != wantTool {
+			t.Errorf("%s: tool digest = %q (%v), want %q", doc.name, got, err, wantTool)
+		}
 	}
 	for _, malformed := range []string{
 		`{"name":"urnetwork-provider-v1-freebsd-amd64.tar.gz","assets":[]}`,
@@ -1064,7 +1084,6 @@ pr_err() { printf "[ERROR] %%s\n" "$*" >&2; }
 pr_warn() { printf "[WARN] %%s\n" "$*" >&2; }
 pr_info() { printf "[INFO] %%s\n" "$*"; }
 priv() { "$@"; }
-sha256() { sha256sum "$2" | awk '{print $1}'; }
 sudo() { "$@"; }
 user_shell() { echo "/bin/sh"; }
 assert_state_path_safe() { return 0; }
@@ -1463,8 +1482,10 @@ func TestInstallerProviderTarballDigestMatchProceeds(t *testing.T) {
 	}
 }
 
-// 3. A release with no digest: one warning, install proceeds.
-func TestInstallerProviderTarballNoDigestWarnsAndProceeds(t *testing.T) {
+// 3. A release with no provider digest. FreeBSD refuses before extraction: an
+// asset whose digest cannot be established is never installed, whichever JSON
+// parser the host has. Linux still warns once and proceeds.
+func TestInstallerProviderTarballNoDigestPolicy(t *testing.T) {
 	tarballContent := []byte("tarball-without-release-digest")
 	tag := "v2026.10.27"
 
@@ -1472,9 +1493,10 @@ func TestInstallerProviderTarballNoDigestWarnsAndProceeds(t *testing.T) {
 		name      string
 		assetName string
 		run       func(*testing.T, installerHarnessOpts) installerHarnessResult
+		refuses   bool
 	}{
-		{"FreeBSD", "urnetwork-provider-" + tag + "-freebsd-amd64.tar.gz", runFreeBSDInstaller},
-		{"Linux", "urnetwork-provider-" + tag + ".tar.gz", runLinuxInstaller},
+		{"FreeBSD", "urnetwork-provider-" + tag + "-freebsd-amd64.tar.gz", runFreeBSDInstaller, true},
+		{"Linux", "urnetwork-provider-" + tag + ".tar.gz", runLinuxInstaller, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			releaseJSON := fmt.Sprintf(`{
@@ -1489,6 +1511,19 @@ func TestInstallerProviderTarballNoDigestWarnsAndProceeds(t *testing.T) {
 				releaseJSON: releaseJSON,
 				tarballData: tarballContent,
 			})
+			if tc.refuses {
+				out := res.stdout + "\n" + res.stderr
+				if res.exitCode == 0 || len(res.tarCalls) != 0 {
+					t.Fatalf("FreeBSD installed a provider with no digest (exit %d, tar %v):\n%s", res.exitCode, res.tarCalls, out)
+				}
+				if strings.Contains(out, "continuing without verification") || strings.Contains(out, "mismatch") {
+					t.Errorf("refusal must say the digest is missing, not warn or report a mismatch:\n%s", out)
+				}
+				if !strings.Contains(out, tc.assetName) || !strings.Contains(out, "refusing") {
+					t.Errorf("refusal does not name %q and say it is refusing:\n%s", tc.assetName, out)
+				}
+				return
+			}
 			if res.exitCode != 0 {
 				t.Fatalf("expected missing digest install to proceed, got exit %d (out:\n%s)", res.exitCode, res.stdout)
 			}
@@ -1514,9 +1549,10 @@ func TestInstallerProviderTarballNoDigestWarnsAndProceeds(t *testing.T) {
 	}
 }
 
-// A FreeBSD host without jq or python3 cannot read the provider digest from the
-// release metadata. That is not the same as the release publishing none, so the
-// installer must refuse before extraction rather than install unverified.
+// A release that publishes no digest for the provider is refused before
+// extraction on a host with no jq or python3, exactly as with a parser: the
+// base-system scanner reads the metadata, finds no digest, and the installer
+// never installs what it cannot verify.
 func TestFreeBSDInstallerRefusesUnreadableDigestWithoutParser(t *testing.T) {
 	tag := "v2026.10.27"
 	asset := "urnetwork-provider-" + tag + "-freebsd-amd64.tar.gz"
@@ -1542,7 +1578,7 @@ func TestFreeBSDInstallerRefusesUnreadableDigestWithoutParser(t *testing.T) {
 	if strings.Contains(combined, "continuing without verification") {
 		t.Errorf("parser-less host still installs unverified:\n%s", combined)
 	}
-	for _, want := range []string{asset, "jq", "python3", "unverified", "refusing"} {
+	for _, want := range []string{asset, "digest", "unverified", "refusing"} {
 		if !strings.Contains(combined, want) {
 			t.Errorf("refusal output missing %q:\n%s", want, combined)
 		}
@@ -1570,6 +1606,8 @@ func TestFreeBSDInstallVerifiedAssetsWithBaseTools(t *testing.T) {
 func baseToolsPath(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
+	_, opensslErr := exec.LookPath("openssl")
+	hideSha256sum := opensslErr == nil
 	for _, src := range []string{"/bin", "/usr/bin"} {
 		entries, err := os.ReadDir(src)
 		if err != nil {
@@ -1578,6 +1616,11 @@ func baseToolsPath(t *testing.T) string {
 		for _, e := range entries {
 			name := e.Name()
 			if name == "jq" || strings.HasPrefix(name, "python") {
+				continue
+			}
+			// FreeBSD has no sha256sum; hide it where openssl can stand in so
+			// the installer's own digest fallback is what runs, not a GNU tool.
+			if name == "sha256sum" && hideSha256sum {
 				continue
 			}
 			// A name already linked from /bin is skipped, so /usr/bin does not
