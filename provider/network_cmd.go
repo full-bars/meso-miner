@@ -7,6 +7,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -29,14 +30,14 @@ var networkPresets = map[string][2]string{
 // chooseNetworkCmd implements `provider choose_network <api_url>
 // <connect_url>`, `provider choose_network --reset` and
 // `provider choose_network --show`.
-func chooseNetworkCmd(opts docopt.Opts) {
+func chooseNetworkCmd(opts docopt.Opts, out io.Writer) {
 	if show, _ := opts.Bool("--show"); show {
 		text, err := networkShowText()
 		if err != nil {
-			fmt.Printf("failed to read the saved network: %s\n", err)
+			fmt.Fprintf(out, "failed to read the saved network: %s\n", err)
 			os.Exit(1)
 		}
-		fmt.Print(text)
+		fmt.Fprint(out, text)
 		return
 	}
 
@@ -47,19 +48,19 @@ func chooseNetworkCmd(opts docopt.Opts) {
 	if reset, _ := opts.Bool("--reset"); reset {
 		changed := apiUrlChanged(DefaultApiUrl)
 		if err := resetNetworkConfig(); err != nil {
-			fmt.Printf("failed to reset network: %s\n", err)
+			fmt.Fprintf(out, "failed to reset network: %s\n", err)
 			os.Exit(1)
 		}
-		fmt.Println("network reset to the main network")
+		fmt.Fprintln(out, "network reset to the main network")
 		if notice := networkSwitchNoticeForState(changed); notice != "" {
-			fmt.Println(notice)
+			fmt.Fprintln(out, notice)
 		}
 		return
 	}
 
 	apiUrl, err := opts.String("<api_url>")
 	if err != nil {
-		fmt.Printf("missing <api_url>: %s\n", err)
+		fmt.Fprintf(out, "missing <api_url>: %s\n", err)
 		os.Exit(1)
 	}
 
@@ -69,43 +70,43 @@ func chooseNetworkCmd(opts docopt.Opts) {
 		// If the user also supplied a connect_url, reject — presets are
 		// self-contained and silently discarding the second arg is confusing.
 		if _, urlErr := opts.String("<connect_url>"); urlErr == nil {
-			fmt.Printf("preset %q includes its own connect_url — pass only the preset name, or use two explicit URLs\n", apiUrl)
+			fmt.Fprintf(out, "preset %q includes its own connect_url — pass only the preset name, or use two explicit URLs\n", apiUrl)
 			os.Exit(1)
 		}
 		apiUrl, connectUrl := preset[0], preset[1]
 		if err := writeNetworkConfig(apiUrl, connectUrl); err != nil {
-			fmt.Printf("network not saved: %s\n", err)
+			fmt.Fprintf(out, "network not saved: %s\n", err)
 			os.Exit(1)
 		}
 		changed := apiUrlChanged(apiUrl)
-		fmt.Printf("network saved (preset): api_url=%s connect_url=%s\n", apiUrl, connectUrl)
+		fmt.Fprintf(out, "network saved (preset): api_url=%s connect_url=%s\n", apiUrl, connectUrl)
 		if notice := networkSwitchNoticeForState(changed); notice != "" {
-			fmt.Println(notice)
+			fmt.Fprintln(out, notice)
 		}
 		return
 	}
 	if !strings.HasPrefix(apiUrl, "http://") && !strings.HasPrefix(apiUrl, "https://") {
-		fmt.Printf("unknown network preset %q; known presets: main, beta — or pass an explicit URL pair: provider choose_network <api_url> <connect_url>\n", apiUrl)
+		fmt.Fprintf(out, "unknown network preset %q; known presets: main, beta — or pass an explicit URL pair: provider choose_network <api_url> <connect_url>\n", apiUrl)
 		os.Exit(1)
 	}
 
 	connectUrl, err := opts.String("<connect_url>")
 	if err != nil {
-		fmt.Printf("missing <connect_url>: %s\n", err)
-		fmt.Println("tip: use a preset name (main|beta) instead of a URL pair, e.g. `provider choose_network main`")
+		fmt.Fprintf(out, "missing <connect_url>: %s\n", err)
+		fmt.Fprintln(out, "tip: use a preset name (main|beta) instead of a URL pair, e.g. `provider choose_network main`")
 		os.Exit(1)
 	}
 
 	changed := apiUrlChanged(apiUrl)
 	if err := writeNetworkConfig(apiUrl, connectUrl); err != nil {
-		fmt.Printf("network not saved: %s\n", err)
+		fmt.Fprintf(out, "network not saved: %s\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("network saved: api_url=%s connect_url=%s\n", apiUrl, connectUrl)
+	fmt.Fprintf(out, "network saved: api_url=%s connect_url=%s\n", apiUrl, connectUrl)
 	if warning := insecureNetworkWarning(apiUrl, connectUrl); warning != "" {
-		fmt.Println(warning)
+		fmt.Fprintln(out, warning)
 	}
 	if notice := networkSwitchNoticeForState(changed); notice != "" {
-		fmt.Println(notice)
+		fmt.Fprintln(out, notice)
 	}
 }

@@ -1097,7 +1097,7 @@ func main() {
 	} else if printNetworkId, _ := opts.Bool("print-network-id"); printNetworkId {
 		printNetworkIdCmd(opts)
 	} else if chooseNetwork, _ := opts.Bool("choose_network"); chooseNetwork {
-		chooseNetworkCmd(opts)
+		chooseNetworkCmd(opts, os.Stdout)
 	} else if direct_, _ := opts.Bool("direct"); direct_ {
 		cmdDirect(opts)
 	}
