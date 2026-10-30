@@ -103,13 +103,9 @@ func TestSmartDialerProbesStartNoGoroutineWhenOff(t *testing.T) {
 	defer cancel()
 	strategy := connect.NewClientStrategy(ctx, connect.DefaultClientStrategySettings())
 
-	// Let the strategy's own construction settle so the count below moves only
-	// if a probe start adds something.
-	time.Sleep(25 * time.Millisecond)
 	if total, _ := probeGoroutines(); total != 0 {
 		t.Fatalf("%d probe goroutines before any start", total)
 	}
-	before := runtime.NumGoroutine()
 
 	// One call per identity, as provide() does for every proxy.
 	const identities = 64
@@ -117,20 +113,11 @@ func TestSmartDialerProbesStartNoGoroutineWhenOff(t *testing.T) {
 		startSmartDialerProbes(ctx, strategy, "http://127.0.0.1:0/probe", fmt.Sprintf("proxy[%d]", i))
 	}
 
-	// A started goroutine reaches the loop on its first turn; poll so a late
-	// schedule cannot hide it, and fail the moment one appears.
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for {
-		if total, _ := probeGoroutines(); total != 0 {
-			t.Fatalf("smart dialer off, but %d probe goroutines were started for %d identities", total, identities)
-		}
-		if !time.Now().Before(deadline) {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if after := runtime.NumGoroutine(); before < after {
-		t.Fatalf("goroutine count grew from %d to %d across %d starts with the smart dialer off", before, after, identities)
+	// Count probe stacks, including unscheduled wrappers, rather than all
+	// goroutines: unrelated goroutines may start or exit during this test.
+	// The context stays live, so any started probe remains visible here.
+	if total, _ := probeGoroutines(); total != 0 {
+		t.Fatalf("smart dialer off, but %d probe goroutines were started for %d identities", total, identities)
 	}
 }
 
