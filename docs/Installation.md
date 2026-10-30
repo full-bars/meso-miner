@@ -26,7 +26,7 @@ curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/mai
 | Platform | Needs | Missing tools |
 |---|---|---|
 | Linux (systemd or OpenRC) | a downloader (`curl` or `wget`) and a JSON parser (`jq` or `python3`) | installed through the host package manager: `apt`, `dnf`, `yum`, `zypper`, `pacman` or `apk`, with `sudo` when you are not root. Amazon Linux 2 has no `dnf`, so `yum` is used there |
-| FreeBSD | `fetch`, and root or `sudo` to run the installer | the installer installs nothing for you. A JSON reader is not optional: the base system has neither `jq` nor `python3`, the installer needs one of them to read the `urnet-tools` digest, and it stops without it, so run `pkg install -y jq` first. `sudo` is not in the base system, so either `pkg install -y sudo` or run the installer from a root shell (`su -`) |
+| FreeBSD | `fetch`, and root or `sudo` to run the installer | the installer installs nothing for you. It needs no JSON reader: the base system has neither `jq` nor `python3`, and the installer reads the release digests with `awk` when neither is installed. `sudo` is not in the base system, so either `pkg install -y sudo` or run the installer from a root shell (`su -`) |
 
 To keep the Linux installer from touching packages at all:
 
