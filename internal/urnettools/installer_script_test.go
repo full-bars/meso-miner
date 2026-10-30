@@ -3,6 +3,7 @@ package urnettools
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -878,6 +879,25 @@ func TestFreeBSDDigestAndAssetListOnBaseToolsOnly(t *testing.T) {
 	if got, err := run(`get_asset_digest_from_api_response '{"assets":[{"name":"urnetwork-provider-v1-freebsd-amd64.tar.gz","digest":null}]}' "$ASSET"`); err != nil || got != "" {
 		t.Errorf("null digest on base tools = %q (%v), want empty", got, err)
 	}
+	// A following asset must never lend its digest to the requested asset.
+	if got, err := run(`get_asset_digest_from_api_response '{"assets":[{"name":"urnetwork-provider-v1-freebsd-amd64.tar.gz"},{"digest":"sha256:` + hex64 + `","name":"other"}]}' "$ASSET"`); err != nil || got != "" {
+		t.Errorf("digest leaked across assets: %q (%v)", got, err)
+	}
+	// GitHub may emit nested uploader objects and digest before name.
+	if got, err := run(`get_asset_digest_from_api_response '{"assets":[{"digest":"sha256:` + hex64 + `","uploader":{"name":"other"},"name":"urnetwork-provider-v1-freebsd-amd64.tar.gz"}]}' "$ASSET"`); err != nil || got != hex64 {
+		t.Errorf("reordered nested asset digest = %q (%v), want %q", got, err, hex64)
+	}
+	for _, malformed := range []string{
+		`{"name":"urnetwork-provider-v1-freebsd-amd64.tar.gz","assets":[]}`,
+		`{"assets":[{"name":"urnetwork-provider-v1-freebsd-amd64.tar.gz"},{"name":"urnetwork-provider-v1-freebsd-amd64.tar.gz"}]}`,
+		`{"assets":[{"name":"urnetwork-provider-v1-freebsd-amd64.tar.gz"}]`,
+	} {
+		cmd := exec.Command("/bin/sh", "-c", scanFn+"\n"+listFn+"\nrelease_lists_asset \"$RELEASE_CASE\" \"$ASSET\"")
+		cmd.Env = append(basePath, "RELEASE_CASE="+malformed)
+		if out, err := cmd.CombinedOutput(); err == nil {
+			t.Errorf("accepted absent, duplicate or malformed asset metadata %q: %s", malformed, out)
+		}
+	}
 }
 
 // skipWithoutPOSIXShell skips tests that execute the FreeBSD installer with
@@ -973,7 +993,30 @@ func runFreeBSDInstaller(t *testing.T, opts installerHarnessOpts) installerHarne
 	if err := os.WriteFile(tarballPath, opts.tarballData, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(releaseJSONPath, []byte(opts.releaseJSON), 0o644); err != nil {
+	// Valid metadata needs the separately verified urnet-tools release asset.
+	releaseJSON := opts.releaseJSON
+	var release map[string]json.RawMessage
+	if json.Unmarshal([]byte(releaseJSON), &release) == nil {
+		var assets []json.RawMessage
+		if json.Unmarshal(release["assets"], &assets) == nil {
+			sum := sha256.Sum256(opts.tarballData)
+			tool, err := json.Marshal(map[string]string{"name": "urnet-tools-freebsd-amd64", "digest": "sha256:" + hex.EncodeToString(sum[:])})
+			if err != nil {
+				t.Fatal(err)
+			}
+			assets = append(assets, tool)
+			release["assets"], err = json.Marshal(assets)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(release)
+			if err != nil {
+				t.Fatal(err)
+			}
+			releaseJSON = string(data)
+		}
+	}
+	if err := os.WriteFile(releaseJSONPath, []byte(releaseJSON), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if opts.existingBin != "" {
@@ -1021,9 +1064,11 @@ pr_err() { printf "[ERROR] %%s\n" "$*" >&2; }
 pr_warn() { printf "[WARN] %%s\n" "$*" >&2; }
 pr_info() { printf "[INFO] %%s\n" "$*"; }
 priv() { "$@"; }
+sha256() { sha256sum "$2" | awk '{print $1}'; }
 sudo() { "$@"; }
 user_shell() { echo "/bin/sh"; }
 assert_state_path_safe() { return 0; }
+enforce_install_tree_perms() { return 0; }
 set_rc_conf_default() { return 0; }
 write_rc_script_body() { echo "# rc"; }
 install_wrapper_tool() { return 0; }
@@ -1501,6 +1546,20 @@ func TestFreeBSDInstallerRefusesUnreadableDigestWithoutParser(t *testing.T) {
 		if !strings.Contains(combined, want) {
 			t.Errorf("refusal output missing %q:\n%s", want, combined)
 		}
+	}
+}
+
+// Exercise both provider and tool digest verification in the full installer
+// with no jq or python3, not just the standalone metadata helpers.
+func TestFreeBSDInstallVerifiedAssetsWithBaseTools(t *testing.T) {
+	tag := "v2026.10.27"
+	asset := "urnetwork-provider-" + tag + "-freebsd-amd64.tar.gz"
+	payload := []byte("verified-base-only-payload")
+	sum := sha256.Sum256(payload)
+	metadata := fmt.Sprintf(`{"tag_name":%q,"assets":[{"name":%q,"digest":"sha256:%x"}]}`, tag, asset, sum)
+	res := runFreeBSDInstaller(t, installerHarnessOpts{tag: tag, releaseJSON: metadata, tarballData: payload, parserless: true})
+	if res.exitCode != 0 || len(res.tarCalls) == 0 || res.finalBin != "extracted-new-binary\n" {
+		t.Fatalf("base-only install did not verify and install both assets: exit=%d, tar=%v, binary=%q\n%s", res.exitCode, res.tarCalls, res.finalBin, res.stdout)
 	}
 }
 

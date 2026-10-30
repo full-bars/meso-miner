@@ -79,6 +79,9 @@ http_fetch() {
     if [ "$#" = 1 ]; then printf '{}'; else printf 'new tool' > "$2"; fi
 }
 jq() { case "$*" in *tag_name*) printf 'test-tag\n' ;; *) [ "$DIGEST" = missing ] || printf '%064d\n' 0 | tr 0 a ;; esac; }
+release_lists_asset() { return 0; }
+get_asset_digest_from_api_response() { printf '%064d\n' 0 | tr 0 a; }
+verify_sha256_file() { return 0; }
 tar() { printf 'new provider' > "$4/provider"; }
 uname() { printf 'amd64\n'; }
 sha256() { if [ "$DIGEST" = match ]; then printf '%064d\n' 0 | tr 0 a; else printf '%064d\n' 0 | tr 0 b; fi; }
@@ -135,6 +138,11 @@ enforce_install_tree_perms() {
 					t.Fatal(err)
 				}
 				for _, entry := range entries {
+					// This harness stops immediately after the two renames, before
+					// the normal post-service backup cleanup can run.
+					if tc.success && strings.HasPrefix(entry.Name(), ".urnetwork.bak.") {
+						continue
+					}
 					if strings.HasPrefix(entry.Name(), ".urnet") {
 						t.Errorf("staged file left behind: %s", entry.Name())
 					}

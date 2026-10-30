@@ -111,23 +111,69 @@ except Exception: sys.exit(1)' "$2" >/dev/null 2>&1
 # lists the asset; mode "digest" prints its 64-hex sha256 (empty when absent).
 release_asset_scan() {
     printf '%s' "$1" | A="$2" M="$3" awk '
-        BEGIN { RS = ","; a = ENVIRON["A"]; m = ENVIRON["M"]; cur = ""; found = 0 }
-        {
-            if (match($0, /"name"[ \t\r\n]*:[ \t\r\n]*"[^"]*"/)) {
-                v = substr($0, RSTART, RLENGTH)
-                sub(/^"name"[ \t\r\n]*:[ \t\r\n]*"/, "", v)
-                sub(/"$/, "", v)
-                cur = v
-                if (cur == a) found = 1
+        function ws() { while (substr(doc, pos, 1) ~ /[ \t\r\n]/ && pos <= length(doc)) pos++ }
+        function string(    c,e,h,out) {
+            if (substr(doc, pos++, 1) != "\"") { bad=1; return "" }
+            out=""
+            while (pos <= length(doc)) {
+                c=substr(doc,pos++,1)
+                if (c == "\"") return out
+                if (c == "\\") {
+                    e=substr(doc,pos++,1)
+                    if (e == "u") {
+                        h=substr(doc,pos,4); pos+=4
+                        if (length(h)!=4 || h !~ /^[0-9a-fA-F]+$/) { bad=1; return "" }
+                        out=out "?"
+                    } else if (e == "\"" || e == "\\" || e == "/") out=out e
+                    else if (e ~ /^[bfnrt]$/) out=out "?"
+                    else { bad=1; return "" }
+                } else out=out c
             }
-            if (m == "digest" && cur == a && match($0, /"digest"[ \t\r\n]*:[ \t\r\n]*"(sha256:)?[0-9a-fA-F]+"/)) {
-                v = substr($0, RSTART, RLENGTH)
-                sub(/^"digest"[ \t\r\n]*:[ \t\r\n]*"(sha256:)?/, "", v)
-                sub(/"$/, "", v)
-                if (length(v) == 64) { print v; exit }
-            }
+            bad=1; return ""
         }
-        END { if (m == "list") exit(found ? 0 : 1) }'
+        function value(kind,    c,k,v,t,name,digest,hasname,hasdigest,count) {
+            ws(); c=substr(doc,pos,1); scalar=""; scalar_string=0
+            if (c == "{") {
+                if (kind == "assets") { bad=1; return }
+                pos++; ws(); count=0; name=""; digest=""; hasname=0; hasdigest=0
+                while (substr(doc,pos,1) != "}") {
+                    if (count++ && substr(doc,pos++,1) != ",") { bad=1; return }
+                    ws(); if (substr(doc,pos,1) != "\"") { bad=1; return }
+                    k=string(); ws(); if (substr(doc,pos++,1) != ":") { bad=1; return }
+                    t="other"; if (kind == "root" && k == "assets") t="assets"
+                    value(t); if (bad) return
+                    if (kind == "asset" && k == "name") { if (hasname++) { bad=1; return }; if (scalar_string) name=scalar }
+                    if (kind == "asset" && k == "digest") { if (hasdigest++) { bad=1; return }; if (scalar_string) digest=scalar }
+                    ws()
+                }
+                pos++; scalar_string=0
+                if (kind == "asset" && name == ENVIRON["A"]) { found++; answer=digest }
+                return
+            }
+            if (c == "[") {
+                if (kind == "root" || kind == "asset") { bad=1; return }
+                pos++; ws(); count=0
+                while (substr(doc,pos,1) != "]") {
+                    if (count++ && substr(doc,pos++,1) != ",") { bad=1; return }
+                    t="other"; if (kind == "assets") t="asset"
+                    value(t); if (bad) return; ws()
+                }
+                pos++; scalar_string=0; return
+            }
+            if (kind == "root" || kind == "assets" || kind == "asset") { bad=1; return }
+            if (c == "\"") { scalar=string(); scalar_string=1; return }
+            t=substr(doc,pos); if (match(t,/^(true|false|null|-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?)/) != 1) { bad=1; return }
+            pos+=RLENGTH
+        }
+        { doc=doc $0 "\n" }
+        END {
+            pos=1; value("root"); ws()
+            if (bad || pos <= length(doc) || found != 1) exit 1
+            if (ENVIRON["M"] == "digest") {
+                sub(/^sha256:/,"",answer)
+                if (length(answer)==64 && answer ~ /^[0-9a-fA-F]+$/) print answer
+            }
+        }'
 }
 
 compute_sha256_file() {
@@ -898,6 +944,8 @@ for asset in doc.get("assets", []):
 val = val.replace("sha256:", "")
 print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
 ' "$tool_asset" 2>/dev/null || true)"
+    else
+        tool_digest="$(get_asset_digest_from_api_response "$release_json" "$tool_asset")"
     fi
 
     if [ -z "$tool_digest" ]; then
@@ -977,9 +1025,10 @@ print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
     had_old_binary=0
     if [ -f "$provider_bin" ]; then
         had_old_binary=1
-        if ! priv ln -f "$provider_bin" "$provider_backup" 2>/dev/null; then
-            priv cp -p "$provider_bin" "$provider_backup" 2>/dev/null || \
-            priv cp "$provider_bin" "$provider_backup" 2>/dev/null || true
+        _live_bin="$provider_bin"
+        if ! priv ln -f "$_live_bin" "$provider_backup" 2>/dev/null; then
+            priv cp -p "$_live_bin" "$provider_backup" 2>/dev/null || \
+            priv cp "$_live_bin" "$provider_backup" 2>/dev/null || true
         fi
     fi
 
