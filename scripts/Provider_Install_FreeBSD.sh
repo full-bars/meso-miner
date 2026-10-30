@@ -796,9 +796,7 @@ print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
         if [ "$service_user" != "root" ]; then
             # Re-check here, not only at the top of do_install: the service user
             # controls this directory and can replace it with a symlink between
-            # the two, and these are the root writes that would follow it. -h
-            # keeps the recursive chown from dereferencing anything that
-            # appears.
+            # the two, and these are the root writes that would follow it.
             if [ -L "$state_dir" ]; then
                 pr_err "%s became a symlink during install; refusing to write through it" "$state_dir"
                 rm -rf "$tmpdir"; exit 1
