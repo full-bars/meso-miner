@@ -31,11 +31,12 @@ here="$(cd "$(dirname "$0")" && pwd)"
 installer="$here/Provider_Install_FreeBSD.sh"
 
 # The falsification run needs the PRE-FIX installer, so it is pinned to the
-# commit this branch started from — the parent of the fix. Reading it from
-# origin/main worked only until merge: after this lands origin/main IS the fixed
-# version, the old code is unreachable, and the block passes without testing
-# anything. This SHA is that parent commit and does not move.
-prefix_commit="775101264f75581fa743cc148e425681a3fa1c7e"
+# parent of the commit that fixed the symlink write-through (69006d0a0c). That
+# parent is an ancestor of origin/main, so it stays reachable after merge while
+# the fixed installer replaces it on main. Pin only a SHA from this repo's own
+# history: a SHA from another repo (the urnetwork-3.23-fix line) is absent from
+# this checkout, even with fetch-depth: 0, and the block then fails in CI.
+prefix_commit="609948fca84ac761dc6aeea09332909dec310178"
 prefix_short="$(printf '%.12s' "$prefix_commit")"
 
 fails=0
