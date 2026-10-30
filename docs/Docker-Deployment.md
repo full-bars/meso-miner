@@ -54,7 +54,7 @@ ghcr.io/full-bars/meso-miner:latest
 
 ## 🔑 Persistent JWT
 
-The JWT is stored inside the container at `/root/.urnetwork/jwt`. Without a persistent volume, every container restart wipes it and forces re-authentication using the original auth code, which is single-use and will fail on the second attempt.
+The JWT is stored inside the container at `/root/.urnetwork/jwt`. Restarting the same container keeps that file. To keep it when replacing the container, mount the same persistent volume at `/root/.urnetwork`. Stable and nightly startup reuse a valid saved JWT ([e1a1c7ca1](https://github.com/full-bars/meso-miner/commit/e1a1c7ca1a3bee3bddbef1bfff9dde5e73573c41)).
 
 All examples below mount a config volume at `/root/.urnetwork`. With this volume in place, the startup script detects the existing JWT and skips authentication on later starts. Auth codes are only consumed once: on first run or after manually removing the config volume.
 
