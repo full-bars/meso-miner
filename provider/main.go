@@ -3346,6 +3346,10 @@ func provide(opts docopt.Opts) {
 
 	nodeName := strings.TrimSpace(os.Getenv("URNETWORK_NODE_NAME"))
 
+	// Clear a proxy.lock left by the previous image before any goroutine here can take one of its own.
+	// A hot swap execs in place, so the pid survives and the old lock reads as held-by-a-live-holder;
+	// clearing it after the heartbeat has started could delete a lock this image just acquired.
+	cleanStaleSelfProxyLock()
 	go connect.HandleError(func() { runHealthHeartbeat(ctx, provideStartTime, os.Getenv("URNETWORK_PROFILE")) })
 	go connect.HandleError(func() { runJWTRefresher(ctx, apiUrl) })
 	go connect.HandleError(func() { runEarningWindows(ctx) })
@@ -4309,10 +4313,8 @@ func provide(opts docopt.Opts) {
 	// Startup imports identity/provenance into proxy.state and persists it. Take
 	// the cross-process lock across the read-modify-write so a clear or reload
 	// cannot replace this transaction with a stale snapshot.
-	// A hot swap execs in place: the pid survives and the previous image's
-	// proxy.lock would read as held-by-a-live-holder. Clear it before the lock
-	// is taken, or startup waits proxyStartLockWait and fatals before cleanup.
-	cleanStaleSelfProxyLock()
+	// The stale self-lock was cleared at startup, before any goroutine could take
+	// one of its own, so this image is not deleting a lock it already holds.
 	releaseProxyLock, err := acquireProxyLockWait(ctx, proxyStartLockWait)
 	if err != nil {
 		shmLogFatal(20, "[proxy] could not acquire proxy lock: %v", err)
