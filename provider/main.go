@@ -4801,6 +4801,7 @@ func provide(opts docopt.Opts) {
 
 	printReadyUnlessCondensed()
 
+	<-ctx.Done()
 	quiesceForRun(ctx, reloader)
 	wg.Wait()
 
