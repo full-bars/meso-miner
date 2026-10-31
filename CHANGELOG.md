@@ -28,6 +28,10 @@ Everything merged after `v2026.10.24-1080497440-meso`. Claims below were checked
 - **Preset network switches warn about a stale token again** ([#324](https://github.com/full-bars/meso-miner/pull/324), 3cc1e1294): `choose_network` with a preset saved the configuration first and then compared the API URL with the one it had just written, so the notice never fired. It reads the previous selection before the write.
 - **`urnet-tools logs --important` follows the newest important log** ([#324](https://github.com/full-bars/meso-miner/pull/324), b7ad8a094): it tailed only the RAM file, so a provider keeping `important.log` in the service user's state directory showed nothing, and a rotation ended the follow. It picks the newer of the two files and follows by name.
 - **The FreeBSD installer never prompts for a password while adding the PATH line** ([#324](https://github.com/full-bars/meso-miner/pull/324), 9eb0d5626): root edits the service user's rc file through `su`, the service user edits it directly, and anyone else is told to make the edit by hand.
+- **The FreeBSD rc.d start keeps the previous run's log** (766968be): the start ran the install over `stdout.log` every time, which truncated it, so a restart erased the last run. The log is created only when it is missing, and a failed creation stops the start.
+- **The FreeBSD running check sees a provider that has not exec'd yet** (587b81f5): the daemon writes the child's pid before the child execs the provider, so the argv check found nothing and a healthy boot read as stopped. The check now falls back to an unfiltered scan and then to the live pidfile pid.
+- **Staged FreeBSD install files are removed with the privilege that created them** (d64a8fd1): a failed non-root install left a root-owned temp file behind. Removals now go through `priv_rm`, with an EXIT trap for the early exits.
+- **A pending reload no longer holds up exit, and every proxy clear triggers a reload** (477be273, f29f7283): shutdown waited on a reload that was still queued, and a clear that only partly succeeded left the running provider on an old proxy list.
 
 ### Security
 
@@ -43,7 +47,7 @@ Everything merged after `v2026.10.24-1080497440-meso`. Claims below were checked
 
 ### Added
 
-- **The v2026 extender stack, with the provider serving role** ([#289](https://github.com/full-bars/meso-miner/pull/289), [#290](https://github.com/full-bars/meso-miner/pull/290)): the extender v2 library and server, the feed and gossip composition layer and the pinned directory candidate, ported from 3.23-fix. A provider can serve the extender role on its direct slot (TCP 443, then QUIC 443 and DNS 4053). It is opt-in with `URNETWORK_EXTENDER`, and forwards are limited to the hosts listed in `URNETWORK_EXTENDER_ALLOWED_HOSTS`. A node that sets neither is unchanged.
+- **The v2026 extender stack, as a work in progress that is not proven** ([#289](https://github.com/full-bars/meso-miner/pull/289), [#290](https://github.com/full-bars/meso-miner/pull/290)): the extender v2 library and server, the feed and gossip composition layer and the pinned directory candidate, ported from 3.23-fix. With the switch set, the role binds its carriers on the direct slot (TCP 443, then QUIC 443 and DNS 4053). It has not been verified in production and is not active on the fleet; the release notes for this tag say the same. It is opt-in with `URNETWORK_EXTENDER`, and forwards are limited to the hosts listed in `URNETWORK_EXTENDER_ALLOWED_HOSTS`. A node that sets neither is unchanged.
 - **The TLS ClientHello is a runtime switch** (`tls_hello`, [#289](https://github.com/full-bars/meso-miner/pull/289)): `urnet-tools set tls-hello on|off` makes the normal and resilient dialers present Chrome's TLS ClientHello instead of Go's on new connections, live and without a restart, with `URNETWORK_TLS_HELLO` as the startup default. It affects new connections only: an open session keeps the handshake it made and follows the setting the next time it dials. The Chrome hello is **off by default** while it soaks, so a box that never sets the key keeps Go's hello exactly as before; a persisted `off` beats `URNETWORK_TLS_HELLO=on`, and clearing the key hands the decision back to the environment. The provider logs `[control] applied tls_hello=<v> (was <old>)` on each change. A fingerprint drift harness gates the dialers' hellos in CI.
 - **Smaller subsystems ported with the extender stack** ([#289](https://github.com/full-bars/meso-miner/pull/289)): the blocker gate in the packet path (the host lookup runs only after an IP miss, with IPv6, UDP, mid-connection and setter-race tests), an opt-in blocklist generator, lag messages and naming, a control-result and wallet-mapping API, and four dataplane leaves: egress TTL realism (inactive at the zero mode), H3 datagram auth compatibility, request-scoped redirect, and DoH dial observation.
 - **`urnet-tools proxy trim` with no count reports the cap** ([#282](https://github.com/full-bars/meso-miner/pull/282), [#284](https://github.com/full-bars/meso-miner/pull/284)): it prints the cap in force and its source, the configured pool before the cap, how many proxies the cap holds back, and the running counts. `urnet-tools status` carries the same as a `trim` row on the live block whenever a cap applies, and `status --json` gains `configured`, `trim_cap`, `trim_cap_source` and `trim_reported` in the `proxies` block. The cap is read from the provider snapshot first, so an unreadable `proxy_trim` file cannot hide a cap the provider is enforcing; the file is used when the provider is stopped or predates the fields. The reload records the selection only when `proxy_url.json` was readable, so an unreadable cache cannot understate the pool.
@@ -424,6 +428,31 @@ Everything merged after `v2026.10.24-1080497440-meso`. Claims below were checked
 
 ---
 
+## [v2026.9.9-1788917009-meso-hub] — 2026-09-08 (hub variant)
+
+The hub-carrying build of the parity port in `v2026.9.9-1788916951-meso`. Its own commits, on top of the 3.23-fix v30.9 port (`518d454c`), are below. Commits are cited because this line's PR numbers do not cover them.
+
+### Added
+
+- **Warm-client proxies start first** (`dc30abed`): proxies with a warm client id start ahead of the rest, with an accelerated stagger.
+- **Provider, `urnet-tools` and `urnet-docker` flags agree** (`c930259c`): the three share the flag set ported from 3.23-fix.
+
+### Fixed
+
+- **Dropped-item contracts settle before their sequence closes** (`b4cbef9e`).
+- **The SSRF guard covers hostname dial targets** (`5a542dab`).
+- **Refused-share forgiveness uses a saturating counter** (`88eb639a`), not a single bit.
+- **The usage graph** (`f3e6a2e5`, `8f3bad59`, `1e0223f7`): UTC truncation, every post-restart segment summed in a bucket, and flags honored after the `usage` subcommand.
+- **The paste signal handler is registered before plaintext credentials are written** (`381310b4`).
+- **The direct-toggle directory and file take the state directory owner** (`db9a03dd`).
+- **Startup validates the FHS PATH defaults and flushes retention events on exit** (`3020f790`).
+
+### Security
+
+- **CFAA blocklist synced from upstream** (`2838cc8b`, `bc992a24`, `8eb6e564`, `05e5b135`): the last sync in the tag carries 43,479 IPv4 and 438 IPv6 entries.
+
+---
+
 ## [v2026.9.9-1788916951-meso] — 2026-09-09
 
 Full parity with the 3.23-fix v30.9 line: warm proxy prioritization, `sn-status`, and security hardening. The same code was also published as `v2026.9.9-1788917009-meso-hub`, a variant that kept the old hub; the hub has since been removed.
@@ -432,7 +461,13 @@ Full parity with the 3.23-fix v30.9 line: warm proxy prioritization, `sn-status`
 
 ## [v2026.8.28-1031582360-meso] — 2026-08-28
 
-Fixes the endless retry loop on dead proxies, makes Docker self-update fetch from this repository, and adds Pelican egg support. Two earlier builds the same day, `v2026.8.28-1031544720-meso` and `v2026.8.28-1031579830-meso`, carry the same release notes. See `releases/v2026.8.28-1031582360-meso.md`.
+Fixes the endless retry loop on dead proxies, makes Docker self-update fetch from this repository, and adds Pelican egg support. The earlier build of the same day, `v2026.8.28-1031544720-meso`, has the same code (its own section follows). See `releases/v2026.8.28-1031582360-meso.md`.
+
+---
+
+## [v2026.8.28-1031544720-meso] — 2026-08-28
+
+The first tag of 2026-08-28. Its code is identical to `v2026.8.28-1031582360-meso`: the only later commits touch `.github/` and `releases/`. `f6697a6e` limits the VirusTotal scan to the six provider binaries, `20887cff` signs release tags with a dedicated GPG key, and `b662cedd` sets the signing key for `git tag -s`. The release notes are `releases/v2026.8.28-1031544720-meso.md`.
 
 ---
 
