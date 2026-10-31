@@ -1,7 +1,7 @@
 # H3 Auto
 
 > [!NOTE]
-> **Status: ships in the v34 parity release** (the next meso release, 2026-10-20). `h3 auto` is opt-in: nothing in this page changes anything unless the `h3` control key is set to `auto`. The same release also turns plain H3 on by default for a settled direct-only node (mode `on`), but that is not `auto` and it does not run the sizing controller described here.
+> **Status: shipped in `v2026.10.20-1076956260-meso`.** `h3 auto` is opt-in: nothing in this page changes anything unless the `h3` control key is set to `auto`. The same release also turns plain H3 on by default for a settled direct-only node (mode `on`), but that is not `auto` and it does not run the sizing controller described here.
 
 `h3 auto` is a value for the existing [`h3`](/full-bars/meso-miner/wiki/Configuration#-control-socket--runtime-settings) control key. It chooses how many proxies get the H3, H3-over-DNS and DNS-pump fallback policy from the provider's memory limit and its existing memory pressure signal. It does not add a sensor, a background loop or a metric series.
 

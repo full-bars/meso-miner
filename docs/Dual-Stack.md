@@ -4,7 +4,7 @@ Plain-language answer to "are we dual stack, and what does that mean per proxy?"
 
 ## The short version
 
-The provider supports both IPv4 and IPv6. Since the v34 parity release the direct identity is a dual-stack transport group: one transport pinned to IPv4, one pinned to IPv6, and a family-agnostic standby. The remaining gap is the provider's egress **through a proxy**: by default it still resolves the target itself with an IPv4-only query and hands the proxy an IPv4 literal. `proxy_target_family=proxy` hands the hostname to the proxy instead.
+The provider supports both IPv4 and IPv6. Since the `v2026.10.20-1076956260-meso` the direct identity is a dual-stack transport group: one transport pinned to IPv4, one pinned to IPv6, and a family-agnostic standby. The remaining gap is the provider's egress **through a proxy**: by default it still resolves the target itself with an IPv4-only query and hands the proxy an IPv4 literal. `proxy_target_family=proxy` hands the hostname to the proxy instead.
 
 The defaults need no configuration and do not affect earnings.
 
@@ -74,7 +74,7 @@ The local resolution was deliberate: it shares a DNS cache across burst dials an
 
 | Line | Provider platform connection | Proxy egress family | Proxy data plane |
 |---|---|---|---|
-| v34 parity release | Direct identity: v4 pin + v6 pin + family-agnostic standby, chosen by `ip_version` | IPv4 pinned by default; `proxy_target_family=proxy` lets the proxy choose | v4 and v6 |
-| Before the v34 parity release | One family-agnostic transport (legacy) | IPv4 pinned by the provider | v4 and v6 |
+| `v2026.10.20-1076956260-meso` | Direct identity: v4 pin + v6 pin + family-agnostic standby, chosen by `ip_version` | IPv4 pinned by default; `proxy_target_family=proxy` lets the proxy choose | v4 and v6 |
+| Before the `v2026.10.20-1076956260-meso` | One family-agnostic transport (legacy) | IPv4 pinned by the provider | v4 and v6 |
 
 IPv4 remains the default in every shipped configuration: `ip_version` defaults to `dual`, and `ipv4` is available when an operator wants a v4-only provider. The v4 pin is not demoted by the control-plane family policy; that policy only steers family-agnostic control dials (the API client, the platform websocket and the h3/quic name path).
