@@ -2,11 +2,34 @@ package urnettools
 
 import (
 	"bufio"
+	"io"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 )
+
+// captureWalletStderr runs fn and returns what it wrote to stderr, so a test
+// can prove a warning was actually printed instead of merely not failing.
+func captureWalletStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stderr pipe: %v", err)
+	}
+	os.Stderr = w
+	defer func() { os.Stderr = old }()
+	done := make(chan string, 1)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- string(b)
+	}()
+	fn()
+	w.Close()
+	return <-done
+}
 
 // The wallet group: help renders from the cobra tree (never by running the
 // tool), the fleet-node refusals guard the seed-bearing forms, and the
@@ -126,50 +149,62 @@ func TestWalletChallengeRequiresAColdkey(t *testing.T) {
 	}
 }
 
-func TestWalletSetSeedFileRefusedOnFleetNode(t *testing.T) {
+func TestWalletSetSeedFileWarnsOnProviderBox(t *testing.T) {
 	var calls [][]string
 	withWalletSeams(t, []Provider{walletTestProvider()}, &calls, "", "")
-	err := cmdWalletSet([]string{"-f", "5CvF...ss58", "--coldkey_seed_file=/tmp/seed"})
-	if err == nil || !strings.Contains(err.Error(), "never a fleet node") {
-		t.Fatalf("the seed-file form on a fleet node must refuse, got %v", err)
+	// A provider on the box is worth saying out loud, and it is not a reason
+	// to stop the operator.
+	var err error
+	out := captureWalletStderr(t, func() {
+		err = cmdWalletSet([]string{"-f", "5CvF...ss58", "--coldkey_seed_file=/tmp/seed"})
+	})
+	if err != nil {
+		t.Fatalf("the seed-file form must warn, not refuse, got %v", err)
 	}
-	if len(calls) != 0 {
-		t.Fatal("a refused set must not delegate")
+	if !strings.Contains(out, "not recommended here") {
+		t.Fatalf("the seed-file form must warn on a provider box, got %q", out)
 	}
-	// No flag bypasses the guard any more: the removed flag is rejected by
-	// name before anything reaches the provider.
-	err = cmdWalletSet([]string{"-f", "--i-am-on-my-own-workstation", "5CvF...ss58", "--coldkey_seed_file=/tmp/seed"})
-	if err == nil || !strings.Contains(err.Error(), "is gone") {
-		t.Fatalf("a removed flag must be rejected by name, got %v", err)
+	if len(calls) != 1 {
+		t.Fatalf("the warned set must still delegate, got %v", calls)
 	}
-	if len(calls) != 0 {
-		t.Fatal("a refused set must not delegate")
-	}
-	// the message/signature form is untouched by the fleet rule
+	// The message/signature form reads no seed, so it earns no warning.
 	calls = nil
-	err = cmdWalletSet([]string{"-f", "5CvF...ss58", "--message=m", "--signature=0x00"})
+	out = captureWalletStderr(t, func() {
+		err = cmdWalletSet([]string{"-f", "5CvF...ss58", "--message=m", "--signature=0x00"})
+	})
 	if err != nil {
 		t.Fatalf("wallet set signed form: %v", err)
 	}
+	if strings.Contains(out, "not recommended here") {
+		t.Fatalf("the signed form reads no seed and must not warn, got %q", out)
+	}
 	if len(calls) != 1 {
-		t.Fatal("the signed form must delegate without the fleet gate")
+		t.Fatal("the signed form must delegate")
 	}
 }
 
 func TestWalletFleetDetectionViaProviderEnv(t *testing.T) {
 	var calls [][]string
-	// no discovered providers, but the provider runtime environment is present
-	withWalletSeams(t, nil, &calls, "", "")
+	// a provider is present, and the runtime environment marker is what makes
+	// the box look like a fleet member
+	withWalletSeams(t, []Provider{walletTestProvider()}, &calls, "", "")
 	t.Setenv("URNETWORK_PROFILE", "lowmem")
-	if err := cmdWalletSet([]string{"-f", "5CvF...ss58", "--coldkey_seed_file=/tmp/seed"}); err == nil {
-		t.Fatal("the provider environment marker must count as a fleet node")
+	var err error
+	out := captureWalletStderr(t, func() {
+		err = cmdWalletSet([]string{"-f", "5CvF...ss58", "--coldkey_seed_file=/tmp/seed"})
+	})
+	if err != nil {
+		t.Fatalf("the provider environment marker must warn, not refuse, got %v", err)
 	}
-	if len(calls) != 0 {
-		t.Fatal("a refused set must not delegate")
+	if !strings.Contains(out, "not recommended here") {
+		t.Fatalf("the provider environment marker must produce the warning, got %q", out)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("the warned set must still delegate, got %d calls", len(calls))
 	}
 }
 
-// withWalletStdin feeds one answer to the guard as if stdin were a terminal.
+// withWalletStdin feeds one answer to a prompt as if stdin were a terminal.
 // It sets the override directly rather than calling the linux-tagged test
 // helper, so this file still builds on FreeBSD and Windows.
 func withWalletStdin(t *testing.T, answer string) {
@@ -184,77 +219,58 @@ func withWalletStdin(t *testing.T, answer string) {
 	})
 }
 
-// The removed flag is rejected by name, on every subcommand, and never
-// reaches the provider.
-func TestWalletRemovedWorkstationFlagRejected(t *testing.T) {
+// The removed flag is recognised by name on every subcommand and warns; it is
+// neither a bypass nor a failure, and the call still reaches the provider.
+func TestWalletRemovedWorkstationFlagWarns(t *testing.T) {
 	var calls [][]string
 	withWalletSeams(t, []Provider{walletTestProvider()}, &calls, "", "")
 	for _, args := range [][]string{
 		{"-f", "--i-am-on-my-own-workstation", "5CvF...ss58", "--coldkey_seed_file=/tmp/seed"},
 		{"-f", "5CvF...ss58", "--message=m", "--signature=0x00", "--i-am-on-my-own-workstation"},
 	} {
-		if err := cmdWalletSet(args); err == nil || !strings.Contains(err.Error(), "is gone") {
-			t.Fatalf("wallet set must reject the removed flag by name, got %v", err)
+		var err error
+		out := captureWalletStderr(t, func() { err = cmdWalletSet(args) })
+		if err != nil {
+			t.Fatalf("a removed flag must warn, not refuse, got %v", err)
+		}
+		if !strings.Contains(out, "is gone") {
+			t.Fatalf("wallet set must name the removed flag, got %q", out)
 		}
 	}
-	if err := cmdWalletSign([]string{"--i-am-on-my-own-workstation", "5CvF...ss58"}); err == nil || !strings.Contains(err.Error(), "is gone") {
-		t.Fatal("wallet sign must reject the removed flag by name")
+	var err error
+	out := captureWalletStderr(t, func() {
+		err = cmdWalletSign([]string{"-f", "--i-am-on-my-own-workstation", "5CvF...ss58"})
+	})
+	if err != nil {
+		t.Fatalf("wallet sign must warn, not refuse, got %v", err)
 	}
-	if len(calls) != 0 {
-		t.Fatalf("a rejected call must not delegate, got %v", calls)
+	if !strings.Contains(out, "is gone") {
+		t.Fatalf("wallet sign must name the removed flag, got %q", out)
+	}
+	if len(calls) == 0 {
+		t.Fatal("a warned call must still delegate")
 	}
 }
 
-// The browser form signs in the extension and never reads a seed, so the
-// fleet-node guard must not apply to it even when the box looks like one.
-func TestWalletSignNotGatedOnFleetNode(t *testing.T) {
+// The browser form signs in the extension and never reads a seed, so it is not
+// gated on a provider box. It still says so, because signing from a machine
+// that also runs a provider is unusual.
+func TestWalletSignWarnsButDelegatesOnProviderBox(t *testing.T) {
 	var calls [][]string
 	withWalletSeams(t, []Provider{walletTestProvider()}, &calls, "", "")
 	t.Setenv("URNETWORK_PROFILE", "lowmem")
-	if err := cmdWalletSign([]string{"-f", "5CvF...ss58", "--no-open"}); err != nil {
-		t.Fatalf("wallet sign must not be gated on a fleet node: %v", err)
+	var err error
+	out := captureWalletStderr(t, func() {
+		err = cmdWalletSign([]string{"-f", "5CvF...ss58", "--no-open"})
+	})
+	if err != nil {
+		t.Fatalf("wallet sign must not be gated on a provider box: %v", err)
+	}
+	if !strings.Contains(out, "not recommended here") {
+		t.Fatalf("wallet sign must warn on a provider box, got %q", out)
 	}
 	if len(calls) != 1 {
-		t.Fatalf("wallet sign must delegate on a fleet node, got %v", calls)
-	}
-}
-
-// The seed-file form asks a human on a fleet node: yes proceeds, anything
-// else cancels and nothing is delegated.
-func TestWalletSetSeedFilePromptOnFleetNode(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		answer  string
-		proceed bool
-	}{
-		{"y", "y\n", true},
-		{"yes", "yes\n", true},
-		{"n", "n\n", false},
-		{"empty", "\n", false},
-		{"eof", "", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var calls [][]string
-			withWalletSeams(t, []Provider{walletTestProvider()}, &calls, "", "")
-			t.Setenv("URNETWORK_PROFILE", "lowmem")
-			withWalletStdin(t, tc.answer)
-			err := cmdWalletSet([]string{"-f", "5CvF...ss58", "--coldkey_seed_file=/tmp/seed"})
-			if tc.proceed {
-				if err != nil {
-					t.Fatalf("answering %q must proceed: %v", tc.answer, err)
-				}
-				if len(calls) != 1 {
-					t.Fatalf("answering %q must delegate, got %v", tc.answer, calls)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), "cancelled") {
-				t.Fatalf("answering %q must cancel, got %v", tc.answer, err)
-			}
-			if len(calls) != 0 {
-				t.Fatalf("a cancelled set must not delegate, got %v", calls)
-			}
-		})
+		t.Fatalf("wallet sign must delegate on a provider box, got %v", calls)
 	}
 }
 
