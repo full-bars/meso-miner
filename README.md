@@ -281,7 +281,7 @@ The `monitoring/` bundle runs Prometheus and Grafana with a ready-made fleet
 dashboard. See [Monitoring](docs/Monitoring.md).
 
 > [!NOTE]
-> **No fleet dashboard in the app.** The old hub dashboard was removed in v32.0. To watch many machines at once, turn on Prometheus metrics (`urnet-tools metrics on`) and use the [Monitoring bundle](docs/Monitoring.md) or your own Grafana.
+> **No fleet dashboard in the app.** The old hub dashboard was removed in `v2026.10.22-1078651310-meso`. To watch many machines at once, turn on Prometheus metrics (`urnet-tools metrics on`) and use the [Monitoring bundle](docs/Monitoring.md) or your own Grafana.
 
 ---
 

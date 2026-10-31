@@ -80,4 +80,4 @@ Test files sit beside the code they test (`*_test.go`).
 
 ## What was removed
 
-The Hub (fleet dashboard server) and its commands were removed in v32.0. Fleet visibility now comes from Prometheus `/metrics` (`urnet-tools metrics on`) with the monitoring bundle and Grafana.
+The Hub (fleet dashboard server) and its commands were removed in `v2026.10.22-1078651310-meso`. Fleet visibility now comes from Prometheus `/metrics` (`urnet-tools metrics on`) with the monitoring bundle and Grafana.
