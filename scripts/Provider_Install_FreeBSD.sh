@@ -352,6 +352,9 @@ priv() {
 staged_bin=""
 staged_tool=""
 staged_version=""
+# The pre-update provider copy. It is removed on a failed exit, but cleared to
+# empty wherever it is the only remaining copy of the old binary.
+provider_backup=""
 
 priv_rm() {
     if [ -z "${1:-}" ]; then
@@ -373,6 +376,7 @@ install_cleanup() {
     priv_rm "$staged_bin"
     priv_rm "$staged_tool"
     priv_rm "$staged_version"
+    priv_rm "$provider_backup"
     # mktemp -d ran as the invoking user, so this removal needs no privilege.
     if [ -n "${tmpdir:-}" ]; then
         rm -rf "$tmpdir" 2>/dev/null || true
@@ -978,6 +982,8 @@ do_install() {
         fi
     fi
 
+    priv mv -f "$staged_tool" "$install_path/bin/urnet-tools" || { pr_err "Failed to install urnet-tools"; exit 1; }
+    staged_tool=""
     # Back up the old provider only after the tree passed the permission gate.
     provider_backup="$install_path/bin/.urnetwork.bak.$$"
     had_old_binary=0
@@ -997,13 +1003,11 @@ do_install() {
         fi
     fi
 
-    priv mv -f "$staged_tool" "$install_path/bin/urnet-tools" || { pr_err "Failed to install urnet-tools"; exit 1; }
-    staged_tool=""
     priv mv -f "$staged" "$provider_bin" || {
         pr_err "Failed to install binary"
         priv_rm "$staged"
         if [ "$had_old_binary" -eq 1 ] && [ ! -f "$provider_bin" ] && [ -f "$provider_backup" ]; then
-            priv mv -f "$provider_backup" "$provider_bin" 2>/dev/null || true
+            priv mv -f "$provider_backup" "$provider_bin" 2>/dev/null || provider_backup=""
         fi
         rm -rf "$tmpdir"
         exit 1
@@ -1054,6 +1058,7 @@ RCSCRIPT
         if [ "$had_old_binary" -eq 1 ] && [ -f "$provider_backup" ]; then
             if ! priv mv -f "$provider_backup" "$provider_bin"; then
                 pr_err "Could not restore previous binary from %s; service restart was not attempted" "$provider_backup"
+                provider_backup=""
             elif [ "$service_was_running" -eq 1 ]; then
                 if restart_service; then
                     pr_warn "Restored previous binary and restarted the service; update did not apply"
@@ -1068,6 +1073,7 @@ RCSCRIPT
         exit 1
     fi
     [ "$had_old_binary" -eq 1 ] && priv rm -f "$provider_backup" 2>/dev/null || true
+    provider_backup=""
 
     # Publish after a successful start; rename replaces a symlink rather than following it.
     ver_tmp="$install_path/.version.new.$$"
