@@ -67,7 +67,7 @@ Quick jump:
 | `PROXY_DEAD_CLEANUP_INTERVAL` | `6h` | Base cadence of the automatic cleanup job, when scope is not `none` (shrinks under pressure when self-heal is on). The reaper runs this often to sweep dead proxies from the allowed sources. |
 | `URNETWORK_PROXY_TARGET_FAMILY` | `v4` | Startup default for the `proxy_target_family` control key: `v4` resolves a proxied target here with an A-only query and sends the proxy an IPv4 literal; `proxy` sends the hostname to the proxy so its resolver picks A or AAAA. The control key wins at runtime. See [Dual-Stack](/full-bars/meso-miner/wiki/Dual-Stack#the-one-gap-the-providers-egress-through-a-proxy). |
 
-### 🌐 Extender Serving Role
+### 🌐 Extender Role (work in progress, unproven)
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |

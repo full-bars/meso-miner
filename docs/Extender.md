@@ -2,6 +2,9 @@
 
 The extender role lets the provider accept incoming carrier connections and forward requests to approved hostnames. It is opt-in and off by default.
 
+> [!WARNING]
+> The extender role is a work in progress and is unproven. It has not been verified in production, and it does not run on the fleet. The steps below describe what the code does when the switch is set (#289, #290); they do not show the role serving traffic.
+
 ## Before you start
 
 The host must be reachable on the ports you publish. Open the ports in the host firewall and forward them through any router or NAT in front of the host.
