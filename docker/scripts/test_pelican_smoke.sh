@@ -61,6 +61,17 @@ JWTLOG="$(cat "$tmp/jwt.log")"; CALLS="$(cat "$tmp/calls.log" 2>/dev/null)"
 t "jwt mode calls auth-provide with code" grep -q "FAKE-CALL: auth-provide code-test" <<<"${JWTLOG}${CALLS}"
 t "jwt mode logged running build version" grep -q "Running UrNetwork build v.test"   <<<"$JWTLOG"
 
+# --- (2b) jwt mode, documented URNETWORK_AUTH_CODE alias (AUTHCODE unset) ---
+rm -f "$tmp/calls.log"
+( eval "$base_env"
+  unset AUTHCODE
+  export APP_DIR="$tmp/app" BUILD=jwt URNETWORK_AUTH_CODE="alias-code"
+  cd "$tmp/app"; timeout 8 sh "$tmp/panel_jwt.sh" ) >"$tmp/alias.log" 2>&1 </dev/null &
+AP=$!; sleep 4; kill $AP 2>/dev/null; wait $AP 2>/dev/null
+ALOG="$(cat "$tmp/alias.log")"; ACALLS="$(cat "$tmp/calls.log" 2>/dev/null)"
+
+t "jwt mode honours URNETWORK_AUTH_CODE alias" grep -q "FAKE-CALL: auth-provide alias-code" <<<"${ALOG}${ACALLS}"
+
 # --- (3) stable/user-pass mode ---
 rm -f "$tmp/calls.log"
 ( eval "$base_env"

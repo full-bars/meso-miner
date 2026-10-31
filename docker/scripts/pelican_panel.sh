@@ -5,6 +5,11 @@ APP_DIR="/app"
 JWT_FILE="$HOME/.urnetwork/jwt"
 ENABLE_VNSTAT="false"
 
+# Accept URNETWORK_AUTH_CODE as an alias for AUTHCODE if unset
+if [ -z "${AUTHCODE:-}" ] && [ -n "${URNETWORK_AUTH_CODE:-}" ]; then
+  AUTHCODE="$URNETWORK_AUTH_CODE"
+fi
+
 # === Logging Helper ===
 log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') >>> UrNetwork >>> $*"
