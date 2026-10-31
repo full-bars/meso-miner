@@ -1411,6 +1411,9 @@ download_asset() {
     cp %q "$_dst"
 }
 cp() {
+    if [ "${FAIL_BACKUP:-0}" = "1" ]; then
+        case "$*" in *"/bin/urnetwork.old") return 1;; esac
+    fi
     if [ "${FAIL_CP:-0}" = "1" ]; then
         case "$*" in
             *"/bin/.urnetwork"*|*"/bin/urnetwork"*)
@@ -1477,6 +1480,9 @@ do_install
 	fullScript := harness + "\n" + fnGetVersion + "\n" + fnGetDate + "\n" + fnListsAsset + "\n" + fnDigest + "\n" + fnCompute + "\n" + fnVerify + "\n" + fnSanitize + "\n" + fnInstallSystemd + "\n" + fnDoInstall + "\n" + driver
 	cmd := exec.Command("/bin/sh", "-c", fullScript)
 	cmd.Env = []string{"PATH=/usr/bin:/bin"}
+	if opts.failBackup {
+		cmd.Env = append(cmd.Env, "FAIL_BACKUP=1")
+	}
 	out, err := cmd.CombinedOutput()
 
 	var exitCode int
@@ -2000,9 +2006,20 @@ func TestInstallerBackupFailurePreservesLiveBinary(t *testing.T) {
 	const tag = "v2026.10.27"
 	const old = "pre-existing-working-binary"
 	sum := sha256.Sum256([]byte("payload"))
-	release := fmt.Sprintf(`{"tag_name":%q,"assets":[{"name":%q,"digest":"sha256:%x"}]}`, tag, "urnetwork-provider-"+tag+"-freebsd-amd64.tar.gz", sum)
-	res := runFreeBSDInstaller(t, installerHarnessOpts{tag: tag, operation: "update", releaseJSON: release, tarballData: []byte("payload"), existingBin: old, failBackup: true})
-	if res.exitCode == 0 || res.finalBin != old || !strings.Contains(res.stdout, "Could not back up") {
-		t.Fatalf("backup failure did not abort before replacing live binary: exit=%d binary=%q output=%s", res.exitCode, res.finalBin, res.stdout)
+	for _, tc := range []struct {
+		name  string
+		asset string
+		run   func(*testing.T, installerHarnessOpts) installerHarnessResult
+	}{
+		{"FreeBSD", "urnetwork-provider-" + tag + "-freebsd-amd64.tar.gz", runFreeBSDInstaller},
+		{"Linux", "urnetwork-provider-" + tag + ".tar.gz", runLinuxInstaller},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			release := fmt.Sprintf(`{"tag_name":%q,"assets":[{"name":%q,"digest":"sha256:%x"}]}`, tag, tc.asset, sum)
+			res := tc.run(t, installerHarnessOpts{tag: tag, operation: "update", releaseJSON: release, tarballData: []byte("payload"), existingBin: old, failBackup: true})
+			if res.exitCode == 0 || res.finalBin != old || !strings.Contains(res.stdout, "Could not back up") {
+				t.Fatalf("backup failure did not abort before replacing live binary: exit=%d binary=%q output=%s", res.exitCode, res.finalBin, res.stdout)
+			}
+		})
 	}
 }
