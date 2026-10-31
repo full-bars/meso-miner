@@ -90,6 +90,12 @@ curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/mai
 curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh
 ```
 
+**😈 FreeBSD** (the base system's `fetch` is enough; see [docs/FreeBSD.md](docs/FreeBSD.md))
+
+```sh
+fetch -qo urnet-install.sh https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_FreeBSD.sh
+sudo sh urnet-install.sh install
+```
 
 **🐋 Docker**
 
