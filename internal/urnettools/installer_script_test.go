@@ -650,6 +650,9 @@ func freeBSDGateFailure(t *testing.T) (string, string, string) {
  pr_info() { :; }
  pr_warn() { :; }
  pr_err() { :; }
+ release_lists_asset() { return 0; }
+ get_asset_digest_from_api_response() { printf '%064d\n' 0 | tr 0 a; }
+ verify_sha256_file() { [ "$(sha256 -q "$1")" = "$2" ]; }
  http_fetch() { if [ "$#" -gt 1 ]; then printf 'tool' > "$2"; else printf '{"assets":[{"name":"urnet-tools-freebsd-amd64","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}'; fi; }
  jq() { case "$*" in *tag_name*) printf 'test-tag\n' ;; *) printf '%064d\n' 0 | tr 0 a ;; esac; }
  uname() { printf 'amd64\n'; }
