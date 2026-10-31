@@ -626,6 +626,16 @@ func freeBSDGateFailure(t *testing.T) (string, string, string) {
 	if body == "" {
 		t.Fatal("missing do_install")
 	}
+	// The real digest helpers, so the harness exercises the shipped
+	// verification rather than a stub that always agrees with itself.
+	var digestHelpers string
+	for _, fn := range []string{"release_asset_scan", "release_lists_asset", "get_asset_digest_from_api_response", "compute_sha256_file", "verify_sha256_file"} {
+		src := extractShellFunc(t, strings.ReplaceAll(string(b), "\r\n", "\n"), fn)
+		if src == "" {
+			t.Fatalf("missing %s", fn)
+		}
+		digestHelpers += src + "\n"
+	}
 	dir := t.TempDir()
 	tree := filepath.Join(dir, "tree")
 	if err := os.MkdirAll(filepath.Join(tree, "bin"), 0755); err != nil {
@@ -650,16 +660,13 @@ func freeBSDGateFailure(t *testing.T) (string, string, string) {
  pr_info() { :; }
  pr_warn() { :; }
  pr_err() { :; }
- release_lists_asset() { return 0; }
- get_asset_digest_from_api_response() { printf '%064d\n' 0 | tr 0 a; }
- verify_sha256_file() { [ "$(sha256 -q "$1")" = "$2" ]; }
- http_fetch() { if [ "$#" -gt 1 ]; then printf 'tool' > "$2"; else printf '{"assets":[{"name":"urnet-tools-freebsd-amd64","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}'; fi; }
- jq() { case "$*" in *tag_name*) printf 'test-tag\n' ;; *) printf '%064d\n' 0 | tr 0 a ;; esac; }
+ http_fetch() { if [ "$#" -gt 1 ]; then printf 'tool' > "$2"; else printf '{"assets":[{"name":"urnetwork-provider-test-tag-freebsd-amd64.tar.gz","digest":"sha256:%s"},{"name":"urnet-tools-freebsd-amd64","digest":"sha256:%s"}]}' "$(printf '%064d' 0 | tr 0 a)" "$(printf '%064d' 0 | tr 0 a)"; fi; }
  uname() { printf 'amd64\n'; }
  sha256() { printf '%064d\n' 0 | tr 0 a; }
  tar() { printf 'new binary' > "$4/provider"; }
  install_wrapper_tool() { :; }
  enforce_install_tree_perms() { printf '%s\n%s\n' "$(id -u)" "$2" > "$install_path/gate-called"; return 1; }
+ ` + digestHelpers + `
  ` + body + `
  do_install test-tag
  `
@@ -695,6 +702,120 @@ func TestFreeBSDGateFailurePreservesBinaryAndVersion(t *testing.T) {
 	}
 }
 
+// runFreeBSDDigestInstall runs the real do_install body against a stubbed
+// release. fetched reports whether the provider tarball was downloaded;
+// reachedGate reports whether the install got past verification to the
+// permission gate, which the stub fails on purpose so nothing is installed.
+func runFreeBSDDigestInstall(t *testing.T, releaseJSON, actualSha string) (out string, fetched, reachedGate bool) {
+	t.Helper()
+	skipWithoutPOSIXShell(t)
+	b, err := os.ReadFile("../../scripts/Provider_Install_FreeBSD.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := strings.ReplaceAll(string(b), "\r\n", "\n")
+	var helpers string
+	for _, fn := range []string{"release_asset_scan", "release_lists_asset", "get_asset_digest_from_api_response", "compute_sha256_file", "verify_sha256_file"} {
+		src := extractShellFunc(t, script, fn)
+		if src == "" {
+			t.Fatalf("missing %s", fn)
+		}
+		helpers += src + "\n"
+	}
+	body := extractShellFunc(t, script, "do_install")
+	if body == "" {
+		t.Fatal("missing do_install")
+	}
+	dir := t.TempDir()
+	tree := filepath.Join(dir, "tree")
+	if err := os.MkdirAll(filepath.Join(tree, "bin"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	harness := `install_path="$1"
+ provider_bin="$install_path/bin/urnetwork"
+ state_dir="$install_path/state"
+ service_user=testuser
+ github_api=example
+ me=test
+ id() { if [ "$1" = -u ]; then printf '1000\n'; else command id "$@"; fi; }
+ priv() { "$@"; }
+ priv_rm() { [ -z "$1" ] || rm -f "$1"; }
+ install_cleanup() { :; }
+ assert_state_path_safe() { :; }
+ pr_info() { :; }
+ pr_warn() { :; }
+ pr_err() { printf 'ERR: '; printf "$@"; printf '\n'; }
+ http_fetch() { if [ "$#" -gt 1 ]; then printf 'x' > "$2"; case "$1" in *.tar.gz) : > "$install_path/fetched" ;; esac; else printf '%s' "$RELEASE_JSON"; fi; }
+ uname() { printf 'amd64\n'; }
+ sha256() { printf '%s\n' "$ACTUAL_SHA"; }
+ tar() { printf 'new binary' > "$4/provider"; }
+ enforce_install_tree_perms() { : > "$install_path/gate-called"; return 1; }
+ ` + helpers + body + `
+ do_install test-tag
+ `
+	h := filepath.Join(dir, "harness.sh")
+	if err := os.WriteFile(h, []byte(harness), 0755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/bin/sh", h, tree)
+	cmd.Env = append(os.Environ(), "RELEASE_JSON="+releaseJSON, "ACTUAL_SHA="+actualSha)
+	o, _ := cmd.CombinedOutput()
+	_, ferr := os.Stat(filepath.Join(tree, "fetched"))
+	_, gerr := os.Stat(filepath.Join(tree, "gate-called"))
+	return string(o), ferr == nil, gerr == nil
+}
+
+func freeBSDDigestRelease(provider, tool string) string {
+	asset := func(name, digest string) string {
+		if digest == "" {
+			return `{"name":"` + name + `"}`
+		}
+		return `{"name":"` + name + `","digest":"sha256:` + digest + `"}`
+	}
+	return `{"assets":[` + asset("urnetwork-provider-test-tag-freebsd-amd64.tar.gz", provider) + `,` + asset("urnet-tools-freebsd-amd64", tool) + `]}`
+}
+
+// A tarball whose digest does not match the release metadata must be refused
+// before it is extracted or staged.
+func TestFreeBSDInstallRefusesProviderDigestMismatch(t *testing.T) {
+	want := strings.Repeat("a", 64)
+	out, fetched, gate := runFreeBSDDigestInstall(t, freeBSDDigestRelease(want, want), strings.Repeat("b", 64))
+	if !fetched {
+		t.Fatalf("test did not reach the download: %s", out)
+	}
+	if gate || !strings.Contains(out, "SHA-256 digest mismatch for provider asset") {
+		t.Fatalf("mismatched provider digest was not refused (gate reached=%v): %s", gate, out)
+	}
+}
+
+// A release that publishes no provider digest is refused before any download,
+// with or without jq or python3 on the host.
+func TestFreeBSDInstallRefusesProviderWithoutDigest(t *testing.T) {
+	out, fetched, gate := runFreeBSDDigestInstall(t, freeBSDDigestRelease("", strings.Repeat("a", 64)), strings.Repeat("a", 64))
+	if fetched || gate || !strings.Contains(out, "Cannot establish a sha256 digest for provider asset") {
+		t.Fatalf("missing provider digest was not refused up front (fetched=%v gate=%v): %s", fetched, gate, out)
+	}
+}
+
+// A missing tool digest is a release bug and must fail loudly, not fall back.
+func TestFreeBSDInstallRefusesToolWithoutDigest(t *testing.T) {
+	d := strings.Repeat("a", 64)
+	out, _, gate := runFreeBSDDigestInstall(t, freeBSDDigestRelease(d, ""), d)
+	if gate || !strings.Contains(out, "Cannot verify urnet-tools") {
+		t.Fatalf("missing tool digest was not refused (gate reached=%v): %s", gate, out)
+	}
+}
+
+// With both digests matching, verification passes and the install proceeds to
+// the permission gate (which the stub fails so nothing is written).
+func TestFreeBSDInstallVerifiedAssetsReachPermissionGate(t *testing.T) {
+	d := strings.Repeat("a", 64)
+	out, fetched, gate := runFreeBSDDigestInstall(t, freeBSDDigestRelease(d, d), d)
+	if !fetched || !gate {
+		t.Fatalf("verified install did not reach the gate (fetched=%v gate=%v): %s", fetched, gate, out)
+	}
+}
+
 // shellExecLines returns the executable lines of a shell function body,
 // trimmed. A commented-out copy of a repair satisfies a whole-text Contains
 // while doing nothing, so assertions about what the installer DOES read only
@@ -711,6 +832,10 @@ func shellExecLines(body string) []string {
 	return out
 }
 
+// extractShellFunc returns the body of a top-level shell function, from its
+// definition line to the closing brace at column 0. Used so assertions can
+// target ONE function instead of the whole file, which is how a string present
+// in a sibling function satisfied a check about do_install.
 // extractShellFunc returns the body of a top-level shell function, from its
 // definition line to the closing brace at column 0. Used so assertions can
 // target ONE function instead of the whole file, which is how a string present
