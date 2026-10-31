@@ -1414,10 +1414,17 @@ EOF
         if ! systemctl --user start urnetwork.service; then
             pr_err "Failed to restart urnetwork.service after update"
             if [ -f "$install_path/bin/urnetwork.old" ]; then
-                ${SUDO:-} mv -f "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork" 2>/dev/null || true
-                systemctl --user daemon-reload 2>/dev/null || true
-                systemctl --user start urnetwork.service 2>/dev/null || true
-                pr_err "Restored previous binary after service restart failure"
+                if ${SUDO:-} mv -f "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork" 2>/dev/null; then
+                    systemctl --user daemon-reload 2>/dev/null || true
+                    systemctl --user start urnetwork.service 2>/dev/null || true
+                    pr_err "Restored previous binary after service restart failure"
+                else
+                    if [ -f "$install_path/bin/urnetwork.old" ] && [ -f "$install_path/bin/urnetwork" ]; then
+                        pr_err "Failed to restore previous binary; backup remains at %s and replacement at %s" "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork"
+                    else
+                        pr_err "Failed to restore previous binary; check backup at %s and installed binary at %s" "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork"
+                    fi
+                fi
             fi
             exit 1
         fi
@@ -2016,9 +2023,16 @@ EOF
         if ! rc-service urnetwork start; then
             pr_err "Failed to restart urnetwork after update"
             if [ -f "$install_path/bin/urnetwork.old" ]; then
-                ${SUDO:-} mv -f "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork" 2>/dev/null || true
-                rc-service urnetwork start 2>/dev/null || true
-                pr_err "Restored previous binary after service restart failure"
+                if ${SUDO:-} mv -f "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork" 2>/dev/null; then
+                    rc-service urnetwork start 2>/dev/null || true
+                    pr_err "Restored previous binary after service restart failure"
+                else
+                    if [ -f "$install_path/bin/urnetwork.old" ] && [ -f "$install_path/bin/urnetwork" ]; then
+                        pr_err "Failed to restore previous binary; backup remains at %s and replacement at %s" "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork"
+                    else
+                        pr_err "Failed to restore previous binary; check backup at %s and installed binary at %s" "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork"
+                    fi
+                fi
             fi
             exit 1
         fi
@@ -2600,6 +2614,12 @@ do_install ()
             if ${SUDO:-} cp -p "$install_path/bin/urnetwork" "$install_path/bin/urnetwork.old" 2>/dev/null || \
                ${SUDO:-} cp "$install_path/bin/urnetwork" "$install_path/bin/urnetwork.old" 2>/dev/null; then
                 provider_swap_pending=1
+            else
+                # No backup means a failed start could not be rolled back, so
+                # the live binary is left untouched.
+                pr_err "Could not back up the current binary to %s; refusing to replace it" "$install_path/bin/urnetwork.old"
+                ${SUDO:-} rm -f "$install_path/bin/urnetwork.old" "$staged_bin" 2>/dev/null || true
+                exit 1
             fi
         fi
 
