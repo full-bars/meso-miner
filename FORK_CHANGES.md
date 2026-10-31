@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/meso-miner  
-**Current Version**: v2026.10.19-1075696970-meso
+**Current Version**: v2026.10.24-1080497440-meso
 
 ---
 
@@ -3748,3 +3748,54 @@ Parity port of the `fragment+segment` dialer from `full-bars/urnetwork-3.23-fix`
 - **CFAA blocklist refresh**: IPv4 41,425 → 41,202, IPv6 548 → 593, across two upstream syncs. Data-only.
 
 **Impact**: operators see the counters continue across a restart, a node that updates carries the certificate block, and a script that still calls a retired report command now fails. Nothing else changes provider traffic behaviour.
+
+---
+
+## 179. v2026.10.22: Handshake Stage Metrics, `docker stop` Forwarding, Blocklist Sync
+
+**Purpose**: Make the post-quantum handshake observable per stage and per curve, make `docker stop` reach the provider, and pick the stable release asset for the running platform. The window is `2ee56058` (v2026.10.20) to `469b6128` (v2026.10.22), 94 non-merge commits. The v2026.10.21 items in section 178 are not repeated.
+
+**Files Modified** (code and scripts, subset): `pqe_tracker.go`, `transfer_encrypt.go`, `provider/metrics_provider.go`, `provider/control_socket.go`, `provider/main.go`, `docker/scripts/provider_common.sh`, `ip_security_cfaa_block.go`, `ip_blocker_block.go`, `monitoring/grafana/dashboards/urnetwork-providers.json`.
+
+**Files Added**: `docker/scripts/test_stop_forwarding.sh`, `docker/scripts/test_login_exit_code.sh`.
+
+**Change**:
+- **The handshake is counted per stage and per curve** (PRs #259, #261): the `[pqe]` line reports attempts, completed TLS, verified identities, identity failures and a per-curve histogram. `/metrics` exports `urnet_sessions_handshake_total{stage}` and `urnet_sessions_curve_total{curve}`, and the bundled dashboard gains two panels. A superseded epoch and concurrent verifiers no longer skip or double a count (#259).
+- **Lifetime session counters do not fall when a proxy exits** (PR #261): a departing manager's counts fold into a provider-wide accumulator first, so `rate()` does not read a decrease as a reset.
+- **`docker stop` reaches the provider** (PR #258): a shell as PID 1 ignores SIGTERM, so Docker used to SIGKILL the container at its grace timeout. The supervisor now forwards the signal and waits for a HotSwap successor. `docker/scripts/test_stop_forwarding.sh` covers it.
+- **The updater selects an asset for this platform** (PR #258): the nightly path could take another platform's tarball, and stable lookup stalled on a docs-only release. Selection now matches operating system and architecture.
+- **The blocklists sync together and drift is checked** (PRs #262, #265, #235, #252): the blocker table syncs with the CFAA file, and the scheduled workflow fails on drift. The final sync carries 46,733 IPv4 and 597 IPv6 CFAA entries and 164,212 blocked hosts. Data only.
+
+**Impact**: operators see the handshake breakdown on `/metrics`, and a `docker stop` now shuts the provider down cleanly. The blocklist refresh changes what a node blocks once it runs this build.
+
+**How to Identify in New Upstream**: the `[pqe]` line and the `urnet_sessions_*` names in `pqe_tracker.go` and `provider/metrics_provider.go`; the signal forwarding in `docker/scripts/provider_common.sh`.
+
+**Status**: merged on `main`, tagged `v2026.10.22-1078651310-meso`.
+
+---
+
+## 180. v2026.10.24: Extender Role (Unproven), Chrome ClientHello Switch, Proxy and Outage Fixes
+
+**Purpose**: Port the v2026 extender stack and the switchable Chrome ClientHello from 3.23-fix, and fix the outage-window failures of 2026-10-23. The window is `469b6128` (v2026.10.22) to `d20d24c6` (v2026.10.24), 144 non-merge commits.
+
+**Files Modified** (subset): `ip.go`, `ip_remote_multi_client.go`, `net_http.go`, `net_http_doh.go`, `net_tls.go`, `transport.go`, `transport_h3_quic_stats.go`, `protocol/extender.proto`, `provider/main.go`, `provider/proxy_trim.go`, `provider/lifetime_metrics.go`, `provider/smart_dialer_probe.go`, `provider/memory_headroom.go`, `provider/oom_cap.go`, `provider/resource_pressure.go`, `provider/proxy_url_source.go`, `scripts/Provider_Install_FreeBSD.sh`, `hotkeywallet/store.go`.
+
+**Files Added** (subset): `extender/`, `extenderrole/role.go`, `provider/extender_role.go`, `net_extender*.go`, `gossip/`, `res/extender_spoof.bin`, `net_tls_hello*.go`, `provider/tls_hello.go`, `provider/thrash_exit_note.go`, `internal/durablesync/`, `internal/urnettools/proxy_trim_status.go`.
+
+**Change**:
+- **The extender stack is ported and is a work in progress, not a proven role** (PRs #289, #290): the extender v2 library, the feed and gossip layer and the pinned directory candidate come from 3.23-fix. With `URNETWORK_EXTENDER` set, the role binds carriers on the direct slot (TCP 443, QUIC 443, DNS 4053). Forwards are limited to `URNETWORK_EXTENDER_ALLOWED_HOSTS`. The role has not been verified in production and does not run on the fleet. Review fixes are in #290.
+- **The Chrome ClientHello is a runtime switch, off by default** (PR #289): `urnet-tools set tls-hello on|off` applies to new connections, with `URNETWORK_TLS_HELLO` as the startup default. A persisted `off` beats the environment.
+- **Smaller ported subsystems** (PR #289): the blocker gate in the packet path, lag naming, a control-result and wallet-mapping API, and four dataplane leaves.
+- **Proxy trim reports its cap** (PRs #282, #284): `urnet-tools proxy trim` with no count prints the cap, its source and the held-back count.
+- **Lifetime counters carry their start date** (PRs #285, #287).
+- **The smart dialer is restart-required and costs nothing when off** (PR #297).
+- **The disk benchmark samples by time** (PR #300): a 3 s budget up to 256 MiB, in place of a fixed 16 MiB.
+- **Outage fixes** (PRs #302, #294, #298, #301, #288, #296, #291): proxied H3 charges its handshake bytes and waits on the attempt budget; the degraded reaper holds when scores tie; the memory-headroom check classifies the limit by source; OOM-cap write failures are reported; the URL-proxy warm-up hold is bounded to five minutes; a planned thrash restart writes its own marker; and the `psi_some_avg60` read targets `/proc/pressure/memory`.
+- **Installer and wallet fixes** (PRs #292, #293, #295): the FreeBSD installer refuses a bad binary before replacing a working one and no longer writes through a symlinked shell rc; the Windows hotkey write tolerates a directory flush that Windows refuses.
+- **CFAA and blocker tables refreshed** (PR #275): 46,733 to 47,632 IPv4 entries and 597 to 619 IPv6, blocked hosts 164,212 to 164,225. Data only.
+
+**Impact**: operators with `smart_dialer` on must restart to apply it. Nodes with `h3` set to `all`, a count or `auto` see their proxied H3 dials wait on the shared budget. The extender and ClientHello switch change nothing unless set.
+
+**How to Identify in New Upstream**: `extender/` and `provider/extender_role.go` for the role; `net_tls_hello_gate.go` and `provider/tls_hello.go` for the switch; `transport_h3_quic_stats.go` for the H3 accounting.
+
+**Status**: merged on `main`, tagged `v2026.10.24-1080497440-meso`. The extender role is in progress and unproven.
