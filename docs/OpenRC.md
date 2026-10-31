@@ -69,7 +69,7 @@ tail -f /var/log/urnetwork.log
 
 `urnet-tools logs` follows the same file. If the service does not stay up, read `/var/log/urnetwork.err` as well as the main log. If you have not authenticated yet, go back to [Authenticate](#authenticate).
 
-A node with no proxy list configured serves traffic directly from the box's own address. The `[profit]` line in the log says so with `mode=direct`; see the [Log Reference](/full-bars/meso-miner/blob/main/LOG_REFERENCE.md#-profit-heartbeat-323-fix).
+A node with no proxy list configured serves traffic directly from the box's own address. The `[profit]` line in the log says so with `mode=direct`; see the [Log Reference](/full-bars/meso-miner/blob/main/LOG_REFERENCE.md#-profit-heartbeat).
 
 To add proxies, see [Adding Proxies](/full-bars/meso-miner/wiki/Adding-Proxies).
 
