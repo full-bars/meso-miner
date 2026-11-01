@@ -242,7 +242,7 @@ Submits the consent for the coldkey. Recommended: sign with 'urnet-tools
 wallet sign' (browser, seed stays in the extension) and let it call this.
 The --coldkey_seed_file form reads a seed from disk and is FOR THE
 OPERATOR'S OWN WORKSTATION ONLY, never a fleet node; on a fleet member the
-tool asks before it uses one and refuses when nothing can answer. Without a
+tool prints a warning and carries on. Without a
 proof this sends the legacy unsigned request. Provider flags pass through.
 `)
 		return nil
