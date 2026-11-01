@@ -27,14 +27,14 @@ Metrics: on
 Prometheus target: 100.64.0.10:9100
 ```
 
-The setting survives restarts and updates. Run `urnet-tools metrics status` at any time to see it again.
+The setting survives restarts and updates. Run `urnet-tools metrics status` at any time to see it again. `urnet-tools metrics off` stops the listener now, but a nonempty `URNETWORK_METRICS` starts it again on restart or HotSwap. Remove the environment variable as well to keep metrics off.
 
 ### Where the endpoint listens
 
 | Situation | Listens on |
 |---|---|
 | Bare metal or VM (default) | `127.0.0.1` plus this machine's Tailscale address, if it has one |
-| Docker container (default) | Every interface inside the container |
+| Docker container (default) | Every IPv4 interface inside the container, unless its network has a public address; then loopback and Tailscale only |
 | `urnet-tools metrics listen <ip:port>` | Exactly that address |
 | `URNETWORK_METRICS=<ip:port>` set in the environment | Exactly that address (overrides everything above) |
 
@@ -55,7 +55,7 @@ urnet-tools metrics listen auto   # back to the default
 
 ### Docker
 
-Inside a container `/metrics` is on by default and listens on port 9100 on every container interface, so there is nothing to turn on. Publish the port on an address Prometheus can reach:
+Inside a container `/metrics` is on by default and listens on port 9100 on every IPv4 interface of the container, so there is nothing to turn on. Other containers and hosts with a route to the container can reach it even without a published port. To scrape from outside, publish the port on an address Prometheus can reach:
 
 ```bash
 docker run -d --name urnetwork -p 100.64.0.10:9100:9100 ... ghcr.io/full-bars/meso-miner:latest
