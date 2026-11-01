@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/docopt/docopt-go"
 	"github.com/urnetwork/connect"
 	"golang.org/x/net/proxy"
 )
@@ -43,16 +44,6 @@ func TestProxyKeyDisplayRejectsUnsafePortAndHost(t *testing.T) {
 	}
 }
 
-func TestPercentEncodedProxyUserinfoIsRedacted(t *testing.T) {
-	address := "socks5%3A%2F%2Falice%3Asecret%40host:1080"
-	got := redactedProxyAddress(address)
-	for _, secret := range []string{"alice", "secret"} {
-		if strings.Contains(got, secret) {
-			t.Errorf("redacted address leaks %q: %q", secret, got)
-		}
-	}
-}
-
 // Errors from provide formatting proxySettings.Address must not leak credentials
 // if the address string is malformed and contains userinfo or parameters.
 func TestProvideProxyAddressErrorsAreRedacted(t *testing.T) {
@@ -72,6 +63,51 @@ func TestProvideProxyAddressErrorsAreRedacted(t *testing.T) {
 	for _, leak := range []string{"alice", "secret", "token"} {
 		if strings.Contains(errBelowBar.Error(), leak) {
 			t.Errorf("errBelowBar leaks %q: %v", leak, errBelowBar)
+		}
+	}
+}
+
+func TestPercentEncodedProxyUserinfoIsRedacted(t *testing.T) {
+	address := "socks5%3A%2F%2Falice%3Asecret%40host:1080"
+	got := redactedProxyAddress(address)
+	for _, secret := range []string{"alice", "secret"} {
+		if strings.Contains(got, secret) {
+			t.Errorf("redacted address leaks %q: %q", secret, got)
+		}
+	}
+}
+
+// Errors from h3 packet conn factory formatting proxySettings.Address must not leak credentials.
+func TestH3PacketConnProxyAddressErrorsAreRedacted(t *testing.T) {
+	malformed := "socks5://alice:secret@host:1080/token"
+	settings := &connect.ProxySettings{
+		Network: "socks5",
+		Address: malformed,
+	}
+
+	factory := newH3PacketConnFactory(settings)
+	_, err := factory(t.Context())
+	if err == nil {
+		t.Fatal("expected error from malformed address, got nil")
+	}
+	for _, leak := range []string{"alice", "secret", "token"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Errorf("h3 packet conn factory error leaks %q: %v", leak, err)
+		}
+	}
+}
+
+// Errors from resolveClaimCredential formatting store keys must not leak credentials.
+func TestClaimCredentialStoreKeyErrorsAreRedacted(t *testing.T) {
+	withTempHome(t)
+	malformed := "host:1080;password=secret"
+	_, err := resolveClaimCredential(docopt.Opts{"--store-client": malformed})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	for _, leak := range []string{"secret", "password", "1080;"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Errorf("claim credential error leaks %q: %v", leak, err)
 		}
 	}
 }
