@@ -3398,7 +3398,7 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 
 - **Windows Provider Support (v31.2)**: HotSwap via Windows named pipes with equivalent lifecycle management (start/stop/restart/logs). Go `urnet-tools` included in the Windows tarball. `schtasks`-based auto-start registration. Control-socket shutdown for graceful teardown. DACL socket hardening to restrict access to the owning user.
 
-- **Monitoring & Metrics (v31.2)**: `/metrics` endpoint enabled by default on port 9091 in Prometheus exposition format. Throttled error counters to avoid metric cardinality explosion. Contract and lifetime metrics for provider session observability. Prometheus + Grafana Docker Compose bundle for one-command monitoring.
+- **Monitoring & Metrics (v31.2)**: `/metrics` endpoint enabled by default on port 9100 in Prometheus exposition format. Throttled error counters to avoid metric cardinality explosion. Contract and lifetime metrics for provider session observability. Prometheus + Grafana Docker Compose bundle for one-command monitoring.
 
 - **Provider Discovery (v31.2)**: state-dir deduplication resolves unit+process duplicates where the same provider appears twice. `urnet-tools config` now uses the same discovery path as `status`, eliminating inconsistent provider listings.
 

@@ -425,7 +425,7 @@ Monitors backend connectivity. It is designed to be conservative to avoid false 
 
 ## 🛡️ Backend Outage Protection (`[govern]`, `[t]flap`, `[proxy][outage]`)
 
-Observes by default on this line (`URNETWORK_GOVERN=shadow`); set `enforce` to act, `off` to disable (see [Configuration](docs/Configuration.md#backend-outage-protection)). Every line starting with `[govern]` is also in the important log.
+Enforces by default (`URNETWORK_GOVERN` unset or `enforce`); set `shadow` to observe only, `off` to disable (see [Configuration](docs/Configuration.md#backend-outage-protection)). Every line starting with `[govern]` is also in the important log.
 
 ```
 [govern] ok window=60s attempts=732 (12.2/s) connected=673 died_young=9 good=97% baseline=91% threshold=20% socks=9 tls=0 upgrade=0 timeout_platform=9 timeout_silent=3 other=0 refused=0 dials/attempt=3.3 KB/attempt=4.8 failed_KB=71 would_hold=0 mode=enforce rate=200.0/s waiting=0
