@@ -158,7 +158,7 @@
         },
         {
             "name": "Traffic monitor",
-            "description": "vnStat web UI on port 8080. Disabled by default for security (it exposes fleet traffic without authentication). Enable only via a custom image build.",
+            "description": "Retired. vnStat is no longer run and port 8080 is not exposed. The variable is still accepted so old eggs keep importing; setting it only logs a warning.",
             "env_variable": "ENABLE_VNSTAT",
             "default_value": "false",
             "user_viewable": false,

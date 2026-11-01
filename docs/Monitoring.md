@@ -55,17 +55,18 @@ urnet-tools metrics listen auto   # back to the default
 
 ### Docker
 
-Publish the port on an address Prometheus can reach, then turn metrics on inside the container:
+Inside a container `/metrics` is on by default and listens on port 9100 on every container interface, so there is nothing to turn on. Publish the port on an address Prometheus can reach:
 
 ```bash
 docker run -d --name urnetwork -p 100.64.0.10:9100:9100 ... ghcr.io/full-bars/meso-miner:latest
-docker exec urnetwork urnet-tools metrics on
 ```
+
+The `urnet-tools` inside the image does not handle `metrics`, so `docker exec urnetwork urnet-tools metrics on` fails. A container with a public address on one of its interfaces stays on loopback and Tailscale instead (see the warning below).
 
 Here `100.64.0.10` is the host's Tailscale address, and the Prometheus target is `100.64.0.10:9100`. For several containers on one host, publish each on its own host port (`-p 100.64.0.10:9101:9100`) and use that port as the target.
 
 > [!WARNING]
-> With `--network host`, the container shares the host's interfaces, so the default binds every host interface, including public ones. Use `urnet-tools metrics listen <tailscale-ip>:9100` there.
+> With `--network host`, the container shares the host's interfaces. If the host has no public address, the default binds every host interface, including the LAN. If it has one, the default stays on loopback and Tailscale. To choose the address, set `URNETWORK_METRICS=<tailscale-ip>:9100` in the container's environment. `urnet-tools metrics listen` does not run inside the image.
 
 ## 2. Run the monitoring stack
 

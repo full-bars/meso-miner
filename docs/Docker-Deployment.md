@@ -7,7 +7,7 @@ This page keeps the copy-paste Docker examples from the README in one place. Use
 > [!IMPORTANT]
 > **Host-Side vs. In-Container Tooling:**
 > - **`urnet-docker`** runs **on the Docker host** (outside the containers). It discovers provider containers, reads their in-container JWTs, and dispatches management tasks directly.
-> - **`urnet-tools`** runs **inside the container** (accessible via `docker exec -it <container> urnet-tools <command>`).
+> - **`urnet-tools`** runs **inside the container** (accessible via `docker exec -it <container> urnet-tools <command>`). The in-container tool handles a subset of commands; any other operation prints `not supported in Docker` and exits 1.
 
 Install `urnet-docker` once on the host (SHA-256 verified against the release API):
 
@@ -529,7 +529,7 @@ When nothing was saved either, the second line reads `No proxy.txt found; none c
 
 ## Letting the Thrash Watchdog Restart the Container's Provider
 
-The swap-thrash watchdog ([details](/full-bars/meso-miner/wiki/Configuration#swap-thrash-watchdog)) restarts the provider by exiting with status 75. Inside a container that is allowed only when you opt in, because only you know that the container restarts the provider afterwards:
+The swap-thrash watchdog ([details](/full-bars/meso-miner/wiki/Configuration#swap-thrash-watchdog)) restarts the provider by exiting with status 75. In a container the watchdog counts the container as a supervisor, the same as systemd, so there is no opt-in variable. The container needs a restart policy that restarts on exit:
 
 ```yaml
 services:
@@ -538,9 +538,8 @@ services:
     restart: unless-stopped
     environment:
       URNETWORK_SELF_HEAL: "1"
-      URNETWORK_EXIT75_OK: "1"
     volumes:
       - ur_config_1:/root/.urnetwork   # the thrash cap and its 24h ceiling live here
 ```
 
-The start scripts (`start_stable.sh`, `start_nightly.sh`, `start_jwt.sh` and the provider loop of the Pelican egg) treat exit 75 as a planned restart: they wait 5 seconds, restart the provider and leave the JWT alone. Without `URNETWORK_EXIT75_OK=1` the watchdog logs `no-supervisor` and never exits. Without a writable, persistent `~/.urnetwork` it logs `persist-failed` and never exits. On runtimes that do not create `/.dockerenv` (Podman, Kubernetes) also set `URNETWORK_CONTAINER=1`.
+The start scripts (`start_stable.sh`, `start_nightly.sh`, `start_jwt.sh` and the provider loop of the Pelican egg) treat exit 75 as a planned restart: they wait 5 seconds, restart the provider and leave the JWT alone. Before it exits, the watchdog proves that `~/.urnetwork` can be written and read back. If it cannot, the watchdog logs `persist-failed` and does not restart, because a self-exit without its throttle record could loop. Keep `~/.urnetwork` on a persistent volume so the restart ceiling survives a restart. On runtimes that do not create `/.dockerenv` (Podman, Kubernetes) also set `URNETWORK_CONTAINER=1`.
