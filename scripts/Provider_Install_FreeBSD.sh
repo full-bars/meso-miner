@@ -982,8 +982,6 @@ do_install() {
         fi
     fi
 
-    priv mv -f "$staged_tool" "$install_path/bin/urnet-tools" || { pr_err "Failed to install urnet-tools"; exit 1; }
-    staged_tool=""
     # Back up the old provider only after the tree passed the permission gate.
     provider_backup="$install_path/bin/.urnetwork.bak.$$"
     had_old_binary=0
@@ -1003,6 +1001,11 @@ do_install() {
         fi
     fi
 
+    # Install the wrapper only after the provider backup exists. If the backup
+    # fails the installer exits, and a partial update would leave the new tool
+    # beside the old provider.
+    priv mv -f "$staged_tool" "$install_path/bin/urnet-tools" || { pr_err "Failed to install urnet-tools"; exit 1; }
+    staged_tool=""
     priv mv -f "$staged" "$provider_bin" || {
         pr_err "Failed to install binary"
         priv_rm "$staged"
@@ -1072,8 +1075,17 @@ RCSCRIPT
         rm -rf "$tmpdir"
         exit 1
     fi
-    [ "$had_old_binary" -eq 1 ] && priv rm -f "$provider_backup" 2>/dev/null || true
-    provider_backup=""
+    if [ "$had_old_binary" -eq 1 ]; then
+        # Clear the path only when the backup is really gone: on failure the
+        # exit cleanup must still know where it is so it can retry.
+        if priv rm -f "$provider_backup" 2>/dev/null; then
+            provider_backup=""
+        else
+            pr_warn "Could not remove the backup binary at %s; it is left on disk" "$provider_backup"
+        fi
+    else
+        provider_backup=""
+    fi
 
     # Publish after a successful start; rename replaces a symlink rather than following it.
     ver_tmp="$install_path/.version.new.$$"
