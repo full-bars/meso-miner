@@ -22,7 +22,7 @@ The healthcheck avoids a cold-start race where dependent nodes would otherwise l
 | 5 nodes | Moderate single-host scaling. |
 | 10 nodes | Larger hosts where you want a ready fleet file. |
 
-Each service needs a unique service name, container name, host port, and vnStat volume. All nodes share `ur_config` for the JWT.
+Each service needs a unique service name and container name. All nodes share `ur_config` for the JWT.
 
 ## 🚶 3-Node Walkthrough
 
@@ -39,16 +39,13 @@ services:
       - net.ipv4.ip_forward=1
     environment:
       - BUILD=jwt
-      - ENABLE_VNSTAT=true
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-1
       - URNETWORK_AUTH_CODE=YOUR_AUTH_CODE # Only needed on Node 1
     volumes:
       - ur_config:/root/.urnetwork  # SHARED volume for JWT
-      - urfix-1_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
     ports:
-      - "9001:8080"
     logging:
       driver: json-file
       options:
@@ -77,15 +74,12 @@ services:
         condition: service_healthy
     environment:
       - BUILD=jwt
-      - ENABLE_VNSTAT=true
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-2
     volumes:
       - ur_config:/root/.urnetwork  # SHARED volume
-      - urfix-2_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
     ports:
-      - "9002:8080"
     logging:
       driver: json-file
       options:
@@ -106,15 +100,12 @@ services:
         condition: service_healthy
     environment:
       - BUILD=jwt
-      - ENABLE_VNSTAT=true
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-3
     volumes:
       - ur_config:/root/.urnetwork  # SHARED volume
-      - urfix-3_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
     ports:
-      - "9003:8080"
     logging:
       driver: json-file
       options:
@@ -123,9 +114,6 @@ services:
 
 volumes:
   ur_config:      # Shared authentication session
-  urfix-1_vnstat: # Unique traffic stats per node
-  urfix-2_vnstat:
-  urfix-3_vnstat:
 ```
 
 ## 🚀 Ready Templates
@@ -162,16 +150,13 @@ services:
     container_name: urfix-1
     environment:
       - BUILD=jwt
-      - ENABLE_VNSTAT=true
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-1
       - URNETWORK_AUTH_CODE=YOUR_AUTH_CODE
     volumes:
       - ur_config:/root/.urnetwork
-      - urfix-1_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
     ports:
-      - "9001:8080"
     healthcheck:
       test: ["CMD-SHELL", "[ -s /root/.urnetwork/jwt ]"]
       interval: 5s
@@ -184,68 +169,51 @@ services:
     container_name: urfix-2
     environment:
       - BUILD=jwt
-      - ENABLE_VNSTAT=true
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-2
     volumes:
       - ur_config:/root/.urnetwork
-      - urfix-2_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
     ports:
-      - "9002:8080"
 
   node-3:
     <<: *dependent-node
     container_name: urfix-3
     environment:
       - BUILD=jwt
-      - ENABLE_VNSTAT=true
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-3
     volumes:
       - ur_config:/root/.urnetwork
-      - urfix-3_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
     ports:
-      - "9003:8080"
 
   node-4:
     <<: *dependent-node
     container_name: urfix-4
     environment:
       - BUILD=jwt
-      - ENABLE_VNSTAT=true
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-4
     volumes:
       - ur_config:/root/.urnetwork
-      - urfix-4_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
     ports:
-      - "9004:8080"
 
   node-5:
     <<: *dependent-node
     container_name: urfix-5
     environment:
       - BUILD=jwt
-      - ENABLE_VNSTAT=true
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-5
     volumes:
       - ur_config:/root/.urnetwork
-      - urfix-5_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
     ports:
-      - "9005:8080"
 
 volumes:
   ur_config:
-  urfix-1_vnstat:
-  urfix-2_vnstat:
-  urfix-3_vnstat:
-  urfix-4_vnstat:
-  urfix-5_vnstat:
 ```
 
 ### 🔟 10 Nodes
@@ -276,16 +244,13 @@ services:
     container_name: urfix-1
     environment:
       - BUILD=jwt
-      - ENABLE_VNSTAT=true
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-1
       - URNETWORK_AUTH_CODE=YOUR_AUTH_CODE
     volumes:
       - ur_config:/root/.urnetwork
-      - urfix-1_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
     ports:
-      - "9001:8080"
     healthcheck:
       test: ["CMD-SHELL", "[ -s /root/.urnetwork/jwt ]"]
       interval: 5s
@@ -298,148 +263,111 @@ services:
     container_name: urfix-2
     environment:
       - BUILD=jwt
-      - ENABLE_VNSTAT=true
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-2
     volumes:
       - ur_config:/root/.urnetwork
-      - urfix-2_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
     ports:
-      - "9002:8080"
 
   node-3:
     <<: *dependent-node
     container_name: urfix-3
     environment:
       - BUILD=jwt
-      - ENABLE_VNSTAT=true
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-3
     volumes:
       - ur_config:/root/.urnetwork
-      - urfix-3_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
     ports:
-      - "9003:8080"
 
   node-4:
     <<: *dependent-node
     container_name: urfix-4
     environment:
       - BUILD=jwt
-      - ENABLE_VNSTAT=true
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-4
     volumes:
       - ur_config:/root/.urnetwork
-      - urfix-4_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
     ports:
-      - "9004:8080"
 
   node-5:
     <<: *dependent-node
     container_name: urfix-5
     environment:
       - BUILD=jwt
-      - ENABLE_VNSTAT=true
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-5
     volumes:
       - ur_config:/root/.urnetwork
-      - urfix-5_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
     ports:
-      - "9005:8080"
 
   node-6:
     <<: *dependent-node
     container_name: urfix-6
     environment:
       - BUILD=jwt
-      - ENABLE_VNSTAT=true
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-6
     volumes:
       - ur_config:/root/.urnetwork
-      - urfix-6_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
     ports:
-      - "9006:8080"
 
   node-7:
     <<: *dependent-node
     container_name: urfix-7
     environment:
       - BUILD=jwt
-      - ENABLE_VNSTAT=true
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-7
     volumes:
       - ur_config:/root/.urnetwork
-      - urfix-7_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
     ports:
-      - "9007:8080"
 
   node-8:
     <<: *dependent-node
     container_name: urfix-8
     environment:
       - BUILD=jwt
-      - ENABLE_VNSTAT=true
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-8
     volumes:
       - ur_config:/root/.urnetwork
-      - urfix-8_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
     ports:
-      - "9008:8080"
 
   node-9:
     <<: *dependent-node
     container_name: urfix-9
     environment:
       - BUILD=jwt
-      - ENABLE_VNSTAT=true
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-9
     volumes:
       - ur_config:/root/.urnetwork
-      - urfix-9_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
     ports:
-      - "9009:8080"
 
   node-10:
     <<: *dependent-node
     container_name: urfix-10
     environment:
       - BUILD=jwt
-      - ENABLE_VNSTAT=true
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-10
     volumes:
       - ur_config:/root/.urnetwork
-      - urfix-10_vnstat:/var/lib/vnstat
       - ./proxy.txt:/app/proxy.txt
     ports:
-      - "9010:8080"
 
 volumes:
   ur_config:
-  urfix-1_vnstat:
-  urfix-2_vnstat:
-  urfix-3_vnstat:
-  urfix-4_vnstat:
-  urfix-5_vnstat:
-  urfix-6_vnstat:
-  urfix-7_vnstat:
-  urfix-8_vnstat:
-  urfix-9_vnstat:
-  urfix-10_vnstat:
 ```
 
 ## ▶️ Start the Stack

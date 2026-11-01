@@ -92,7 +92,7 @@ Quick jump:
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `ENABLE_VNSTAT` | `true` | Enables the traffic monitor on port 8080. |
+| `ENABLE_VNSTAT` | none | Retired. Accepted so old compose files keep working; it starts nothing and logs a warning. Use the `/metrics` endpoint on `:9091` instead. |
 | `ENABLE_IP_CHECKER` | `false` | Diagnostic only. Prints your full public IP to container logs on startup via an external script. Distinct from dashboard identity reporting, which sends only a redacted IP. |
 | `/metrics` endpoint | `:9091` | **Since v3.23.0-fix.31.2 (inherited from the 3.23-fix line)**, the Prometheus metrics endpoint is enabled by default on port `9091`. No `URNETWORK_METRICS` environment variable is required — the provider starts the metrics listener automatically. Scrape `http://<host>:9091/metrics` from Prometheus or any compatible collector. To disable it, set `URNETWORK_METRICS=0`. |
 | `URNETWORK_PUBLIC_IP` | `<auto-detected>` | Override the public IP shown in the dashboard identity label. Display only; does not change the actual egress IP. Auto-detected via `ip.me` on native/systemd installs; auto-set by Docker startup scripts. Create `~/.urnetwork/disable_ip_autodetect` or run `urnet-tools ip-detect off` to prevent autodetection. See [Node-Identity.md](/full-bars/meso-miner/wiki/Node-Identity). |

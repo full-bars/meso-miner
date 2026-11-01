@@ -73,7 +73,7 @@ serves mid-flight.
 
 ## Security notes
 
-- vnStat ships OFF by default: its port-8080 web UI exposes traffic counters
+- vnStat is retired: the variable is still accepted so old eggs keep importing, but it starts nothing and logs a warning. Port 8080 is not exposed.
   publicly, which is why the default is off. It was hardened a long time ago,
   so this is a conservative default, not an open vulnerability — enable it if
   you want the counters and accept the exposure.
