@@ -223,7 +223,7 @@ docker run -d \
 - `UR_API_URL` / `UR_CONNECT_URL` - Point at a custom API + connect backend instead of `bringyour.com`. Must be set together; saved to the `~/.urnetwork` volume so it survives restarts. See [Configuration Reference](docs/Configuration.md).
 
 > [!TIP]
-> Providers do not require any listening ports. Outbound connections handle all traffic. vnStat is retired and `ENABLE_VNSTAT` now only warns; for traffic telemetry use the Prometheus `/metrics` endpoint on `:9091`. See the [vnStat retirement note](docs/Docker-Deployment.md#-optional-running-with-vnstat-bandwidth-monitor).
+> Providers do not require any listening ports. Outbound connections handle all traffic. vnStat is retired and `ENABLE_VNSTAT` now only warns; for traffic telemetry use the Prometheus `/metrics` endpoint on `:9100`. See the [vnStat retirement note](docs/Docker-Deployment.md#-optional-running-with-vnstat-bandwidth-monitor).
 
 See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/password auth, Watchtower, multi-container, and advanced options.
 
