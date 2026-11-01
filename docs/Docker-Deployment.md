@@ -297,13 +297,10 @@ docker run -d \
   -e URNETWORK_RAMLOGS=1 \
   -e URNETWORK_NODE_NAME=urfix \
   -e BUILD=jwt \
-  -e ENABLE_VNSTAT=true \
   -e HOST_HOSTNAME=$(hostname) \
   -e PROXY_URL='https://example.com/your-proxy-list.txt' \
   -v urfix_config:/root/.urnetwork \
-  -v urfix_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
-  -p 9001:8080 \
   ghcr.io/full-bars/meso-miner:latest YOUR_AUTH_CODE
 ```
 
@@ -339,7 +336,6 @@ docker run -d \
   -e BUILD=jwt \
   -e URNETWORK_HOT_RESTART=0 \
   -v urfix_config:/root/.urnetwork \
-  -v urfix_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
   ghcr.io/full-bars/meso-miner:latest YOUR_AUTH_CODE
 ```
@@ -400,13 +396,10 @@ docker run -d \
   -e BUILD=jwt \
   -e URNETWORK_PROFILE=auto \
   -e URNETWORK_NODE_NAME=urfix \
-  -e ENABLE_VNSTAT=true \
   -e HOST_HOSTNAME=$(hostname) \
   -e PROXY_URL='https://example.com/your-proxy-list.txt' \
   -v urfix_config:/root/.urnetwork \
-  -v urfix_vnstat:/var/lib/vnstat \
   -v /path/to/proxy.txt:/app/proxy.txt \
-  -p 9001:8080 \
   ghcr.io/full-bars/meso-miner:latest YOUR_AUTH_CODE
 ```
 
@@ -463,108 +456,9 @@ docker exec -it <container> urnet-tools idle-update --window 0
 
 ## 📊 (Optional) Running with vnStat Bandwidth Monitor
 
-By default, production Docker deployments run with **zero listening ports** and vnStat disabled. The provider establishes all p2p tunnels and relay connections outbound, requiring no inbound port forwarding.
+vnStat is retired. It is no longer built into the container, and `ENABLE_VNSTAT=true` now only prints a warning. Nothing listens on port 8080, and there is no `/var/lib/vnstat` volume to mount.
 
-If you specifically want the web-based vnStat traffic monitor to view real-time throughput graphs:
-
-### 1. Configuration Requirements
-- Set `-e ENABLE_VNSTAT=true`
-- Map a host port to container port `8080`: `-p <host_port>:8080`
-- Mount a persistent volume to preserve traffic history across restarts: `-v <name>_vnstat:/var/lib/vnstat`
-
-### 2. Single-Container Example
-
-```bash
-docker run -d \
-  --name=urfix \
-  --pull=always \
-  --restart=unless-stopped \
-  --cap-add=NET_ADMIN \
-  --cap-add=NET_RAW \
-  --sysctl net.ipv4.ip_forward=1 \
-  -e BUILD=jwt \
-  -e ENABLE_VNSTAT=true \
-  -e HOST_HOSTNAME=$(hostname) \
-  -v urfix_config:/root/.urnetwork \
-  -v urfix_vnstat:/var/lib/vnstat \
-  -v /path/to/proxy.txt:/app/proxy.txt \
-  -p 127.0.0.1:9001:8080 \
-  ghcr.io/full-bars/meso-miner:latest AUTH_CODE_HERE
-```
-
-Access the traffic page locally at `http://localhost:9001` (bind to `127.0.0.1` prevents exposing the unauthenticated vnStat web UI to the public internet; use a reverse proxy or SSH tunnel if accessing remotely).
-
----
-
-### 3. Multi-Container Rules: Offsetting Ports & Volumes
-
-When running more than one provider container on the same host with vnStat enabled, you **must adhere to three mandatory isolation rules**:
-
-> [!CAUTION]
-> **1. Offset Host Ports:** The internal container port is always `:8080`. Every container running on the same Docker host must map to a **unique host port** (e.g. Node 1 on `127.0.0.1:9001`, Node 2 on `127.0.0.1:9002`). Attempting to reuse the same host port will cause a Docker daemon bind error (`bind: address already in use`).
->
-> **2. Offset vnStat Storage Volumes:** Never point multiple containers at the same vnStat volume. vnStat maintains an active database inside `/var/lib/vnstat`. Sharing a single volume causes concurrent write locks, data clobbering, and database corruption. Each container must have its own isolated volume (e.g. `urfix-1_vnstat`, `urfix-2_vnstat`).
->
-> **3. Isolate Provider Config Volumes (`/root/.urnetwork`):** Never share `/root/.urnetwork` between multiple running containers. The provider maintains process-local SQLite databases (`proxy.state`, `.client_jwts.json`, `lifetime`) and identity keys inside this directory. Sharing it across containers leads to lock contention and state corruption. Each container requires its own config volume (`ur_config_1`, `ur_config_2`).
-
-#### Multi-Container Compose Snippet:
-
-```yaml
-services:
-  node-1:
-    image: ghcr.io/full-bars/meso-miner:latest
-    container_name: urfix-1
-    environment:
-      - BUILD=jwt
-      - ENABLE_VNSTAT=true
-    volumes:
-      - ur_config_1:/root/.urnetwork    # ISOLATED identity & state volume
-      - urfix-1_vnstat:/var/lib/vnstat # DEDICATED vnStat volume
-      - ./proxy-1.txt:/app/proxy.txt
-    ports:
-      - "127.0.0.1:9001:8080"          # OFFSET host port (localhost bound)
-
-  node-2:
-    image: ghcr.io/full-bars/meso-miner:latest
-    container_name: urfix-2
-    environment:
-      - BUILD=jwt
-      - ENABLE_VNSTAT=true
-    volumes:
-      - ur_config_2:/root/.urnetwork    # ISOLATED identity & state volume
-      - urfix-2_vnstat:/var/lib/vnstat # DEDICATED vnStat volume
-      - ./proxy-2.txt:/app/proxy.txt
-    ports:
-      - "127.0.0.1:9002:8080"          # OFFSET host port (localhost bound)
-
-volumes:
-  ur_config_1:
-  ur_config_2:
-  urfix-1_vnstat:
-  urfix-2_vnstat:
-```
-
----
-
-### 📊 Prometheus + Grafana Monitoring Bundle (v3.23.0-fix.31.2)
-
-As of v31.2, a `docker-compose.monitoring.yml` file is included in the repository for a ready-made Prometheus + Grafana stack that scrapes the provider's built-in `/metrics` endpoint on port `9091`:
-
-```bash
-# Start the provider + monitoring stack together
-docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
-```
-
-This brings up:
-- **Prometheus** — configured to scrape `http://urnetwork:9091/metrics` at a 15s interval
-- **Grafana** — pre-loaded with a provider dashboard (default login `admin` / `admin`)
-
-> [!TIP]
-> If you run multiple provider containers, update the Prometheus scrape targets in `docker-compose.monitoring.yml` to point at each container's metrics port. Each container needs a unique host-side port mapping (e.g. `-p 9091:9091` on the first, `-p 9092:9091` on the second).
-
-The metrics endpoint is enabled by default — no environment variables are needed. To disable it on a specific container, add `-e URNETWORK_METRICS=0`.
-
-See also the [Configuration](/full-bars/meso-miner/wiki/Configuration#-monitoring--telemetry) reference for the full list of telemetry variables.
+For traffic telemetry use the Prometheus `/metrics` endpoint on port `9091`, which starts by default.
 
 ## 🐦 Pelican Panel
 

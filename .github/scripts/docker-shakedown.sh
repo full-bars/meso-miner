@@ -293,7 +293,7 @@ CID=$(wait_cid_docker dsk-w4-vnstat 120)
 if [ -n "$CID" ]; then
   ok "W4 ENABLE_VNSTAT=true does not break startup (${CID:0:12}…)"
   HTTP=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 http://127.0.0.1:18080/ 2>/dev/null)
-  [ "$HTTP" != "000" ] && [ -n "$HTTP" ] && ok "W4 vnstat port 8080 serves (HTTP $HTTP)" || bad "W4 vnstat port 8080 did not serve (HTTP ${HTTP:-none})"
+  [ "$HTTP" = "000" ] && ok "W4 vnstat stays retired, port 8080 serves nothing" || bad "W4 vnstat port 8080 answered (HTTP $HTTP) although vnStat is retired"
 else
   bad "W4 ENABLE_VNSTAT=true broke startup"
 fi
