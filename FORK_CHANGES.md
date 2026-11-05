@@ -3799,3 +3799,31 @@ Parity port of the `fragment+segment` dialer from `full-bars/urnetwork-3.23-fix`
 **How to Identify in New Upstream**: `extender/` and `provider/extender_role.go` for the role; `net_tls_hello_gate.go` and `provider/tls_hello.go` for the switch; `transport_h3_quic_stats.go` for the H3 accounting.
 
 **Status**: merged on `main`, tagged `v2026.10.24-1080497440-meso`. The extender role is in progress and unproven.
+
+---
+
+## 181. Post-November 1 Reliability and Observability
+
+**Purpose**: Preserve the fork's egress isolation, fair transfer admission, accurate reconnect accounting, identity persistence and operator diagnostics under load and failure.
+
+**Files Modified**: `egress.go`, `egress_windows.go`, `transfer_memory_budget.go`, `transport.go`, `control_family_dial.go`, `framed_message_conn.go`, `provider/client_jwt_store.go`, `provider/h1plus_metrics.go`, `provider/proxy_url_source.go`, `provider/proxy_trim.go`, `provider/proxy_state.go`, `proxy_health.go`, `provider/metrics_listen.go`, `provider/control_socket.go`, `provider/main.go`.
+
+**Change**: Windows checks the actual socket family and refuses an unpinned IPv6 socket. Capacity waiters preserve eligible FIFO order and outstanding grants, including cancellation wakeups. Locally canceled H1 dials do not feed the reconnect governor; proxy failures do not strike the platform family. JWT writes log their cause, skip unchanged bytes, count completed writes and preserve legacy entries. H1+ reports failure classes. Degraded proxy cleanup tracks persisted down time, with holds for outages and trim. Metrics disable values suppress the listener, and the proxy health line no longer duplicates its down count.
+
+**How to Identify in New Upstream**: Look for `errEgressIpv6Unpinned`, `grantedByteCount`, `flushBatchAt`, `formatH1PlusHandshakeClasses`, `restartHeldDownClock` and `metricsDisabledByEnv`.
+
+**Status**: merged on `main` after `v2026.11.1-1087111111-meso`; not yet tagged.
+
+## 182. Restore Extender Bind Capability After Updates
+
+**Purpose**: Keep an opt-in Linux extender able to bind its privileged ports after a provider binary replacement or installer rollback.
+
+**Files Modified**: `scripts/Provider_Install_Linux.sh`, `scripts/Provider_Install_Mac.sh`, `docker/scripts/provider_common.sh`, `docker/scripts/urnet-tools.sh`, `internal/urnettools/update.go`.
+
+**Files Added**: `internal/urnettools/update_extender.go`.
+
+**Change**: Provider swaps attempt to restore `cap_net_bind_service` and warn if it is missing or cannot be verified. The Linux installer also reapplies it on rollback. The macOS installer wrapper separately forwards options for proxy refresh and dead-proxy removal.
+
+**How to Identify in New Upstream**: Look for `installProviderBinary` and `extenderCapabilityPresent`, and capability restoration in the installer and container scripts.
+
+**Status**: merged on `main` after `v2026.11.1-1087111111-meso`; not yet tagged. The extender role remains unproven.

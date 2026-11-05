@@ -103,6 +103,12 @@ The signaling layer is responsible for contract creation and connection handshak
 | `oob err = Invalid` | Authentication token (JWT) or credentials failed. | Verify your `<AUTH-CODE>` or email/pass. |
 | `exit could not create contract` | Repeated timeouts prevented contract initialization. | See [Performance Tuning](/full-bars/meso-miner/wiki/High-Volume-Performance-Tuning). |
 
+## Egress interface pin failures
+
+On Windows, when an egress interface is selected, `connect: could not pin the socket's ipv6 traffic to the egress interface` means the IPv6 socket could not be pinned even though the IPv4 option succeeded. The dial fails rather than using an unpinned route. Check that the selected interface still exists and supports IPv6. The related `connect: could not read the socket family` error also fails the dial.
+
+On macOS, a configured egress index can produce `connect: could not pin the socket to the macOS egress interface` when the applicable interface bindings fail. Check the selected interface and its address-family support. This tree has no acceptance-peer caller that selects an egress index on macOS, so this path is inert unless a host forces one. These platform paths were read from code, not tested on a Windows or macOS host for this release.
+
 ## 4. Resource Exhaustion
 
 ### Disk Space (Log Ballooning)
