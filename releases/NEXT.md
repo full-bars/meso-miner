@@ -1,0 +1,71 @@
+# NEXT (placeholder, rename at tag time)
+
+**Covers:** everything merged after `v2026.11.1-1087111111-meso` on `main`.
+
+Legend: **[redeploy]** needs the built artifact redeployed. **[installer]** needs the installer or unit refresh. **[no redeploy]** docs, CI or tests only.
+
+## Docker and provider
+
+- **Proxied identities carry their clients' UDP through the proxy** **[redeploy]** (#79). Before, a proxied identity dropped all tunneled UDP: DNS, STUN, QUIC and games. Each client UDP flow now opens its own SOCKS5 UDP association. The flow closes the association when it ends. A proxy with no UDP relay, or with a different UDP exit, refuses the flow at once. The flow never falls back to the host's own address. IPv6 destinations are refused fast. A proxied UDP flow closes after 120 seconds with no traffic. TCP does not change. The log shows refusals as `[proxy][udp] ... client udp refused`.
+- **H1+ handshake failures are reported by class** **[redeploy]** (#73). A failed H1+ upgrade now says why it failed. The classes are `timeout`, `tls`, `proxy_connect`, `auth`, `upgrade_rejected`, `io` and `other`. The ten-minute `[h1plus]` line shows them. `/metrics` has a new family, `urnet_h1plus_handshake_failures_class_total`. The classes add up to `urnet_h1plus_handshake_failures_total`. Use one family or the other, never both. A dead SOCKS5 hop now counts as `proxy_connect`.
+- **The client JWT store logs why it rewrites its file** **[redeploy]** (#74). Each write logs a `[jwt-store]` line. The line names the site and the operation. It counts the entries added, updated, removed and unchanged. The same reason logs at most once a minute. A save that changes nothing does not rewrite the file.
+- **An upgrade keeps the saved client identities** **[redeploy]** (#74). Before, the first start after an upgrade could drop every entry saved before mint times were recorded. Every proxy then had to authenticate again. These entries now stay.
+- **The client JWT store counts its writes correctly** **[redeploy]** (4da075b0, 941801fa). A write counts only after the file replace succeeds. A batch that adds, removes and refreshes entries reports all three. A reload under the lock no longer brings back identities that the provider pruned as stale.
+- **The extender keeps its low-port capability after a binary swap** **[redeploy] [installer]** (#75). A new provider binary loses `cap_net_bind_service`. On a host that keeps ports below 1024 privileged, the extender then could not bind 443. The Linux installer, the Docker scripts and the Go updater now set the capability again after each swap. Rollbacks do this too. The image now ships `setcap` and `getcap`. If the provider cannot set the capability, it prints one warning with the exact repair command.
+- **An IPv6 dial on Windows stays on the chosen interface** **[redeploy]** (#77). Before, an IPv6 dial could leave through the wrong interface and loop back into the tunnel. The provider now sets the interface for both families. It refuses an IPv6 dial whose pin failed. The log shows a failed pin.
+- **The `proxy refresh` preview matches the reload** **[redeploy]** (#78). Before, the preview listed every URL-cached proxy under "Removing". The reload kept them. The preview and the reload now use the same desired set.
+- **Degraded URL proxy cleanup counts only time a proxy could serve** **[redeploy]** (5cbcb1b0, e8d58883, 6ab60e81). Degraded eviction stays off until you set `degraded_cleanup_threshold`. With a window set, the cleanup does not remove a proxy that the trim cap holds back. That proxy's down clock starts again on each pass. During a backend outage the down clocks also start again, so outage time does not count. A degraded entry with no down time gets one. A window the provider cannot read logs a warning and leaves eviction off.
+- **`URNETWORK_METRICS` can turn `/metrics` off** **[redeploy]** (c61638a6). The values `off`, `false`, `no`, `0` and `none` stop the listener. This holds at start, after a restart and after a HotSwap. With one of these values set, `urnet-tools metrics on` returns an error. `auto` selects the default binding. Any other value is still the exact listen address.
+- **The `[health][proxies]` line no longer prints `down=`** **[redeploy]** (174e16f4). `down` was only `dead` plus `degraded`. It made one fact look like two problems.
+- **A failed proxy hop does not retry on the other IP family** **[redeploy]** (04e93345). A proxied dial reports the family of the proxy hop, not of the destination. The failure no longer goes into the family ledger. The provider no longer sends the same request through the proxy a second time.
+- **A local shutdown no longer counts as a backend failure** **[redeploy]** (88eb48f8). A cancelled H1 dial used to feed the connect governor. It could then hold back the next session.
+- **The transfer memory budget serves waiters in arrival order** **[redeploy]** (b819fe1e, 57fb9594). Before, small requests could take each free byte ahead of a large waiting request. The large request could wait forever. A request that can never fit no longer blocks requests that fit. A cancelled waiter wakes the waiters behind it.
+
+## Metrics endpoint
+
+The `v2026.11.1-1087111111-meso` note said not to set `URNETWORK_METRICS=off`. That advice is now wrong.
+
+- `URNETWORK_METRICS=off` (or `false`, `no`, `0`, `none`) turns `/metrics` off.
+- `urnet-tools metrics off` also turns it off and keeps it off across restarts.
+- `URNETWORK_METRICS=<ip:port>` pins one exact address.
+- `URNETWORK_METRICS=auto`, or no value, uses the default binding.
+
+## urnet-tools and installers
+
+- **The macOS wrapper passes arguments to `proxy refresh` and `proxy remove-dead`** **[installer]** (#76). Before, `urnet-tools proxy remove-dead --preview` ran a real prune on macOS.
+- **`urnet-tools wallet set --coldkey_seed_file` warns and carries on** **[redeploy]** (b291fb7d). This applies on a box that also runs a provider. The tool prints a multi-line warning to stderr. It does not ask you to type yes, so it runs with no terminal and no flag. `--dry-run` still stops before the provider. The signed `--message` and `--signature` form still asks you to confirm.
+
+## Security
+
+- **The CFAA and IP blocklists are refreshed** **[redeploy]** (9a57ce56). The tables follow the upstream refresh. CFAA IPv4 prefixes go from 48764 to 44467. CFAA IPv6 prefixes go from 539 to 271. Blocked hosts go from 164781 to 164912. The change is data only. It takes effect when a node runs this release.
+
+## Repository sync
+
+- **This tree is level with `full-bars/meso-miner` through 2026-11-05** **[no redeploy]**. The fork's main line is merged in. Only repository identity differs: the download URLs, the help text, the image name and the release-repo guards. This tree keeps its own extender capability helper, its test and the installer's restore guard. These were ahead of the fork.
+
+## CI and documentation
+
+- **The pages describe the metrics disable values** **[no redeploy]**. The configuration reference and the monitoring page no longer say that `off` breaks the listener.
+- **The log reference shows the `[health][proxies]` line without `down=`** **[no redeploy]**.
+- **The README shows the FreeBSD install and lists the release binaries** **[no redeploy]**.
+- **The project map moved to `docs/Project-Structure.md`** **[no redeploy]**. `PROJECT_STRUCTURE.md` points there, so old links still work.
+
+## Deploy notes
+
+1. Provider hosts and Docker images: redeploy to get the provider changes.
+2. A script or alert that reads `down=` from the `[health][proxies]` line must add `dead` and `degraded` instead.
+3. Degraded URL proxy cleanup stays off unless you set a window. A node without a window sees no change.
+4. macOS: run the installer again (or `urnet-tools update`) to get the wrapper fix.
+
+## What's Changed
+
+- Report per-class H1+ handshake failures (#73)
+- Log why the client JWT store is rewritten and keep entries saved before mint times (#74)
+- Reapply the extender capability after binary swaps (#75)
+- Forward arguments to proxy refresh and remove-dead on macOS (#76)
+- Pin an IPv6 dial to the egress interface (#77)
+- Derive the refresh preview from the reloader's desired set (#78)
+- Carry proxied identities' client UDP through the proxy relay (#79)
+- Sync the full-bars main line through 2026-11-05
+
+**Full Changelog**: <https://github.com/urfoundation/meso-miner/compare/v2026.11.1-1087111111-meso...main>
