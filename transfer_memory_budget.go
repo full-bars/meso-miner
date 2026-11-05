@@ -425,42 +425,53 @@ func (self *TransferMemoryBudget) removeCapacityWaiterWithLock(
 	self.capacityWaiterCount.Add(-1)
 }
 
-// notifyEligibleCapacityWaiters performs a bounded FIFO admission grant. It
-// scans past a large ineligible request so a smaller request cannot starve,
-// while subtracting each grant from a capacity snapshot prevents a release
-// for one receive window from waking every speculative P2P setup.
+// notifyEligibleCapacityWaiters grants in arrival order at each budget.
+// An impossible request does not block fitting requests, and a child ceiling
+// does not block waiters on an independent sibling.
 func (self *TransferMemoryBudget) notifyEligibleCapacityWaiters() {
-	if self.capacityWaiterCount.Load() == 0 {
-		return
-	}
-	availableByteCount := self.Available()
-	if availableByteCount <= 0 {
+	if self.capacityWaiterCount.Load() == 0 || self.Available() <= 0 {
 		return
 	}
 
 	self.capacityWaitStateLock.Lock()
 	defer self.capacityWaitStateLock.Unlock()
-	// Only the uncommon intrusive-waiter path needs this scratch map. Track
-	// grants per ancestor as well as at the root so a broad root does not wake
-	// every setup behind a single newly freed child receive window.
-	granted := make(map[*TransferMemoryBudget]ByteCount)
+	type waitState struct {
+		granted ByteCount
+		blocked bool
+	}
+	states := make(map[*TransferMemoryBudget]waitState)
 	for waiter := self.capacityWaitHead; waiter != nil; {
 		nextWaiter := waiter.nextCapacityWaiter
-		eligible := waiter.requiredByteCount <= availableByteCount
-		for budget := waiter.budget; eligible && budget != nil; budget = budget.parent {
-			eligible = waiter.requiredByteCount <= max(0, budget.totalByteCount.Load()-budget.usedByteCount.Load()-granted[budget])
+		required := max(0, waiter.requiredByteCount)
+		eligible, blocked, impossible := true, false, false
+		for budget := waiter.budget; budget != nil; budget = budget.parent {
+			state := states[budget]
+			blocked = blocked || state.blocked
+			total := budget.totalByteCount.Load()
+			impossible = impossible || required > total
+			if required > max(0, total-budget.usedByteCount.Load()-state.granted) {
+				eligible = false
+			}
 		}
-		if eligible {
+		switch {
+		case eligible && (!blocked || required == 0):
 			self.removeCapacityWaiterWithLock(waiter)
 			select {
 			case waiter.notify <- struct{}{}:
-				availableByteCount -= waiter.requiredByteCount
 				for budget := waiter.budget; budget != nil; budget = budget.parent {
-					granted[budget] += waiter.requiredByteCount
+					state := states[budget]
+					state.granted += required
+					states[budget] = state
 				}
 			default:
-				// A pending token means this waiter already has a grant. Do
-				// not charge it twice; continue looking for another waiter.
+			}
+		case !eligible && !blocked && !impossible:
+			for budget := waiter.budget; budget != nil; budget = budget.parent {
+				state := states[budget]
+				if required > max(0, budget.totalByteCount.Load()-budget.usedByteCount.Load()-state.granted) {
+					state.blocked = true
+					states[budget] = state
+				}
 			}
 		}
 		waiter = nextWaiter
