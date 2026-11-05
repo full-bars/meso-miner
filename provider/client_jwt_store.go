@@ -131,6 +131,18 @@ var globalClientJWTStore = func() *clientJWTStore {
 	return newClientJWTStore(filepath.Join(home, ".urnetwork", ".client_jwts.json"))
 }()
 
+func pruneStaleClientJWTEntries(entries map[string]clientJWTEntry) map[string]clientJWTEntry {
+	now := time.Now()
+	pruned := make(map[string]clientJWTEntry, len(entries))
+	for key, entry := range entries {
+		// Legacy entries without a mint time must survive upgrades.
+		if entry.MintedAt.IsZero() || now.Sub(entry.MintedAt) < clientJWTStaleAfter {
+			pruned[key] = entry
+		}
+	}
+	return pruned
+}
+
 func (s *clientJWTStore) loadLocked() {
 	if s.loaded {
 		return
@@ -158,18 +170,7 @@ func (s *clientJWTStore) loadLocked() {
 	// the previous identity set the operator had before this restart.
 	s.snapshotLocked(data, len(entries))
 
-	now := time.Now()
-	pruned := make(map[string]clientJWTEntry, len(entries))
-	for key, entry := range entries {
-		// A zero MintedAt means the entry predates this field: it came from a
-		// store written before mint times were recorded, or from a caller that
-		// only knows the credential. Do not call it stale. Dropping it would
-		// discard every identity on the first start after an upgrade and force
-		// a re-auth for every proxy.
-		if entry.MintedAt.IsZero() || now.Sub(entry.MintedAt) < clientJWTStaleAfter {
-			pruned[key] = entry
-		}
-	}
+	pruned := pruneStaleClientJWTEntries(entries)
 	s.entries = pruned
 
 	// Log how many identities we're carrying forward — gives the operator a
@@ -399,6 +400,12 @@ func (s *clientJWTStore) flushBatchAt(site, op string, upserts map[string]client
 		// entries (merged stays s.entries) rather than failing the flush —
 		// loadLocked already snapshotted the corrupt bytes for recovery.
 	}
+	// The lock-protected disk reload must not restore entries pruned at load.
+	for key, entry := range merged {
+		if !entry.MintedAt.IsZero() && time.Since(entry.MintedAt) >= clientJWTStaleAfter {
+			delete(merged, key)
+		}
+	}
 	var change jwtChangeSet
 	for _, key := range deletes {
 		if _, ok := merged[key]; ok && baseline != nil {
@@ -429,9 +436,6 @@ func (s *clientJWTStore) flushBatchAt(site, op string, upserts map[string]client
 		s.logWriteLocked(site, op, "skip", len(merged), change, len(data))
 		return nil
 	}
-	s.flushes++
-	s.logWriteLocked(site, op, "write", len(merged), change, len(data))
-
 	// Use unpredictable temp file to prevent collisions with concurrent writers (F-9)
 	tmpFile, err := os.CreateTemp(dir, ".client_jwts-*.tmp")
 	if err != nil {
@@ -459,7 +463,13 @@ func (s *clientJWTStore) flushBatchAt(site, op string, upserts map[string]client
 		return err
 	}
 
-	return os.Rename(tmpPath, s.path)
+	if err := os.Rename(tmpPath, s.path); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	s.flushes++
+	s.logWriteLocked(site, op, "write", len(merged), change, len(data))
+	return nil
 }
 
 // logWriteLocked records why the store file was rewritten (or why a rewrite was
