@@ -1,5 +1,30 @@
 ## [Unreleased]
 
+Everything merged after `v2026.11.1-1087111111-meso`.
+
+### Added
+
+- **H1+ failure classes identify the failing stage.** The ten-minute summary and `urnet_h1plus_handshake_failures_class_total` separate timeouts, TLS, proxy connections, authentication, rejected upgrades, I/O and other failures. The class counts partition the existing total; do not add the two metrics together. SOCKS5 hop failures count as `proxy_connect`. ([#336](https://github.com/full-bars/meso-miner/pull/336))
+- **JWT store writes explain their cause.** A rate-limited line reports the call site, operation, result, change counts, byte count and suppressed repeats without printing tokens. Unchanged serialized stores skip the disk rewrite. ([#337](https://github.com/full-bars/meso-miner/pull/337))
+
+### Fixed
+
+- **IPv6 sockets honor the selected egress interface on Windows.** The socket family is checked and a failed IPv6 pin is returned instead of accepting an IPv4-only pin, preventing a silent tunnel loop. This code path has not been run on a Windows host in this documentation pass. ([#342](https://github.com/full-bars/meso-miner/pull/342))
+- **Capacity waiters keep their place under load.** Eligible earlier waiters are protected against starvation, outstanding grants stay accounted for, and cancellation wakes followers. An impossible request or an independent child budget does not block unrelated eligible work. ([#341](https://github.com/full-bars/meso-miner/pull/341))
+- **Local H1 cancellation no longer feeds the reconnect governor as a backend failure.** Proxy handshake failures also no longer strike the platform address family or trigger family retries. ([#341](https://github.com/full-bars/meso-miner/pull/341))
+- **JWT batches report actual changes and completed writes.** Mixed additions, updates and removals are counted together; a write is counted only after it completes. Legacy entries without mint times survive pruning. ([#337](https://github.com/full-bars/meso-miner/pull/337), [#341](https://github.com/full-bars/meso-miner/pull/341))
+- **Degraded URL proxy cleanup uses a persisted down clock.** Degraded eviction remains opt-in: an unset or invalid window removes no degraded members. The reaper backfills missing clocks and restarts the clock during an outage or trim hold. Live health informs the cleanup decision. ([#335](https://github.com/full-bars/meso-miner/pull/335))
+- **Linux provider swaps restore the extender bind capability.** The installer, container scripts and Go updater reapply `cap_net_bind_service` after replacing a binary; the installer also reapplies it after rollback. A failed or unverifiable restoration warns the operator. ([#338](https://github.com/full-bars/meso-miner/pull/338), [#340](https://github.com/full-bars/meso-miner/pull/340))
+- **The macOS shell wrapper forwards proxy command arguments.** `proxy refresh` and `proxy remove-dead` now pass their options to the provider. ([#339](https://github.com/full-bars/meso-miner/pull/339))
+- **Metrics disable values take effect.** `URNETWORK_METRICS=off`, `false`, `no`, `0` or `none` disables the listener; `auto` selects automatic binding. (`c61638a61`)
+- **Proxy health no longer repeats the down count.** The health line contains it once. ([#334](https://github.com/full-bars/meso-miner/pull/334))
+
+### Documentation
+
+- **Bittensor live numbers refreshed.** The scheduled updates changed `Bittensor-Head-Tier.md`; their timestamps describe the snapshot, not a live query. (`a6cad7a16`)
+
+## [v2026.11.1-1087111111-meso] — 2026-11-01
+
 Everything merged after `v2026.10.24-1080497440-meso`. Claims below were checked against the code at the head of `main`; behaviour on FreeBSD and macOS is read from the code and has not been run on those platforms.
 
 ### Added

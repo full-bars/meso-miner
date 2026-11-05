@@ -75,6 +75,10 @@ All values compared across upstream defaults and fork profiles. "Fork default" i
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `ReceiveBufferSize` per peer | 4 MiB | 4 MiB | 16 MiB | 8 MiB | 16 MiB |
 
+### Transfer capacity under load
+
+Transfer capacity is shared through a budget. When work waits for capacity, earlier eligible waiters retain their place, and capacity granted to a woken waiter remains accounted for until it reserves the capacity or gives up. Cancellation wakes followers. A request larger than its budget cannot block requests that fit, and an independent child budget can make progress. This ordering prevents starvation; it is not a promise of immediate admission or an increase in the memory limit.
+
 ### 🧠 Memory & GC
 
 | Parameter | Upstream | Fork default | Lowmem | Eco | Auto Extreme | Turbo V4 | Turbo V8 |
