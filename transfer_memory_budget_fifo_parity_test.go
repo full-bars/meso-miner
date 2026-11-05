@@ -30,6 +30,19 @@ func TestTransferMemoryBudgetFIFORepeatedReleases(t *testing.T) {
 	default:
 		t.Fatal("large waiter did not wake")
 	}
+	if !budget.TryReserve(8) {
+		t.Fatal("large waiter could not reserve its grant")
+	}
+	// Only after the head has taken its grant can the follower receive one.
+	budget.Release(2)
+	select {
+	case <-notifies[0]:
+		if !budget.TryReserve(3) {
+			t.Fatal("small waiter could not reserve its grant")
+		}
+	default:
+		t.Fatal("small waiter did not wake after the large waiter")
+	}
 }
 
 func TestTransferMemoryBudgetFIFOImpossibleWaiter(t *testing.T) {
