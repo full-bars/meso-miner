@@ -33,6 +33,7 @@ func TestTransferMemoryBudgetFIFORepeatedReleases(t *testing.T) {
 	if !budget.TryReserve(8) {
 		t.Fatal("large waiter could not reserve its grant")
 	}
+	large.reset() // consuming the grant ends it
 	// Only after the head has taken its grant can the follower receive one.
 	budget.Release(2)
 	select {
@@ -114,5 +115,77 @@ func TestTransferMemoryBudgetFIFOSurplus(t *testing.T) {
 	case <-sn:
 	default:
 		t.Fatal("surplus did not wake follower")
+	}
+}
+
+// A cancelled head must not leave a follower it was blocking asleep.
+func TestTransferMemoryBudgetFIFOCanceledHeadWakesFollower(t *testing.T) {
+	budget := NewTransferMemoryBudget(10)
+	budget.Reserve(7) // 3 available
+	head, follower := newTransferMemoryBudgetWaiter(), newTransferMemoryBudgetWaiter()
+	defer head.reset()
+	defer follower.reset()
+	head.subscribe(budget, 8)
+	followerNotify := follower.subscribe(budget, 3)
+	select {
+	case <-followerNotify:
+		t.Fatal("follower overtook the head")
+	default:
+	}
+	head.reset()
+	select {
+	case <-followerNotify:
+	default:
+		t.Fatal("follower stayed asleep after the head was cancelled")
+	}
+}
+
+// A notified head holds its grant across a second release until it resets.
+func TestTransferMemoryBudgetFIFOGrantRetainedAcrossSecondRelease(t *testing.T) {
+	budget := NewTransferMemoryBudget(10)
+	budget.Reserve(10)
+	head, follower := newTransferMemoryBudgetWaiter(), newTransferMemoryBudgetWaiter()
+	defer head.reset()
+	defer follower.reset()
+	headNotify := head.subscribe(budget, 8)
+	followerNotify := follower.subscribe(budget, 3)
+	budget.Release(8)
+	select {
+	case <-headNotify:
+	default:
+		t.Fatal("head did not wake")
+	}
+	budget.Release(1) // second release before the head reserves
+	select {
+	case <-followerNotify:
+		t.Fatal("follower woke against the head's outstanding grant")
+	default:
+	}
+	if !budget.TryReserve(8) {
+		t.Fatal("head could not reserve its grant")
+	}
+	head.reset()
+	budget.Release(2) // 3 available, no grant outstanding
+	select {
+	case <-followerNotify:
+	default:
+		t.Fatal("follower did not wake once the head consumed its grant")
+	}
+}
+
+// A granted waiter that gives up releases its grant to followers.
+func TestTransferMemoryBudgetFIFOCanceledGrantWakesFollower(t *testing.T) {
+	budget := NewTransferMemoryBudget(10)
+	budget.Reserve(10)
+	head, follower := newTransferMemoryBudgetWaiter(), newTransferMemoryBudgetWaiter()
+	defer follower.reset()
+	head.subscribe(budget, 8)
+	followerNotify := follower.subscribe(budget, 3)
+	budget.Release(9)
+	head.reset()
+	select {
+	case <-followerNotify:
+	default:
+		t.Fatal("abandoned grant kept the follower asleep")
 	}
 }

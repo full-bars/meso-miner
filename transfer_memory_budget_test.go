@@ -240,6 +240,7 @@ func TestTransferMemoryBudgetAdmissionReleaseWakesOnlyCapacityFit(t *testing.T) 
 	if !budget.TryReserve(1) {
 		t.Fatal("the single notified admission could not reserve released capacity")
 	}
+	waiters[0].reset() // the first (woken) waiter consumed its grant
 	budget.Release(1)
 	wokenCount = 0
 	for _, notify := range notifies {

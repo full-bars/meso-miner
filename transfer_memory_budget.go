@@ -51,6 +51,9 @@ type TransferMemoryBudget struct {
 	capacityWaitHead      *transferMemoryBudgetWaiter
 	capacityWaitTail      *transferMemoryBudgetWaiter
 	capacityWaiterCount   atomic.Int64
+	// Bytes promised to woken waiters that have not yet reset. Guarded by the
+	// root's capacityWaitStateLock; every budget in a waiter's chain carries it.
+	grantedByteCount ByteCount
 
 	// ADAPTATION (v2026-engine port, transfer layer, stage 1): the pinned file
 	// also ends this struct with
@@ -86,6 +89,9 @@ type transferMemoryBudgetWaiter struct {
 	previousCapacityWaiter *transferMemoryBudgetWaiter
 	nextCapacityWaiter     *transferMemoryBudgetWaiter
 	registered             bool
+	// granted is true from the moment a wake is assigned until the owner
+	// calls reset (it reserved, or gave up). Guarded by capacityWaitStateLock.
+	granted bool
 }
 
 func newTransferMemoryBudgetWaiter() *transferMemoryBudgetWaiter {
@@ -114,13 +120,20 @@ func (self *transferMemoryBudgetWaiter) subscribe(
 	return self.notify
 }
 
-// reset removes an armed subscription. A wake already assigned to this
-// waiter is drained; the owner either consumed capacity or is about to
-// re-subscribe immediately against current state.
+// reset removes an armed subscription and ends any outstanding grant. A wake
+// is a grant of capacity, not a reservation: the owner must call reset once
+// it has reserved (consumed the grant) or abandoned the attempt, otherwise
+// followers stay blocked behind the grant. A wake already assigned to this
+// waiter is drained.
 func (self *transferMemoryBudgetWaiter) reset() {
 	if self.budget != nil {
-		self.budget.removeCapacityWaiter(self)
+		budget := self.budget
+		changed := budget.removeCapacityWaiter(self)
 		self.budget = nil
+		if changed {
+			// Followers may have been blocked behind this head or grant.
+			budget.admissionRoot().notifyEligibleCapacityWaiters()
+		}
 	}
 	select {
 	case <-self.notify:
@@ -394,11 +407,19 @@ func (self *TransferMemoryBudget) addCapacityWaiter(
 
 func (self *TransferMemoryBudget) removeCapacityWaiter(
 	waiter *transferMemoryBudgetWaiter,
-) {
-	self = self.admissionRoot()
-	self.capacityWaitStateLock.Lock()
-	defer self.capacityWaitStateLock.Unlock()
-	self.removeCapacityWaiterWithLock(waiter)
+) (changed bool) {
+	root := self.admissionRoot()
+	root.capacityWaitStateLock.Lock()
+	defer root.capacityWaitStateLock.Unlock()
+	changed = waiter.registered || waiter.granted
+	root.removeCapacityWaiterWithLock(waiter)
+	if waiter.granted {
+		waiter.granted = false
+		for budget := waiter.budget; budget != nil; budget = budget.parent {
+			budget.grantedByteCount -= max(0, waiter.requiredByteCount)
+		}
+	}
+	return changed
 }
 
 func (self *TransferMemoryBudget) removeCapacityWaiterWithLock(
@@ -436,7 +457,6 @@ func (self *TransferMemoryBudget) notifyEligibleCapacityWaiters() {
 	self.capacityWaitStateLock.Lock()
 	defer self.capacityWaitStateLock.Unlock()
 	type waitState struct {
-		granted ByteCount
 		blocked bool
 	}
 	states := make(map[*TransferMemoryBudget]waitState)
@@ -449,7 +469,7 @@ func (self *TransferMemoryBudget) notifyEligibleCapacityWaiters() {
 			blocked = blocked || state.blocked
 			total := budget.totalByteCount.Load()
 			impossible = impossible || required > total
-			if required > max(0, total-budget.usedByteCount.Load()-state.granted) {
+			if required > max(0, total-budget.usedByteCount.Load()-budget.grantedByteCount) {
 				eligible = false
 			}
 		}
@@ -458,17 +478,17 @@ func (self *TransferMemoryBudget) notifyEligibleCapacityWaiters() {
 			self.removeCapacityWaiterWithLock(waiter)
 			select {
 			case waiter.notify <- struct{}{}:
+				// Retain the grant until the owner resets the waiter.
+				waiter.granted = true
 				for budget := waiter.budget; budget != nil; budget = budget.parent {
-					state := states[budget]
-					state.granted += required
-					states[budget] = state
+					budget.grantedByteCount += required
 				}
 			default:
 			}
 		case !eligible && !blocked && !impossible:
 			for budget := waiter.budget; budget != nil; budget = budget.parent {
 				state := states[budget]
-				if required > max(0, budget.totalByteCount.Load()-budget.usedByteCount.Load()-state.granted) {
+				if required > max(0, budget.totalByteCount.Load()-budget.usedByteCount.Load()-budget.grantedByteCount) {
 					state.blocked = true
 					states[budget] = state
 				}
