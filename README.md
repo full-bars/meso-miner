@@ -90,6 +90,12 @@ curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/
 curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh
 ```
 
+**😈 FreeBSD** (the base system's `fetch` is enough; see [docs/FreeBSD.md](docs/FreeBSD.md))
+
+```sh
+fetch -qo urnet-install.sh https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_FreeBSD.sh
+sudo sh urnet-install.sh install
+```
 
 **🐋 Docker**
 
@@ -327,5 +333,5 @@ dashboard. See [Monitoring](docs/Monitoring.md).
 - **Base engine:** the URnetwork connect engine, brought up to the 33.1/34 generation (see [CHANGELOG.md](CHANGELOG.md)). This line began as a fork of the 3.23-fix line and has its own release numbers, such as `v2026.10.20-1076956260-meso`
 - **Language:** Go 1.27.3, compiled on Alpine
 - **Platforms:** Linux (systemd, and Alpine/OpenRC with a native boot-start service), macOS, Windows and FreeBSD. Alpine setup: [docs/OpenRC.md](docs/OpenRC.md); FreeBSD setup: [docs/FreeBSD.md](docs/FreeBSD.md)
-- **Images:** Multi-arch `linux/amd64` + `linux/arm64` via GitHub Actions → GHCR. The macOS builds are release tarballs, not container images
+- **Images:** Multi-arch `linux/amd64` + `linux/arm64` via GitHub Actions to GHCR. Release binaries for `darwin`, `windows` and `freebsd` are attached to each GitHub release.
 - **Bridge-friendly:** runs on standard Docker bridge networks, no `--network host` required

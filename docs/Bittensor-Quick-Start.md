@@ -69,7 +69,7 @@ Good to know:
   ```bash
   provider wallet set <coldkey> --message='<printed text>' --signature=0x<128 hex characters>
   ```
-- **`urnet-tools wallet sign` needs no flag, anywhere.** It serves a page on 127.0.0.1 and the seed never leaves your wallet extension, so it does not care whether the box also runs a provider. The seed-file form is the one that asks: `wallet set --coldkey_seed_file` prompts when it can, and on a fleet node with no terminal to answer it refuses outright. There is no flag to skip that.
+- **`urnet-tools wallet sign` needs no flag, anywhere.** It serves a page on 127.0.0.1 and the seed never leaves your wallet extension, so it does not care whether the box also runs a provider. The seed-file form is the one that warns: `wallet set --coldkey_seed_file` prints a warning on a box that also runs a provider, then carries on. It never asks and never refuses, so the warning is your cue to stop, not a gate.
 
 ## By install type
 
@@ -99,7 +99,7 @@ The step is the same for everyone. Nothing changes on the nodes.
 
 | Problem | What to check |
 |---|---|
-| `wallet status` says you are not logged in | The node's saved login lives in `~/.urnetwork/jwt` (or under `URNETWORK_STATE_DIR` if set). The command must run as the same user that owns it. For Docker, check which user the container runs as. This is not confirmed for every setup. |
+| `wallet status` says you are not logged in | The node's saved login lives in `~/.urnetwork/jwt`. The command must run as the same user that owns it. For Docker, check which user the container runs as. This is not confirmed for every setup. |
 | The message expired before you signed | Each message is valid for 5 minutes. Click **New message** on the page to get a fresh one. |
 | The signing page closed | The page closes after 15 minutes. Run `provider wallet sign` again. Nothing was stored. |
 | `signature_mismatch` | The signature came from a different account than the coldkey you named. Pick the same account in the extension, or leave out the address and choose it on the page. |

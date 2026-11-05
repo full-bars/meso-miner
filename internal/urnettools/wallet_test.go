@@ -156,12 +156,12 @@ func TestWalletSetSeedFileWarnsOnProviderBox(t *testing.T) {
 	// to stop the operator.
 	var err error
 	out := captureWalletStderr(t, func() {
-		err = cmdWalletSet([]string{"-f", "5CvF...ss58", "--coldkey_seed_file=/tmp/seed"})
+		err = cmdWalletSet([]string{"5CvF...ss58", "--coldkey_seed_file=/tmp/seed"})
 	})
 	if err != nil {
 		t.Fatalf("the seed-file form must warn, not refuse, got %v", err)
 	}
-	if !strings.Contains(out, "not recommended here") {
+	if !strings.Contains(out, "COLDKEY SEED ON A FLEET NODE") {
 		t.Fatalf("the seed-file form must warn on a provider box, got %q", out)
 	}
 	if len(calls) != 1 {
@@ -183,20 +183,81 @@ func TestWalletSetSeedFileWarnsOnProviderBox(t *testing.T) {
 	}
 }
 
+// noTerminal makes stdin look like a pipe: any prompt fails with "needs a
+// terminal", so a command that still waits for an answer returns an error.
+func noTerminal(t *testing.T) {
+	t.Helper()
+	old := stdinIsInteractiveOverride
+	stdinIsInteractiveOverride = func() bool { return false }
+	t.Cleanup(func() { stdinIsInteractiveOverride = old })
+}
+
+// The seed-file form proceeds with no -f and no terminal. Passing -f, as the
+// older tests did, would hide a command that still blocked on the typed yes.
+func TestWalletSetSeedFileProceedsWithoutTerminal(t *testing.T) {
+	var calls [][]string
+	withWalletSeams(t, []Provider{walletTestProvider()}, &calls, "", "")
+	noTerminal(t)
+	var err error
+	out := captureWalletStderr(t, func() {
+		err = cmdWalletSet([]string{"5CvF...ss58", "--coldkey_seed_file=/tmp/seed"})
+	})
+	if err != nil {
+		t.Fatalf("the seed-file form must proceed with no terminal and no -f, got %v", err)
+	}
+	if len(calls) != 1 || strings.Join(calls[0], " ") != "wallet set 5CvF...ss58 --coldkey_seed_file=/tmp/seed" {
+		t.Fatalf("the seed-file form must delegate to the provider, got %v", calls)
+	}
+	for _, want := range []string{"WARNING: COLDKEY SEED ON A FLEET NODE", "Carrying on", "urnet-tools wallet set --coldkey_seed_file"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stderr must carry the loud warning (%q missing), got %q", want, out)
+		}
+	}
+}
+
+// The warning is not a bypass of --dry-run, and the warning stays off stdout.
+func TestWalletSetSeedFileDryRunStillStops(t *testing.T) {
+	var calls [][]string
+	withWalletSeams(t, []Provider{walletTestProvider()}, &calls, "", "")
+	noTerminal(t)
+	var err error
+	captureWalletStderr(t, func() {
+		err = cmdWalletSet([]string{"--dry-run", "5CvF...ss58", "--coldkey_seed_file=/tmp/seed"})
+	})
+	if err != nil || len(calls) != 0 {
+		t.Fatalf("--dry-run must stop before the provider, err=%v calls=%v", err, calls)
+	}
+}
+
+// Only the seed-file form skips the typed yes. The signed form keeps it, so
+// without a terminal it still stops.
+func TestWalletSetSignedFormKeepsTheConfirmation(t *testing.T) {
+	var calls [][]string
+	withWalletSeams(t, []Provider{walletTestProvider()}, &calls, "", "")
+	noTerminal(t)
+	var err error
+	captureWalletStderr(t, func() {
+		err = cmdWalletSet([]string{"5CvF...ss58", "--message=m", "--signature=0x00"})
+	})
+	if err == nil || len(calls) != 0 {
+		t.Fatalf("the signed form must still need its confirmation, err=%v calls=%v", err, calls)
+	}
+}
+
 func TestWalletFleetDetectionViaProviderEnv(t *testing.T) {
 	var calls [][]string
-	// a provider is present, and the runtime environment marker is what makes
-	// the box look like a fleet member
-	withWalletSeams(t, []Provider{walletTestProvider()}, &calls, "", "")
+	// the provider is workstation-shaped, so only the runtime environment
+	// marker can make the box look like a fleet member
+	withWalletSeams(t, []Provider{walletWorkstationProvider()}, &calls, "", "")
 	t.Setenv("URNETWORK_PROFILE", "lowmem")
 	var err error
 	out := captureWalletStderr(t, func() {
-		err = cmdWalletSet([]string{"-f", "5CvF...ss58", "--coldkey_seed_file=/tmp/seed"})
+		err = cmdWalletSet([]string{"5CvF...ss58", "--coldkey_seed_file=/tmp/seed"})
 	})
 	if err != nil {
 		t.Fatalf("the provider environment marker must warn, not refuse, got %v", err)
 	}
-	if !strings.Contains(out, "not recommended here") {
+	if !strings.Contains(out, "COLDKEY SEED ON A FLEET NODE") {
 		t.Fatalf("the provider environment marker must produce the warning, got %q", out)
 	}
 	if len(calls) != 1 {
