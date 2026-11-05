@@ -2350,8 +2350,8 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 		if err != nil {
 			self.familyNoteConnectFailed(TransportModeH1, err, time.Since(dialStart))
 		}
-		// fork: governor feed for every attempt, success or failure
-		if !self.pinned() {
+		// A canceled local teardown is not a backend failure.
+		if !self.pinned() && (err == nil || self.ctx.Err() == nil) {
 			connectGov.recordAttempt(classifyConnectError(err, attemptStats), attemptStats)
 		}
 		if err != nil {
