@@ -394,7 +394,10 @@ func (s *clientJWTStore) flushBatchAt(site, op string, upserts map[string]client
 		if jsonErr := json.Unmarshal(data, &onDisk); jsonErr == nil {
 			merged = onDisk
 			diskBytes = data
-			baseline = onDisk
+			baseline = make(map[string]clientJWTEntry, len(onDisk))
+			for key, entry := range onDisk {
+				baseline[key] = entry
+			}
 		}
 		// A corrupt on-disk file falls back to this process's in-memory
 		// entries (merged stays s.entries) rather than failing the flush —
@@ -406,23 +409,28 @@ func (s *clientJWTStore) flushBatchAt(site, op string, upserts map[string]client
 			delete(merged, key)
 		}
 	}
-	var change jwtChangeSet
 	for _, key := range deletes {
-		if _, ok := merged[key]; ok && baseline != nil {
-			change.removed++
-		}
 		delete(merged, key)
 	}
 	for key, entry := range upserts {
-		switch prev, ok := baseline[key]; {
+		merged[key] = entry
+	}
+	var change jwtChangeSet
+	for key, previous := range baseline {
+		entry, ok := merged[key]
+		switch {
 		case !ok:
-			change.added++
-		case prev.sameAs(entry):
+			change.removed++
+		case previous.sameAs(entry):
 			change.unchanged++
 		default:
 			change.updated++
 		}
-		merged[key] = entry
+	}
+	for key := range merged {
+		if _, ok := baseline[key]; !ok {
+			change.added++
+		}
 	}
 	s.entries = merged
 
