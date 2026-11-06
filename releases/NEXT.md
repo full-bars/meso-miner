@@ -8,7 +8,7 @@ This release covers changes merged after `v2026.11.6-1091259400-meso`. I focused
 - Windows graceful `stop` and `restart` refuse to act when another provider may share the profile or the process list cannot be checked. Forced `stop` bypasses the graceful-stop guard. A live socket is not removed during stale-socket cleanup.
 - Windows update and tune restarts now use the Windows process route. A running provider can restart; a provider that was stopped stays stopped, and the change takes effect when it is started.
 - `urnet-tools uninstall` stops the target before removing files. On Unix it checks the target PID and control socket after the stop. On Windows it also checks for other processes that may share the profile and rechecks after stopping. It aborts removal if it cannot verify the stop.
-- The Windows PowerShell uninstaller checks for other provider processes, checks termination results and confirms that providers have exited. It refuses removal if a process path or query cannot be verified. Stop any extra provider first and retry if the guard blocks uninstall.
+- The Windows PowerShell uninstaller recognizes both the current and legacy installed provider paths. It checks for other provider processes, checks termination results and confirms that providers have exited. It refuses removal if a process path or query cannot be verified. Stop any extra provider first and retry if the guard blocks uninstall.
 
 ## Linux and Docker capability safety
 
@@ -28,3 +28,4 @@ Update `urnet-tools` on provider hosts to get the lifecycle and uninstall change
 
 - Prepare the previous release by @full-bars in #81
 - Port provider lifecycle and installer safety fixes by @full-bars in #82
+- Fix Windows uninstall for legacy provider paths by @full-bars in #83
