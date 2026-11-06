@@ -30,3 +30,4 @@ Update `urnet-tools` on provider hosts to get the lifecycle and uninstall change
 - Prepare the previous release by @full-bars in #81
 - Port provider lifecycle and installer safety fixes by @full-bars in #82
 - Fix Windows uninstall for legacy provider paths by @full-bars in #83
+- Refresh operator docs for the next release by @full-bars in #85
