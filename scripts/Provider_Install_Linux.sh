@@ -2654,8 +2654,9 @@ do_install ()
             pr_err "Failed to install provider binary"
             ${SUDO:-} rm -f "$staged_bin" 2>/dev/null || true
             if [ "$provider_swap_pending" -eq 1 ] && [ ! -f "$install_path/bin/urnetwork" ] && [ -f "$install_path/bin/urnetwork.old" ]; then
-                ${SUDO:-} mv -f "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork" 2>/dev/null || true
-                ensure_extender_cap "$install_path/bin/urnetwork"
+                if ${SUDO:-} mv -f "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork" 2>/dev/null; then
+                    ensure_extender_cap "$install_path/bin/urnetwork"
+                fi
             fi
             exit 1
         fi
