@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // mesoReleasePrefixes are the only URL prefixes the update path may build.
@@ -65,7 +66,16 @@ func withRecordingTransport(t *testing.T, body string) *recordingTransport {
 	rt := &recordingTransport{body: body}
 	prev := http.DefaultTransport
 	http.DefaultTransport = rt
-	t.Cleanup(func() { http.DefaultTransport = prev })
+	latestReleaseMu.Lock()
+	prevInfo, prevTime := cachedLatest, cachedLatestTime
+	cachedLatest, cachedLatestTime = nil, time.Time{}
+	latestReleaseMu.Unlock()
+	t.Cleanup(func() {
+		http.DefaultTransport = prev
+		latestReleaseMu.Lock()
+		cachedLatest, cachedLatestTime = prevInfo, prevTime
+		latestReleaseMu.Unlock()
+	})
 	return rt
 }
 
