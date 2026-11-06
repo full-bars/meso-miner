@@ -231,10 +231,10 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 > **Docker Management** - Use `urnet-docker` directly on the host (no `docker exec` wrapping needed):
 > - `urnet-docker status`
 > - `urnet-docker proxy add ~/proxies.txt`
->
-> `direct` and `usage` are not available through `urnet-docker`: it forwards them to the image's shell `urnet-tools`, which does not implement them. Use a systemd install for those.
 > - `cat proxies.txt | urnet-docker proxy paste`
 > - `urnet-docker proxy traffic`
+>
+> `direct` and `usage` are not available through `urnet-docker`: it forwards them to the image's shell `urnet-tools`, which does not implement them. Use a systemd install for those.
 
 ---
 
