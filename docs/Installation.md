@@ -59,7 +59,7 @@ This fork publishes no hosted `install.sh` dispatcher, so nothing detects the pl
 
 - **Linux with systemd** — `curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh`. Installs a systemd user unit; see the sections above.
 - **Linux with OpenRC (Alpine and friends)** — the same Linux installer, run from a root shell. It uses `rc-service` and `supervise-daemon` instead of `systemctl`. See the [Alpine Linux (OpenRC) guide](https://github.com/urfoundation/meso-miner/wiki/OpenRC).
-- **macOS** — `curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh`. `launchd` instead of systemd; see [macOS Installation](#-macos-installation).
+- **macOS** — `curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh -s -- install`. `launchd` instead of systemd; see [macOS Installation](#-macos-installation).
 - **FreeBSD** — download the script with the base system's `fetch`, then run it from a root shell (`su -`), where no `sudo` is needed: `fetch -qo urnet-install.sh https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_FreeBSD.sh && SERVICE_USER_OVERRIDE=urnet sh urnet-install.sh install`. The installer refuses to run the service as root and never creates the account, so that name must already exist. As a normal user, install `sudo` first (`pkg install -y sudo`) and prefix the second command with it. On standard FreeBSD 13/14 `fetch(1)` is in the base system, so nothing has to be installed first; curl and wget are optional. See the [FreeBSD guide](https://github.com/urfoundation/meso-miner/wiki/FreeBSD).
 - **Windows** — `irm https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_Win32.ps1 | iex` in PowerShell, no admin required; see [Windows Installation](#-windows-installation).
 
@@ -186,15 +186,17 @@ Uninstall via PowerShell (no admin required):
 irm https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Uninstall_Win32.ps1 | iex
 ```
 
+The uninstaller stops the installed provider before removing files. It refuses removal if another `urnetwork.exe` is running or a process path cannot be verified. Stop other providers first, then retry. It recognizes both the current install path and the legacy `windows\<arch>` path.
+
 ### What gets installed
 
 | Component | Location |
 |-----------|----------|
-| Provider binary | `%LOCALAPPDATA%\urnetwork\provider\windows\<arch>\urnetwork.exe` |
-| Management tool | `urnet-tools` (Go binary, v3.23.0-fix.27.0+) |
+| Provider binary | `%LOCALAPPDATA%\urnetwork\provider\urnetwork.exe` |
+| Management tool | `%LOCALAPPDATA%\urnetwork\provider\urnet-tools.exe` (Go binary) |
 | State directory | `%USERPROFILE%\.urnetwork\` |
 | Startup (optional) | Task Scheduler logon task `urnetwork-autostart` |
-| PATH | User PATH updated to include `%LOCALAPPDATA%\urnetwork\provider\windows\<arch>\` |
+| PATH | User PATH updated to include `%LOCALAPPDATA%\urnetwork\provider\` |
 
 ### Post-install commands
 
@@ -234,22 +236,9 @@ urnet-tools update
 
 `urnet-tools` runs natively on Windows. It needs no `tail`, no `sudo` and no WSL: the log views use a built-in follower that survives log rotation, `urnet-tools start` creates `%USERPROFILE%\.urnetwork` before it launches the provider, and the commands that would need `sudo` on Linux are skipped. Rotating, clearing or updating a log no longer fails with "being used by another process", because the follower opens it with delete sharing.
 
-### 📦 Tarball Install (Alternative)
+### 📦 Release archives
 
-Starting with v3.23.0-fix.31.2, the Windows release tarball includes `urnet-tools` alongside the provider binary. If you prefer a manual or offline install:
-
-1. Download the release tarball from [GitHub Releases](https://github.com/urfoundation/meso-miner/releases).
-2. Extract the archive to your desired location (e.g. `%LOCALAPPDATA%\urnetwork`).
-3. Open **PowerShell** and run the included install script:
-
-```powershell
-.\Provider_Install_Win32.ps1
-```
-
-This registers the PATH entry and optional Task Scheduler logon task — the same result as the CDN installer, but sourced entirely from the tarball. No internet access is required at install time. The script detects `amd64`/`arm64` automatically and places the correct binaries.
-
-> [!TIP]
-> The tarball method is useful for air-gapped machines or when you want to pin a specific release version rather than always pulling `latest`.
+The [GitHub release page](https://github.com/urfoundation/meso-miner/releases) also offers provider archives and standalone `urnet-tools` binaries for Windows. The PowerShell installer above downloads the release assets; it is not an offline installer.
 
 ## 📊 System Auditor & Host Optimization
 
