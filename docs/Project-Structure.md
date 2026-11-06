@@ -27,7 +27,7 @@ Everything the provider binary does that is not the shared network stack.
 
 ## Operator tool (`cmd/urnet-tools/`, `cmd/urnet-docker/`, `internal/`)
 
-- `internal/urnettools/` holds all the logic: command tree (`cobra.go`), provider discovery (`discover*.go`), update with checksum verification (`update.go`, `release.go`), start/stop/restart (`lifecycle*.go`), proxy commands (`proxy.go`), session save/load, self-heal, log following, and Docker support (`cli_docker.go`, `docker.go`).
+- `internal/urnettools/` holds the operator logic: the command tree (`cobra.go`), provider discovery (`discover*.go`), update with checksum verification (`update.go`, `release.go`), start/stop/restart (`lifecycle*.go`, `*_windows_route.go`), uninstall safety (`uninstall_process_guard.go`, `uninstall_unix.go`), capability restoration (`update_extender.go`), proxy commands, session save/load, self-heal, logs and Docker support (`cli_docker.go`, `docker.go`).
 - `internal/tui/` is the terminal drawing kit behind `urnet-tools top`.
 - `internal/verdictfeed/` reads the signed backend-health feed (off by default).
 - `internal/promtext/`, `internal/durable*/` are small support packages for metrics checks and durable state.
@@ -69,7 +69,7 @@ Test files sit beside the code they test (`*_test.go`).
 - `Dockerfile` and `docker/scripts/`: the container image. `entrypoint.sh` picks the start script from the `BUILD` setting.
 - `pelican/`: egg for the Pelican game-server panel.
 - `monitoring/`: ready-made Prometheus and Grafana stack. See [Monitoring](/urfoundation/meso-miner/wiki/Monitoring).
-- `.github/workflows/`: CI. `build.yml` builds and tests, `release.yml` publishes releases, plus installer, OpenRC, FreeBSD, CodeQL and soak checks.
+- `.github/workflows/`: workflow definitions for builds, releases and platform checks. GitHub Actions are disabled in this repository; its tests and releases are run locally.
 
 ## Documentation
 

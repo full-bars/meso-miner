@@ -1186,6 +1186,9 @@ Goroutine and heap profiles taken on the way into a stall (see [Configuration](d
 | Message | Meaning |
 |---|---|
 | `WARNING: extender capability missing or unverified` | The provider binary swap could not confirm `cap_net_bind_service`. Follow the command in the warning if the opt-in extender needs privileged ports. |
+| `WARNING: extender capability blocked by the process bounding set` | The process cannot apply the bind capability within its current bounding set. Check the host or container capability configuration. |
+| `WARNING: blocked file has other capabilities or unrecognized flags; refusing to remove them` | Removing the blocked bind capability could erase other file capabilities. The shell installer stops rather than remove them. |
+| `WARNING: could not remove blocked file capability; provider may not start` | The shell installer could not remove the blocked capability. It stops the update; inspect the file capabilities and permissions before retrying. |
 | `[metrics] disabled by URNETWORK_METRICS` | The environment disables the Prometheus listener. |
 | `[metrics] enabling Prometheus /metrics on` | Startup is attempting to bind the environment-selected address or automatic setting. A following `[metrics] listener failed:` reports a bind failure. |
 
