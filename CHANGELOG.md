@@ -15,14 +15,18 @@ Everything merged after `v2026.11.1-1087111111-meso`.
 - **Local H1 cancellation no longer feeds the reconnect governor as a backend failure.** Proxy handshake failures also no longer strike the platform address family or trigger family retries. ([#341](https://github.com/full-bars/meso-miner/pull/341))
 - **JWT batches report actual changes and completed writes.** Mixed additions, updates and removals are counted together; a write is counted only after it completes. Legacy entries without mint times survive pruning. ([#337](https://github.com/full-bars/meso-miner/pull/337), [#341](https://github.com/full-bars/meso-miner/pull/341))
 - **Degraded URL proxy cleanup uses a persisted down clock.** Degraded eviction remains opt-in: an unset or invalid window removes no degraded members. The reaper backfills missing clocks and restarts the clock during an outage or trim hold. Live health informs the cleanup decision. ([#335](https://github.com/full-bars/meso-miner/pull/335))
-- **Linux provider swaps restore the extender bind capability.** The installer, container scripts and Go updater reapply `cap_net_bind_service` after replacing a binary; the installer also reapplies it after rollback. A failed or unverifiable restoration warns the operator. ([#338](https://github.com/full-bars/meso-miner/pull/338), [#340](https://github.com/full-bars/meso-miner/pull/340))
+- **Linux provider swaps restore the extender bind capability when possible.** The installer, container scripts and Go updater attempt to reapply `cap_net_bind_service` after replacing a binary; the installer also attempts it after a successful rollback. A failed or unverifiable restoration warns the operator. ([#338](https://github.com/full-bars/meso-miner/pull/338), [#340](https://github.com/full-bars/meso-miner/pull/340))
 - **The macOS shell wrapper forwards proxy command arguments.** `proxy refresh` and `proxy remove-dead` now pass their options to the provider. ([#339](https://github.com/full-bars/meso-miner/pull/339))
 - **Metrics disable values take effect.** `URNETWORK_METRICS=off`, `false`, `no`, `0` or `none` disables the listener; `auto` selects automatic binding. (`c61638a61`)
-- **Proxy health no longer repeats the down count.** The health line contains it once. ([#334](https://github.com/full-bars/meso-miner/pull/334))
+- **Proxy health no longer repeats the down count.** The `down` field is removed; `dead` and `degraded` remain. ([#334](https://github.com/full-bars/meso-miner/pull/334))
+- **Refresh previews use the reloader's desired proxy set.** URL-cached proxies are included and an unreadable cache protects unknown desired state. ([#343](https://github.com/full-bars/meso-miner/pull/343))
+- **Uninstall stops the provider and confirms exit before removing files.** Windows lifecycle commands also protect shared profiles and preserve a socket with a live listener. The PowerShell uninstaller waits for process exit. ([#347](https://github.com/full-bars/meso-miner/pull/347))
+- **Capability restoration handles container and rollback limits.** The image includes capability utilities, container scripts check the bounding set and failed rollback moves do not trigger restoration. ([#346](https://github.com/full-bars/meso-miner/pull/346))
 
 ### Documentation
 
-- **Bittensor live numbers refreshed.** The scheduled updates changed `Bittensor-Head-Tier.md`; their timestamps describe the snapshot, not a live query. (`a6cad7a16`)
+- **Bittensor live numbers refreshed.** Scheduled updates changed `Bittensor-Head-Tier.md`; their timestamps describe the snapshot, not a live query. (`cab156f5d`)
+- **Operator guidance and tests were updated.** The docs clarify container commands, FreeBSD service accounts and the extender role. Proxy downloads and probes report progress, and release lookup tests use a local transport. ([#344](https://github.com/full-bars/meso-miner/pull/344), [#346](https://github.com/full-bars/meso-miner/pull/346))
 
 ## [v2026.11.1-1087111111-meso] — 2026-11-01
 
