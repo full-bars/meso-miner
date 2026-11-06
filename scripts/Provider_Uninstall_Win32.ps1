@@ -16,7 +16,7 @@ if ($ForAllUsers) {
     }
 }
 
-$Arch = (Get-CimInstance Win32_Processor).Architecture
+$Arch = (Get-CimInstance Win32_Processor -ErrorAction Stop).Architecture
 $Arch = switch ($Arch) {
     9 { "amd64" }
     12 { "arm64" }
@@ -43,10 +43,35 @@ if (-not (Test-Path $InstallDir)) {
 }
 
 $ProviderExe = Join-Path -Path $InstallDir -ChildPath "urnetwork.exe"
-# Terminate the running provider. The installer always places urnetwork.exe
-# flat in the install dir (the release tarball is flat), so match the exact
-# installed path only.
-Get-WmiObject Win32_Process | Where-Object { $_.ExecutablePath -eq $ProviderExe } | ForEach-Object { $_.Terminate() }
+# Stop the installed provider and prove it has exited before removing files.
+# A failed process query is not evidence that no provider is running.
+try {
+    $AllProviders = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -eq 'urnetwork.exe' })
+    $OtherProviders = @($AllProviders | Where-Object { -not $_.ExecutablePath -or $_.ExecutablePath -ne $ProviderExe })
+    if ($OtherProviders.Count -gt 0) { throw "Another provider is running or its path cannot be verified; stop it before uninstalling" }
+    $Processes = @($AllProviders | Where-Object { $_.ExecutablePath -eq $ProviderExe })
+    foreach ($Process in $Processes) {
+        try {
+            $Result = Invoke-CimMethod -InputObject $Process -MethodName Terminate -ErrorAction Stop
+            if ($Result.ReturnValue -ne 0) { throw "Terminate returned $($Result.ReturnValue) for PID $($Process.ProcessId)" }
+        } catch {
+            # A process may exit between discovery and termination. Only
+            # suppress the failure after a successful query proves the PID gone.
+            $SamePid = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.ProcessId -eq $Process.ProcessId })
+            if ($SamePid.Count -gt 0) { throw }
+        }
+    }
+    $Deadline = (Get-Date).AddSeconds(15)
+    do {
+        $Alive = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -eq 'urnetwork.exe' })
+        if ($Alive.Count -eq 0) { break }
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $Deadline)
+    if ($Alive.Count -gt 0) { throw "The provider is still running" }
+} catch {
+    Write-Error "Could not verify the provider has stopped. Nothing was removed. $($_.Exception.Message)"
+    exit 1
+}
 
 # Kill the legacy updater process (PS1-era) if still running.
 # Read the PID file first — the process runs under powershell.exe,

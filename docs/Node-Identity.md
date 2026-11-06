@@ -20,10 +20,12 @@ The provider resolves each component in priority order:
 
 | Priority | Source | Description |
 |----------|--------|-------------|
-| 1 | `URNETWORK_NODE_NAME` env var | Explicit override — set this for full control |
-| 2 | `HOST_HOSTNAME` env var | Docker: pass the host's actual hostname with `-e HOST_HOSTNAME=$(hostname)` |
-| 3 | OS hostname | `os.Hostname()` — what the container or machine reports |
-| 4 | Auto-detect | If the name looks like a 12-char Docker container ID, it's replaced with `provider` |
+| 1 | Control-socket state | `node-name` saved in `provider_state.json` |
+| 2 | Legacy node name file | Nonempty `~/.urnetwork/node_name` |
+| 3 | `URNETWORK_NODE_NAME` env var | Explicit startup name |
+| 4 | `HOST_HOSTNAME` env var | Docker host name passed with `-e HOST_HOSTNAME=$(hostname)` |
+| 5 | OS hostname | `os.Hostname()` — what the container or machine reports |
+| 6 | Auto-detect | A name that looks like a 12-character Docker container ID is replaced with `provider` |
 
 If no name is set and the hostname is a container ID (e.g. `a1b2c3d4e5f6`), the label shows only the redacted IP or just `provider`.
 
@@ -60,16 +62,19 @@ docker run -e URNETWORK_NODE_NAME="us-east-1" ...
 #### Docker
 ```sh
 # Writes the label file the provider reads on its next tick (no restart).
-# /root/.urnetwork is the state directory inside the container.
-docker exec -it <container> sh -c 'echo us-east-1 > /root/.urnetwork/node_name'
+# $HOME/.urnetwork is the state directory inside the container; the single
+# quotes make the container's shell expand $HOME, not yours.
+docker exec -it <container> sh -c 'echo us-east-1 > "$HOME/.urnetwork/node_name"'
 
 # Clear the override (reverts to hostname)
-docker exec -it <container> rm -f /root/.urnetwork/node_name
+docker exec -it <container> sh -c 'rm -f "$HOME/.urnetwork/node_name"'
 ```
+
+> **A name set through the control socket wins over this file.** A name saved earlier with a native `urnet-tools set node-name <name>` (or `urnet-tools rename`) lives in `provider_state.json` in the state directory, and the provider reads it before `node_name`. If the container mounts a state directory from such an install, writing or removing the file changes nothing. Clear that name first with `urnet-tools set node-name off` on the native install. The image's shell `urnet-tools` and the `provider` binary have no command that clears it.
 
 `urnet-docker rename` and `urnet-tools rename` inside the container do not work: `urnet-docker` forwards the call to the image's shell `urnet-tools`, which does not implement `rename`.
 
-> **Note:** The `rename` command is a convenience alias for `urnet-tools set node-name <name>`. Both write to `~/.urnetwork/node_name`, which the provider re-reads on its next renewal tick. No restart is needed.
+> **Note:** On native installs, `rename` is an alias for `urnet-tools set node-name <name>`.
 
 ### Disable IP autodetection (native/systemd only)
 Docker startup scripts already set `URNETWORK_PUBLIC_IP` at container startup. For native/systemd installs where the binary auto-fetches its own IP, you can disable this:

@@ -41,14 +41,14 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | Command | What it does |
 |---|---|
 | `auth <code> [target] [-f]` | Authenticate provider with an auth code. `-f` forces overwrite of existing JWT. Drops privileges to run as target user when called by root. |
-| `direct [on\|off\|status] [target]` | Toggle or report direct/local IP providing state. Taking effect immediately via reload. Available across `provider` and `urnet-tools`. `urnet-docker` forwards it to the image's shell `urnet-tools`, which does not implement it. |
+| `direct [on\|off\|status] [target]` | Toggle or report direct/local IP providing state. Taking effect immediately via reload. Available across `provider` and `urnet-tools`. `urnet-docker` forwards it to the image's shell `urnet-tools`, which does not implement it; in Docker run `docker exec <container> provider direct <state>`. |
 | `show-ip [on\|off\|status] [target]` | Control whether the provider appends its public IP to the dashboard label set by `rename`. Renamed from `ip-detect` in v3.23.0-fix.31.0, which is kept as an alias. This is about what the dashboard shows, not which address the provider serves on; for that see `direct`. |
-| `sn-status [--json] [target]` | Query and display Subnet 25 mining & node telemetry (v3.23.0-fix.30.9+): global rank, top-200 tier eligibility, net bandwidth provided, registered coldkey (SS58/Hex), current subnet epoch blocks, and finalized epoch pool payout share. Available across `urnet-tools` and `provider`. `urnet-docker` forwards it to the image's shell `urnet-tools`, which does not implement it. |
+| `sn-status [--json] [target]` | Query and display Subnet 25 mining & node telemetry (v3.23.0-fix.30.9+): global rank, top-200 tier eligibility, net bandwidth provided, registered coldkey (SS58/Hex), current subnet epoch blocks, and finalized epoch pool payout share. Available across `urnet-tools` and `provider`. `urnet-docker` forwards it to the image's shell `urnet-tools`, which does not implement it; in Docker run `docker exec <container> provider sn-status`. |
 | `usage [graphs\|graph <view>] [target]` | Display traffic & billing accounting: billable relay bytes vs control-plane protocol overhead, with rolling time-series summaries. Available with `urnet-tools`. `urnet-docker` forwards it to the image's shell `urnet-tools`, which does not implement it. |
 | `choose-network <api> <connect> [target]` | Point provider to custom API and WebSocket signaling endpoints. Use `--reset` to restore default bringyour endpoints. |
 | `fast-auth [on\|off\|status] [target]` | Toggle or check `~/.urnetwork/fast_auth` marker to bypass auth rate limiter. Confirm-gated. |
 | `set [help \| <key> <val> \| <key> off \| <key>] [target]` | Get, set, or clear runtime provider state overrides (`node-name`, `proxy-url-max`, `proxy-url-refresh`, `cleanup-scope`, `cleanup-interval`, `fast-auth`, `ip-version`, `proxy-target-family`, `h1-plus`, `h3`, `h3-datagram`, `h3-datagram-send`, `tls-hello`). `h3` accepts `off`, `direct`, `on`, a positive proxy count, `all` or `auto`; `ip-version` accepts `dual`, `ipv4`, `ipv6` or `legacy`; `proxy-target-family` accepts `v4` or `proxy`; `tls-hello` accepts `on` or `off` and selects Chrome's or Go's hello for new connections; open ones keep their handshake. Its `off` is a stored value, not a clear: it survives restarts and takes precedence over `URNETWORK_TLS_HELLO=on`. A control socket `clear` returns the key to `URNETWORK_TLS_HELLO` ([ef3508eee](https://github.com/urfoundation/meso-miner/commit/ef3508eeee806477c36686431331e884a0061bfa), [27664c9fd](https://github.com/urfoundation/meso-miner/commit/27664c9fdafbd7cf5d1f4ab937bd528cf0c90f6f)). Sent live over the provider control socket, or queued to `pending_overrides.json` if the provider is stopped. Confirm-gated. |
-| `rename <name> [target]` | Set the dashboard identity label on the backend. Alias for `set node-name <name>`. Writes `~/.urnetwork/node_name`, re-read on next tick — no restart. Use `off` to clear. Available with `urnet-tools`. `urnet-docker rename` does not work: the image's shell `urnet-tools` does not implement it. Inside a container, write `~/.urnetwork/node_name` directly, as in [Node-Identity](Node-Identity.md). |
+| `rename <name> [target]` | Set the dashboard identity label on the backend. Alias for `set node-name <name>`. The setting persists in provider state and takes precedence over the legacy node name file. Use `off` to clear. Available with `urnet-tools`. `urnet-docker rename` does not work: the image's shell `urnet-tools` does not implement it. For container instructions, see [Node-Identity](/urfoundation/meso-miner/wiki/Node-Identity). |
 | `session save <file> [target]` | Export encrypted AES-256-CBC bundle of provider JWT identity and state. Prompts for passphrase. |
 | `session load <file> [target] [--allow-different-account]` | Decrypt and load identity bundle into provider. Automatically backs up current state first. Verifies account identity unless bypassed. |
 | `self-heal [on\|off\|status] [target]` | Toggle or query resource-pressure self-healing monitor (`~/.urnetwork/proxy_self_heal`). |
@@ -249,9 +249,9 @@ Rejected changes log too, so a setting that did not take explains itself:
 ⚠️ [control] set gomemlimit=2GiB (was 1GiB) persisted but live apply failed, takes effect on restart: ...
 ```
 
-`rename` and `show-ip` do not go through the socket. Both take effect at the
-next renewal, and the provider reports the resulting dashboard label when it
-changes:
+`rename` uses the control socket, or queues the change if the provider is
+stopped. `show-ip` uses a marker file instead. The provider reports the
+resulting dashboard label when it changes at renewal:
 
 ```text
 🏷️ [identity] dashboard label changed: nyc-1 [...] -> nyc-2 [...]

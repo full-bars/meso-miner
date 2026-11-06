@@ -2,6 +2,11 @@
 
 Everything merged after `v2026.11.6-1091259400-meso`.
 
+### Safety and lifecycle
+
+- **Uninstall stops providers before removing their files.** **[redeploy] [installer]** (#82) The management tool verifies that the provider stopped. The Windows PowerShell uninstaller refuses removal if another provider is running or process checks fail.
+- **Updates check the Linux capability bounding set.** **[redeploy] [installer]** (#82) The updater and installer avoid applying a bind capability outside the bounding set. They remove a blocked file capability only when unrelated capabilities will not be lost.
+
 ## [v2026.11.6-1091259400-meso] — 2026-11-06
 
 Everything merged after `v2026.11.1-1087111111-meso`.
