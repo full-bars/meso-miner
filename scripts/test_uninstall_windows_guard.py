@@ -21,12 +21,12 @@ $script:queries = 0
 function Get-CimInstance {
     param($ClassName, $ErrorAction)
     $script:queries++
-    if ($env:GUARD_SCENARIO -eq 'query-error') { throw 'query failed' }
-    if ($env:GUARD_SCENARIO -eq 'disappears' -and $script:queries -eq 1) {
+    if ($env:GUARD_SCENARIO -eq 'query-error' -or ($env:GUARD_SCENARIO -eq 'query-error-after' -and $script:queries -gt 1)) { throw 'query failed' }
+    if (($env:GUARD_SCENARIO -eq 'disappears' -or $env:GUARD_SCENARIO -eq 'terminate-error' -or $env:GUARD_SCENARIO -eq 'query-error-after') -and $script:queries -eq 1) {
         return [pscustomobject]@{ ExecutablePath = 'C:\Fake\urnetwork.exe'; ProcessId = 42 }
     }
 }
-function Invoke-CimMethod { param($InputObject, $MethodName, $ErrorAction) return [pscustomobject]@{ ReturnValue = 0 } }
+function Invoke-CimMethod { param($InputObject, $MethodName, $ErrorAction) if ($env:GUARD_SCENARIO -eq 'terminate-error') { throw 'terminate failed' }; return [pscustomobject]@{ ReturnValue = 0 } }
 '''
         program = "$env:GUARD_SCENARIO = '" + scenario + "'\n" + prefix + guard + "\nWrite-Output 'CLEANUP_REACHED'\n"
         encoded = base64.b64encode(program.encode("utf-16le")).decode()
@@ -36,9 +36,11 @@ function Invoke-CimMethod { param($InputObject, $MethodName, $ErrorAction) retur
                               env=env, capture_output=True, text=True)
 
     def test_query_failure_refuses_cleanup(self):
-        result = self.run_guard("query-error")
-        self.assertNotEqual(result.returncode, 0, result.stdout)
-        self.assertNotIn("CLEANUP_REACHED", result.stdout)
+        for scenario in ("query-error", "query-error-after", "terminate-error"):
+            with self.subTest(scenario=scenario):
+                result = self.run_guard(scenario)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertNotIn("CLEANUP_REACHED", result.stdout)
 
     def test_process_disappears_before_cleanup(self):
         result = self.run_guard("disappears")
