@@ -102,7 +102,7 @@ The summary displays proxy source breakdown (file/URL/internal), health state co
 ### 1. Install
 
 ```sh
-curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh -s -- install
 ```
 
 This is the same installer as Linux but uses `launchd` instead of `systemd`. It creates:
