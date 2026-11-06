@@ -3843,4 +3843,4 @@ Parity port of the `fragment+segment` dialer from `urfoundation/meso-miner` (PR 
 
 **How to identify in new upstream**: Compare the process-list and uninstall guards, Windows lifecycle routes and `ensure_extender_cap` call sites with #82 and #83.
 
-**Status**: Merged on main; prepared for `v2026.11.6-1091988050-meso`, not yet tagged.
+**Status**: Included in `v2026.11.6-1091992770-meso`.
