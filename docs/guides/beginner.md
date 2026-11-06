@@ -41,7 +41,7 @@ On standard FreeBSD 13/14, `fetch(1)` is in the base system, so you do not need 
 The installer never runs the service as root. From a direct root login with no `urnetwork` account it refuses, so it needs a non-root service account. The installer does not create that account, so create it first (`pw useradd -n urnet -m`) and name it with `SERVICE_USER_OVERRIDE`:
 
 ```sh
-fetch -qo urnet-install.sh https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_FreeBSD.sh && SERVICE_USER_OVERRIDE=urnet sh urnet-install.sh install
+fetch -qo urnet-install.sh https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_FreeBSD.sh && env SERVICE_USER_OVERRIDE=urnet sh urnet-install.sh install
 ```
 
 **Windows (PowerShell, no admin required):**
