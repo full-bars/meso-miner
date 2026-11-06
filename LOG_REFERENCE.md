@@ -569,18 +569,19 @@ steps.
 In addition to the main `[health]` line, when running with a proxy list the provider emits proxy health lines:
 
 ```
-[health][proxies] up=1193 down=7 dead=4 degraded=3 recovered=5 lost=0 lifetime_recovered=51 lifetime_lost=39
-[health][proxies] dead: proxy[112] (203.0.113.11:1081), proxy[266] (203.0.113.14:1081), ... (+2 more)
-[health][proxies] degraded: proxy[49] (203.0.113.16:1081), proxy[1037] (203.0.113.17:1081), proxy[660] (98.76.54.32:1081)
+[health][proxies] up=1193 dead=4 degraded=3 recovered=5 lost=0 lifetime_recovered=51 lifetime_lost=39 (since-start 2026-11-03 01:20 UTC)
+[health][proxies] unreachable (dead): proxy[112] (203.0.113.11:1081), proxy[266] (203.0.113.14:1081), ... (+2 more)
+[health][proxies] failing (degraded): proxy[49] (203.0.113.16:1081), proxy[1037] (203.0.113.17:1081), proxy[660] (98.76.54.32:1081)
 ```
 
 | Field | Meaning |
 |---|---|
-| `up` / `down` | Current proxy state (`up` agrees with `proxies=N`). |
+| `up` | Proxies currently up (agrees with `proxies=N`). The line has no `down` field: down is `dead` plus `degraded`. |
 | `dead` | Proxies that have never successfully authenticated (trustworthy after ~1h). |
 | `degraded` | Proxies that worked before but are currently down. |
 | `recovered` / `lost` | Down->up and up->down transitions since the last heartbeat. |
 | `lifetime_recovered` / `lifetime_lost` | Cumulative transition counts since process start. |
+| `since-start` | Local time the process started, which those lifetime counts are measured from. |
 
 - The detail lines are capped at 50 entries in stdout (shows `... (+N more)` when truncated).
 - A complete, uncapped history is mirrored to `proxy_health.state` and `proxy_health.log` (default `~/.urnetwork`).
