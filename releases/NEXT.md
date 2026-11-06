@@ -41,7 +41,7 @@ The `v2026.11.1-1087111111-meso` note said not to set `URNETWORK_METRICS=off`. T
 
 ## Repository sync
 
-- **This tree is level with `full-bars/meso-miner` through 2026-11-05** **[no redeploy]**. The fork's main line is merged in. Only repository identity differs: the download URLs, the help text, the image name and the release-repo guards. This tree keeps its own extender capability helper, its test and the installer's restore guard. These were ahead of the fork.
+- **This tree is level with `full-bars/meso-miner` through 2026-11-05** **[no redeploy]** (#80). The fork's main line is merged in. Only repository identity differs: the download URLs, the help text, the image name and the release-repo guards. This tree keeps its own extender capability helper, its test and the installer's restore guard. These were ahead of the fork.
 
 ## CI and documentation
 
@@ -66,6 +66,6 @@ The `v2026.11.1-1087111111-meso` note said not to set `URNETWORK_METRICS=off`. T
 - Pin an IPv6 dial to the egress interface (#77)
 - Derive the refresh preview from the reloader's desired set (#78)
 - Carry proxied identities' client UDP through the proxy relay (#79)
-- Sync the full-bars main line through 2026-11-05
+- Sync the full-bars main line through 2026-11-05 (#80)
 
 **Full Changelog**: <https://github.com/urfoundation/meso-miner/compare/v2026.11.1-1087111111-meso...main>

@@ -28,7 +28,7 @@ Everything merged after `v2026.11.1-1087111111-meso`.
 
 ### Repository sync
 
-- **This tree is level with `full-bars/meso-miner` through 2026-11-05** **[no redeploy]**. The fork's main line is merged in. Only repository identity differs: the download URLs, the help text, the image name and the release-repo guards. This tree keeps its own extender capability helper, its test and the installer's restore guard, because they were ahead of the fork.
+- **This tree is level with `full-bars/meso-miner` through 2026-11-05** **[no redeploy]** (#80). The fork's main line is merged in. Only repository identity differs: the download URLs, the help text, the image name and the release-repo guards. This tree keeps its own extender capability helper, its test and the installer's restore guard, because they were ahead of the fork.
 
 ### CI and documentation
 
@@ -53,7 +53,7 @@ Everything merged after `v2026.11.1-1087111111-meso`.
 - Pin an IPv6 dial to the egress interface (#77)
 - Derive the refresh preview from the reloader's desired set (#78)
 - Carry proxied identities' client UDP through the proxy relay (#79)
-- Sync the full-bars main line through 2026-11-05
+- Sync the full-bars main line through 2026-11-05 (#80)
 
 ## [v2026.11.1-1087111111-meso] — 2026-11-01
 
