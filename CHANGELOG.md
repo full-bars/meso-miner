@@ -6,6 +6,13 @@ Everything merged after `v2026.11.6-1091259400-meso`.
 
 - **Uninstall stops providers before removing their files.** **[redeploy] [installer]** (#82) The management tool verifies that the provider stopped. The Windows PowerShell uninstaller refuses removal if another provider is running or process checks fail.
 - **Updates check the Linux capability bounding set.** **[redeploy] [installer]** (#82) The updater and installer avoid applying a bind capability outside the bounding set. They remove a blocked file capability only when unrelated capabilities will not be lost.
+- **Windows lifecycle commands protect shared profiles.** **[redeploy]** (#82) `start` avoids launching a second provider when it finds one or its socket. Graceful `stop` and `restart` refuse when another process may share the profile or the process list cannot be checked. Forced stop bypasses the graceful-stop guard. A live provider can now restart after an update or tune; a stopped provider stays stopped.
+- **Uninstall fails closed when it cannot verify a stop.** **[redeploy] [installer]** (#82) On Unix, the tool stops the service or process and checks the PID and socket before removal. On Windows, it checks for processes that may share the profile and checks again after stopping. The PowerShell uninstaller also checks termination and rechecks running providers; it refuses removal on a failed query or an unverifiable path.
+- **Capability checks protect other file capabilities.** **[installer]** (#82) Linux and Docker shell installers stop if a blocked bind capability cannot be removed safely. They warn when the bounding set blocks it; an extender that needs privileged ports may require a change to the host or container configuration.
+
+### Documentation
+
+- **Installation and operator guides are corrected.** **[no redeploy]** (#82) The macOS install examples include the required `install` argument. Docker instructions show how to run `direct` and `sn-status` through `provider`. Node identity docs explain that a saved control-socket name takes precedence over the legacy file and environment names.
 
 ## [v2026.11.6-1091259400-meso] — 2026-11-06
 
