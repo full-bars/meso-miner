@@ -4,13 +4,13 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/urfoundation/meso-miner  
-**Current Version**: v2026.10.31-1086896130-meso
+**Latest published release**: v2026.11.6-1091259400-meso
 
 ---
 
 ## Inherited from urnetwork-3.23-fix (carried by the parity port)
 
-Sections 1 through 165 are inherited history from `urfoundation/meso-miner`, carried over by the parity port. They are recorded here for rebase reference and are not meso-miner changes. The meso-miner parity work begins at section 166.
+Sections 1 through 165 are inherited history from `full-bars/urnetwork-3.23-fix`, carried over by the parity port. They are recorded here for rebase reference. The meso-miner parity work begins at section 166.
 
 ---
 
@@ -3788,3 +3788,59 @@ Parity port of the `fragment+segment` dialer from `urfoundation/meso-miner` (PR 
 - **Installer hardening and CI** (urfoundation #46 to #48 and #50): a symlinked shell rc is refused, path changes are checked before writing, and the shell-rc symlink test runs in CI.
 
 **Impact**: the serving role remains unverified in production, so it should not be treated as a working service. The other changes in this window are operator-visible in status, metrics and the installer.
+
+## 181. v2026.11.1: Startup, Installer and Proxy Safety
+
+**Window**: `v2026.10.24-1080497440-meso` to `v2026.11.1-1087111111-meso`. See the versioned section of [CHANGELOG.md](CHANGELOG.md) for the full list.
+
+**Purpose**: Protect provider state during startup and updates, reduce credential exposure in logs and make platform installers safer.
+
+**Files Modified**: `docker/scripts/`, `provider/`, `internal/urnettools/`, `scripts/Provider_Install_Linux.sh`, `scripts/Provider_Install_FreeBSD.sh`, `LOG_REFERENCE.md` and operator guides.
+
+**Change**:
+- Docker stages proxy imports and keeps the saved configuration when an import fails. Debug logs redact credentials and nightly starts reuse saved JWTs.
+- Proxy state changes use the proxy lock. URL fetch failures keep their reason in the important log, and fetches and probes report progress.
+- The FreeBSD installer checks release digests, protects symlinked shell configuration and rolls back provider updates. The Linux installer refuses updates when release metadata or backups cannot be verified.
+- Proxy transport tracks explicit IPv6 failures per carrier. The H3 relay dial error does not print proxy credentials.
+- `urnet-tools wallet` warns instead of refusing seed use on a provider host. The old workstation flag is removed.
+
+**How to identify in new upstream**: Check the staged import in `docker/scripts/provider_common.sh`, the provider proxy lock and redaction paths, and the installer digest and rollback paths. Compare with the versioned changelog before porting.
+
+**Status**: Included in `v2026.11.1-1087111111-meso`.
+
+## 182. v2026.11.6: Client UDP, Capability Restoration and Lifecycle Metrics
+
+**Window**: `v2026.11.1-1087111111-meso` to `v2026.11.6-1091259400-meso`. See the versioned section of [CHANGELOG.md](CHANGELOG.md) for the full list.
+
+**Purpose**: Carry client UDP through proxy relays, preserve the extender bind capability across binary swaps and improve failure reporting and provider state safety.
+
+**Files Modified**: `provider/proxy_udp_egress.go`, `provider/proxy_udp_check.go`, `provider/client_jwt_*.go`, `internal/urnettools/update_extender.go`, `scripts/Provider_Install_Linux.sh`, `docker/scripts/`, `memory_budget.go` and related transport, metrics, tests and documentation.
+
+**Change**:
+- @Ryanmello07 contributed the proxied-client UDP relay support in #79. A refused flow does not fall back to the host address; IPv6 destinations are refused because the relay check proves IPv4 only.
+- The installer, Docker update scripts and Go updater attempt to restore `cap_net_bind_service` after provider swaps. Docker images include the capability tools.
+- The client JWT store skips unchanged writes, preserves entries without mint times and reports write causes and counts. H1+ handshake failures are classified by cause.
+- The proxy refresh preview uses the reloader's desired set. Windows IPv6 binding reports a failed pin. Transfer memory waiters keep their place.
+- The macOS wrapper forwards proxy command arguments. Metrics can be disabled through `URNETWORK_METRICS`.
+
+**How to identify in new upstream**: Check `provider/proxy_udp_egress.go`, `internal/urnettools/update_extender.go`, the JWT store and the shared proxy desired-set code. Compare with the versioned changelog before porting.
+
+**Status**: Included in `v2026.11.6-1091259400-meso`.
+
+## 183. After v2026.11.6: Provider Lifecycle and Capability Safety
+
+**Window**: Changes merged after `v2026.11.6-1091259400-meso`, including #82 and #83. This window is not yet released.
+
+**Purpose**: Avoid removing files while a provider may still be running, protect shared Windows profiles and prevent blocked Linux capabilities from breaking startup.
+
+**Files Modified**: `internal/urnettools/lifecycle_cmds.go`, `internal/urnettools/*_windows_route.go`, `internal/urnettools/uninstall_process_guard.go`, `internal/urnettools/uninstall_unix.go`, `internal/urnettools/update_extender.go`, `scripts/Provider_Uninstall_Win32.ps1`, `scripts/Provider_Install_Linux.sh` and `docker/scripts/`.
+
+**Change**:
+- Windows start checks for an existing provider. Graceful stop and restart protect shared profiles, and update and tune use the Windows restart route.
+- Uninstall verifies that the provider stopped before removing files. The Windows PowerShell uninstaller refuses cleanup when another provider is running or process checks fail. It recognizes the current and legacy installed paths.
+- Linux installer and update paths check the capability bounding set. Shell helpers refuse to remove a blocked bind capability if doing so would remove unrelated file capabilities, and stop when the safety check fails.
+- macOS install examples, Docker command guidance and node-name precedence documentation were corrected. Release-cache tests use an isolated fixture.
+
+**How to identify in new upstream**: Compare the process-list and uninstall guards, Windows lifecycle routes and `ensure_extender_cap` call sites with #82 and #83.
+
+**Status**: Merged on main; not yet tagged.

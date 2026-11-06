@@ -16,7 +16,8 @@ The Linux installer, Docker update scripts and Go updater check the process capa
 
 ## Documentation
 
-- The macOS installation examples now pass the required `install` argument.
+- The macOS installation examples now pass the required `install` argument. The Windows guide shows the current install path and does not present the online installer as an offline tarball install.
+- The project map, fork history and capability warning reference reflect the current repository.
 - Docker guides show how to run `provider direct` and `provider sn-status` inside the container. The image's shell `urnet-tools` does not implement those commands.
 - Node identity guidance now explains that a name saved through the control socket takes precedence over the legacy node-name file and environment names.
 

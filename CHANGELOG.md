@@ -13,6 +13,7 @@ Everything merged after `v2026.11.6-1091259400-meso`.
 ### Documentation
 
 - **Installation and operator guides are corrected.** **[no redeploy]** (#82) The macOS install examples include the required `install` argument. Docker instructions show how to run `direct` and `sn-status` through `provider`. Node identity docs explain that a saved control-socket name takes precedence over the legacy file and environment names.
+- **The installation guide matches the Windows installer.** **[no redeploy]** It shows the current install path and no longer describes the online installer as an offline tarball install. The project map, fork history and capability warning reference are updated.
 
 ## [v2026.11.6-1091259400-meso] — 2026-11-06
 
