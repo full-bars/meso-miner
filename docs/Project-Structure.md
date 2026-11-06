@@ -19,7 +19,7 @@ meso-miner is the production-oriented fork of the URnetwork provider. The Go mod
 Everything the provider binary does that is not the shared network stack.
 
 - Entry point and runtime: `main.go`, `startup_banner.go`, `control_socket.go`, `control_state.go`, `pending_overrides.go`, `hotswap*.go`, `thrash_watchdog.go`, `liveness_watchdog.go`, `loop_supervisor.go`.
-- Proxy handling: `proxy_url*.go` (URL sources), `proxy_reload.go` (hot reload), `proxy_state.go`, `proxy_id.go`, `proxy_health_log.go`, `proxy_slow_retry.go`, `proxy_probe.go`, `proxy_benchmark.go`, `proxy_grade_*.go`, `proxy_trim*.go`, `proxy_udp_check.go`, `socks5_udp.go`, `ssrf_guard.go`.
+- Proxy handling: `proxy_url*.go` (URL sources), `proxy_reload.go` (hot reload), `proxy_state.go`, `proxy_id.go`, `proxy_health_log.go`, `proxy_slow_retry.go`, `proxy_probe.go`, `proxy_benchmark.go`, `proxy_grade_*.go`, `proxy_trim*.go`, `proxy_udp_check.go`, `proxy_udp_egress.go`, `socks5_udp.go`, `ssrf_guard.go`.
 - Login and identity: `auth_rate_limiter.go`, `proxy_admission_gate.go`, `client_jwt_*.go`, `network_refresh.go`, `renewal_watcher.go`, `wallet_*.go`.
 - Transport choices: `family_transport.go` (dual-stack for the direct identity), `h3_*.go` (HTTP/3), `direct.go`.
 - Bittensor and claim commands: `sn*.go`, `claim_*.go`, `bt_*.go`, `fleet*.go`, `hotkey_wallet.go`.
@@ -27,7 +27,7 @@ Everything the provider binary does that is not the shared network stack.
 
 ## Operator tool (`cmd/urnet-tools/`, `cmd/urnet-docker/`, `internal/`)
 
-- `internal/urnettools/` holds all the logic: command tree (`cobra.go`), provider discovery (`discover*.go`), update with checksum verification (`update.go`, `release.go`), start/stop/restart (`lifecycle*.go`), proxy commands (`proxy.go`), session save/load, self-heal, log following, and Docker support (`cli_docker.go`, `docker.go`).
+- `internal/urnettools/` holds the operator logic: the command tree (`cobra.go`), provider discovery (`discover*.go`), update with checksum verification (`update.go`, `release.go`), start/stop/restart (`lifecycle*.go`, `*_windows_route.go`), uninstall safety (`uninstall_process_guard.go`, `uninstall_unix.go`), capability restoration (`update_extender.go`), proxy commands, session save/load, self-heal, logs and Docker support (`cli_docker.go`, `docker.go`).
 - `internal/tui/` is the terminal drawing kit behind `urnet-tools top`.
 - `internal/verdictfeed/` reads the signed backend-health feed (off by default).
 - `internal/promtext/`, `internal/durable*/` are small support packages for metrics checks and durable state.

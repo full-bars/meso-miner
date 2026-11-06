@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/meso-miner  
-**Current Version**: v2026.10.31-1086902680-meso (see [releases/v2026.10.31-1086902680-meso.md](releases/v2026.10.31-1086902680-meso.md)); section 180 is the latest detailed entry, for v2026.10.24
+**Latest published release**: v2026.11.1-1087111111-meso (see [release notes](releases/v2026.11.1-1087111111-meso.md))
 
 ---
 
@@ -3827,3 +3827,19 @@ Parity port of the `fragment+segment` dialer from `full-bars/urnetwork-3.23-fix`
 **How to Identify in New Upstream**: Look for `installProviderBinary` and `extenderCapabilityPresent`, and capability restoration in the installer and container scripts.
 
 **Status**: merged on `main` after `v2026.11.1-1087111111-meso`; not yet tagged. The extender role remains unproven.
+
+## 183. Proxied Client UDP and Lifecycle Safety
+
+**Purpose**: Carry a proxied identity's client UDP through its proxy, report long proxy-list operations and keep lifecycle commands from removing files while a provider may still be running.
+
+**Files Modified**: `provider/proxy_udp_egress.go`, `provider/proxy_udp_check.go`, `provider/proxy_url_source.go`, `internal/urnettools/lifecycle_cmds.go`, `internal/urnettools/start_windows_route.go`, `internal/urnettools/restart_windows_route.go`, `internal/urnettools/uninstall_process_guard.go`, `internal/urnettools/uninstall_unix.go`, the Linux and Windows installer scripts and Docker scripts.
+
+**Change**:
+- @Ryanmello07 contributed the client UDP relay in urfoundation/meso-miner#79; the full-bars meso port is #345. A confirmed missing relay or mismatched exit refuses the flow; an unknown check permits a relay attempt without a verified exit. A refused flow never falls back to the host. IPv6 destinations are refused, and either direction being idle for 120 seconds closes the flow.
+- Proxy-list downloads and probes report progress. The refresh preview uses the same desired set as the reloader (#343, #346).
+- Windows lifecycle commands avoid duplicate starts and protect shared profiles. Uninstall stops the target and checks its exit before removing files on Windows and Unix (#346, #347).
+- Provider swaps attempt to restore the extender bind capability. The Docker helper skips it when the bounding set blocks it (#338, #340, #346). The extender remains a work in progress and does not activate for clients.
+
+**How to identify in new upstream**: Check `dialProxiedUdp`, `proxiedUdpFlowIdleTimeout`, `runProxyURLCleanupOnce`, `uninstall_process_guard.go` and the Windows start and restart routes. Compare the release notes and changelog for the full list.
+
+**Status**: On main after v2026.11.1-1087111111-meso; not yet tagged.
