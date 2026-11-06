@@ -569,18 +569,19 @@ steps.
 In addition to the main `[health]` line, when running with a proxy list the provider emits proxy health lines:
 
 ```
-[health][proxies] up=1193 down=7 dead=4 degraded=3 recovered=5 lost=0 lifetime_recovered=51 lifetime_lost=39
-[health][proxies] dead: proxy[112] (203.0.113.11:1081), proxy[266] (203.0.113.14:1081), ... (+2 more)
-[health][proxies] degraded: proxy[49] (203.0.113.16:1081), proxy[1037] (203.0.113.17:1081), proxy[660] (98.76.54.32:1081)
+[health][proxies] up=1193 dead=4 degraded=3 recovered=5 lost=0 lifetime_recovered=51 lifetime_lost=39 (since-start 2026-11-03 01:20 UTC)
+[health][proxies] unreachable (dead): proxy[112] (203.0.113.11:1081), proxy[266] (203.0.113.14:1081), ... (+2 more)
+[health][proxies] failing (degraded): proxy[49] (203.0.113.16:1081), proxy[1037] (203.0.113.17:1081), proxy[660] (98.76.54.32:1081)
 ```
 
 | Field | Meaning |
 |---|---|
-| `up` / `down` | Current proxy state (`up` agrees with `proxies=N`). |
+| `up` | Proxies currently up (agrees with `proxies=N`). The line has no `down` field: down is `dead` plus `degraded`. |
 | `dead` | Proxies that have never successfully authenticated (trustworthy after ~1h). |
 | `degraded` | Proxies that worked before but are currently down. |
 | `recovered` / `lost` | Down->up and up->down transitions since the last heartbeat. |
 | `lifetime_recovered` / `lifetime_lost` | Cumulative transition counts since process start. |
+| `since-start` | Local time the process started, which those lifetime counts are measured from. |
 
 - The detail lines are capped at 50 entries in stdout (shows `... (+N more)` when truncated).
 - A complete, uncapped history is mirrored to `proxy_health.state` and `proxy_health.log` (default `~/.urnetwork`).
@@ -916,6 +917,24 @@ Using 1000 proxy servers:
 - Each `added server` line confirms a proxy was registered successfully
 - Credentials are partially redacted in logs (`***`)
 - `Using N proxy servers:` summarizes the loaded pool with index assignments
+- Without `/app/proxy.txt`, the startup script keeps the saved `~/.urnetwork/proxy` configuration. It only removes stale `.proxy-import.*` staging directories older than ten minutes.
+
+### Public IP checker and password-login debug output
+
+`ENABLE_IP_CHECKER=true` logs these messages around the external checker:
+
+```
+[INFO] Checking current public IP...
+[INFO] IP checker script ran successfully
+[WARN] IP checker script failed
+[WARN] IP checker fetch failed
+[WARN] IP checker fetch failed: could not create temporary file
+[INFO] IP checker disabled
+```
+
+The checker script is downloaded to a temporary file first, so `fetch failed` means the download itself failed and the script never ran, while `script failed` means it downloaded but exited non-zero.
+
+When `DEBUG=true`, the password-login path prints `DEBUG: USER_AUTH set=` and `DEBUG: PASSWORD set=`, each with its length, then `DEBUG: AUTH_EXIT_CODE=` and `DEBUG: AUTH_OUTPUT=`. The credential values are not printed. `DEBUG: AUTH_OUTPUT=[redacted]` replaces the output when it echoes a credential. The lengths still reveal something about the credentials, so do not share these logs unedited.
 
 ### `proxy.state` reconciliation
 

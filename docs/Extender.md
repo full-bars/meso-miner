@@ -1,6 +1,6 @@
 # Extender role (work in progress, does not activate yet)
 
-The extender role is a work in progress and does not activate yet. `URNETWORK_EXTENDER` starts the role's listener, but activation, the directory, gossip and the probes are not implemented, so the role serves no traffic (`provider/extender_role.go:29-36`). The sections below describe the switches and the carrier layout the role is built around. It is opt-in and off by default.
+The extender role is a work in progress and does not activate yet. `URNETWORK_EXTENDER` starts the role's listener, but activation, the directory, gossip and the probes are not implemented, so the role does not take part in the network yet (`provider/extender_role.go:29-36`). A bound dns carrier still answers ordinary DNS queries on udp 4053 (`extender/extender_dns.go`), so firewall that port like any resolver you expose. The sections below describe the switches and the carrier layout the role is built around. It is opt-in and off by default.
 
 > [!WARNING]
 > The extender role is a work in progress and is unproven. It has not been verified in production, and it does not run on the fleet. The steps below describe what the code does when the switch is set (#289, #290); they do not show the role serving traffic.
