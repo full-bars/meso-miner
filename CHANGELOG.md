@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [v2026.11.6-1091988050-meso] — 2026-11-06 (prepared; not tagged)
+
 Everything merged after `v2026.11.6-1091259400-meso`.
 
 ### Safety and lifecycle
