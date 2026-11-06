@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise only the extracted post-swap helper, never an installer or entrypoint."""
+"""Exercise the extracted capability helper, never an installer or entrypoint."""
 import os
 from pathlib import Path
 import shutil
@@ -10,8 +10,8 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = (
     "scripts/Provider_Install_Linux.sh",
-    "docker/scripts/urnet-tools.sh",
     "docker/scripts/provider_common.sh",
+    "docker/scripts/urnet-tools.sh",
 )
 
 
@@ -73,19 +73,21 @@ setcap() {
                     result, calls, binary = self.run_helper(script, initial, mode, platform)
                     self.assertEqual(bool(calls), expect_call)
                     if expect_call:
-                        self.assertEqual(calls, f"cap_net_bind_service=+ep {binary}\n")
+                        self.assertEqual(calls, f"cap_net_bind_service=+ep {binary}" + chr(10))
+                    else:
+                        self.assertEqual(calls, "")
                     self.assertEqual("WARNING:" in result.stderr, warn)
                     if warn:
                         self.assertEqual(len(result.stderr.splitlines()), 1)
-                        quoted = "'" + binary.replace("'", "'\\''") + "'"
+                        quoted = "'" + binary.replace("'", "'" + chr(92) + "''") + "'"
                         self.assertIn("sudo setcap cap_net_bind_service=+ep " + quoted, result.stderr)
 
-    def test_swap_sites(self):
+    def test_all_provider_swap_sites_reapply(self):
         installer = (ROOT / SCRIPTS[0]).read_text()
-        self.assertEqual(installer.count('ensure_extender_cap "$install_path/bin/urnetwork"'), 3)
-        for script in SCRIPTS[1:]:
-            text = (ROOT / script).read_text()
-            self.assertEqual(text.count('    ensure_extender_cap "'), 1)
+        self.assertEqual(installer.count('ensure_extender_cap "$install_path/bin/urnetwork"'), 4)
+        self.assertIn('ensure_extender_cap "$provider_bin"', (ROOT / SCRIPTS[2]).read_text())
+        self.assertIn('ensure_extender_cap "$APP_DIR/urnetwork_${A_SYS_ARCH}_${PROVIDER_FLAVOR}"',
+                      (ROOT / SCRIPTS[1]).read_text())
 
 
 if __name__ == "__main__":

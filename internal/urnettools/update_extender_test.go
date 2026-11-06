@@ -79,6 +79,13 @@ func TestInstallProviderBinaryExtenderCapability(t *testing.T) {
 			if got := warnings.String(); tc.wantWarning != strings.Contains(got, "WARNING:") {
 				t.Fatalf("warning=%q", got)
 			}
+			if tc.wantWarning {
+				quoted := "'" + strings.ReplaceAll(dst, "'", "'\\''") + "'"
+				want := "WARNING: extender capability missing or unverified for " + fmt.Sprintf("%q", dst) + "; run: sudo setcap cap_net_bind_service=+ep " + quoted + "\n"
+				if warnings.String() != want {
+					t.Fatalf("warning=%q, want %q", warnings.String(), want)
+				}
+			}
 		})
 	}
 }
