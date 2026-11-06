@@ -249,9 +249,9 @@ Rejected changes log too, so a setting that did not take explains itself:
 ⚠️ [control] set gomemlimit=2GiB (was 1GiB) persisted but live apply failed, takes effect on restart: ...
 ```
 
-`rename` and `show-ip` do not go through the socket. Both take effect at the
-next renewal, and the provider reports the resulting dashboard label when it
-changes:
+`rename` uses the control socket, or queues the change if the provider is
+stopped. `show-ip` uses a marker file instead. The provider reports the
+resulting dashboard label when it changes at renewal:
 
 ```text
 🏷️ [identity] dashboard label changed: nyc-1 [...] -> nyc-2 [...]

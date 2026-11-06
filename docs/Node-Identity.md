@@ -20,10 +20,12 @@ The provider resolves each component in priority order:
 
 | Priority | Source | Description |
 |----------|--------|-------------|
-| 1 | `URNETWORK_NODE_NAME` env var | Explicit override — set this for full control |
-| 2 | `HOST_HOSTNAME` env var | Docker: pass the host's actual hostname with `-e HOST_HOSTNAME=$(hostname)` |
-| 3 | OS hostname | `os.Hostname()` — what the container or machine reports |
-| 4 | Auto-detect | If the name looks like a 12-char Docker container ID, it's replaced with `provider` |
+| 1 | Control-socket state | `node-name` saved in `provider_state.json` |
+| 2 | Legacy node name file | Nonempty `~/.urnetwork/node_name` |
+| 3 | `URNETWORK_NODE_NAME` env var | Explicit startup name |
+| 4 | `HOST_HOSTNAME` env var | Docker host name passed with `-e HOST_HOSTNAME=$(hostname)` |
+| 5 | OS hostname | `os.Hostname()` — what the container or machine reports |
+| 6 | Auto-detect | A name that looks like a 12-character Docker container ID is replaced with `provider` |
 
 If no name is set and the hostname is a container ID (e.g. `a1b2c3d4e5f6`), the label shows only the redacted IP or just `provider`.
 
