@@ -87,7 +87,7 @@ curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/
 **🍎 macOS (launchd)**
 
 ```sh
-curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh
+curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh -s -- install
 ```
 
 **😈 FreeBSD** (the base system's `fetch` is enough; see [docs/FreeBSD.md](docs/FreeBSD.md))

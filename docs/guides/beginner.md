@@ -28,7 +28,7 @@ curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/
 
 **macOS:**
 ```sh
-curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh
+curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh -s -- install
 ```
 
 **FreeBSD:**
