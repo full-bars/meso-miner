@@ -51,6 +51,9 @@ type TransferMemoryBudget struct {
 	capacityWaitHead      *transferMemoryBudgetWaiter
 	capacityWaitTail      *transferMemoryBudgetWaiter
 	capacityWaiterCount   atomic.Int64
+	// Bytes promised to woken waiters that have not yet reset. Guarded by the
+	// root's capacityWaitStateLock; every budget in a waiter's chain carries it.
+	grantedByteCount ByteCount
 
 	// ADAPTATION (v2026-engine port, transfer layer, stage 1): the pinned file
 	// also ends this struct with
@@ -86,6 +89,9 @@ type transferMemoryBudgetWaiter struct {
 	previousCapacityWaiter *transferMemoryBudgetWaiter
 	nextCapacityWaiter     *transferMemoryBudgetWaiter
 	registered             bool
+	// granted is true from the moment a wake is assigned until the owner
+	// calls reset (it reserved, or gave up). Guarded by capacityWaitStateLock.
+	granted bool
 }
 
 func newTransferMemoryBudgetWaiter() *transferMemoryBudgetWaiter {
@@ -114,13 +120,20 @@ func (self *transferMemoryBudgetWaiter) subscribe(
 	return self.notify
 }
 
-// reset removes an armed subscription. A wake already assigned to this
-// waiter is drained; the owner either consumed capacity or is about to
-// re-subscribe immediately against current state.
+// reset removes an armed subscription and ends any outstanding grant. A wake
+// is a grant of capacity, not a reservation: the owner must call reset once
+// it has reserved (consumed the grant) or abandoned the attempt, otherwise
+// followers stay blocked behind the grant. A wake already assigned to this
+// waiter is drained.
 func (self *transferMemoryBudgetWaiter) reset() {
 	if self.budget != nil {
-		self.budget.removeCapacityWaiter(self)
+		budget := self.budget
+		changed := budget.removeCapacityWaiter(self)
 		self.budget = nil
+		if changed {
+			// Followers may have been blocked behind this head or grant.
+			budget.admissionRoot().notifyEligibleCapacityWaiters()
+		}
 	}
 	select {
 	case <-self.notify:
@@ -394,11 +407,19 @@ func (self *TransferMemoryBudget) addCapacityWaiter(
 
 func (self *TransferMemoryBudget) removeCapacityWaiter(
 	waiter *transferMemoryBudgetWaiter,
-) {
-	self = self.admissionRoot()
-	self.capacityWaitStateLock.Lock()
-	defer self.capacityWaitStateLock.Unlock()
-	self.removeCapacityWaiterWithLock(waiter)
+) (changed bool) {
+	root := self.admissionRoot()
+	root.capacityWaitStateLock.Lock()
+	defer root.capacityWaitStateLock.Unlock()
+	changed = waiter.registered || waiter.granted
+	root.removeCapacityWaiterWithLock(waiter)
+	if waiter.granted {
+		waiter.granted = false
+		for budget := waiter.budget; budget != nil; budget = budget.parent {
+			budget.grantedByteCount -= max(0, waiter.requiredByteCount)
+		}
+	}
+	return changed
 }
 
 func (self *TransferMemoryBudget) removeCapacityWaiterWithLock(
@@ -425,42 +446,52 @@ func (self *TransferMemoryBudget) removeCapacityWaiterWithLock(
 	self.capacityWaiterCount.Add(-1)
 }
 
-// notifyEligibleCapacityWaiters performs a bounded FIFO admission grant. It
-// scans past a large ineligible request so a smaller request cannot starve,
-// while subtracting each grant from a capacity snapshot prevents a release
-// for one receive window from waking every speculative P2P setup.
+// notifyEligibleCapacityWaiters grants in arrival order at each budget.
+// An impossible request does not block fitting requests, and a child ceiling
+// does not block waiters on an independent sibling.
 func (self *TransferMemoryBudget) notifyEligibleCapacityWaiters() {
-	if self.capacityWaiterCount.Load() == 0 {
-		return
-	}
-	availableByteCount := self.Available()
-	if availableByteCount <= 0 {
+	if self.capacityWaiterCount.Load() == 0 || self.Available() <= 0 {
 		return
 	}
 
 	self.capacityWaitStateLock.Lock()
 	defer self.capacityWaitStateLock.Unlock()
-	// Only the uncommon intrusive-waiter path needs this scratch map. Track
-	// grants per ancestor as well as at the root so a broad root does not wake
-	// every setup behind a single newly freed child receive window.
-	granted := make(map[*TransferMemoryBudget]ByteCount)
+	type waitState struct {
+		blocked bool
+	}
+	states := make(map[*TransferMemoryBudget]waitState)
 	for waiter := self.capacityWaitHead; waiter != nil; {
 		nextWaiter := waiter.nextCapacityWaiter
-		eligible := waiter.requiredByteCount <= availableByteCount
-		for budget := waiter.budget; eligible && budget != nil; budget = budget.parent {
-			eligible = waiter.requiredByteCount <= max(0, budget.totalByteCount.Load()-budget.usedByteCount.Load()-granted[budget])
+		required := max(0, waiter.requiredByteCount)
+		eligible, blocked, impossible := true, false, false
+		for budget := waiter.budget; budget != nil; budget = budget.parent {
+			state := states[budget]
+			blocked = blocked || state.blocked
+			total := budget.totalByteCount.Load()
+			impossible = impossible || required > total
+			if required > max(0, total-budget.usedByteCount.Load()-budget.grantedByteCount) {
+				eligible = false
+			}
 		}
-		if eligible {
+		switch {
+		case eligible && (!blocked || required == 0):
 			self.removeCapacityWaiterWithLock(waiter)
 			select {
 			case waiter.notify <- struct{}{}:
-				availableByteCount -= waiter.requiredByteCount
+				// Retain the grant until the owner resets the waiter.
+				waiter.granted = true
 				for budget := waiter.budget; budget != nil; budget = budget.parent {
-					granted[budget] += waiter.requiredByteCount
+					budget.grantedByteCount += required
 				}
 			default:
-				// A pending token means this waiter already has a grant. Do
-				// not charge it twice; continue looking for another waiter.
+			}
+		case !eligible && !blocked && !impossible:
+			for budget := waiter.budget; budget != nil; budget = budget.parent {
+				state := states[budget]
+				if required > max(0, budget.totalByteCount.Load()-budget.usedByteCount.Load()-budget.grantedByteCount) {
+					state.blocked = true
+					states[budget] = state
+				}
 			}
 		}
 		waiter = nextWaiter

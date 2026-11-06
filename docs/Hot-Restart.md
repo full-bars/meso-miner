@@ -90,7 +90,7 @@ docker exec urfix sh -c 'echo ${URNETWORK_HOT_RESTART:-1}'
 
 ## What is stored
 
-`$HOME/.urnetwork/.client_jwts.json`, or `$URNETWORK_STATE_DIR/.client_jwts.json` when that override is set. One entry per identity slot:
+`$HOME/.urnetwork/.client_jwts.json`. One entry per identity slot:
 
 | Field | Meaning |
 | :--- | :--- |

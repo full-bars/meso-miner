@@ -569,14 +569,14 @@ steps.
 In addition to the main `[health]` line, when running with a proxy list the provider emits proxy health lines:
 
 ```
-[health][proxies] up=1193 down=7 dead=4 degraded=3 recovered=5 lost=0 lifetime_recovered=51 lifetime_lost=39
+[health][proxies] up=1193 dead=4 degraded=3 recovered=5 lost=0 lifetime_recovered=51 lifetime_lost=39
 [health][proxies] dead: proxy[112] (203.0.113.11:1081), proxy[266] (203.0.113.14:1081), ... (+2 more)
 [health][proxies] degraded: proxy[49] (203.0.113.16:1081), proxy[1037] (203.0.113.17:1081), proxy[660] (98.76.54.32:1081)
 ```
 
 | Field | Meaning |
 |---|---|
-| `up` / `down` | Current proxy state (`up` agrees with `proxies=N`). |
+| `up` | Proxies up now (agrees with `proxies=N`). Down proxies are `dead` plus `degraded`. |
 | `dead` | Proxies that have never successfully authenticated (trustworthy after ~1h). |
 | `degraded` | Proxies that worked before but are currently down. |
 | `recovered` / `lost` | Down->up and up->down transitions since the last heartbeat. |
@@ -1100,7 +1100,7 @@ These lines describe the native direct identity's transport group and the H1+/H3
 [ipv6] v4 h1 connected carrier=websocket remote=...
 [ipv6] v6 h1 session ended lived=...
 [h3] auto: 4 -> 8 proxies get the fallback transports (memory pressure 0.22, capacity 8)
-[h1plus] last 10m: attempts=330 accepted=328 websocket=2 fallbacks(rejected=2 invalid=0 io=0 proxy=0) handshake_failures=0 auth_failures=0 avg_handshake=186ms messages=48210 bytes=61MiB flushes=9012 errors(read=3 write=1) largest_message=15999B
+[h1plus] last 10m: attempts=330 accepted=328 websocket=2 fallbacks(rejected=2 invalid=0 io=0 proxy=0) handshake_failures=0 handshake_classes(none) auth_failures=0 avg_handshake=186ms messages=48210 bytes=61MiB flushes=9012 errors(read=3 write=1) largest_message=15999B enabled=true
 ```
 
 | Message | Meaning |
@@ -1111,7 +1111,7 @@ These lines describe the native direct identity's transport group and the H1+/H3
 | `ip-version <old> -> <new>` | The operator changed `ip_version`; the group is re-pinning break-before-make. |
 | `[ipv6] v4\|v6 h1 connected ...` / `session ended ...` | Per-family platform session lifecycle, with the carrier, remote address and close cause. |
 | `[h3] auto: ...` | The auto controller changed how many proxies get the fallback transports, with the memory pressure and capacity that decided it. |
-| `[h1plus] last 10m: ...` | Ten-minute summary of H1 dials: upgrades accepted, websocket fallbacks and their reasons, handshake and auth failures, messages, bytes, flushes and read/write errors. |
+| `[h1plus] last 10m: ...` | Ten-minute summary of H1 dials: upgrades accepted, websocket fallbacks, handshake and auth failures, messages, bytes, flushes and read/write errors. `handshake_classes(none)` means no handshake failures in the interval; otherwise the classes are `timeout`, `tls`, `proxy_connect`, `auth`, `upgrade_rejected`, `io` and `other`. These partition `handshake_failures`. |
 
 ## 🐌 Proxy Startup Pace Monitor
 
@@ -1181,6 +1181,14 @@ Goroutine and heap profiles taken on the way into a stall (see [Configuration](d
 
 ---
 
+## Release update and metrics warnings
+
+| Message | Meaning |
+|---|---|
+| `WARNING: extender capability missing or unverified` | The provider binary swap could not confirm `cap_net_bind_service`. Follow the command in the warning if the opt-in extender needs privileged ports. |
+| `[metrics] disabled by URNETWORK_METRICS` | The environment disables the Prometheus listener. |
+| `[metrics] enabling Prometheus /metrics on` | Startup is attempting to bind the environment-selected address or automatic setting. A following `[metrics] listener failed:` reports a bind failure. |
+
 ## 🔑 Stored Identities (`[hot-restart]`, `[jwt-store]`, `[jwt-renew]`, `[proxy][identity]`)
 
 A provider keeps one client login per proxy in `~/.urnetwork/.client_jwts.json` so a restart reuses the same client id instead of minting a new one and losing that identity's history. These lines say what happened to those logins.
@@ -1191,6 +1199,7 @@ A provider keeps one client login per proxy in `~/.urnetwork/.client_jwts.json` 
 | `[hot-restart] no stored client identities found` | An empty store: every proxy mints a fresh identity on its first sign-in. Expected on a first start, a warning after a restart. |
 | `[hot-restart] <key>: stored client JWT expired, renewed identity <id>` | The saved login had aged out and was renewed under the same client id. The identity and its history survive. |
 | `[hot-restart] <key>: network_id mismatch ... minting fresh` | The saved login belongs to a different network (for example after switching accounts), so it is not reused. |
+| `[jwt-store] <write-or-skip> site=<site> op=<op> entries=<n> added=<n> updated=<n> removed=<n> unchanged=<n> bytes=<n> suppressed=<n>` | A store write or skipped unchanged rewrite, with the caller and change counts. Repeated causes are rate-limited; `suppressed` counts held-back lines. Tokens are not printed. |
 | `[jwt-store] corrupt ..., starting fresh` | The store file could not be read. A snapshot of the unreadable bytes is taken first (the `snapshot saved` line), then every proxy mints fresh. |
 | `[jwt-store] snapshot saved` / `snapshot ... failed` / `failed to prune old backup` | Pre-restart copies of the store. Failures are warnings only and do not stop the provider. At most 10 snapshots are kept. |
 | `[jwt-store] reused client identity ... never authenticated ... evicted` | A reused login drew 5 refusals that count — `ProxyAuthRejectionCount` reaches 5, so only transport-authentication refusals, not timeouts — without ever coming up, which is how a revoked identity looks. Eviction is off unless `URNETWORK_EVICT_REVOKED_IDENTITIES=1`, and it never runs while the backend is degraded: a timeout or an overloaded gateway says nothing about the identity. When it is on, the login is removed so the next attempt mints a fresh one. |
@@ -1326,6 +1335,9 @@ These explain a proxy that is not signing in. Per-attempt `[t]auth error` lines 
 
 | Message | Meaning |
 |---|---|
+| `[proxy][cleanup] warning: could not persist down_since changes to proxy.state` | The reaper could not save updated degraded down clocks. Check the state directory and disk. |
+| `[proxy][cleanup] warning: unparseable or negative degraded_cleanup_threshold` | The configured window is invalid, so degraded eviction stays off. |
+| `[proxy][cleanup] warning: trim cap` | The desired proxy set could not be read while a trim cap applies. The pass skips degraded eviction rather than guessing which members are held. |
 | `[proxy][cleanup] automatically removed N ...` | The URL-source reaper removed proxies that stayed dead, inactive or degraded past the threshold from `proxy_url.json`. `scope` is `url` (only URL-sourced) or `all`. |
 | `[proxy-quality] dropped N under-performing proxies` | The degraded-proxy reaper ranks degraded proxies by lifetime contribution (traffic and contracts acquired) and released the worst ones, keeping the best. |
 | `[hourly-maintenance] reconnecting stalled transports` | Once an hour the provider nudges transports that are down, dead, degraded or still connecting to reconnect without a restart. The counts are the health snapshot at that moment. |

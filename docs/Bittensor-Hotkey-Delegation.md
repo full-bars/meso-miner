@@ -90,7 +90,7 @@ Running the same `set` again is always safe:
 - With `--coldkey_seed_file` and the same coldkey and epochs it prints `generation N is already stored for this coldkey and these epochs; resubmitting it` instead of signing a new generation.
 - It also renews a delegation whose window has passed, because the resubmission signs a fresh delegation window at the operator.
 
-The chain lives in the provider state directory (`~/.urnetwork`, or `URNETWORK_STATE_DIR`): `hotkey-wallet/originals.json` holds the signed generations and `hotkey-wallet/pending.json` holds a statement waiting for its signatures. **Back both up.**
+The chain lives in the provider state directory (`~/.urnetwork`): `hotkey-wallet/originals.json` holds the signed generations and `hotkey-wallet/pending.json` holds a statement waiting for its signatures. **Back both up.**
 
 ## What to check after
 

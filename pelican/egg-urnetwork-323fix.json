@@ -158,7 +158,7 @@
         },
         {
             "name": "Traffic monitor",
-            "description": "Retired. vnStat is no longer in the image and port 8080 is not exposed. Accepted so old eggs keep importing; it starts nothing and logs a warning.",
+            "description": "Retired. vnStat is no longer run and port 8080 is not exposed. The variable is still accepted so old eggs keep importing; setting it only logs a warning.",
             "env_variable": "ENABLE_VNSTAT",
             "default_value": "false",
             "user_viewable": false,

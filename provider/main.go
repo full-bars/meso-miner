@@ -2150,8 +2150,8 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		now := time.Now()
 		report := connect.ProxyHealthHeartbeat(uptime >= deadConfirmDelay)
 		down := len(report.Dead) + len(report.Degraded)
-		tlog("❤️ [health][proxies] up=%d down=%d dead=%d degraded=%d recovered=%d lost=%d lifetime_recovered=%d lifetime_lost=%d (since-start %s)\n",
-			report.Up, down, len(report.Dead), len(report.Degraded),
+		tlog("❤️ [health][proxies] up=%d dead=%d degraded=%d recovered=%d lost=%d lifetime_recovered=%d lifetime_lost=%d (since-start %s)\n",
+			report.Up, len(report.Dead), len(report.Degraded),
 			len(report.Recovered), len(report.NewlyDegraded),
 			report.LifetimeRecovered, report.LifetimeLost,
 			clockLabel(startTime))
@@ -4751,20 +4751,7 @@ func provide(opts docopt.Opts) {
 			}
 		}
 	}
-	// URNETWORK_METRICS binds a Prometheus /metrics endpoint on the given
-	// address (typically a Tailscale IP like "100.64.0.10:9100") so remote
-	// Prometheus can scrape without an agent on the fleet server.
-	//
-	// A HotSwap candidate skips this: the parent still holds the address
-	// until it yields, and startMetricsAfterTakeover binds it after takeover.
-	if metricsAddr := os.Getenv("URNETWORK_METRICS"); metricsAddr != "" && !isHotSwapCandidate {
-		tlog("[metrics] enabling Prometheus /metrics on %s\n", metricsAddr)
-		if ln, err := net.Listen("tcp", metricsAddr); err != nil {
-			tlog("[metrics] listener failed: %v\n", err)
-		} else {
-			serveMetrics(ln)
-		}
-	}
+	startEnvMetrics(isHotSwapCandidate)
 	// /metrics is on by default (see metricsEnabledByState): auto mode binds
 	// loopback plus the box's Tailscale addresses and never a public interface.
 	startDefaultMetrics(globalControlState, isHotSwapCandidate)

@@ -240,6 +240,7 @@ func TestTransferMemoryBudgetAdmissionReleaseWakesOnlyCapacityFit(t *testing.T) 
 	if !budget.TryReserve(1) {
 		t.Fatal("the single notified admission could not reserve released capacity")
 	}
+	waiters[0].reset() // the first (woken) waiter consumed its grant
 	budget.Release(1)
 	wokenCount = 0
 	for _, notify := range notifies {
@@ -253,7 +254,7 @@ func TestTransferMemoryBudgetAdmissionReleaseWakesOnlyCapacityFit(t *testing.T) 
 	AssertEqual(t, budget.capacityWaiterCount.Load(), int64(waiterCount-2))
 }
 
-func TestTransferMemoryBudgetAdmissionReleaseSkipsIneligibleHead(t *testing.T) {
+func TestTransferMemoryBudgetAdmissionReleaseProtectsIneligibleHead(t *testing.T) {
 	budget := NewTransferMemoryBudget(10)
 	budget.Reserve(10)
 	largeWaiter := newTransferMemoryBudgetWaiter()
@@ -271,8 +272,8 @@ func TestTransferMemoryBudgetAdmissionReleaseSkipsIneligibleHead(t *testing.T) {
 	}
 	select {
 	case <-smallNotify:
+		t.Fatal("small admission consumed capacity reserved for the earlier waiter")
 	default:
-		t.Fatal("eligible admission behind a large waiter was not woken")
 	}
 
 	budget.Release(5)

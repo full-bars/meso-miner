@@ -34,8 +34,7 @@ The setting survives restarts and updates. Run `urnet-tools metrics status` at a
 | Situation | Listens on |
 |---|---|
 | Bare metal or VM (default) | `127.0.0.1` plus this machine's Tailscale address, if it has one |
-| Docker container on a bridge network (default) | Every IPv4 interface inside the container. Other containers and hosts with a route to it can reach it without a published port |
-| Docker container sharing a publicly addressed network, such as `--network host` (default) | `127.0.0.1` plus Tailscale, as on bare metal |
+| Docker container (default) | Every IPv4 interface inside the container, unless its network has a public address; then loopback and Tailscale only |
 | `urnet-tools metrics listen <ip:port>` | Exactly that address |
 | `URNETWORK_METRICS=<ip:port>` set in the environment | Exactly that address (overrides everything above) |
 
@@ -56,18 +55,18 @@ urnet-tools metrics listen auto   # back to the default
 
 ### Docker
 
-Publish the port on an address Prometheus can reach. Metrics are on by default inside the container, so no command is needed after the container starts:
+Inside a container `/metrics` is on by default and listens on port 9100 on every IPv4 interface of the container, so there is nothing to turn on. Other containers and hosts with a route to the container can reach it even without a published port. To scrape from outside, publish the port on an address Prometheus can reach:
 
 ```bash
 docker run -d --name urnetwork -p 100.64.0.10:9100:9100 ... ghcr.io/urfoundation/meso-miner:latest
 ```
 
-The container's `urnet-tools` is a shell wrapper that does not carry the `metrics` subcommand, so `docker exec urnetwork urnet-tools metrics on` fails.
+The `urnet-tools` inside the image does not handle `metrics`, so `docker exec urnetwork urnet-tools metrics on` fails. A container with a public address on one of its interfaces stays on loopback and Tailscale instead (see the warning below).
 
 Here `100.64.0.10` is the host's Tailscale address, and the Prometheus target is `100.64.0.10:9100`. For several containers on one host, publish each on its own host port (`-p 100.64.0.10:9101:9100`) and use that port as the target.
 
 > [!WARNING]
-> With `--network host`, the container shares the host's interfaces. When the provider sees a publicly addressed network it does not bind `0.0.0.0`: it logs a notice and stays on loopback and Tailscale. To scrape from elsewhere, set `URNETWORK_METRICS=<tailscale-ip>:9100` in the container's environment.
+> With `--network host`, the container shares the host's interfaces. If the host has no public address, the default binds every host interface, including the LAN. If it has one, the default stays on loopback and Tailscale. To choose the address, set `URNETWORK_METRICS=<tailscale-ip>:9100` in the container's environment. `urnet-tools metrics listen` does not run inside the image.
 
 ## 2. Run the monitoring stack
 
