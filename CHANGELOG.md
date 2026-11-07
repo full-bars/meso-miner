@@ -16,6 +16,7 @@ Everything merged after `v2026.11.1-1087111111-meso`.
 
 ### Fixed
 
+- **Extender carrier status distinguishes binding from platform acceptance.** Activation warnings name carriers left out by the platform. The periodic health line and status show each family's carrier state, and a later acceptance logs a recovery.
 - **The client receive loop no longer panics on three peer inputs.** Each panic stopped the whole client. A missing path in a sealed frame is now an error. A pack that belongs to another lane is now dropped. A stale head index is now healed, and the sequence opens.
 - **`urnet-tools logs` keeps showing new lines after a RAM log trim.** With RAM logs on, the log file is trimmed by rename. `urnet-tools logs` could stop showing new lines. The command now follows the file across a trim, without repeating a fragment. In Docker it uses `tail -F`.
 - **IPv6 sockets honor the selected egress interface on Windows.** The socket family is checked and a failed IPv6 pin is returned instead of accepting an IPv4-only pin, preventing a silent tunnel loop. This code path has not been run on a Windows host in this documentation pass. ([#342](https://github.com/full-bars/meso-miner/pull/342))
