@@ -1,9 +1,16 @@
 ## [Unreleased]
 
+This release turns the extender on by default. I turned it on so that clients in censored networks can reach URnetwork. Check that TCP 443 is open before you update. After the update, run `urnet-tools extender status` to check the extender.
+
 Everything merged after `v2026.11.1-1087111111-meso`.
 
 ### Added
 
+- **The extender starts by default.** The extender helps clients in censored networks reach URnetwork. It does not earn; it works like a Tor bridge. The provider starts it on its own, with no unit file edit or drop-in. `urnet-tools extender off` turns it off and keeps it off across restarts and updates. `urnet-tools extender on` turns it back on. Both commands apply at once, with no restart. `URNETWORK_EXTENDER=off` sets the start default. A proxy cannot be an extender.
+- **The extender needs TCP 443 and has two optional UDP ports.** TCP 443 is required. The extender binds it first and retries every three minutes while it cannot. Its log names the process that holds the port when it can. UDP 443 (QUIC) and UDP 4053 (DNS carrier) are optional. The extender also tries UDP 53 by default. If another process holds UDP 53, the extender logs one warning and keeps UDP 4053. `URNETWORK_EXTENDER_DNS53=off` skips UDP 53. The DNS ports answer ordinary DNS questions from anyone, at a strict rate limit. Firewall them to block that traffic. The installer prints one notice about TCP 443 and how to turn the extender off.
+- **`urnet-tools extender status` shows the extender state.** The command shows the ports, the IPv4 and IPv6 state with expiry, live clients, and requests served over 24 hours, 7 days and lifetime. `urnet-tools status` and `urnet-tools top` show the same block. Extender log lines start with a bridge mark (🌉). Outcome marks show the result: ✅ worked, ⛔ refused by the platform, ❌ failed, ⚠️ warning. The provider writes a `[health][extender]` line every few minutes.
+- **`urnet-tools extender setup` checks and prepares the host.** It checks whether another process holds TCP 443, checks `cap_net_bind_service` on the provider binary and the active host firewall (`ufw`, `firewalld`, `iptables`, `nftables`, `pf`, `ipfw`, Windows Firewall) for TCP 443 (required) and UDP 443 and 4053 (optional), prints the exact commands to run, and asks for confirmation before changing anything (`--yes` for non-interactive runs, `--dry-run` to print without applying). On Linux it tests a live TCP 443 bind as the provider user when the port is free, or says plainly when the bind could not be tested.
+- **Docker needs host networking for IPv6.** `--network host` gives IPv4 and IPv6. Published ports on the default bridge give IPv4 only. In Docker, use `URNETWORK_EXTENDER=off` and restart the container to turn the extender off. Keep `/root/.urnetwork` on a persistent volume. The auth code is single-use.
 - **Capture diagnostic profiles without restarting the provider.** `urnet-tools diag` requests a private bundle over the control socket. It requires 512 MiB of free space and keeps the five newest bundles. Profiles may contain sensitive data.
 
 - **H1+ failure classes identify the failing stage.** The ten-minute summary and `urnet_h1plus_handshake_failures_class_total` separate timeouts, TLS, proxy connections, authentication, rejected upgrades, I/O and other failures. The class counts partition the existing total; do not add the two metrics together. SOCKS5 hop failures count as `proxy_connect`. ([#336](https://github.com/full-bars/meso-miner/pull/336))
@@ -12,6 +19,9 @@ Everything merged after `v2026.11.1-1087111111-meso`.
 
 ### Fixed
 
+- **Extender carrier status distinguishes binding from platform acceptance.** Activation warnings name carriers left out by the platform. The periodic health line and status show each family's carrier state, and a later acceptance logs a recovery.
+- **The client receive loop no longer panics on three peer inputs.** Each panic stopped the whole client. A missing path in a sealed frame is now an error. A pack that belongs to another lane is now dropped. A stale head index is now healed, and the sequence opens.
+- **`urnet-tools logs` keeps showing new lines after a RAM log trim.** With RAM logs on, the log file is trimmed by rename. `urnet-tools logs` could stop showing new lines. The command now follows the file across a trim, without repeating a fragment. In Docker it uses `tail -F`.
 - **IPv6 sockets honor the selected egress interface on Windows.** The socket family is checked and a failed IPv6 pin is returned instead of accepting an IPv4-only pin, preventing a silent tunnel loop. This code path has not been run on a Windows host in this documentation pass. ([#342](https://github.com/full-bars/meso-miner/pull/342))
 - **Capacity waiters keep their place under load.** Eligible earlier waiters are protected against starvation, outstanding grants stay accounted for, and cancellation wakes followers. An impossible request or an independent child budget does not block unrelated eligible work. ([#341](https://github.com/full-bars/meso-miner/pull/341))
 - **Local H1 cancellation no longer feeds the reconnect governor as a backend failure.** Proxy handshake failures also no longer strike the platform address family or trigger family retries. ([#341](https://github.com/full-bars/meso-miner/pull/341))

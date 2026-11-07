@@ -56,7 +56,7 @@ Test files sit beside the code they test (`*_test.go`).
 - `protocol/`: protocol buffer definitions (`*.proto`) and generated Go. Do not edit the generated files; run `make` in that folder.
 - `api/`: platform API definitions.
 - `extender/`: extender transport.
-- `extenderrole/`, `gossip/`: extender serving core and its feed layer (work in progress, see [Extender](/full-bars/meso-miner/wiki/Extender)).
+- `extenderrole/`, `gossip/`: extender serving core and its feed layer (see [Extender](/full-bars/meso-miner/wiki/Extender)).
 - `fingerprint/`: ClientHello capture and diff tooling.
 - `blocker/`: tool that builds the default block lists. `security/`: source list URLs for the IP blocklist.
 - `hotkeywallet/`, `durablesys/`, `durablevolume/`: Bittensor wallet storage and durable-disk support.
