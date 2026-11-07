@@ -157,14 +157,14 @@ URNETWORK_EXTENDER_ALLOWED_HOSTS='example.com,*.example.org'
 
 ## Docker
 
-The default run command in [Docker Deployment](/full-bars/meso-miner/wiki/Docker-Deployment) publishes no ports, so the extender could not be reached. There are three ways to run it. Tested with Docker 26 on Debian 13.
+The default run command in [Docker Deployment](/full-bars/meso-miner/wiki/Docker-Deployment) publishes no ports, so the extender could not be reached. There are three ways to run it.
 
-**1. Host networking (simplest, IPv4 and IPv6).** The container uses the host's addresses and ports directly. Both families activated on the first try.
+**1. Host networking (simplest, IPv4 and IPv6).** The container uses the host's addresses and ports directly.
 
 ```sh
-docker run -d --name=urfix --pull=always --restart=unless-stopped \
+docker run -d --name=meso-extender --pull=always --restart=unless-stopped \
   --network host --cap-add=NET_ADMIN --cap-add=NET_RAW \
-  -e AUTH=authcode -e AUTHCODE='YOUR_AUTH_CODE_HERE' -e HOST_HOSTNAME=$(hostname) \
+  -e AUTH=authcode -e URNETWORK_AUTH_CODE='YOUR_AUTH_CODE_HERE' -e HOST_HOSTNAME=$(hostname) \
   -v urnetwork_data:/root/.urnetwork \
   ghcr.io/full-bars/meso-miner:latest
 ```
@@ -172,15 +172,15 @@ docker run -d --name=urfix --pull=always --restart=unless-stopped \
 **2. Published ports on the default bridge (IPv4 only).** The default Docker bridge has no IPv6, so only IPv4 activates.
 
 ```sh
-docker run -d --name=urfix --pull=always --restart=unless-stopped \
+docker run -d --name=meso-extender --pull=always --restart=unless-stopped \
   --cap-add=NET_ADMIN --cap-add=NET_RAW --sysctl net.ipv4.ip_forward=1 \
   -p 443:443 -p 443:443/udp -p 4053:4053/udp \
-  -e AUTH=authcode -e AUTHCODE='YOUR_AUTH_CODE_HERE' -e HOST_HOSTNAME=$(hostname) \
+  -e AUTH=authcode -e URNETWORK_AUTH_CODE='YOUR_AUTH_CODE_HERE' -e HOST_HOSTNAME=$(hostname) \
   -v urnetwork_data:/root/.urnetwork \
   ghcr.io/full-bars/meso-miner:latest
 ```
 
-**3. Published ports with IPv6 enabled on the bridge.** Turn on IPv6 in Docker's daemon config (`/etc/docker/daemon.json`), restart Docker, and run the same command as in (2). The container gets a private IPv6 address that Docker translates, and the platform could still reach it: both families activated on the first try.
+**3. Published ports with IPv6 enabled on the bridge.** Turn on IPv6 in Docker's daemon config (`/etc/docker/daemon.json`), restart Docker, and run the same command as in (2). The container gets a private IPv6 address that Docker translates.
 
 ```json
 {
