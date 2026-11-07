@@ -53,6 +53,7 @@ Performance & Tuning:
   config [--json]         Show all provider settings with source and age
   profile [<name>]        Show or set the memory/GC tuning profile
   metrics [on|off|listen] Prometheus /metrics: status, toggle, listen address
+  extender [on|off|about] Extender role (helps censored clients): status, enable, disable, explain
   smart-dialer [on|off]   Adapt transport choice to the network: skip DPI-circumvention cost when it is not needed
 
 Session & Identity:
@@ -179,6 +180,7 @@ func buildRootCmd() *cobra.Command {
 		newWalletCmd(),
 		newProxyCmd(),
 		newDirectCmd(),
+		newExtenderCmd(),
 		newUsageCmd(),
 		newReinstallCmd(),
 		newUninstallCmd(),
@@ -1393,6 +1395,7 @@ func cmdDashboard(args []string) error {
 	fmt.Printf("  urnet-tools set <key> <value>    Change a setting\n")
 	fmt.Printf("  urnet-tools profile <name>       Switch tuning profile\n")
 	fmt.Printf("  urnet-tools metrics [on|off|listen] Prometheus metrics status and control\n")
+	fmt.Printf("  urnet-tools extender [on|off]    Extender status and control\n")
 	fmt.Printf("  urnet-tools history              View command audit trail\n")
 	if p.Running && len(changedKeys) > 0 {
 		fmt.Printf("\n  %s⚠ Restart pending: systemctl --user restart %s%s\n", yellow, p.Unit, reset)

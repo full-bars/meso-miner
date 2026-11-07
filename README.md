@@ -334,7 +334,7 @@ dashboard. See [Monitoring](docs/Monitoring.md).
 - **Language:** Go 1.27.3, compiled on Alpine
 - **Platforms:** Linux (systemd, and Alpine/OpenRC with a native boot-start service), macOS, Windows and FreeBSD. Alpine setup: [docs/OpenRC.md](docs/OpenRC.md); FreeBSD setup: [docs/FreeBSD.md](docs/FreeBSD.md)
 - **Images:** Multi-arch `linux/amd64` + `linux/arm64` via GitHub Actions to GHCR. Release binaries for `darwin`, `windows` and `freebsd` are attached to each GitHub release.
-- **Bridge-friendly:** runs on standard Docker bridge networks, no `--network host` required
+- **Bridge-friendly:** runs on standard Docker bridge networks. The extender role needs its ports published (`-p 443:443 -p 443:443/udp -p 4053:4053/udp`), and the default bridge has no IPv6, so on it the role activates for IPv4 only. For IPv6, either turn on IPv6 on the bridge in Docker's daemon config and publish the same ports, or run with `--network host`. `docker run` and Compose examples for both: [docs/Extender.md](docs/Extender.md#docker)
 
 ---
 
