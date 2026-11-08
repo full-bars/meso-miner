@@ -507,7 +507,7 @@ The extender helps people in censored countries reach URnetwork through this hos
 ```
 grep 🌉 /dev/shm/urnetwork.log          # every extender line
 grep '🌉❌' /dev/shm/urnetwork.log      # every failure
-urnet-tools logs --important             # the outcome lines and the health line
+urnet-tools logs                         # recent provider logs, then follow
 ```
 
 Lines tagged `[extender]` are mirrored into the important buffer. Outcomes (started, stopped, failed, refused, activated) are also written to the disk events log, so they survive a reboot; the five-minute reminder below is written to the ordinary log only, so it reaches the RAM log and the important log (which is bounded and rotated) but not the events log, and a long failure cannot fill it.
