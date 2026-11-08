@@ -123,7 +123,7 @@ docker run -d \
   --cap-add=NET_ADMIN \
   --cap-add=NET_RAW \
   --sysctl net.ipv4.ip_forward=1 \
-  -e BUILD=jwt \
+  -e AUTH=authcode \
   -e PROXY_URL='https://example.com/your-proxy-list.txt' \
   -v /path/to/your/proxy.txt:/app/proxy.txt \
   ghcr.io/full-bars/meso-miner:latest YOUR_AUTH_CODE_HERE

@@ -38,7 +38,7 @@ services:
     sysctls:
       - net.ipv4.ip_forward=1
     environment:
-      - BUILD=jwt
+      - AUTH=authcode
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-1
       - URNETWORK_AUTH_CODE=YOUR_AUTH_CODE # Only needed on Node 1
@@ -73,7 +73,7 @@ services:
       node-1:
         condition: service_healthy
     environment:
-      - BUILD=jwt
+      - AUTH=authcode
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-2
     volumes:
@@ -99,7 +99,7 @@ services:
       node-1:
         condition: service_healthy
     environment:
-      - BUILD=jwt
+      - AUTH=authcode
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-3
     volumes:
@@ -149,7 +149,7 @@ services:
     <<: *urnetwork-common
     container_name: urfix-1
     environment:
-      - BUILD=jwt
+      - AUTH=authcode
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-1
       - URNETWORK_AUTH_CODE=YOUR_AUTH_CODE
@@ -168,7 +168,7 @@ services:
     <<: *dependent-node
     container_name: urfix-2
     environment:
-      - BUILD=jwt
+      - AUTH=authcode
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-2
     volumes:
@@ -180,7 +180,7 @@ services:
     <<: *dependent-node
     container_name: urfix-3
     environment:
-      - BUILD=jwt
+      - AUTH=authcode
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-3
     volumes:
@@ -192,7 +192,7 @@ services:
     <<: *dependent-node
     container_name: urfix-4
     environment:
-      - BUILD=jwt
+      - AUTH=authcode
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-4
     volumes:
@@ -204,7 +204,7 @@ services:
     <<: *dependent-node
     container_name: urfix-5
     environment:
-      - BUILD=jwt
+      - AUTH=authcode
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-5
     volumes:
@@ -243,7 +243,7 @@ services:
     <<: *urnetwork-common
     container_name: urfix-1
     environment:
-      - BUILD=jwt
+      - AUTH=authcode
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-1
       - URNETWORK_AUTH_CODE=YOUR_AUTH_CODE
@@ -262,7 +262,7 @@ services:
     <<: *dependent-node
     container_name: urfix-2
     environment:
-      - BUILD=jwt
+      - AUTH=authcode
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-2
     volumes:
@@ -274,7 +274,7 @@ services:
     <<: *dependent-node
     container_name: urfix-3
     environment:
-      - BUILD=jwt
+      - AUTH=authcode
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-3
     volumes:
@@ -286,7 +286,7 @@ services:
     <<: *dependent-node
     container_name: urfix-4
     environment:
-      - BUILD=jwt
+      - AUTH=authcode
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-4
     volumes:
@@ -298,7 +298,7 @@ services:
     <<: *dependent-node
     container_name: urfix-5
     environment:
-      - BUILD=jwt
+      - AUTH=authcode
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-5
     volumes:
@@ -310,7 +310,7 @@ services:
     <<: *dependent-node
     container_name: urfix-6
     environment:
-      - BUILD=jwt
+      - AUTH=authcode
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-6
     volumes:
@@ -322,7 +322,7 @@ services:
     <<: *dependent-node
     container_name: urfix-7
     environment:
-      - BUILD=jwt
+      - AUTH=authcode
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-7
     volumes:
@@ -334,7 +334,7 @@ services:
     <<: *dependent-node
     container_name: urfix-8
     environment:
-      - BUILD=jwt
+      - AUTH=authcode
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-8
     volumes:
@@ -346,7 +346,7 @@ services:
     <<: *dependent-node
     container_name: urfix-9
     environment:
-      - BUILD=jwt
+      - AUTH=authcode
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-9
     volumes:
@@ -358,7 +358,7 @@ services:
     <<: *dependent-node
     container_name: urfix-10
     environment:
-      - BUILD=jwt
+      - AUTH=authcode
       - HOST_HOSTNAME=${HOSTNAME}
       - URNETWORK_NODE_NAME=urfix-10
     volumes:

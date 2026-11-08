@@ -232,7 +232,7 @@ Create a directory for your config:
 mkdir -p ~/.urnetwork
 ```
 
-Create `~/proxies.txt` with your proxy list (same format as the systemd method above), then run the container with `BUILD=jwt` and your auth code:
+Create `~/proxies.txt` with your proxy list (same format as the systemd method above), then run the container with `AUTH=authcode` and your auth code:
 
 ```sh
 docker run -d \
@@ -240,7 +240,7 @@ docker run -d \
   --restart unless-stopped \
   -v ~/.urnetwork:/root/.urnetwork \
   -v ~/proxies.txt:/app/proxies.txt \
-  -e BUILD=jwt \
+  -e AUTH=authcode \
   -e URNETWORK_AUTH_CODE="<your-auth-code>" \
   ghcr.io/full-bars/meso-miner:latest
 ```
@@ -253,7 +253,7 @@ Create a directory for your config:
 New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.urnetwork"
 ```
 
-Create `$env:USERPROFILE\proxies.txt` with your proxy list (same format as the systemd method above), then run the container with `BUILD=jwt` and your auth code — PowerShell needs backtick line continuations instead of `\`, and Windows-style volume paths:
+Create `$env:USERPROFILE\proxies.txt` with your proxy list (same format as the systemd method above), then run the container with `AUTH=authcode` and your auth code — PowerShell needs backtick line continuations instead of `\`, and Windows-style volume paths:
 
 ```powershell
 docker run -d `
@@ -261,7 +261,7 @@ docker run -d `
   --restart unless-stopped `
   -v "$env:USERPROFILE\.urnetwork:/root/.urnetwork" `
   -v "$env:USERPROFILE\proxies.txt:/app/proxies.txt" `
-  -e BUILD=jwt `
+  -e AUTH=authcode `
   -e URNETWORK_AUTH_CODE="<your-auth-code>" `
   ghcr.io/full-bars/meso-miner:latest
 ```

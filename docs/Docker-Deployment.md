@@ -56,6 +56,11 @@ Primary image:
 ghcr.io/full-bars/meso-miner:latest
 ```
 
+## ⚠️ Authentication selector
+
+> [!IMPORTANT]
+> Docker examples use `AUTH=authcode` or `AUTH=userpass`. `AUTH=authcode` uses `AUTHCODE` (or `URNETWORK_AUTH_CODE`, or a trailing auth-code argument). `AUTH=userpass` uses `USER_AUTH` and `PASSWORD`. The older `BUILD=stable|nightly|jwt` still works and maps to the same modes, with a deprecation warning (see [Legacy Variables](#-legacy-variables)).
+
 ## 🔑 Persistent JWT
 
 The JWT is stored inside the container at `/root/.urnetwork/jwt`. Restarting the same container keeps that file. To keep it when replacing the container, mount the same persistent volume at `/root/.urnetwork`. Stable and nightly startup reuse a valid saved JWT ([e1a1c7ca1](https://github.com/full-bars/meso-miner/commit/e1a1c7ca1a3bee3bddbef1bfff9dde5e73573c41)).
@@ -86,7 +91,7 @@ docker run -d --name urfix \
 
 For additional containers, change the container name and volumes together.
 
-### 🔐 JWT Auth
+### 🔐 Auth Code Login (`AUTH=authcode`)
 
 ```bash
 docker run -d \
@@ -99,7 +104,7 @@ docker run -d \
   --log-driver=json-file \
   --log-opt max-size=10m \
   --log-opt max-file=3 \
-  -e BUILD=jwt \
+  -e AUTH=authcode \
   -e HOST_HOSTNAME=$(hostname) \
   -v urfix_config:/root/.urnetwork \
   -v /path/to/proxy.txt:/app/proxy.txt \
@@ -120,7 +125,7 @@ To label this server in webhook alerts and health logs, add:
 -e URNETWORK_NODE_NAME=your-server-name
 ```
 
-### ✉️ Email/Password Auth
+### ✉️ Email/Password Login (`AUTH=userpass`)
 
 ```bash
 docker run -d \
@@ -133,7 +138,7 @@ docker run -d \
   --log-driver=json-file \
   --log-opt max-size=10m \
   --log-opt max-file=3 \
-  -e BUILD=stable \
+  -e AUTH=userpass \
   -e USER_AUTH=you@example.com \
   -e PASSWORD=yourpassword \
   -e HOST_HOSTNAME=$(hostname) \
@@ -146,7 +151,7 @@ docker run -d \
 
 The commands are identical to GHCR except for the image name.
 
-### 🔐 JWT Auth
+### 🔐 Auth Code Login (`AUTH=authcode`)
 
 ```bash
 docker run -d \
@@ -159,7 +164,7 @@ docker run -d \
   --log-driver=json-file \
   --log-opt max-size=10m \
   --log-opt max-file=3 \
-  -e BUILD=jwt \
+  -e AUTH=authcode \
   -e HOST_HOSTNAME=$(hostname) \
   -v urfix_config:/root/.urnetwork \
   -v /path/to/proxy.txt:/app/proxy.txt \
@@ -172,7 +177,7 @@ Alternative method:
 -e URNETWORK_AUTH_CODE=YOUR_CODE
 ```
 
-### ✉️ Email/Password Auth
+### ✉️ Email/Password Login (`AUTH=userpass`)
 
 ```bash
 docker run -d \
@@ -185,7 +190,7 @@ docker run -d \
   --log-driver=json-file \
   --log-opt max-size=10m \
   --log-opt max-file=3 \
-  -e BUILD=stable \
+  -e AUTH=userpass \
   -e USER_AUTH=you@example.com \
   -e PASSWORD=yourpassword \
   -e HOST_HOSTNAME=$(hostname) \
@@ -200,7 +205,7 @@ For another single-container deployment on the same host, copy your `docker-comp
 
 For 3, 5, or 10 nodes in one Compose file, use the [Multi-Container Scaling](/full-bars/meso-miner/wiki/Multi-Container-Scaling) guide.
 
-### 🔐 JWT Auth
+### 🔐 Auth Code Login (`AUTH=authcode`)
 
 ```yaml
 services:
@@ -215,7 +220,7 @@ services:
     sysctls:
       - net.ipv4.ip_forward=1
     environment:
-      - BUILD=jwt
+      - AUTH=authcode
       - HOST_HOSTNAME=${HOSTNAME}
     volumes:
       - urfix_config:/root/.urnetwork
@@ -241,7 +246,7 @@ After the JWT is saved to the volume, subsequent starts need no auth code:
 docker compose up -d
 ```
 
-### ✉️ Email/Password Auth
+### ✉️ Email/Password Login (`AUTH=userpass`)
 
 ```yaml
 services:
@@ -256,7 +261,7 @@ services:
     sysctls:
       - net.ipv4.ip_forward=1
     environment:
-      - BUILD=stable
+      - AUTH=userpass
       - USER_AUTH=you@example.com
       - PASSWORD=yourpassword
       - HOST_HOSTNAME=${HOSTNAME}
@@ -300,7 +305,7 @@ docker run -d \
   --sysctl net.ipv4.ip_forward=1 \
   -e URNETWORK_RAMLOGS=1 \
   -e URNETWORK_NODE_NAME=urfix \
-  -e BUILD=jwt \
+  -e AUTH=authcode \
   -e HOST_HOSTNAME=$(hostname) \
   -e PROXY_URL='https://example.com/your-proxy-list.txt' \
   -v urfix_config:/root/.urnetwork \
@@ -337,7 +342,7 @@ docker run -d \
   --cap-add=NET_ADMIN \
   --cap-add=NET_RAW \
   --sysctl net.ipv4.ip_forward=1 \
-  -e BUILD=jwt \
+  -e AUTH=authcode \
   -e URNETWORK_HOT_RESTART=0 \
   -v urfix_config:/root/.urnetwork \
   -v /path/to/proxy.txt:/app/proxy.txt \
@@ -397,7 +402,7 @@ docker run -d \
   --cap-add=NET_ADMIN \
   --cap-add=NET_RAW \
   --sysctl net.ipv4.ip_forward=1 \
-  -e BUILD=jwt \
+  -e AUTH=authcode \
   -e URNETWORK_PROFILE=auto \
   -e URNETWORK_NODE_NAME=urfix \
   -e HOST_HOSTNAME=$(hostname) \
@@ -463,6 +468,16 @@ docker exec -it <container> urnet-tools idle-update --window 0
 vnStat is retired. It is no longer built into the container, and `ENABLE_VNSTAT=true` now only prints a warning. Nothing listens on port 8080, and there is no `/var/lib/vnstat` volume to mount.
 
 For traffic telemetry use the Prometheus `/metrics` endpoint on port `9100`, which starts by default.
+
+## 🏛️ Legacy Variables
+
+These variables still work for backward compatibility:
+
+| Variable | Status | Description |
+|---|---|---|
+| `BUILD` | Deprecated | Legacy auth selector: `stable` (maps to `AUTH=userpass`), `jwt` (maps to `AUTH=authcode`), or `nightly`. An explicit `BUILD` takes precedence over `AUTH`, and a conflict logs a warning. When `BUILD` is set without `AUTH`, a deprecation warning advises `AUTH=userpass\|authcode`. With neither set, the entrypoint picks `authcode` when an auth code or trailing argument is present, otherwise `userpass`. |
+| `URNETWORK_AUTH_CODE` | Alias | Earlier name for `AUTHCODE`. Both are accepted interchangeably. |
+| `ENABLE_VNSTAT` | Retired | vnStat and port 8080 were removed. If set to `true`, a warning is logged and the container keeps running. Use Prometheus metrics (`URNETWORK_METRICS`) instead. |
 
 ## 🐦 Pelican Panel
 
