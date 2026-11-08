@@ -20,7 +20,7 @@ For it to work the host needs:
 2. **Permission to use a port below 1024**, which a non-root provider gets from `cap_net_bind_service` on the binary. The installer and `urnet-tools update` apply it.
 3. **A public IPv4 address**, and for IPv6 a public IPv6 address with a working route out.
 
-UDP 443, UDP 4053 and UDP 53 are optional. Without them the host is still listed over TCP.
+UDP 53 is optional and user-managed. Setup does not open it. If you want the extender to use UDP 53, decide whether to expose it and manage that firewall rule yourself. Without UDP 53 the extender can use UDP 4053; UDP 53 is not required.
 
 ## Is it working?
 
@@ -99,11 +99,11 @@ urnet-tools extender setup --dry-run
 urnet-tools extender setup --yes
 ```
 
-`urnet-tools extender setup` inspects the host and proposes only the missing privilege and firewall steps:
+`urnet-tools extender setup` inspects TCP 443 occupancy, the provider binary's bind capability and the host firewall. It prints the exact commands it proposes and asks before changing anything. In a non-interactive run, only explicit `--yes` or `--force` approves changes; `--dry-run` prints the plan without applying it.
 
 1. **Port 443 occupancy.** Checks whether another process already holds TCP 443 and stops with the holder's name and PID if one does.
-2. **Low-port bind privilege.** On Linux, checks `getcap` on the installed provider binary (resolving symlinks) and the process capability bounding set (`/proc/self/status` `CapBnd`), and plans `setcap cap_net_bind_service=+ep <binary>` when missing. On FreeBSD, setup can set `net.inet.ip.portrange.reservedhigh=0` and persist it in `/etc/sysctl.conf`. This removes privileged-port protection for all users on the host. Record the previous value before confirming. To undo, remove the added assignment from `/etc/sysctl.conf` and restore the previous value with `sysctl net.inet.ip.portrange.reservedhigh=<previous value>`.
-3. **Host firewall rules.** Inspects the active local firewall (`ufw`, `firewalld`, `iptables`/`ip6tables`, `nftables`, `pf`/`ipfw`, or Windows Firewall) for inbound TCP 443 (required TLS carrier), UDP 443 (optional QUIC carrier) and UDP 4053 (optional DNS carrier), and plans only the rules that are not already present. For example, if `ufw` is active and already allows `443/tcp` while `443/udp` and `4053/udp` are missing, it proposes only `ufw allow 443/udp` and `ufw allow 4053/udp`.
+2. **Low-port bind privilege.** On Linux, checks `getcap` on the installed provider binary (resolving symlinks) and the process capability bounding set (`/proc/self/status` `CapBnd`), and plans to add `cap_net_bind_service` when missing. Existing file capabilities are preserved. On FreeBSD, setup is print-only and untested this release. It makes no changes. It prints the sysctl commands and undo instructions. Regular providing on FreeBSD is unaffected.
+3. **Host firewall rules.** Inspects the active local firewall (`ufw`, `firewalld`, `iptables`/`ip6tables`, `nftables`, `pf`/`ipfw`, or Windows Firewall) for inbound TCP 443 (required TLS carrier), UDP 443 (optional QUIC carrier) and UDP 4053 (optional DNS carrier), and prints only the missing commands. For firewalld, it plans runtime and permanent rules separately and does not reload the firewall. For example, if `ufw` is active and already allows `443/tcp` while `443/udp` and `4053/udp` are missing, it proposes only `ufw allow 443/udp` and `ufw allow 4053/udp`. UDP 53 is optional and user-managed; setup does not open it.
 4. **Confirmation gate.** Prints the port summary and every command it will run under `Commands to run:`, then asks `Apply these changes? [y/N]:` before changing anything. In a non-interactive session without `--yes` (or `--force`) it executes nothing and exits with an error; `--dry-run` (`-n`) prints the plan and exits without prompting.
 5. **Bind verification.** On Linux, after capability checks, runs `<provider-binary> --extender-bind-probe` as the provider's user (`sudo -n -u <user>`) when TCP 443 is free to confirm a live low-port bind. When the running provider already holds TCP 443 or the probe cannot run without a password prompt, `setup` states plainly that the live TCP 443 bind was not tested.
 
@@ -122,8 +122,9 @@ sudo ufw allow 443/udp
 sudo ufw allow 4053/udp
 
 # firewalld (RHEL, Alma, Rocky, Fedora)
-sudo firewall-cmd --permanent --add-port=443/tcp --add-port=443/udp --add-port=4053/udp
-sudo firewall-cmd --reload
+# Setup plans missing runtime and permanent rules separately. It does not reload.
+sudo firewall-cmd --add-port=443/tcp
+sudo firewall-cmd --permanent --add-port=443/tcp
 
 # iptables (plain)
 sudo iptables -I INPUT -p tcp --dport 443 -j ACCEPT
@@ -257,7 +258,7 @@ In every case:
 
 - The auth code is single-use. Keep `/root/.urnetwork` on a persistent volume: after the first start the saved login is used (`-e AUTH=authcode` with no code works), and the volume also keeps the extender identity and listing.
 - No extender variable is needed. To keep the role off in a container, set `-e URNETWORK_EXTENDER=off`.
-- `urnet-tools extender` is not available inside the container. Read the state with `docker logs <container> | grep 🌉` (the `[health][extender]` line repeats every few minutes) and control the role with the environment variable.
+- `urnet-tools extender` is not available inside the container. Read the state with `docker logs <container> | grep 🌉` (the `[health][extender]` line repeats every few minutes) and control the role with the environment variable. The Docker log follower can replay retained lines; this limitation is not fixed in this release.
 - The port also has to be open on the host's firewall and forwarded by whatever sits in front of the host.
 
 ## Reading the log
@@ -303,6 +304,10 @@ The role also exports its state to Prometheus. Turn metrics on with `urnet-tools
 | A family stays `waiting` | TCP 443 is not bound, the platform asked it to wait, or direct providing is off. | Read the status line; it says which. |
 | `off: direct providing is disabled` | `urnet-tools direct off` is set. | `urnet-tools direct on`. |
 | `FAILED to start: <reason>` | The role failed for a reason other than a port. | The provider keeps providing and retries every 15 seconds; fix the reason shown. |
+
+### Known limitations
+
+The Docker log follower can replay retained lines. A hot-swap candidate can race to bind a socket still held by the current provider. These limitations are not fixed in this release.
 
 ## FAQ
 

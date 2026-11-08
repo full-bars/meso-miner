@@ -553,6 +553,14 @@ Lines tagged `[extender]` are mirrored into the important buffer. Outcomes (star
 - State lines after the first are logged only when something changes, as `<state> — <note>`. `tcp_unavailable`, `unavailable` and `error` carry `🌉❌`.
 - The extender server also writes `🌉 [extender] listen error (<carrier>): <error>`, `accept error`, `udp carrier <mode> exited: <reason>`, and `refused a request at <stage>: <error>` (rate limited to `refused N requests at <stage> in the last minute; latest: <error>`). Refusals are normal on a public port: scanners and ordinary browsers are answered like a plain website, and malformed or unauthorized requests are refused.
 
+### Setup
+
+`urnet-tools extender setup` inspects TCP 443 occupancy, the provider binary's bind capability and the host firewall. It prints exact commands and asks before changing anything. Only explicit `--yes` or `--force` approves a non-interactive run. It preserves existing file capabilities when adding `cap_net_bind_service`. For firewalld, it plans runtime and permanent rules separately and does not reload. UDP 53 is optional and user-managed; setup does not open it.
+
+On FreeBSD, setup is print-only and untested this release. It makes no changes and prints the sysctl commands with undo instructions. Regular providing on FreeBSD is unaffected.
+
+The Docker log follower can replay retained lines. A hot-swap candidate can race to bind a socket that the current provider still holds. These limitations are not fixed in this release.
+
 ### Activation: asking the platform to list this host
 
 The platform lists an extender only after it proves it from the outside: it dials back to this host on tcp 443, requires a signed answer, then forwards a real request through it to its own API. IPv4 and IPv6 are tried separately.
