@@ -71,6 +71,21 @@ func executeExtenderSetupPlan(out io.Writer, plan []setupCommand, yes, dryRun bo
 	return nil
 }
 
+// FreeBSD setup never changes the host; the previous value stays in the shell
+// for an exact undo without touching persistent configuration.
+const freeBSDSetupInstructions = `FreeBSD extender setup is untested this release. No changes were made.
+For a non-root provider, the following commands temporarily allow all users to
+bind privileged ports. Run them in the same shell; stop if the first fails:
+  previous=$(sysctl -n net.inet.ip.portrange.reservedhigh)
+  sudo sysctl net.inet.ip.portrange.reservedhigh=0
+Undo in that same shell:
+  sudo sysctl net.inet.ip.portrange.reservedhigh="$previous"
+This change is not persistent; setup does not edit /etc/sysctl.conf.
+Manage your firewall manually: TCP 443 is required; UDP 443 and UDP 4053
+are optional. UDP 53 is optional and user-managed. Check your existing pf or
+ipfw rules and undo any changes using your own ruleset procedure.
+`
+
 // ExtenderSetupOptions controls the behavior of `urnet-tools extender setup`.
 type ExtenderSetupOptions struct {
 	Yes            bool
@@ -114,6 +129,11 @@ func RunExtenderSetup(opts ExtenderSetupOptions) error {
 	platform := opts.Platform
 	if platform == "" {
 		platform = runtime.GOOS
+	}
+
+	if platform == "freebsd" {
+		fmt.Fprint(out, freeBSDSetupInstructions)
+		return nil
 	}
 
 	checker := opts.PortChecker
