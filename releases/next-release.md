@@ -1,7 +1,68 @@
-I added a setup command for the extender. It checks TCP 443, the provider binary's bind capability and the host firewall. It prints the exact commands and asks before it changes anything. In a non-interactive session, pass `--yes` or `--force` to approve changes. The setup preserves existing file capabilities when it adds `cap_net_bind_service`.
+# Next release
 
-The setup plans firewalld runtime and permanent rules separately. It does not reload firewalld. UDP 53 is optional and user-managed. Setup does not open it.
+Previous release: [v2026.11.6-1092069850-meso](https://github.com/full-bars/meso-miner/releases/tag/v2026.11.6-1092069850-meso).
 
-FreeBSD extender setup is print-only and untested this release. It makes no changes. It prints the sysctl commands and the undo instructions. Regular providing on FreeBSD is unaffected.
+The extender role now runs by default and activates with the platform. I added `urnet-tools extender setup` to help prepare a host, fixed receive-loop panics and improved log following across trims. I also added on-demand diagnostic bundles.
 
-Known limitations remain. The Docker log follower can replay retained lines. The hot-swap candidate can race to bind a socket that the current provider still holds.
+Legend: **[redeploy]** needs the new provider, tool or container image. **[installer]** needs the updated installer. **[no redeploy]** covers documentation and tests.
+
+## Quick start
+
+Install on Linux:
+
+```sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh
+```
+
+Install on macOS:
+
+```sh
+curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh -s -- install
+```
+
+Run a provider container. Replace `AUTH_CODE_HERE` with a single-use auth code and `/path/to/proxy.txt` with your proxy file:
+
+```sh
+docker run -d --name urfix --pull=always --restart=unless-stopped \
+  --cap-add=NET_ADMIN --cap-add=NET_RAW --sysctl net.ipv4.ip_forward=1 \
+  -e BUILD=jwt -v urfix_config:/root/.urnetwork \
+  -v /path/to/proxy.txt:/app/proxy.txt \
+  ghcr.io/full-bars/meso-miner:latest AUTH_CODE_HERE
+```
+
+## What changed
+
+### Extender
+
+- **The extender runs by default and activates with the platform.** **[redeploy]** Use `urnet-tools extender on` or `off` to change the saved setting. Activation keeps its pacing across restarts and verifies stored records against the platform's root keys.
+- **The platform's own hosts are allowed by default.** **[redeploy]** If the derived domain is a public suffix, forwarding is limited to the API host instead.
+- **TCP 443 binds first.** **[redeploy]** If it is occupied, the extender reports the holder when it can. UDP 53 is optional and user-managed; setup does not open it.
+- **Status shows bound and accepted carriers.** **[redeploy]** Status and `top` distinguish a listening carrier from one the platform accepted. Logs explain omitted carriers and report when they return.
+- **The role recovers more clearly.** **[redeploy]** The manager restarts an exited supervisor, invalid settings no longer repeat the same warning and `top` clears stale extender state when switching providers.
+
+### Extender setup
+
+- **`urnet-tools extender setup` is new.** **[redeploy]** On supported systems it checks port 443, the provider's bind capability and firewall rules, prints its plan and asks before applying changes. FreeBSD prints manual instructions instead.
+- **Approval stays explicit.** **[redeploy]** Only `--yes`, `-y` or `--force` approves changes in a non-interactive run. Elevation does not imply approval; without those flags, an elevated rerun confirms its own plan. Manual reruns retain the selected target and flags.
+- **Firewall and capability changes are conservative.** **[redeploy]** Setup plans firewalld runtime and permanent rules separately without a reload. It stops if it cannot inspect the rules and preserves existing file capabilities when adding the bind capability.
+- **Port checks match the exact local port.** **[redeploy]** The `lsof` and FreeBSD `sockstat` checks no longer confuse a remote port or a longer port number with the local port. FreeBSD checks have not been run on a FreeBSD host.
+- **FreeBSD extender setup is print-only and untested.** **[redeploy]** It prints temporary `sysctl` commands and their undo; it does not elevate or change the host. The commands remove privileged-port protection for all local users until undone. Regular providing is unaffected.
+- **The Linux installer reports port 443 availability.** **[installer]** It prints a notice without asking for changes or failing the install.
+
+### Provider and logs
+
+- **Receive-loop panics are fixed.** **[redeploy]** Missing paths and inconsistent receive indexes no longer stop the client. Repeated mismatch diagnostics are bounded.
+- **Log following continues across RAM log trims.** **[redeploy]** The follower tracks the replaced path and retains new output when repeated history makes a match ambiguous.
+- **Diagnostic bundles can be captured on request.** **[redeploy]** `urnet-tools diag` asks the running provider for heap, goroutine and CPU profiles. The free-space check uses the diag directory's filesystem and treats negative availability as zero.
+
+### Documentation
+
+- **The extender guide, log reference and README are updated.** **[no redeploy]** Docker bridge guidance distinguishes IPv4 from IPv6 and includes Compose examples. SN25 figures were refreshed.
+
+## Known limitations
+
+- The Docker RAM log follower can replay retained lines after a trim.
+- A hot-swap candidate can race the old provider while it still holds a listening socket.
+- FreeBSD extender setup has not been tested on a FreeBSD host.
+
+Full changelog: https://github.com/full-bars/meso-miner/compare/v2026.11.6-1092069850-meso...main
