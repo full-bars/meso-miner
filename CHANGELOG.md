@@ -2,7 +2,7 @@
 
 This release turns the extender on by default. I turned it on so that clients in censored networks can reach URnetwork. Check that TCP 443 is open before you update. After the update, run `urnet-tools extender status` to check the extender.
 
-Everything merged after `v2026.11.1-1087111111-meso`.
+Everything merged after `v2026.11.6-1092069850-meso`.
 
 ### Added
 
