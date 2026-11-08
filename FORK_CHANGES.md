@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/meso-miner  
-**Latest published release**: v2026.11.1-1087111111-meso (see [release notes](releases/v2026.11.1-1087111111-meso.md))
+**Latest published release**: v2026.11.6-1092069850-meso (see [release notes](releases/v2026.11.6-1092069850-meso.md))
 
 ---
 
@@ -3843,3 +3843,11 @@ Parity port of the `fragment+segment` dialer from `full-bars/urnetwork-3.23-fix`
 **How to identify in new upstream**: Check `dialProxiedUdp`, `proxiedUdpFlowIdleTimeout`, `runProxyURLCleanupOnce`, `uninstall_process_guard.go` and the Windows start and restart routes. Compare the release notes and changelog for the full list.
 
 **Status**: On main after v2026.11.1-1087111111-meso; not yet tagged.
+
+## 184. Extender Setup Hardening
+
+The extender setup command now inspects TCP 443 occupancy, the provider binary's bind capability and host firewall rules. It prints exact commands and asks before making changes. In non-interactive runs, only explicit `--yes` or `--force` approves changes. On Linux, adding `cap_net_bind_service` preserves existing file capabilities. firewalld runtime and permanent rules are planned separately, with no reload.
+
+UDP 53 is optional and user-managed. Setup does not open it. FreeBSD extender setup is print-only and untested this release. It prints sysctl commands and undo instructions without making changes. Regular providing on FreeBSD is unaffected.
+
+The Docker log follower can replay retained lines. A hot-swap candidate can race to bind a socket still held by the current provider. These limitations are not fixed in this release.

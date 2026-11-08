@@ -37,6 +37,7 @@ Not sure which guide to read? Pick your level:
 - **Monitoring.** Turn on Prometheus metrics with `urnet-tools metrics on` and use the ready-made Grafana bundle. See [Monitoring](docs/Monitoring.md).
 - **Safer under pressure.** Memory profiles (`auto`, `turbo`, `eco`, `lowmem`), a swap-thrash watchdog that restarts a stuck provider, and protection against reconnect storms during platform outages.
 - **Many providers per machine.** One provider per OS user, with `urnet-tools providers` to list them.
+- **Extender role.** Providers can accept client connections on TCP 443. Setup inspects port use, bind capability and firewall rules, prints the exact commands, and asks before changes. Run `urnet-tools extender setup` to prepare a host. See [Extender](docs/Extender.md).
 - **Move a node.** `urnet-tools session save` and `session load` carry your identity and proxies to another machine.
 - **Runs almost anywhere.** Linux (systemd and Alpine/OpenRC), macOS, Windows, FreeBSD and Docker.
 - **Bittensor subnet 25 tools.** Sign one wallet message to get paid, then check with `provider wallet status`. See the [Bittensor Quick Start](docs/Bittensor-Quick-Start.md).
