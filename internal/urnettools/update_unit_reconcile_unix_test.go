@@ -88,9 +88,17 @@ func TestReconcileMesoUnitType(t *testing.T) {
 	if err != nil || !migrated || !strings.Contains(readUnit(t, path), "\nType=notify\n") {
 		t.Fatalf("meso unit migration: migrated=%v err=%v unit=%s", migrated, err, readUnit(t, path))
 	}
-	migrated, err = reconcileUnitTypeForBinary(p, "v2026.9.9-1788916951-meso")
+	migrated, err = reconcileUnitTypeForBinary(p, "v2026.9.17-1789639761-meso")
 	if err != nil || migrated || !strings.Contains(readUnit(t, path), "\nType=simple\n") {
-		t.Fatalf("old meso unit demotion: migrated=%v err=%v unit=%s", migrated, err, readUnit(t, path))
+		t.Fatalf("pre-floor meso unit demotion: migrated=%v err=%v unit=%s", migrated, err, readUnit(t, path))
+	}
+	migrated, err = reconcileUnitTypeForBinary(p, "v2026.10.20-1076956260-meso")
+	if err != nil || !migrated || !strings.Contains(readUnit(t, path), "\nType=notify\n") {
+		t.Fatalf("meso floor unit migration: migrated=%v err=%v unit=%s", migrated, err, readUnit(t, path))
+	}
+	migrated, err = reconcileUnitTypeForBinary(p, "v2026.10.19-1075696970-meso")
+	if err != nil || migrated || !strings.Contains(readUnit(t, path), "\nType=simple\n") {
+		t.Fatalf("boundary pre-floor meso unit demotion: migrated=%v err=%v unit=%s", migrated, err, readUnit(t, path))
 	}
 }
 

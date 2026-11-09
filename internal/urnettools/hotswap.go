@@ -55,9 +55,10 @@ func isHotSwapSupportedVersion(ver string) bool {
 var mesoVersionPattern = regexp.MustCompile(`^([0-9]{4})\.([0-9]{1,2})\.([0-9]{1,2})-([0-9]+)(?:-(?:fix\.)?[0-9]+(?:\.[0-9]+)*)?(?:-(?:meso|sn)(?:-hub)?)?$`)
 
 // The first meso release with the signal listener, handoff and READY=1 is
-// v2026.9.17-1789639761-meso. Its code is a Unix timestamp; later tags also
-// use tenths of seconds since 2023-05-23. Compare dates first so both work.
+// v2026.10.20-1076956260-meso. Compare by calendar date only; build codes
+// are not monotonic. A tag on 2026-10-20 with any build code counts as supported.
 func isMesoHotSwapVersion(ver string) bool {
+	ver = strings.TrimPrefix(ver, "v")
 	m := mesoVersionPattern.FindStringSubmatch(ver)
 	if m == nil {
 		return false
@@ -73,15 +74,9 @@ func isMesoHotSwapVersion(ver string) bool {
 	if date.Year() != year || int(date.Month()) != month || date.Day() != day {
 		return false
 	}
-	floor := time.Date(2026, 9, 17, 0, 0, 0, 0, time.UTC)
+	floor := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
 	if date.Before(floor) {
 		return false
-	}
-	if date.Equal(floor) {
-		if code >= 1684800000 {
-			return code >= 1789639761
-		}
-		return code >= 1048397610
 	}
 	return true
 }
@@ -96,7 +91,7 @@ func supportsHotSwap(p Provider) bool {
 }
 
 // ErrHotSwapNotSupported is returned when the running provider process does not support zero-downtime hotswap.
-var ErrHotSwapNotSupported = errors.New("zero-downtime hotswap unavailable: the running provider version is unrecognized or below v3.23.0-fix.31.0 or the first supported meso release v2026.9.17-1789639761-meso. Upgrade to a supported release to enable zero-downtime updates")
+var ErrHotSwapNotSupported = errors.New("zero-downtime hotswap unavailable: the running provider version is unrecognized or below v3.23.0-fix.31.0 or the first supported meso release v2026.10.20-1076956260-meso. Upgrade to a supported release to enable zero-downtime updates")
 
 // ErrHotSwapUnitNotNotify is returned when the provider's version supports
 // HotSwap but its owning systemd unit is not Type=notify, so
