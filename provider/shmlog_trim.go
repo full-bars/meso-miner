@@ -7,12 +7,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
+	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // mainTrimWarned and impTrimWarned track failure state so warnings repeat at
 // a bounded rate rather than being silenced permanently.
 var (
+	trimWarnMu       sync.Mutex
 	mainTrimWarned   bool
 	mainTrimWarnTime time.Time
 	impTrimWarned    bool
@@ -94,11 +99,14 @@ func trimRAMLog(f *os.File, maxSize int64, ratio int64) error {
 // does not permanently silence the warning.
 func reportTrimFailure(warned *bool, warnTime *time.Time, path string, err error) {
 	now := time.Now()
+	trimWarnMu.Lock()
 	if *warned && now.Sub(*warnTime) < 5*time.Minute {
+		trimWarnMu.Unlock()
 		return
 	}
 	*warned = true
 	*warnTime = now
+	trimWarnMu.Unlock()
 	fmt.Fprintf(os.Stderr, "[ramlogs] warning: cannot trim %s, leaving it oversized rather than losing history: %v\n", path, err)
 }
 
@@ -184,4 +192,54 @@ func trimRAMLogByRename(path string, maxSize int64, ratio int64) (bool, error) {
 		return false, fmt.Errorf("rename trim target: %w", err)
 	}
 	return true, nil
+}
+
+// reopenIfOrphaned reports whether cur no longer names the file at path and, if
+// so, opens the file now at path for appending.
+//
+// Two processes share one log path during a HotSwap handoff, and a trim by
+// either one renames a new file over that path (trimRAMLogByRename). The other
+// process still holds the old inode, which no path refers to any more: its
+// writes succeed and land nowhere, and nothing ever trims that file because the
+// trimmer works by path. The same happens if an operator removes the file. The
+// descriptor therefore has to be compared with the path from time to time.
+//
+// A missing path counts as orphaned and is recreated, so the log reappears
+// instead of staying silent. It returns (nil, false, nil) when cur still names
+// the file at path.
+func reopenIfOrphaned(path string, cur *os.File, mode os.FileMode) (*os.File, bool, error) {
+	curInfo, err := cur.Stat()
+	if err != nil {
+		return nil, false, fmt.Errorf("stat open log: %w", err)
+	}
+	if pathInfo, err := os.Lstat(path); err == nil && os.SameFile(curInfo, pathInfo) {
+		return nil, false, nil
+	}
+	next, err := openSafeLog(path, mode)
+	if err != nil {
+		return nil, false, fmt.Errorf("reopen orphaned log: %w", err)
+	}
+	return next, true, nil
+}
+
+// openSafeLog refuses links, special files, foreign ownership and permissions
+// broader than the requested mode. NONBLOCK prevents a planted FIFO hanging open.
+func openSafeLog(path string, mode os.FileMode) (*os.File, error) {
+	fd, err := unix.Open(path, unix.O_CREAT|unix.O_RDWR|unix.O_APPEND|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, uint32(mode.Perm()))
+	if err != nil {
+		return nil, err
+	}
+	f := os.NewFile(uintptr(fd), path)
+	info, err := f.Stat()
+	if err == nil {
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || !info.Mode().IsRegular() || stat.Uid != uint32(os.Geteuid()) || info.Mode()&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 || info.Mode().Perm() & ^mode.Perm() != 0 {
+			err = fmt.Errorf("unsafe log file ownership, type or permissions")
+		}
+	}
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	return f, nil
 }

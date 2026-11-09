@@ -113,7 +113,7 @@ func initSHMLogger() {
 		// to read the newest portion back out before truncating; on a
 		// write-only descriptor that read fails with EBADF and the trim
 		// destroys the history it is supposed to keep.
-		f, err := os.OpenFile(shmLogPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
+		f, err := openSafeLog(shmLogPath, 0644)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "failed to open shm log: %v\n", err)
 			return
@@ -282,24 +282,36 @@ func initSHMLogger() {
 					}
 					pendingSwap = true
 				}
-				next, err := os.OpenFile(shmLogPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
-				if err != nil {
+				if err := swapTrimmedLog(shmLogPath, &logFile, &fMu, func() (*os.File, error) { return openSafeLog(shmLogPath, 0644) }); err != nil {
 					reportTrimFailure(&mainTrimWarned, &mainTrimWarnTime, shmLogPath, err)
 					continue
 				}
-				fMu.Lock()
-				previous := logFile
-				logFile = next
-				fMu.Unlock()
-				previous.Close()
 				pendingSwap = false
 			}
 		}()
 
 		// Periodically sync to ensure tail -F sees updates quickly
 		go func() {
+			var mainReopenNotice, impReopenNotice time.Time
 			for {
 				time.Sleep(500 * time.Millisecond)
+				// Another process may have renamed a trimmed file over the log
+				// path (a HotSwap parent and its candidate share one path), or an
+				// operator may have removed it. This descriptor then names an
+				// unlinked inode and every write is lost; follow the path.
+				changes := checkLogPaths(shmLogPath, &logFile, &fMu, impPath, &fImp, &fImpMu, impEnabled, func(path string) {
+					if path == shmLogPath {
+						reportLogReopened(&mainReopenNotice, path)
+					} else {
+						reportLogReopened(&impReopenNotice, path)
+					}
+				})
+				if changes.mainErr != nil {
+					reportTrimFailure(&mainTrimWarned, &mainTrimWarnTime, shmLogPath, changes.mainErr)
+				}
+				if changes.importantErr != nil {
+					reportTrimFailure(&impTrimWarned, &impTrimWarnTime, impPath, changes.importantErr)
+				}
 				// An fsync on an append-only descriptor is safe beside a
 				// concurrent write, so the sync reads the current descriptor
 				// under the lock and then flushes outside it. Holding the lock
@@ -312,6 +324,81 @@ func initSHMLogger() {
 			}
 		}()
 	})
+}
+
+type logPathChanges struct {
+	main, important       bool
+	mainErr, importantErr error
+}
+
+// checkLogPaths follows replacements and reports only after both locks are free.
+func checkLogPaths(mainPath string, mainFile **os.File, mainMu *sync.Mutex, impPath string, impFile **os.File, impMu *sync.Mutex, impEnabled bool, report func(string)) logPathChanges {
+	check := func(path string, file **os.File, mu *sync.Mutex, mode os.FileMode) (bool, error) {
+		return followLogPath(path, file, mu, mode, reopenIfOrphaned)
+	}
+	var changes logPathChanges
+	changes.main, changes.mainErr = check(mainPath, mainFile, mainMu, 0644)
+	// The disk opener removes the stale RAM file; reopening that fallback
+	// would resurrect it and expose stale data to operators.
+	if impEnabled && impPath != shmImportantLogPath {
+		changes.important, changes.importantErr = check(impPath, impFile, impMu, 0600)
+	}
+	if changes.main {
+		report(mainPath)
+	}
+	if changes.important {
+		report(impPath)
+	}
+	return changes
+}
+
+func swapTrimmedLog(path string, file **os.File, mu *sync.Mutex, open func() (*os.File, error)) error {
+	_, err := followLogPath(path, file, mu, 0644, func(_ string, _ *os.File, _ os.FileMode) (*os.File, bool, error) {
+		next, err := open()
+		return next, err == nil, err
+	})
+	return err
+}
+
+// followLogPath opens outside the writer lock and commits only an unchanged path.
+func followLogPath(path string, file **os.File, mu *sync.Mutex, mode os.FileMode, reopen func(string, *os.File, os.FileMode) (*os.File, bool, error)) (bool, error) {
+	mu.Lock()
+	observed := *file
+	mu.Unlock()
+	next, changed, err := reopen(path, observed, mode)
+	if err != nil || !changed {
+		return false, err
+	}
+	info, err := next.Stat()
+	if err != nil {
+		next.Close()
+		return false, err
+	}
+	mu.Lock()
+	// Keep the path identity check atomic with the swap to prevent stale
+	// descriptors. The main log is on tmpfs /dev/shm; the disk important
+	// log already does Write, Rename and OpenFile under this mutex.
+	pathInfo, pathErr := os.Lstat(path)
+	if *file != observed || pathErr != nil || !os.SameFile(info, pathInfo) {
+		mu.Unlock()
+		next.Close()
+		return false, fmt.Errorf("log path changed during reopen")
+	}
+	*file = next
+	mu.Unlock()
+	observed.Close()
+	return true, nil
+}
+
+// reportLogReopened runs only after releasing the descriptor locks: stderr is
+// the pipe drained by the goroutine that also needs those locks.
+func reportLogReopened(last *time.Time, path string) {
+	now := time.Now()
+	if !last.IsZero() && now.Sub(*last) < 5*time.Minute {
+		return
+	}
+	*last = now
+	fmt.Fprintf(os.Stderr, "[ramlogs] log file at %s was replaced or removed; reopened\n", path)
 }
 
 func shmLogFatal(code int, format string, args ...any) {
