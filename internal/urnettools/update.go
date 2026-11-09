@@ -1850,7 +1850,7 @@ func rewriteUnitContent(content string) (string, bool) {
 		}
 	}
 
-	// Legacy Provider_Install_Linux.sh (since #546) wrote NO Type= line: the unit was
+	// Legacy Provider_Install_Linux.sh (before the notify unit) wrote NO Type= line: the unit was
 	// Type=simple by systemd's default and only a comment said so (the installer now
 	// writes Type=notify directly). With no explicit Type= anywhere there is nothing
 	// to rewrite, so add the line under [Service]; without this the migration was a
