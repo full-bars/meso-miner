@@ -23,6 +23,11 @@ Everything merged after `v2026.11.6-1092069850-meso`.
 
 ### Fixed
 
+- **The hotswap unit-type message names the old installer script** (`internal/urnettools/hotswap.go`). It says older versions of `Provider_Install_Linux.sh` wrote `Type=simple`.
+- **The OpenRC verify step no longer runs the provider image as root** (`internal/urnettools/update.go`). It picks the read-only version resolver first. Before, the exec-capable resolver ran the image and only then was overridden.
+- **Setup applies the sysctl route once for several providers** (`internal/urnettools/extender_setup.go`). The host-wide route was applied once per provider, which failed with "backup already exists" or backed up setup's own drop-in.
+- **CI is green so the Docker image builds.** The installer test stub handles `sudo -n` and the suite no longer stops early (`scripts/test_provider_install.sh`). The hidden port holder extender test stubs provider discovery, and a new test covers the anonymous elevation target (`internal/urnettools/extender_setup_regression_test.go`, `internal/urnettools/extender_elevation_test.go`).
+
 - **Updates can install and rerun a newer tool first.** When a newer `urnet-tools` is available, `urnet-tools update` installs it and reruns it before it updates the provider. If the install or the rerun fails, the running tool continues. A loop guard stops repeated reruns. Updates from a release before this one keep the older order. (`internal/urnettools/update.go`, `internal/urnettools/update_tool_first.go`)
 - **The updater skips the file-capability check when the sysctl route is active.** Updates and rollbacks no longer warn about a missing bind capability when the live setting already allows unprivileged TCP 443. When an update installs a binary below the HotSwap floor, the updater demotes a `Type=notify` or `Type=notify-reload` unit to `Type=simple` to match it. (`internal/urnettools/update_extender.go`, `internal/urnettools/update.go`)
 - **Unreadable running images get a plain notice.** When the updater cannot read the running provider's image, it prints one plain line and asks the provider for its version over the control socket. It no longer prints the raw permission error. (`internal/urnettools/update.go`)
