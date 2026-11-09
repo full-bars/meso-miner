@@ -6,7 +6,9 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -31,13 +33,20 @@ type SystemPlatformConfigurer struct {
 	PlatformName string
 	ExecCmd      func(name string, args ...string) ([]byte, error)
 	ReadFile     func(name string) ([]byte, error)
+	ReadDir      func(name string) ([]os.DirEntry, error)
 	WriteFile    func(name string, data []byte, perm os.FileMode) error
 	ListenTCP    func(network, address string) (net.Listener, error)
 	LookupPath   func(file string) (string, error)
 	IsRoot       func() bool
 	// Lstat inspects the provider binary without following a symlink. Nil
 	// skips the check, for test doubles that name no real file.
-	Lstat func(name string) (os.FileInfo, error)
+	Lstat      func(name string) (os.FileInfo, error)
+	Route      string
+	SysctlUndo string
+	// SysctlDirs and SysctlConf override the sysctl search path for tests.
+	// Nil or empty means the documented default.
+	SysctlDirs []string
+	SysctlConf string
 }
 
 // NewSystemPlatformConfigurer returns a SystemPlatformConfigurer for the platform.
@@ -54,6 +63,7 @@ func NewSystemPlatformConfigurer(platform string) *SystemPlatformConfigurer {
 			return cmd.CombinedOutput()
 		},
 		ReadFile:   os.ReadFile,
+		ReadDir:    os.ReadDir,
 		WriteFile:  os.WriteFile,
 		ListenTCP:  net.Listen,
 		LookupPath: exec.LookPath,
@@ -75,6 +85,25 @@ func (sp *SystemPlatformConfigurer) CheckRequirement(binary, user string) (bool,
 		if user == "root" {
 			return true, "provider running as root (no file capability needed)", nil
 		}
+		if sp.Route == "sysctl" {
+			if sp.ReadFile != nil {
+				if b, err := sp.ReadFile("/proc/sys/net/ipv4/ip_unprivileged_port_start"); err == nil {
+					if v, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && v >= 0 && v <= 443 {
+						if !sp.sysctlPersisted() {
+							return false, fmt.Sprintf("ip_unprivileged_port_start=%d live, but not persisted; setup can write %s", v, extenderSysctlDropin), nil
+						}
+						if v == 443 {
+							return true, "TCP 443 is available without a file capability (ip_unprivileged_port_start=443, persisted)", nil
+						}
+						return true, fmt.Sprintf("TCP 443 is available without a file capability (ip_unprivileged_port_start=%d is already lower than 443, persisted)", v), nil
+					}
+				}
+			}
+			return false, "sysctl route not active", nil
+		}
+		if sp.Route == "capability" {
+			return sp.checkLinuxCapability(binary)
+		}
 		return sp.checkLinux(binary)
 	case "freebsd":
 		return sp.checkFreeBSD(user)
@@ -87,11 +116,170 @@ func (sp *SystemPlatformConfigurer) CheckRequirement(binary, user string) (bool,
 	}
 }
 
+const (
+	extenderSysctlDropin  = "/etc/sysctl.d/99-urnetwork-extender.conf"
+	extenderSysctlBackup  = extenderSysctlDropin + ".pre-urnetwork" // not a .conf file: sysctl.d ignores it
+	extenderSysctlContent = "net.ipv4.ip_unprivileged_port_start=443\n"
+)
+
+// sysctlDropinExists refuses unreadable files and symlinks before an overwrite.
+func (sp *SystemPlatformConfigurer) sysctlDropinExists() (bool, error) {
+	if sp.Lstat != nil {
+		info, err := sp.Lstat(extenderSysctlDropin)
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		if err != nil {
+			return false, fmt.Errorf("inspecting %s: %w", extenderSysctlDropin, err)
+		}
+		if !info.Mode().IsRegular() {
+			return false, fmt.Errorf("refusing to replace non-regular sysctl drop-in %s", extenderSysctlDropin)
+		}
+		return true, nil
+	}
+	if sp.ReadFile == nil {
+		return false, fmt.Errorf("cannot inspect sysctl drop-in")
+	}
+	_, err := sp.ReadFile(extenderSysctlDropin)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (sp *SystemPlatformConfigurer) sysctlRecovery() (string, error) {
+	exists, err := sp.sysctlDropinExists()
+	if err != nil {
+		return "", err
+	}
+	command := "sudo rm " + extenderSysctlDropin
+	if exists {
+		command = "sudo mv " + extenderSysctlBackup + " " + extenderSysctlDropin
+	}
+	if sp.ReadFile != nil {
+		if b, err := sp.ReadFile("/proc/sys/net/ipv4/ip_unprivileged_port_start"); err == nil {
+			if v, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && v >= 0 && v <= 65535 {
+				return fmt.Sprintf("%s && sudo sysctl -w net.ipv4.ip_unprivileged_port_start=%d", command, v), nil
+			}
+		}
+	}
+	return command + "\nAfter undo, check: sysctl net.ipv4.ip_unprivileged_port_start. Prior live value unknown; set the value your distribution uses (usually 1024).", nil
+}
+
+// extenderSysctlDirs is the systemd sysctl.d(5) search path, highest
+// precedence first. A file name in an earlier directory masks the same name in
+// a later one.
+var extenderSysctlDirs = []string{"/etc/sysctl.d", "/run/sysctl.d", "/usr/local/lib/sysctl.d", "/usr/lib/sysctl.d", "/lib/sysctl.d"}
+
+const extenderSysctlConf = "/etc/sysctl.conf"
+
+// sysctlFiles lists the files systemd-sysctl applies, in application order:
+// the merged *.conf set sorted by name (same-named files in earlier
+// directories mask later ones), then /etc/sysctl.conf. The last assignment
+// applied wins.
+func (sp *SystemPlatformConfigurer) sysctlFiles() ([]string, bool) {
+	dirs, conf := sp.SysctlDirs, sp.SysctlConf
+	if len(dirs) == 0 {
+		dirs = extenderSysctlDirs
+	}
+	if conf == "" {
+		conf = extenderSysctlConf
+	}
+	var paths []string
+	if sp.ReadDir == nil {
+		paths = append(paths, extenderSysctlDropin)
+	} else {
+		byName := map[string]string{}
+		for _, dir := range dirs {
+			entries, err := sp.ReadDir(dir)
+			if err != nil && !os.IsNotExist(err) {
+				return nil, false
+			}
+			for _, entry := range entries {
+				name := entry.Name()
+				if !strings.HasSuffix(name, ".conf") || entry.IsDir() {
+					continue
+				}
+				if _, masked := byName[name]; !masked {
+					byName[name] = filepath.Join(dir, name)
+				}
+			}
+		}
+		names := make([]string, 0, len(byName))
+		for name := range byName {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			paths = append(paths, byName[name])
+		}
+	}
+	return append(paths, conf), true
+}
+
+// A live low threshold alone does not survive reboot. Scan the sysctl
+// configuration the way systemd-sysctl applies it; the last assignment wins
+// and must be at most 443. Unreadable files and unparsable values fail closed.
+func (sp *SystemPlatformConfigurer) sysctlPersisted() bool {
+	if sp.ReadFile == nil {
+		return false
+	}
+	paths, ok := sp.sysctlFiles()
+	if !ok {
+		return false
+	}
+	last, found := 0, false
+	for _, path := range paths {
+		b, err := sp.ReadFile(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return false
+		}
+		for _, line := range strings.Split(string(b), "\n") {
+			line = strings.TrimSpace(strings.SplitN(line, "#", 2)[0])
+			line = strings.TrimPrefix(line, "-") // systemd sysctl ignore-error prefix
+			key, val, ok := strings.Cut(line, "=")
+			key = strings.TrimSpace(key)
+			if strings.HasPrefix(key, "/") {
+				key = strings.ReplaceAll(strings.TrimPrefix(key, "/"), "/", ".")
+			}
+			if !ok || key != "net.ipv4.ip_unprivileged_port_start" {
+				continue
+			}
+			v, err := strconv.Atoi(strings.TrimSpace(val))
+			if err != nil {
+				return false
+			}
+			last, found = v, true
+		}
+	}
+	return found && last >= 0 && last <= 443
+}
+
 // PlanRequirement returns the exact commands that ApplyRequirement will run.
 func (sp *SystemPlatformConfigurer) PlanRequirement(binary, user string) ([]setupCommand, error) {
 	switch sp.PlatformName {
 	case "linux":
 		if user == "root" {
+			return nil, nil
+		}
+		if sp.Route == "sysctl" {
+			commands := []setupCommand{}
+			exists, err := sp.sysctlDropinExists()
+			if err != nil {
+				return nil, err
+			}
+			if exists {
+				commands = append(commands, setupCommand{name: "cp", args: []string{"-p", "--", extenderSysctlDropin, extenderSysctlBackup}})
+			}
+			return append(commands,
+				setupCommand{name: "sh", args: []string{"-c", "echo net.ipv4.ip_unprivileged_port_start=443 > " + extenderSysctlDropin}},
+				setupCommand{name: "sysctl", args: []string{"--system"}},
+			), nil
+		}
+		if sp.Route == "skip" {
 			return nil, nil
 		}
 		if binary == "" {
@@ -119,6 +307,9 @@ func (sp *SystemPlatformConfigurer) PlanRequirement(binary, user string) ([]setu
 	case "freebsd":
 		return nil, nil
 	case "windows":
+		if sp.ExecCmd == nil {
+			return nil, nil
+		}
 		return planWindowsRules(sp.ExecCmd), nil
 	case "darwin":
 		_, _, err := sp.checkDarwin()
@@ -134,6 +325,12 @@ func (sp *SystemPlatformConfigurer) ApplyRequirement(binary, user string) (bool,
 	case "linux":
 		if user == "root" {
 			return false, "provider running as root (no file capability needed)", nil
+		}
+		if sp.Route == "sysctl" {
+			return sp.applyLinuxSysctl()
+		}
+		if sp.Route == "skip" {
+			return false, "port 443 binding setup skipped", nil
 		}
 		return sp.applyLinux(binary)
 	case "freebsd":
@@ -208,6 +405,22 @@ func bindCapabilityBlocked(status []byte) bool {
 // --- Linux implementation ---
 
 func (sp *SystemPlatformConfigurer) checkLinux(binary string) (bool, string, error) {
+	if sp.ReadFile != nil {
+		if data, err := sp.ReadFile("/proc/sys/net/ipv4/ip_unprivileged_port_start"); err == nil {
+			if value, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && value >= 0 {
+				if value < 443 {
+					return true, fmt.Sprintf("TCP 443 is available without a file capability (ip_unprivileged_port_start=%d is already lower than 443)", value), nil
+				}
+				if value == 443 {
+					return true, "TCP 443 is available without a file capability (ip_unprivileged_port_start=443)", nil
+				}
+			}
+		}
+	}
+	return sp.checkLinuxCapability(binary)
+}
+
+func (sp *SystemPlatformConfigurer) checkLinuxCapability(binary string) (bool, string, error) {
 	if binary == "" {
 		return false, "no provider binary path known", nil
 	}
@@ -327,6 +540,75 @@ func (sp *SystemPlatformConfigurer) applyLinux(binary string) (bool, string, err
 	}
 
 	return true, fmt.Sprintf("applied cap_net_bind_service=+ep on %s (verified with getcap)", binary), nil
+}
+
+func (sp *SystemPlatformConfigurer) applyLinuxSysctl() (applied bool, desc string, err error) {
+	recovery := sp.SysctlUndo
+	if recovery == "" {
+		recovery, err = sp.sysctlRecovery()
+		if err != nil {
+			return false, "", err
+		}
+	}
+	wrote := false
+	defer func() {
+		if wrote && err != nil {
+			err = fmt.Errorf("%w; sysctl drop-in may be active; undo with: %s", err, recovery)
+		}
+	}()
+	if sp.WriteFile == nil {
+		return false, "", fmt.Errorf("cannot write sysctl config: WriteFile unavailable")
+	}
+	exists, err := sp.sysctlDropinExists()
+	if err != nil {
+		return false, "", err
+	}
+	if exists {
+		if sp.Lstat != nil {
+			if _, err := sp.Lstat(extenderSysctlBackup); err == nil {
+				return false, "", fmt.Errorf("backup %s already exists; inspect it before retrying", extenderSysctlBackup)
+			} else if !os.IsNotExist(err) {
+				return false, "", fmt.Errorf("inspecting backup %s: %w", extenderSysctlBackup, err)
+			}
+		} else if _, err := sp.ReadFile(extenderSysctlBackup); err == nil {
+			return false, "", fmt.Errorf("backup %s already exists; inspect it before retrying", extenderSysctlBackup)
+		} else if !os.IsNotExist(err) {
+			return false, "", fmt.Errorf("inspecting backup %s: %w", extenderSysctlBackup, err)
+		}
+		if sp.ExecCmd == nil {
+			return false, "", fmt.Errorf("cannot back up %s: command runner unavailable", extenderSysctlDropin)
+		}
+		if out, err := sp.ExecCmd("cp", "-p", "--", extenderSysctlDropin, extenderSysctlBackup); err != nil {
+			return false, "", fmt.Errorf("backing up %s: %s: %w", extenderSysctlDropin, strings.TrimSpace(string(out)), err)
+		}
+	}
+	wrote = true // even a partial write needs recovery guidance
+	if err := sp.WriteFile(extenderSysctlDropin, []byte(extenderSysctlContent), 0o644); err != nil {
+		return false, "", fmt.Errorf("writing %s: %w", extenderSysctlDropin, err)
+	}
+	var applyErr error
+	if sp.ExecCmd != nil {
+		out, err := sp.ExecCmd("sysctl", "--system")
+		if err != nil {
+			applyErr = fmt.Errorf("sysctl --system failed (%s: %w)", strings.TrimSpace(string(out)), err)
+			out2, err2 := sp.ExecCmd("sysctl", "-w", "net.ipv4.ip_unprivileged_port_start=443")
+			if err2 != nil {
+				return false, "", fmt.Errorf("applying sysctl failed: %v; fallback sysctl -w also failed: %s: %w", applyErr, strings.TrimSpace(string(out2)), err2)
+			}
+		}
+	}
+	if sp.ReadFile != nil {
+		data, err := sp.ReadFile("/proc/sys/net/ipv4/ip_unprivileged_port_start")
+		if err != nil {
+			return false, "", fmt.Errorf("verifying sysctl live value: %w", err)
+		}
+		val, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil || val > 443 {
+			return false, "", fmt.Errorf("sysctl live verification failed: net.ipv4.ip_unprivileged_port_start is %s (want <= 443)", strings.TrimSpace(string(data)))
+		}
+		return true, fmt.Sprintf("applied sysctl drop-in %s (net.ipv4.ip_unprivileged_port_start=%d); undo with: %s", extenderSysctlDropin, val, recovery), nil
+	}
+	return true, fmt.Sprintf("applied sysctl drop-in %s; undo with: %s", extenderSysctlDropin, recovery), nil
 }
 
 // --- FreeBSD implementation ---

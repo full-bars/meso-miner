@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -37,13 +38,22 @@ func (c setupCommand) String() string {
 }
 
 // executeExtenderSetupPlan prints and confirms the complete plan before running it.
-func executeExtenderSetupPlan(out io.Writer, plan []setupCommand, yes, dryRun bool, confirm func() (bool, error), run func(setupCommand) error) error {
+func executeExtenderSetupPlan(out io.Writer, plan []setupCommand, yes, dryRun bool, confirm func() (bool, error), run func(setupCommand) error, recovery ...string) error {
 	if len(plan) == 0 {
 		return nil
 	}
 	for _, c := range plan {
 		if c.name == "sysctl" && len(c.args) == 1 && c.args[0] == "net.inet.ip.portrange.reservedhigh=0" {
 			fmt.Fprintln(out, "Warning: this removes privileged-port protection for all users on this host and persists it in /etc/sysctl.conf. Record the previous value first. To undo, remove the added assignment from /etc/sysctl.conf and restore the previous value with sysctl net.inet.ip.portrange.reservedhigh=<previous value>.")
+			break
+		}
+		if (c.name == "sysctl" && len(c.args) == 1 && c.args[0] == "--system") || (c.name == "sh" && len(c.args) == 2 && strings.Contains(c.args[1], "99-urnetwork-extender.conf")) {
+			fmt.Fprintln(out, "Notice: net.ipv4.ip_unprivileged_port_start=443 removes privileged-port protection for ports 443-1023 for all users on this host.")
+			undo, _ := (&SystemPlatformConfigurer{ReadFile: func(string) ([]byte, error) { return nil, os.ErrNotExist }}).sysctlRecovery()
+			if len(recovery) > 0 {
+				undo = recovery[0]
+			}
+			fmt.Fprintln(out, "Recovery command:", undo)
 			break
 		}
 	}
@@ -106,6 +116,11 @@ type ExtenderSetupOptions struct {
 	ConfirmFunc func() (bool, error)
 	ElevateFunc func(args []string) error
 	Argv        []string
+
+	Route                       string
+	SelectRouteFunc             func() (string, error)
+	InteractiveFunc             func() bool
+	RemoveCapabilityConfirmFunc func() (bool, error)
 }
 
 // RunExtenderSetup executes the extender setup workflow in order:
@@ -156,15 +171,24 @@ func RunExtenderSetup(opts ExtenderSetupOptions) error {
 	if isRootFn == nil {
 		isRootFn = isPrivileged
 	}
+	opts.IsRoot = isRootFn
 
 	lookPathFn := opts.LookPath
 	if lookPathFn == nil {
 		lookPathFn = exec.LookPath
 	}
 
-	targets, err := setupTargets(setupDiscoverFn(), opts.Target)
+	// Re-resolve the exact inspected set under sudo, never the original no-target
+	// argv: root can discover providers the caller could not inspect.
+	discovered := setupDiscoverFn()
+	targets, err := setupTargets(discovered, opts.Target)
 	if err != nil {
 		return fmt.Errorf("resolving target provider: %w", err)
+	}
+	if isRootFn() && os.Getenv(urnetExtenderSetupTargetEnv) != "" {
+		if got := setupTargetIdentity(targets); got != os.Getenv(urnetExtenderSetupTargetEnv) {
+			return fmt.Errorf("elevated extender setup target changed after discovery; refusing to configure any provider (expected %s, resolved %s)", os.Getenv(urnetExtenderSetupTargetEnv), got)
+		}
 	}
 
 	// STEP 1: Check ports first (read-only)
@@ -212,6 +236,45 @@ func RunExtenderSetup(opts ExtenderSetupOptions) error {
 		fmt.Fprintf(errOut, "warn: %s\n", w)
 	}
 
+	// Select the route before checking whether that particular route is satisfied.
+	// Root providers do not need a low-port route.
+	route := strings.ToLower(strings.TrimSpace(opts.Route))
+	needsRoute := false
+	for _, p := range targets {
+		needsRoute = needsRoute || p.User != "root"
+	}
+	if platform == "linux" && needsRoute {
+		if route == "" {
+			if opts.SelectRouteFunc != nil {
+				route, err = opts.SelectRouteFunc()
+				if err != nil {
+					return fmt.Errorf("route selection cancelled: %w", err)
+				}
+			} else if opts.NonInteractive || !stdinIsInteractive() {
+				return fmt.Errorf("extender setup requires an interactive TTY to choose a route; use --route=sysctl|capability|skip")
+			} else {
+				route, err = promptExtenderRoute(errOut)
+				if err != nil {
+					return err
+				}
+			}
+		}
+		switch strings.ToLower(strings.TrimSpace(route)) {
+		case "sysctl", "1":
+			route = "sysctl"
+		case "capability", "cap", "2":
+			route = "capability"
+		case "skip", "3":
+			route = "skip"
+		default:
+			return fmt.Errorf("invalid route %q (must be sysctl, capability, or skip)", route)
+		}
+		opts.Route = route
+		if sp, ok := platformCfg.(*SystemPlatformConfigurer); ok {
+			sp.Route = route
+		}
+	}
+
 	// STEP 2: Detect platform requirement and firewall state (read-only)
 	configured := true
 	var descs []string
@@ -237,7 +300,7 @@ func RunExtenderSetup(opts ExtenderSetupOptions) error {
 	}
 
 	// Check if already configured on host
-	if configured && fwConfigured && !holderHidden {
+	if configured && fwConfigured && !holderHidden && route != "skip" {
 		if !opts.DryRun {
 			for _, p := range targets {
 				if err := reportExtenderBind(out, platformCfg, p, ports.TCP443.Held); err != nil {
@@ -246,10 +309,32 @@ func RunExtenderSetup(opts ExtenderSetupOptions) error {
 			}
 		}
 		fmt.Fprintf(out, "extender: already configured (%s)\n", desc)
+		if route == "sysctl" && !opts.DryRun {
+			if err := offerExtenderCapabilityRemoval(out, platformCfg, targets, opts); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 
 	// STEP 3: Build the exact command plan and explain which ports and why
+	if route == "skip" {
+		needPlatformTargets = nil
+		fmt.Fprintln(out, "extender: port 443 binding setup skipped")
+	}
+	var recovery string
+	if route == "sysctl" && len(needPlatformTargets) > 0 {
+		if sp, ok := platformCfg.(*SystemPlatformConfigurer); ok {
+			recovery, err = sp.sysctlRecovery() // snapshot before any write or sysctl apply
+			if err != nil {
+				return fmt.Errorf("planning sysctl recovery: %w", err)
+			}
+			sp.SysctlUndo = recovery
+		} else {
+			recovery, _ = (&SystemPlatformConfigurer{ReadFile: func(string) ([]byte, error) { return nil, os.ErrNotExist }}).sysctlRecovery()
+		}
+	}
+
 	var plan []setupCommand
 	seenCmd := map[string]bool{}
 	addCmd := func(c setupCommand) {
@@ -269,7 +354,7 @@ func RunExtenderSetup(opts ExtenderSetupOptions) error {
 				addCmd(c)
 			}
 		} else {
-			for _, c := range fallbackPlatformPlan(platform, p) {
+			for _, c := range fallbackPlatformPlan(platform, p, route) {
 				addCmd(c)
 			}
 		}
@@ -283,7 +368,7 @@ func RunExtenderSetup(opts ExtenderSetupOptions) error {
 	// STEP 4: Privilege check
 	if !isRootFn() {
 		if len(plan) > 0 {
-			_ = executeExtenderSetupPlan(out, plan, false, true, nil, func(setupCommand) error { return nil })
+			_ = executeExtenderSetupPlan(out, plan, false, true, nil, func(setupCommand) error { return nil }, recovery)
 		}
 		if opts.DryRun {
 			fmt.Fprintf(out, "[dry-run] would apply platform requirement on %s\n", platform)
@@ -291,15 +376,21 @@ func RunExtenderSetup(opts ExtenderSetupOptions) error {
 			return nil
 		}
 
-		exactCommand := formatSetupSudoCommand(opts)
-		_, sudoErr := lookPathFn("sudo")
-		sudoAvailable := sudoErr == nil
-
 		if platform == "windows" {
 			cmd := formatSetupPowerShellCommand(opts)
 			fmt.Fprintf(errOut, "extender setup requires Administrator privileges. Re-run from an elevated PowerShell terminal (Run as administrator):\n  %s\n", cmd)
 			return fmt.Errorf("extender setup requires Administrator privileges; run from an elevated terminal: %s", cmd)
 		}
+		args, bindErr := setupBoundArgs(opts, discovered, targets)
+		if bindErr != nil {
+			inventory := setupCommand{name: "sudo", args: []string{resolvedExecutablePath(), "providers", "--all"}}.String()
+			return fmt.Errorf("cannot safely elevate extender setup: %w; inspect providers with: %s; then run an explicit --unit or --state-dir setup command", bindErr, inventory)
+		}
+		opts.Argv = args
+		exactCommand := formatSetupSudoCommand(opts, setupTargetIdentity(targets))
+		_, sudoErr := lookPathFn("sudo")
+		sudoAvailable := sudoErr == nil
+
 		if opts.NonInteractive || !stdinIsInteractive() || !sudoAvailable {
 			fmt.Fprintf(errOut, "extender setup requires root privileges. Run:\n  %s\n", exactCommand)
 			return fmt.Errorf("extender setup requires root privileges; run: %s", exactCommand)
@@ -316,11 +407,7 @@ func RunExtenderSetup(opts ExtenderSetupOptions) error {
 
 		elevateFn := opts.ElevateFunc
 		if elevateFn == nil {
-			elevateFn = elevateSelf
-		}
-		args := opts.Argv
-		if len(args) == 0 {
-			args = []string{"extender", "setup"}
+			elevateFn = func(args []string) error { return elevateExtenderSetup(args, setupTargetIdentity(targets)) }
 		}
 		return elevateFn(args)
 	}
@@ -328,7 +415,7 @@ func RunExtenderSetup(opts ExtenderSetupOptions) error {
 	// STEP 5: Dry-run or print-and-ask confirmation gate before mutating anything
 	if opts.DryRun {
 		if len(plan) > 0 {
-			_ = executeExtenderSetupPlan(out, plan, false, true, nil, func(setupCommand) error { return nil })
+			_ = executeExtenderSetupPlan(out, plan, false, true, nil, func(setupCommand) error { return nil }, recovery)
 		}
 		fmt.Fprintf(out, "[dry-run] would apply platform requirement on %s\n", platform)
 		fmt.Fprintf(out, "[dry-run] would configure firewall (%s)\n", fwStatus.Kind)
@@ -351,7 +438,7 @@ func RunExtenderSetup(opts ExtenderSetupOptions) error {
 				return trimmed == "y" || trimmed == "yes", nil
 			}
 		}
-		if err := executeExtenderSetupPlan(out, plan, yes, false, confirmFn, func(setupCommand) error { return nil }); err != nil {
+		if err := executeExtenderSetupPlan(out, plan, yes, false, confirmFn, func(setupCommand) error { return nil }, recovery); err != nil {
 			return err
 		}
 	}
@@ -364,6 +451,12 @@ func RunExtenderSetup(opts ExtenderSetupOptions) error {
 		}
 		if applied {
 			fmt.Fprintf(out, "extender: %s\n", applyDesc)
+		}
+	}
+
+	if route == "sysctl" {
+		if err := offerExtenderCapabilityRemoval(out, platformCfg, targets, opts); err != nil {
+			return err
 		}
 	}
 
@@ -396,11 +489,114 @@ func RunExtenderSetup(opts ExtenderSetupOptions) error {
 	return nil
 }
 
-func fallbackPlatformPlan(platform string, p Provider) []setupCommand {
+func offerExtenderCapabilityRemoval(out io.Writer, cfg PlatformConfigurer, targets []Provider, opts ExtenderSetupOptions) error {
+	sp, ok := cfg.(*SystemPlatformConfigurer)
+	if !ok || sp.ExecCmd == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, p := range targets {
+		if p.Binary == "" || seen[p.Binary] {
+			continue
+		}
+		seen[p.Binary] = true
+		caps, err := sp.ExecCmd("getcap", p.Binary)
+		if err != nil {
+			fmt.Fprintf(out, "warn: cannot inspect file capabilities on %s: %v\n", p.Binary, err)
+			continue
+		}
+		if !linuxHasBindCapability(p.Binary, string(caps)) {
+			continue
+		}
+		cmd := setupCommand{name: "sudo", args: []string{"setcap", "-r", p.Binary}}.String()
+		fmt.Fprintf(out, "warn: %s still carries a file capability. A provider started with it is non-dumpable and may be unreadable to the updater. Restart or hand off the provider after removing the capability; the running process will not change.\n", p.Binary)
+		if strings.TrimSpace(string(caps)) != p.Binary+" cap_net_bind_service=ep" {
+			fmt.Fprintf(out, "warn: %s has other or unrecognized file capabilities (%s); %s would remove ALL of them. No automatic removal; inspect with getcap -n %s and manage capabilities manually.\n", p.Binary, strings.TrimSpace(string(caps)), cmd, setupShellWord(p.Binary))
+			continue
+		}
+		fmt.Fprintf(out, "Remove the bind capability with: %s\n", cmd)
+		interactive := stdinIsInteractive()
+		if opts.InteractiveFunc != nil {
+			interactive = opts.InteractiveFunc()
+		}
+		if opts.NonInteractive || !interactive || opts.DryRun || (opts.IsRoot != nil && !opts.IsRoot()) {
+			continue
+		}
+		confirm := opts.RemoveCapabilityConfirmFunc
+		if confirm == nil {
+			confirm = func() (bool, error) {
+				a, e := confirmStdinRead("Remove all file capabilities now? [y/N] ")
+				return strings.EqualFold(strings.TrimSpace(a), "y") || strings.EqualFold(strings.TrimSpace(a), "yes"), e
+			}
+		}
+		yes, err := confirm()
+		if err != nil {
+			return fmt.Errorf("sysctl applied; capability removal confirmation failed: %w; run %s", err, cmd)
+		}
+		if !yes {
+			continue
+		}
+		if sp.Lstat != nil {
+			info, err := sp.Lstat(p.Binary)
+			if err != nil || !info.Mode().IsRegular() {
+				return fmt.Errorf("sysctl applied; refusing capability removal on non-regular binary %s; inspect it and run %s", p.Binary, cmd)
+			}
+		}
+		current, err := sp.ExecCmd("getcap", p.Binary)
+		if err != nil || strings.TrimSpace(string(current)) != p.Binary+" cap_net_bind_service=ep" {
+			return fmt.Errorf("sysctl applied; file capabilities changed or cannot be read on %s; inspect with getcap -n %s before removing anything", p.Binary, setupShellWord(p.Binary))
+		}
+		if result, err := sp.ExecCmd("setcap", "-r", p.Binary); err != nil {
+			return fmt.Errorf("sysctl applied; %s failed: %s: %w", cmd, strings.TrimSpace(string(result)), err)
+		}
+		fmt.Fprintf(out, "extender: removed file capabilities from %s; restart the provider to make the change effective\n", p.Binary)
+	}
+	return nil
+}
+
+func promptExtenderRoute(w io.Writer) (string, error) {
+	fmt.Fprintln(w, `Port 443 binding setup (Linux):
+An unprivileged provider cannot bind TCP 443 without configuration.
+
+Available routes:
+  1) sysctl (recommended for single-purpose hosts)
+     Configures net.ipv4.ip_unprivileged_port_start=443 via /etc/sysctl.d/99-urnetwork-extender.conf
+     Trade-off: allows any local user on this host to bind ports 443 and above.
+     Survives provider updates and preserves process dumpability (/proc/<pid>/exe readable).
+  2) capability
+     Sets cap_net_bind_service=+ep on the provider binary.
+     Restricted to this binary, but must be re-applied after each update and makes the
+     process non-dumpable (/proc/<pid>/exe unreadable by unprivileged processes).
+  3) skip
+     Do not configure port binding now.`)
+	ans, err := confirmStdinRead("Select route [1=sysctl (recommended), 2=capability, 3=skip]: ")
+	if err != nil {
+		return "", fmt.Errorf("extender setup cancelled; no route selected: %w", err)
+	}
+	trimmed := strings.ToLower(strings.TrimSpace(ans))
+	switch trimmed {
+	case "1", "sysctl", "s":
+		return "sysctl", nil
+	case "2", "capability", "c", "cap":
+		return "capability", nil
+	case "3", "skip":
+		return "skip", nil
+	default:
+		return "", fmt.Errorf("extender setup cancelled; invalid route %q", trimmed)
+	}
+}
+
+func fallbackPlatformPlan(platform string, p Provider, route string) []setupCommand {
 	switch platform {
 	case "linux":
-		if p.User == "root" {
+		if p.User == "root" || route == "skip" {
 			return nil
+		}
+		if route == "sysctl" {
+			return []setupCommand{
+				{name: "sh", args: []string{"-c", "echo net.ipv4.ip_unprivileged_port_start=443 > " + extenderSysctlDropin}},
+				{name: "sysctl", args: []string{"--system"}},
+			}
 		}
 		bin := p.Binary
 		if bin == "" {
@@ -460,14 +656,51 @@ func warnUnitNoNewPrivileges(out io.Writer, cfg PlatformConfigurer, p Provider) 
 
 func setupManualArgs(opts ExtenderSetupOptions) []string {
 	if len(opts.Argv) == 0 {
-		return []string{"extender", "setup"}
+		base := []string{"extender", "setup"}
+		if opts.Route != "" {
+			base = append(base, "--route="+opts.Route)
+		}
+		return base
 	}
-	return opts.Argv
+	base := append([]string{}, opts.Argv...)
+	if opts.Route != "" {
+		hasRoute := false
+		for _, a := range base {
+			if strings.HasPrefix(a, "--route") {
+				hasRoute = true
+				break
+			}
+		}
+		if !hasRoute {
+			base = append(base, "--route="+opts.Route)
+		}
+	}
+	return base
 }
 
-// formatSetupSudoCommand is the exact command to run by hand.
-func formatSetupSudoCommand(opts ExtenderSetupOptions) string {
-	return setupCommand{name: "sudo", args: append([]string{resolvedExecutablePath()}, setupManualArgs(opts)...)}.String()
+// formatSetupSudoCommand is the exact command to run by hand. A non-empty
+// target pins the provider identity the parent resolved, exactly as the
+// automatic elevation does, so root refuses a same-named provider owned by
+// another user instead of configuring its binary.
+func formatSetupSudoCommand(opts ExtenderSetupOptions, target string) string {
+	args := setupManualArgs(opts)
+	if target == "" {
+		return setupCommand{name: "sudo", args: append([]string{resolvedExecutablePath()}, args...)}.String()
+	}
+	return setupCommand{name: "sudo", args: setupElevatedArgv(args, target, false)}.String()
+}
+
+// setupElevatedArgv is the argument list after sudo. The identity travels as an
+// environment assignment run through env, which works under any sudoers
+// env_reset policy. marker also sets the elevated-child flag for the
+// automatic path; a hand-run root shell does not need it.
+func setupElevatedArgv(args []string, target string, marker bool) []string {
+	argv := []string{"--", "/usr/bin/env"}
+	if marker {
+		argv = append(argv, urnetElevatedEnv+"=1")
+	}
+	argv = append(argv, urnetExtenderSetupTargetEnv+"="+target, resolvedExecutablePath())
+	return append(argv, args...)
 }
 
 func formatSetupPowerShellCommand(opts ExtenderSetupOptions) string {
@@ -482,6 +715,84 @@ func formatSetupPowerShellCommand(opts ExtenderSetupOptions) string {
 		words = append(words, quote(arg))
 	}
 	return strings.Join(words, " ")
+}
+
+const urnetExtenderSetupTargetEnv = "URNET_TOOLS_EXTENDER_SETUP_TARGET"
+
+// Only stable, action-relevant fields are compared; newly readable JWT claims
+// under sudo cannot make a valid target appear different.
+func setupTargetIdentity(providers []Provider) string {
+	type identity struct{ Unit, StateDir, User, Binary string }
+	values := make([]identity, 0, len(providers))
+	for _, p := range providers {
+		values = append(values, identity{p.Unit, p.StateDir, p.User, p.Binary})
+	}
+	encoded, _ := json.Marshal(values)
+	return string(encoded)
+}
+
+func setupBoundArgs(opts ExtenderSetupOptions, discovered, selected []Provider) ([]string, error) {
+	if len(selected) != 1 {
+		return nil, fmt.Errorf("resolved %d providers; setup accepts one exact selector per run", len(selected))
+	}
+	p := selected[0]
+	var flag, value string
+	for _, candidate := range []struct{ flag, value string }{{"--unit", p.Unit}, {"--state-dir", p.StateDir}} {
+		if candidate.value == "" {
+			continue
+		}
+		matches := 0
+		for _, other := range discovered {
+			if (candidate.flag == "--unit" && other.Unit == candidate.value) || (candidate.flag == "--state-dir" && other.StateDir == candidate.value) {
+				matches++
+			}
+		}
+		if matches == 1 {
+			flag, value = candidate.flag, candidate.value
+			break
+		}
+	}
+	if flag == "" {
+		return nil, fmt.Errorf("resolved provider has no unique --unit or --state-dir")
+	}
+	args := setupManualArgs(opts)
+	// A user/network/default selector was already resolved here; retaining it
+	// beside the bound selector would either conflict or change the selection.
+	var clean []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		removed := false
+		for _, targetFlag := range []string{"--unit", "--user", "--network", "--network-id", "--state-dir", "--pid"} {
+			if a == targetFlag {
+				i++
+				removed = true
+				break
+			}
+			if strings.HasPrefix(a, targetFlag+"=") {
+				removed = true
+				break
+			}
+		}
+		if !removed {
+			clean = append(clean, a)
+		}
+	}
+	return append(clean, flag, value), nil
+}
+
+// The marker is supplied only to the sudo child; the parent process's
+// environment is never changed (other commands may run concurrently).
+func elevateExtenderSetup(args []string, target string) error {
+	sudo, err := exec.LookPath("sudo")
+	if err != nil {
+		return fmt.Errorf("sudo unavailable; run: %s", setupCommand{name: "sudo", args: setupElevatedArgv(args, target, false)}.String())
+	}
+	cmd := exec.Command(sudo, setupElevatedArgv(args, target, true)...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("elevated extender setup failed: %w", err)
+	}
+	return nil
 }
 
 // setupTargets lists the providers setup configures: the explicit target when
