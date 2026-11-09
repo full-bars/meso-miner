@@ -11,33 +11,110 @@ if [ "$me" = "sh" ] || [ "$me" = "bash" ] || [ "$me" = "zsh" ]; then
     me="urnet-tools"
 fi
 
+ensure_extender_cap ()
+(
+    [ "$(uname -s)" = Linux ] || return 0
+    cap_file=$1
+    cap_present() {
+        command -v getcap >/dev/null 2>&1 || return 1
+        getcap "$cap_file" 2>/dev/null | awk '
+            { for (i=2; i<=NF; i++) {
+                split($i, parts, "="); split(parts[1], caps, ",")
+                for (c in caps) if (caps[c] == "cap_net_bind_service" && parts[2] ~ /e/ && parts[2] ~ /p/) found=1
+            } } END { exit !found }'
+    }
+    # A file capability outside the bounding set makes exec fail with EPERM.
+    # CAP_NET_BIND_SERVICE is bit 10: the 0x4 bit of the third hex digit from
+    # the right of the CapBnd mask.
+    cap_bindable() {
+        [ -r /proc/self/status ] || return 0
+        awk '/^CapBnd:/ { seen=1; h=$2; if (length(h) >= 3) ok = (substr(h, length(h) - 2, 1) ~ /[4-7cdefCDEF]/); else ok = 1 }
+            END { if (!seen) exit 0; exit !ok }' /proc/self/status
+    }
+    if ! cap_bindable; then
+        if cap_present; then
+            # setcap -r clears the whole xattr; never erase other capabilities.
+            if ! getcap "$cap_file" 2>/dev/null | awk '{ v=$NF; safe=(v == "cap_net_bind_service=ep" || v == "cap_net_bind_service+ep") } END { exit !safe }'; then
+                printf "WARNING: blocked file has other capabilities or unrecognized flags; refusing to remove them\n" >&2
+                return 1
+            fi
+            if ! command -v setcap >/dev/null 2>&1 || ! ${SUDO:-} setcap -r "$cap_file" 2>/dev/null || cap_present; then
+                printf "WARNING: could not remove blocked file capability; provider may not start\n" >&2
+                return 1
+            fi
+        fi
+        printf "WARNING: extender capability blocked by the process bounding set; check any existing file capabilities before starting\n" >&2
+        return 0
+    fi
+    if cap_present; then
+        return 0
+    fi
+    if command -v setcap >/dev/null 2>&1 && ${SUDO:-} setcap cap_net_bind_service=+ep "$cap_file" 2>/dev/null && cap_present; then
+        return 0
+    fi
+    # The install path passes "quiet": it explains the missing capability once, in
+    # the extender notice, instead of printing the same warning twice.
+    [ "${2:-}" = quiet ] && return 0
+    quoted_file=$(printf '%s' "$cap_file" | sed "s/'/'\\\\''/g")
+    printf "WARNING: extender capability missing or unverified; run: sudo setcap cap_net_bind_service=+ep '%s'\n" "$quoted_file" >&2
+    return 0
+)
+
+# extender_ports_note prints the ports the extender uses, in plain terms: which
+# one is required and which are optional. Only the extender needs them; the
+# provider earns the same without any of them.
+extender_ports_note ()
+{
+    printf '%s\n' \
+        "  Ports the extender uses (the provider itself needs none of these):" \
+        "    TCP 443   required. The extender cannot run without it. Allow it in your firewall and router." \
+        "    UDP 443   optional. QUIC, an alternative path." \
+        "    UDP 4053  optional. A DNS-style way in for networks that block the others. It answers DNS" \
+        "              queries from anyone who can reach it (rate limited), so open it only if you want that." \
+        "    UDP 53    optional. Used only if nothing else on this host is using it." \
+        "  To check your firewall and open the ports, run: urnet-tools extender setup" \
+        "  (it shows the exact commands and asks before changing anything)."
+}
+
+# extender_what_note says what the extender is and, first, that it does not touch
+# earnings. It is a short block so it reads as a list, not a wall of text.
+extender_what_note ()
+{
+    printf '%s\n' \
+        "  It helps people in censored countries reach URnetwork through this host." \
+        "  It relays only to URnetwork's own servers and does not change your earnings:" \
+        "  the provider earns the same with it off." \
+        "  Turn it off at any time: urnet-tools extender disable"
+}
+
 # report_extender_port says, at install time, what the extender will do on this
 # host. The extender is ON by default, so this never asks a question: it prints
 # whether TCP 443 (the port the platform must reach to list this host) is free or
 # who holds it, and how to turn the extender off. It never fails the install.
 # A listener that is this provider's own (an update keeps the old process up) is
-# not blamed.
+# not blamed. Whether this user may bind 443 is handled by
+# offer_extender_capability, which runs right after.
 report_extender_port ()
 (
     [ "$(uname -s)" = Linux ] || return 0
     provider_file=$1
     off_hint="To turn it off at any time: urnet-tools extender disable"
-    reach_hint="Inbound TCP 443 must also reach this host (check any firewall or router)."
     if ! command -v ss >/dev/null 2>&1; then
-        pr_info "Extender: on by default. It helps people in censored countries reach URnetwork through this host, and needs TCP 443. (could not check whether 443 is free: ss is not installed.) $reach_hint $off_hint"
-        return 0
-    fi
-    if ! tcp_listeners=$(ss -ltnpH 'sport = :443' 2>/dev/null); then
+        pr_info "Extender: on by default. Could not check whether TCP 443 is free (ss is not installed)."
+        extender_what_note
+    elif ! tcp_listeners=$(ss -ltnpH 'sport = :443' 2>/dev/null); then
         # a failed ss says nothing about the port: never call that "free"
-        pr_info "Extender: on by default. It helps people in censored countries reach URnetwork through this host, and needs TCP 443. (could not check whether 443 is free: ss failed.) $reach_hint $off_hint"
+        pr_info "Extender: on by default. Could not check whether TCP 443 is free (ss failed)."
+        extender_what_note
     elif [ -z "$tcp_listeners" ]; then
-        pr_info "Extender: TCP 443 is free, so the extender is on by default. It helps people in censored countries reach URnetwork through this host, and relays only to URnetwork's own servers. It also answers DNS queries on UDP 4053 and may use UDP 53 (rate limited); UDP 53 is optional and user-managed. Firewall any DNS ports you expose. $reach_hint $off_hint"
+        pr_info "Extender: on by default. TCP 443 is free."
+        extender_what_note
     else
         holder=$(printf '%s\n' "$tcp_listeners" | sed -n 's/.*users:(("\([^"]*\)",pid=\([0-9]*\).*/\1 (pid \2)/p' | head -n 1)
         holder_pid=$(printf '%s' "$holder" | sed -n 's/.*(pid \([0-9]*\))$/\1/p')
         case "$holder" in
             "")
-                pr_warn "Extender: TCP 443 is in use by another process (its name is hidden; run: sudo ss -ltnp 'sport = :443'). The extender needs 443, so it cannot be listed until that is freed. It will keep retrying and start by itself once it is. $off_hint"
+                pr_warn "Extender: TCP 443 is in use by another process (its name is hidden; run: sudo ss -ltnp 'sport = :443'). The extender needs 443, so it cannot run until that is freed. It keeps retrying and starts by itself once it is. $off_hint"
                 ;;
             "urnetwork "*)
                 # the name alone proves nothing: another program can be called
@@ -47,30 +124,79 @@ report_extender_port ()
                 holder_exe=${holder_exe% (deleted)}
                 own_exe=$(readlink -f "$provider_file" 2>/dev/null) || own_exe=""
                 if [ -z "$holder_exe" ]; then
-                    pr_warn "Extender: TCP 443 is in use by $holder; could not confirm it is this provider (its executable is not readable). If it is not, the extender cannot be listed until 443 is freed; it keeps retrying and starts by itself once it is. $off_hint"
+                    pr_warn "Extender: TCP 443 is in use by $holder; could not confirm it is this provider (its executable is not readable). If it is not, the extender cannot run until 443 is freed; it keeps retrying and starts by itself once it is. $off_hint"
                 elif [ "$holder_exe" = "$own_exe" ]; then
                     pr_info "Extender: already listening on TCP 443 from this provider. $off_hint"
                 else
-                    pr_warn "Extender: TCP 443 is in use by $holder, which is a different program ($holder_exe). The extender needs 443, so it cannot be listed until that is freed. It will keep retrying and start by itself once it is. $off_hint"
+                    pr_warn "Extender: TCP 443 is in use by $holder, which is a different program ($holder_exe). The extender needs 443, so it cannot run until that is freed. It keeps retrying and starts by itself once it is. $off_hint"
                 fi
                 ;;
             *)
-                pr_warn "Extender: TCP 443 is in use by $holder. The extender needs 443, so it cannot be listed until that is freed. It will keep retrying and start by itself once it is. $off_hint"
+                pr_warn "Extender: TCP 443 is in use by $holder. The extender needs 443, so it cannot run until that is freed. It keeps retrying and starts by itself once it is. $off_hint"
                 ;;
         esac
     fi
+    # Where this user may bind 443 already (root, or the capability is set), the
+    # extender can run now: say which ports it uses. Otherwise
+    # offer_extender_capability prints the same note after it fixes that.
+    can_bind=1
     if [ "$(id -u 2>/dev/null)" != 0 ]; then
-        have_cap=0
+        can_bind=0
         if command -v getcap >/dev/null 2>&1; then
             case "$(getcap "$provider_file" 2>/dev/null)" in
-                *cap_net_bind_service*) have_cap=1 ;;
+                *cap_net_bind_service*) can_bind=1 ;;
             esac
         fi
-        if [ "$have_cap" -eq 0 ]; then
-            quoted_file=$(printf '%s' "$provider_file" | sed "s/'/'\\\\''/g")
-            pr_warn "Extender: this provider is not root and lacks permission to bind port 443, so the extender cannot start yet. Run: sudo setcap cap_net_bind_service=+ep '$quoted_file'"
-        fi
     fi
+    [ "$can_bind" -eq 1 ] && extender_ports_note
+    return 0
+)
+
+# offer_extender_capability fixes the one thing a non-root user cannot do alone:
+# listen on TCP 443. Only the extender needs it; the provider is unaffected. It
+# asks first, runs ONE command (sudo setcap on the provider file) and verifies it.
+# It never prompts without a terminal (the update timer, a container, FORCE=1):
+# there it prints the command instead. Declining or failing never fails the
+# install. A pipe or redirected output is never treated as interactive.
+offer_extender_capability ()
+(
+    [ "$(uname -s)" = Linux ] || return 0
+    provider_file=$1
+    [ "$(id -u 2>/dev/null)" != 0 ] || return 0
+    if command -v getcap >/dev/null 2>&1; then
+        case "$(getcap "$provider_file" 2>/dev/null)" in
+            *cap_net_bind_service*) return 0 ;;
+        esac
+    fi
+    quoted_file=$(printf '%s' "$provider_file" | sed "s/'/'\\\\''/g")
+    cmd="sudo setcap cap_net_bind_service=+ep '$quoted_file'"
+    ext_tty=${extender_tty:-/dev/tty}
+    pr_warn "Extender: not running yet. It needs TCP 443, and this user is not allowed to listen on that port. Only the extender needs this: the provider itself is not affected."
+    # Probe by OPENING the terminal: a readable /dev/tty node can still fail to open.
+    # A subshell, not a brace group: a failed redirect on the special builtin ":"
+    # makes a POSIX-mode shell (bash run as sh) exit instead of returning false.
+    if [ "${FORCE:-0}" = "1" ] || [ ! -t 0 ] || [ ! -t 1 ] || ! ( : < "$ext_tty" ) 2>/dev/null || ! command -v sudo >/dev/null 2>&1; then
+        pr_info "To allow it, run once: $cmd"
+        return 0
+    fi
+    printf '\n  I can allow it with one command:\n      %s\n  This asks for your sudo password once. Run it now? [y/N] ' "$cmd"
+    ans=""
+    read -r ans < "$ext_tty" || ans=""
+    printf '\n'
+    case "$ans" in
+        [Yy]*)
+            if sudo setcap cap_net_bind_service=+ep "$provider_file" && getcap "$provider_file" 2>/dev/null | grep -q cap_net_bind_service; then
+                pr_info "Extender: port 443 is allowed. It takes effect when the provider next starts."
+                extender_ports_note
+                pr_info "An update replaces the provider file and removes this permission. The installer and urnet-tools update try to restore it, and tell you if they cannot."
+            else
+                pr_warn "Extender: setcap did not succeed, so port 443 is still blocked. The provider is unaffected. To try again, run: $cmd"
+            fi
+            ;;
+        *)
+            pr_info "Skipped. The provider runs normally. To allow the extender later, run: $cmd"
+            ;;
+    esac
     return 0
 )
 
@@ -129,54 +255,6 @@ show_help ()
     echo ""
     echo "Need help? Email support@fullbars.xyz or visit <https://github.com/full-bars/meso-miner>"
 }
-
-# Re-apply the extender's low-port capability after a binary swap (a file
-# replace drops file capabilities). Warns loudly; never aborts the install.
-ensure_extender_cap ()
-(
-    [ "$(uname -s)" = Linux ] || return 0
-    cap_file=$1
-    cap_present() {
-        command -v getcap >/dev/null 2>&1 || return 1
-        getcap "$cap_file" 2>/dev/null | awk '
-            { for (i=2; i<=NF; i++) {
-                split($i, parts, "="); split(parts[1], caps, ",")
-                for (c in caps) if (caps[c] == "cap_net_bind_service" && parts[2] ~ /e/ && parts[2] ~ /p/) found=1
-            } } END { exit !found }'
-    }
-    # A file capability outside the bounding set makes exec fail with EPERM.
-    # CAP_NET_BIND_SERVICE is bit 10: the 0x4 bit of the third hex digit from
-    # the right of the CapBnd mask.
-    cap_bindable() {
-        [ -r /proc/self/status ] || return 0
-        awk '/^CapBnd:/ { seen=1; h=$2; if (length(h) >= 3) ok = (substr(h, length(h) - 2, 1) ~ /[4-7cdefCDEF]/); else ok = 1 }
-            END { if (!seen) exit 0; exit !ok }' /proc/self/status
-    }
-    if ! cap_bindable; then
-        if cap_present; then
-            # setcap -r clears the whole xattr; never erase other capabilities.
-            if ! getcap "$cap_file" 2>/dev/null | awk '{ v=$NF; safe=(v == "cap_net_bind_service=ep" || v == "cap_net_bind_service+ep") } END { exit !safe }'; then
-                printf "WARNING: blocked file has other capabilities or unrecognized flags; refusing to remove them\n" >&2
-                return 1
-            fi
-            if ! command -v setcap >/dev/null 2>&1 || ! ${SUDO:-} setcap -r "$cap_file" 2>/dev/null || cap_present; then
-                printf "WARNING: could not remove blocked file capability; provider may not start\n" >&2
-                return 1
-            fi
-        fi
-        printf "WARNING: extender capability blocked by the process bounding set; check any existing file capabilities before starting\n" >&2
-        return 0
-    fi
-    if cap_present; then
-        return 0
-    fi
-    if command -v setcap >/dev/null 2>&1 && ${SUDO:-} setcap cap_net_bind_service=+ep "$cap_file" 2>/dev/null && cap_present; then
-        return 0
-    fi
-    quoted_file=$(printf '%s' "$cap_file" | sed "s/'/'\\\\''/g")
-    printf "WARNING: extender capability missing or unverified; run: sudo setcap cap_net_bind_service=+ep '%s'\n" "$quoted_file" >&2
-    return 0
-)
 
 get_arch ()
 {
@@ -1450,27 +1528,10 @@ install_systemd_units ()
 Description=URnetwork Provider
 
 [Service]
-# Type=simple (the default), deliberately NOT Type=notify.
-#
-# Type=notify makes \`systemctl start\` block until the provider sends
-# sd_notify(READY=1), and provide() only sends it from provideWithProxy --
-# i.e. after a proxy (or the direct/native path) has brought up a transport.
-# That is unbounded: the per-proxy auth retry loop backs off legitimately for
-# hours on a rate-limited or unreachable API, and a provider with direct
-# disabled and no proxies configured never sends it at all.
-#
-# Worse, the unit file and the provider binary ship through different
-# channels (this script from git, the binary from a GitHub release), so any
-# skew -- a fresh install that lands an older release, or a rollback via
-# \`urnet-tools update --tag\` -- pairs a Type=notify unit with a binary that
-# has no sd_notify support whatsoever, and every start/restart hangs forever.
-# That is what wedged the pre-release shakedown for 2h until the CI watchdog
-# killed it (exit 124).
-#
-# HotSwap's MainPID transfer needs NOTIFY_SOCKET and is therefore unavailable
-# under Type=simple; internal/urnettools/hotswap.go already gates on the
-# unit's Type= and declines cleanly with an operator message, and
-# provider/hotswap.go aborts the handoff rather than corrupting MainPID.
+# HotSwap needs notify and NotifyAccess=all to transfer MainPID.
+# All supported providers send READY=1 at the startup barrier.
+Type=notify
+NotifyAccess=all
 Environment="HOST_HOSTNAME=$(hostname)"
 ExecStart=$install_path/bin/urnetwork provide
 Restart=on-failure
@@ -1503,33 +1564,45 @@ Persistent=true
 WantedBy=default.target
 EOF
 
-    if ! systemctl --user enable urnetwork.service 2>/dev/null; then
+    if ! enable_out=$(systemctl --user enable urnetwork.service 2>&1); then
         if [ "$(id -u)" -eq 0 ]; then
             pr_warn "Running as root: user systemd service skipped (requires user session bus). Use Docker 'restart: unless-stopped' or manually run the provider binary."
         else
             pr_err "Could not enable the newly installed systemd service"
+            [ -n "$enable_out" ] && pr_err "systemctl said: %s" "$enable_out"
+            pr_info "The new binary and unit files are installed; service enable failed and this installer has not restarted the service. Once systemd works for your user, finish with: systemctl --user daemon-reload && systemctl --user enable --now urnetwork.service urnetwork-update.timer"
             exit 1
         fi
     fi
 
-    if ! systemctl --user enable --now urnetwork-update.timer 2>/dev/null; then
+    if ! enable_out=$(systemctl --user enable --now urnetwork-update.timer 2>&1); then
         if [ "$(id -u)" -ne 0 ]; then
             pr_err "Could not enable the newly installed update timer"
+            [ -n "$enable_out" ] && pr_err "systemctl said: %s" "$enable_out"
+            pr_info "The new binary and unit files are installed. The service enable succeeded but this installer has not restarted it; the timer enable/start did not complete. Finish with: systemctl --user daemon-reload && systemctl --user enable --now urnetwork.service urnetwork-update.timer"
             exit 1
         fi
     fi
 
     if [ "$start" -eq 1 ]; then
-        systemctl --user daemon-reload
+        if ! systemctl --user daemon-reload; then
+            pr_err "systemctl --user daemon-reload failed. The new binary and unit files are installed, but this installer did not restart the service. Finish with: systemctl --user daemon-reload && systemctl --user start urnetwork.service"
+            exit 1
+        fi
         
         if ! systemctl --user start urnetwork.service; then
-            pr_err "Failed to restart urnetwork.service after update"
+            pr_err "Failed to restart urnetwork.service after update. The new binary and unit files are installed; the service start command failed. Retry with: systemctl --user daemon-reload && systemctl --user start urnetwork.service"
             if [ -f "$install_path/bin/urnetwork.old" ]; then
                 if ${SUDO:-} mv -f "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork" 2>/dev/null; then
                     ensure_extender_cap "$install_path/bin/urnetwork" || { pr_err "Could not verify provider file capabilities; update stopped"; exit 1; }
-                    systemctl --user daemon-reload 2>/dev/null || true
-                    systemctl --user start urnetwork.service 2>/dev/null || true
                     pr_err "Restored previous binary after service restart failure"
+                    if ! systemctl --user daemon-reload; then
+                        pr_err "Reload after restoring the binary failed; the previous binary is installed but its service has not been restarted. Run: systemctl --user daemon-reload && systemctl --user start urnetwork.service"
+                    elif ! systemctl --user start urnetwork.service; then
+                        pr_err "Starting the restored binary failed; run: systemctl --user start urnetwork.service"
+                    else
+                        pr_info "The restored provider service started."
+                    fi
                 else
                     if [ -f "$install_path/bin/urnetwork.old" ] && [ -f "$install_path/bin/urnetwork" ]; then
                         pr_err "Failed to restore previous binary; backup remains at %s and replacement at %s" "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork"
@@ -1823,14 +1896,30 @@ openrc_stage_root_owned_tool ()
 {
     [ "$(${SUDO:-} id -u)" -eq 0 ] || return 1
     [ -f "$install_path/bin/urnet-tools" ] || return 1
-    ${SUDO:-} mkdir -p "$openrc_root_tool_dir" 2>/dev/null || return 1
-    ${SUDO:-} chown root:root "$openrc_root_tool_dir" 2>/dev/null || true
-    ${SUDO:-} chmod 0755 "$openrc_root_tool_dir" 2>/dev/null || true
-    if ${SUDO:-} cp "$install_path/bin/urnet-tools" "$openrc_root_tool_path" 2>/dev/null; then
-        ${SUDO:-} chown root:root "$openrc_root_tool_path" 2>/dev/null || true
-        ${SUDO:-} chmod 0755 "$openrc_root_tool_path" 2>/dev/null || true
+    if ! ${SUDO:-} mkdir -p "$openrc_root_tool_dir"; then
+        pr_warn "Could not create auto-update tool directory; run: sudo mkdir -p '%s'" "$openrc_root_tool_dir"
+        return 1
+    fi
+    if ! ${SUDO:-} chown root:root "$openrc_root_tool_dir"; then
+        pr_warn "Could not secure auto-update tool directory; run: sudo chown root:root '%s'" "$openrc_root_tool_dir"
+        return 1
+    fi
+    if ! ${SUDO:-} chmod 0755 "$openrc_root_tool_dir"; then
+        pr_warn "Could not set auto-update tool directory mode; run: sudo chmod 0755 '%s'" "$openrc_root_tool_dir"
+        return 1
+    fi
+    if ${SUDO:-} cp "$install_path/bin/urnet-tools" "$openrc_root_tool_path"; then
+        if ! ${SUDO:-} chown root:root "$openrc_root_tool_path"; then
+            pr_warn "Could not secure auto-update tool; run: sudo chown root:root '%s'" "$openrc_root_tool_path"
+            return 1
+        fi
+        if ! ${SUDO:-} chmod 0755 "$openrc_root_tool_path"; then
+            pr_warn "Could not set auto-update tool mode; run: sudo chmod 0755 '%s'" "$openrc_root_tool_path"
+            return 1
+        fi
         return 0
     fi
+    pr_warn "Could not stage auto-update tool; run: sudo cp '%s' '%s'" "$install_path/bin/urnet-tools" "$openrc_root_tool_path"
     return 1
 }
 
@@ -1888,7 +1977,7 @@ openrc_finalize_root_paths ()
         case "$openrc_state_target" in
             "$openrc_home"/*)
                 ${SUDO:-} mkdir -p "$openrc_state_target" 2>/dev/null || true
-                ${SUDO:-} chown "$openrc_user" "$openrc_state_target" 2>/dev/null || true
+                ${SUDO:-} chown "$openrc_user" "$openrc_state_target" || pr_warn "Could not set state ownership; run: sudo chown '%s' '%s'" "$openrc_user" "$openrc_state_target"
                 ;;
             *)
                 if [ -z "$openrc_state_target" ]; then
@@ -1901,7 +1990,7 @@ openrc_finalize_root_paths ()
         esac
     else
         ${SUDO:-} mkdir -p "$openrc_home/.urnetwork" 2>/dev/null || true
-        ${SUDO:-} chown "$openrc_user" "$openrc_home/.urnetwork" 2>/dev/null || true
+        ${SUDO:-} chown "$openrc_user" "$openrc_home/.urnetwork" || pr_warn "Could not set state ownership; run: sudo chown '%s' '%s'" "$openrc_user" "$openrc_home/.urnetwork"
     fi
 
     # Create the log targets in /var/log, OWNED BY THE SERVICE USER.
@@ -1923,8 +2012,8 @@ openrc_finalize_root_paths ()
             ${SUDO:-} touch "$openrc_log" 2>/dev/null || pr_warn "could not create %s" "$openrc_log"
         fi
     done
-    ${SUDO:-} chown "$openrc_user" /var/log/urnetwork.log /var/log/urnetwork.err 2>/dev/null || true
-    ${SUDO:-} chmod 0644 /var/log/urnetwork.log /var/log/urnetwork.err 2>/dev/null || true
+    ${SUDO:-} chown "$openrc_user" /var/log/urnetwork.log /var/log/urnetwork.err || pr_warn "Could not set log ownership; run: sudo chown '%s' /var/log/urnetwork.log /var/log/urnetwork.err" "$openrc_user"
+    ${SUDO:-} chmod 0644 /var/log/urnetwork.log /var/log/urnetwork.err || pr_warn "Could not set log modes; run: sudo chmod 0644 /var/log/urnetwork.log /var/log/urnetwork.err"
 
     # Stage the root-owned tool the weekly cron will execute (see the function
     # comment: root must never exec anything reachable through a user-writable
@@ -2179,6 +2268,21 @@ func_run_as_user ()
     fi
 }
 
+# Enable lingering without suppressing errors or prompting for credentials.
+installer_enable_linger ()
+{
+    linger_user="$1"
+    if command -v loginctl >/dev/null 2>&1; then
+        if loginctl enable-linger "$linger_user"; then
+            return 0
+        fi
+        pr_warn "loginctl enable-linger failed; the service may stop on logout. Run: sudo loginctl enable-linger %s" "$linger_user"
+    else
+        pr_warn "loginctl not found; the service may stop on logout. Install it, then run: sudo loginctl enable-linger %s" "$linger_user"
+    fi
+    return 1
+}
+
 # Distro-agnostic creation of a dedicated unprivileged user, then finish the
 # install in that user's systemd context. Called only from the interactive
 # root path; exits the script.
@@ -2220,11 +2324,7 @@ func_assisted_user_setup ()
     runtime="/run/user/$uid"
 
     # Lingering starts the user's systemd + D-Bus without a login session.
-    if command -v loginctl >/dev/null 2>&1; then
-        loginctl enable-linger "$newuser" 2>/dev/null || pr_warn "enable-linger failed; the service may stop on logout."
-    else
-        pr_warn "'loginctl' not found; cannot enable lingering automatically."
-    fi
+    installer_enable_linger "$newuser" || :
 
     # Wait for the per-user bus socket to appear (logind creates it asynchronously).
     i=0
@@ -2331,6 +2431,30 @@ download_asset ()
     fi
 
     return 1
+}
+
+install_downloaded_tool ()
+{
+    tool_source="$1"
+    tool_target="$install_path/bin/urnet-tools"
+    if [ -e "$tool_target" ]; then
+        if ! mv -f "$tool_target" "$tool_target.old"; then
+            pr_err "Could not back up urnet-tools. The provider binary is installed; service setup has not finished and the service may be stopped. Run: sudo mv -f '%s' '%s'" "$tool_target" "$tool_target.old"
+            return 1
+        fi
+    fi
+    if ! cp "$tool_source" "$tool_target"; then
+        trap - EXIT
+        pr_err "Could not copy urnet-tools. The provider binary is installed; service setup has not finished and the service may be stopped. Previous tool, if any, is at %s. Download retained at %s. Run: sudo cp '%s' '%s'" "$tool_target.old" "$tool_source" "$tool_source" "$tool_target"
+        return 1
+    fi
+    if ! chmod 755 "$tool_target"; then
+        pr_err "Could not make urnet-tools executable. The provider binary and tool are installed; service setup has not finished and the service may be stopped. Run: sudo chmod 755 '%s'" "$tool_target"
+        return 1
+    fi
+    if [ -e "$tool_target.old" ]; then
+        rm -f "$tool_target.old" || pr_warn "Could not remove the old tool backup; run: sudo rm -f '%s'" "$tool_target.old"
+    fi
 }
 
 do_install ()
@@ -2746,9 +2870,10 @@ do_install ()
             fi
             exit 1
         fi
-        ensure_extender_cap "$install_path/bin/urnetwork" || { pr_err "Could not verify provider file capabilities; update stopped"; exit 1; }
+        ensure_extender_cap "$install_path/bin/urnetwork" quiet || { pr_err "Could not verify provider file capabilities; update stopped"; exit 1; }
     fi
     report_extender_port "$install_path/bin/urnetwork" || true
+    offer_extender_capability "$install_path/bin/urnetwork" || true
 
     cd "$script_rundir" || exit 1
 
@@ -2776,11 +2901,7 @@ do_install ()
             pr_info "Installing Go urnet-tools binary (%s)..." "$tool_asset"
             if download_asset "$tool_dl_url" "$workdir/$tool_asset"; then
                 if verify_sha256_file "$workdir/$tool_asset" "$tool_digest"; then
-                    # Bypass 'Text file busy' like the provider swap above.
-                    mv -f "$install_path/bin/urnet-tools" "$install_path/bin/urnet-tools.old" 2>/dev/null || true
-                    cp "$workdir/$tool_asset" "$install_path/bin/urnet-tools" || { pr_err "Failed to install urnet-tools binary"; exit 1; }
-                    chmod 755 "$install_path/bin/urnet-tools" || { pr_err "Failed to install urnet-tools binary"; exit 1; }
-                    rm -f "$install_path/bin/urnet-tools.old" 2>/dev/null || true
+                    install_downloaded_tool "$workdir/$tool_asset" || exit 1
                     tool_installed=1
                 else
                     pr_warn "urnet-tools sha256 mismatch, falling back to shell script"
@@ -2789,10 +2910,7 @@ do_install ()
                 pr_warn "Primary tool download failed, trying GitHub mirror..."
                 if download_asset "$tool_mirror_url" "$workdir/$tool_asset"; then
                     if verify_sha256_file "$workdir/$tool_asset" "$tool_digest"; then
-                        mv -f "$install_path/bin/urnet-tools" "$install_path/bin/urnet-tools.old" 2>/dev/null || true
-                        cp "$workdir/$tool_asset" "$install_path/bin/urnet-tools" || { pr_err "Failed to install urnet-tools binary"; exit 1; }
-                        chmod 755 "$install_path/bin/urnet-tools" || { pr_err "Failed to install urnet-tools binary"; exit 1; }
-                        rm -f "$install_path/bin/urnet-tools.old" 2>/dev/null || true
+                        install_downloaded_tool "$workdir/$tool_asset" || exit 1
                         tool_installed=1
                     else
                         pr_warn "urnet-tools sha256 mismatch (mirror), falling back to shell script"
@@ -3481,9 +3599,15 @@ firewall_hint() {
     port="$1"
     proto="${2:-tcp}"
 
-    if command -v firewall-cmd > /dev/null && firewall-cmd --state 2>/dev/null | grep -q running; then
-        printf '  sudo firewall-cmd --add-port=%s/%s --permanent && sudo firewall-cmd --reload\n' "$port" "$proto"
-        return 0
+    if command -v firewall-cmd > /dev/null; then
+        if firewall_state=$(firewall-cmd --state); then
+            if [ "$firewall_state" = running ]; then
+                printf '  sudo firewall-cmd --add-port=%s/%s --permanent && sudo firewall-cmd --reload\n' "$port" "$proto"
+                return 0
+            fi
+        else
+            printf '  Firewall state check failed; inspect with: sudo firewall-cmd --state\n' >&2
+        fi
     fi
 
     if command -v ufw > /dev/null; then
@@ -3496,9 +3620,15 @@ firewall_hint() {
         return 0
     fi
 
-    if command -v nft > /dev/null && nft list tables 2>/dev/null | grep -q .; then
-        printf '  sudo nft add rule inet filter input %s dport %s accept\n' "$proto" "$port"
-        return 0
+    if command -v nft > /dev/null; then
+        if nft_tables=$(nft list tables); then
+            if [ -n "$nft_tables" ]; then
+                printf '  Inspect the active rules and add an appropriate rule for %s/%s: sudo nft list ruleset\n' "$port" "$proto"
+                return 0
+            fi
+        else
+            printf '  nftables query failed; inspect with: sudo nft list tables\n' >&2
+        fi
     fi
 
     return 1
@@ -4127,6 +4257,28 @@ do_auth ()
     exit "$exit_code"
 }
 
+installer_apply_sysctl_config ()
+{
+    sysctl_file="$1"
+    if sysctl -p "$sysctl_file" >/dev/null; then
+        pr_info "sysctl settings applied."
+    elif sysctl --system >/dev/null; then
+        pr_info "sysctl settings applied (system-wide)."
+    else
+        pr_warn "Some sysctl settings could not be applied. Check and retry: sudo sysctl -p '%s'" "$sysctl_file"
+        return 1
+    fi
+}
+
+installer_apply_immediate_sysctls ()
+{
+    for setting in fs.inotify.max_user_watches=524288 fs.inotify.max_user_instances=512 fs.file-max=2097152; do
+        if ! sysctl -w "$setting" >/dev/null; then
+            pr_warn "Could not apply immediate kernel setting; run: sudo sysctl -w %s" "$setting"
+        fi
+    done
+}
+
 do_optimize ()
 {
     if [ "$(id -u)" -ne 0 ]; then
@@ -4143,9 +4295,7 @@ do_optimize ()
     # 0. Immediate Pre-Optimization (prevents failures during the optimization itself)
     # Increase ulimit and inotify limits immediately for the session to prevent "Too many open files"
     ulimit -n 1048576 2>/dev/null || true
-    sysctl -w fs.inotify.max_user_watches=524288 >/dev/null 2>&1 || true
-    sysctl -w fs.inotify.max_user_instances=512 >/dev/null 2>&1 || true
-    sysctl -w fs.file-max=2097152 >/dev/null 2>&1 || true
+    installer_apply_immediate_sysctls
 
     # When running via sudo, we need to find the original user's home
     actual_user=$(logname 2>/dev/null || echo "$SUDO_USER" || echo "$USER")
@@ -4316,13 +4466,7 @@ EOF
         # the next boot. Apply the file we just wrote instead: -p FILE is
         # supported by both BusyBox and procps. Fall back to --system for the
         # case where a host has procps and reads other drop-ins too.
-        if sysctl -p "$sysctl_conf" >/dev/null 2>&1; then
-            pr_info "sysctl settings applied."
-        elif sysctl --system >/dev/null 2>&1; then
-            pr_info "sysctl settings applied (system-wide)."
-        else
-            pr_warn "Warning: some sysctl settings could not be applied (they will apply at next boot)."
-        fi
+        installer_apply_sysctl_config "$sysctl_conf" || :
     fi
 
     # 4. Apply Ulimits — backend-aware.
@@ -4410,8 +4554,8 @@ EOF
         sudo -u "$actual_user" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u $actual_user)/bus" systemctl --user restart urnetwork.service || pr_info "Note: Service not running; ulimits will apply on next start."
 
         # Enable lingering for the user so services persist after logout
-        if command -v loginctl > /dev/null; then
-            loginctl enable-linger "$actual_user" 2>/dev/null && pr_info "✓ Systemd lingering enabled for '$actual_user' (provider will persist after logout)"
+        if installer_enable_linger "$actual_user"; then
+            pr_info "✓ Systemd lingering enabled for '$actual_user' (provider will persist after logout)"
         fi
     fi
 }
