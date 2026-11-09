@@ -3,18 +3,22 @@ package urnettools
 import (
 	"errors"
 	"fmt"
-	"github.com/urnetwork/connect"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/urnetwork/connect"
 )
 
 // isHotSwapSupportedVersion checks whether the given provider version string indicates
-// support for in-process zero-downtime HotSwap (introduced in v3.23.0-fix.31.0).
+// support for in-process zero-downtime HotSwap. The 3.23 line introduced it
+// in v3.23.0-fix.31.0; the meso line has a separately established floor.
 //
-// The check is anchored to the "3.23.0-fix." base version, not just the
+// The 3.23 check is anchored to the "3.23.0-fix." base version, not just the
 // presence of "fix." anywhere in the string: an unanchored substring match
 // would also accept a pre-fork or differently-based version like
 // "v3.22.0-fix.31.0" that happens to contain "fix.31", and triggerHotSwap
@@ -25,16 +29,16 @@ func isHotSwapSupportedVersion(ver string) bool {
 	if ver == "" {
 		return false
 	}
+	ver = strings.TrimPrefix(ver, "v")
 	// The only non-numeric override this recognizes: local/CI dev builds
 	// report exactly "dev" (see RequireVersion()'s fallback), which always
 	// supports the current in-tree HotSwap implementation.
 	if ver == "dev" {
 		return true
 	}
-	ver = strings.TrimPrefix(ver, "v")
 	const base = "3.23.0-fix."
 	if !strings.HasPrefix(ver, base) {
-		return false
+		return isMesoHotSwapVersion(ver)
 	}
 	sub := ver[len(base):]
 	dotIdx := strings.IndexAny(sub, ".-")
@@ -48,6 +52,40 @@ func isHotSwapSupportedVersion(ver string) bool {
 	return fixNum >= 31
 }
 
+var mesoVersionPattern = regexp.MustCompile(`^([0-9]{4})\.([0-9]{1,2})\.([0-9]{1,2})-([0-9]+)(?:-(?:fix\.)?[0-9]+(?:\.[0-9]+)*)?(?:-(?:meso|sn)(?:-hub)?)?$`)
+
+// The first meso release with the signal listener, handoff and READY=1 is
+// v2026.9.17-1789639761-meso. Its code is a Unix timestamp; later tags also
+// use tenths of seconds since 2023-05-23. Compare dates first so both work.
+func isMesoHotSwapVersion(ver string) bool {
+	m := mesoVersionPattern.FindStringSubmatch(ver)
+	if m == nil {
+		return false
+	}
+	year, _ := strconv.Atoi(m[1])
+	month, _ := strconv.Atoi(m[2])
+	day, _ := strconv.Atoi(m[3])
+	code, err := strconv.ParseUint(m[4], 10, 64)
+	if err != nil || code == 0 {
+		return false
+	}
+	date := time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC)
+	if date.Year() != year || int(date.Month()) != month || date.Day() != day {
+		return false
+	}
+	floor := time.Date(2026, 9, 17, 0, 0, 0, 0, time.UTC)
+	if date.Before(floor) {
+		return false
+	}
+	if date.Equal(floor) {
+		if code >= 1684800000 {
+			return code >= 1789639761
+		}
+		return code >= 1048397610
+	}
+	return true
+}
+
 // supportsHotSwap determines whether the target running provider is capable of
 // zero-downtime HotSwap handoff. Both the reported version AND (when the
 // provider is systemd-managed) the owning unit's Type= must check out —
@@ -58,7 +96,7 @@ func supportsHotSwap(p Provider) bool {
 }
 
 // ErrHotSwapNotSupported is returned when the running provider process does not support zero-downtime hotswap.
-var ErrHotSwapNotSupported = errors.New("zero-downtime hotswap unavailable: the running provider is below v3.23.0-fix.31.0 and does not support hotswap. Upgrade to v31.0+ to enable zero-downtime updates")
+var ErrHotSwapNotSupported = errors.New("zero-downtime hotswap unavailable: the running provider version is unrecognized or below v3.23.0-fix.31.0 or the first supported meso release v2026.9.17-1789639761-meso. Upgrade to a supported release to enable zero-downtime updates")
 
 // ErrHotSwapUnitNotNotify is returned when the provider's version supports
 // HotSwap but its owning systemd unit is not Type=notify, so

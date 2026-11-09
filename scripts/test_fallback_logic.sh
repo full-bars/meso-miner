@@ -46,7 +46,7 @@ if [ -z "$latest_version" ]; then
 fi
 
 echo "Final latest_version: '$latest_version'"
-if case "$latest_version" in v3.23.0-fix*) true ;; *) false ;; esac; then
+if case "$latest_version" in v3.23.0-fix*|v2026.*-meso*) true ;; *) false ;; esac; then
     echo "✅ TEST 1 PASSED: Resiliently extracted version!"
 else
     echo "❌ TEST 1 FAILED"

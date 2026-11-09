@@ -82,6 +82,18 @@ func TestRewriteUnitContentToSimple(t *testing.T) {
 // that sends READY=1 at startup, and demoted again for an older binary or an
 // unreadable version, so a notify unit is never left paired with a binary
 // that cannot signal readiness.
+func TestReconcileMesoUnitType(t *testing.T) {
+	p, path, _ := fakeUnit(t, simpleUnit)
+	migrated, err := reconcileUnitTypeForBinary(p, "v2026.11.8-1093260260-meso")
+	if err != nil || !migrated || !strings.Contains(readUnit(t, path), "\nType=notify\n") {
+		t.Fatalf("meso unit migration: migrated=%v err=%v unit=%s", migrated, err, readUnit(t, path))
+	}
+	migrated, err = reconcileUnitTypeForBinary(p, "v2026.9.9-1788916951-meso")
+	if err != nil || migrated || !strings.Contains(readUnit(t, path), "\nType=simple\n") {
+		t.Fatalf("old meso unit demotion: migrated=%v err=%v unit=%s", migrated, err, readUnit(t, path))
+	}
+}
+
 func TestReconcileUnitTypeFollowsBinary(t *testing.T) {
 	p, path, reloads := fakeUnit(t, simpleUnit)
 
