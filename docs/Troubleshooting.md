@@ -9,6 +9,7 @@
 | :--- | :--- | :--- |
 | `[t]auth error` / `[contract]oob err (N suppressed)` | Backend outage or signaling failure | Run `urnet-tools status`; monitor self-healing status with `urnet-tools self-heal status`. |
 | Container exits with code `78` | JWT expired, invalid, or unpersisted | Ensure `/root/.urnetwork` volume is mounted; check `USER_AUTH`/`PASSWORD` in env or re-authenticate via `urnetwork auth` (auth codes are single-use). |
+| Older update reports `read /proc/<pid>/exe: permission denied` | The provider's file capability can make its running image unreadable to an unprivileged updater. | Run `urnet-tools self-update` first if the tool is older, and prefer the sysctl route. See [section 8](#8-updater-image-verification-and-process-dumpability). |
 | Memory ballooning / OOM kills | High proxy count without memory profile | Set `URNETWORK_PROFILE=auto` or `eco`; enable `URNETWORK_SELF_HEAL=1`. |
 | Exit code `52` on `proxy refresh` | 8-hour warmup threshold not met | Run `urnet-tools proxy refresh --force` to bypass warmup gate. |
 | Disk space exhaustion | Unrotated logs filling `/var/log` or root | Enable `URNETWORK_RAMLOGS=1` or set `--log-opt max-size=10m --log-opt max-file=3`. |
@@ -226,3 +227,30 @@ These come from `provider claim`, `provider wallet set` and `provide --wallet`. 
 | `<source> has expired; let the provider renew it or pass a fresher --provider-jwt` | Start the provider so it renews the identity, or pass a newer token file. |
 | `No claimable epoch.` | The platform's own answer: there is nothing to claim for that epoch with that client. Try another identity that served traffic, or another `--epoch`. |
 | `subnet wallet not set: provider wallet set sends the unsigned network wallet request ...` | The unsigned request is refused by default, because the platform is moving to a signed wallet consent. Sign the wallet consent instead with `provider wallet sign <coldkey>` from your own computer, then confirm with `provider wallet status` (see the [Bittensor Quick Start](/full-bars/meso-miner/wiki/Bittensor-Quick-Start)). A plain "connect wallet" in the app or website is only a login proof and is not paid. The unsigned `--legacy-network-wallet` request is not paid either. `provide --wallet` prints this and keeps providing. |
+
+---
+
+## 8. Updater Image Verification and Process Dumpability
+
+**Symptom**: `urnet-tools update` reports `read /proc/<pid>/exe: permission denied`, or it cannot confirm the running provider's version.
+
+**Cause**: A provider started with the file capability `cap_net_bind_service` is non-dumpable, so an unprivileged updater cannot read its running image. The updater then asks the provider for its version over the control socket. On Linux it checks the peer's credentials before it accepts the answer. The notice `verify: the updater cannot read the provider's image ...` is a fallback, not a failure. An answer that fails the socket check still needs investigation.
+
+**Fix**: Use the sysctl route instead of the file capability.
+
+1. Run `urnet-tools extender setup --route=sysctl` on an interactive terminal. Setup prints the recovery command before it changes anything.
+2. If the binary still has the bind capability, check `getcap -n <path-to-provider-binary>`. If it is the only file capability, remove it with `sudo setcap -r <path-to-provider-binary>`. That command removes all file capabilities, so when others are present, remove only the bind capability by hand.
+3. Restart or hand off the provider. Removing a file capability does not change a process that is already running.
+
+For a manual sysctl change, record the live value first with `cat /proc/sys/net/ipv4/ip_unprivileged_port_start`. Then run:
+
+```sh
+echo 'net.ipv4.ip_unprivileged_port_start=443' | sudo tee /etc/sysctl.d/99-urnetwork-extender.conf
+sudo sysctl --system
+```
+
+If that drop-in already exists, save it first with `sudo cp -p` to `/etc/sysctl.d/99-urnetwork-extender.conf.pre-urnetwork`, and do not overwrite an existing backup. To undo, restore the backup with `sudo mv` (or remove the new drop-in if none existed), then set the live value you recorded with `sudo sysctl -w net.ipv4.ip_unprivileged_port_start=<recorded value>`. If you did not record it, check `sysctl net.ipv4.ip_unprivileged_port_start` and set your distribution's value (usually 1024). `sysctl --system` alone does not restore the old live value after the file is removed.
+
+**Updating from an older tool**: run `urnet-tools self-update` before `urnet-tools update` when the installed tool predates this release. This avoids a possible false failure from the older verification logic.
+
+The sysctl route changes a system-wide setting: any local user can bind ports 443 and above. Other process restrictions can still make an image unreadable.

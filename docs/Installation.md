@@ -146,6 +146,10 @@ The installation includes the `urnet-tools` suite for management. Since v3.23.0-
 | `urnet-tools update` | Upgrade to the latest version (prompts before restarting the provider). |
 | `urnet-tools update -f` | Non-interactive upgrade: stop, update, and restart the provider with no prompts. Use in scripts/automation. |
 
+When a newer `urnet-tools` is available, `urnet-tools update` installs it and reruns it before it updates the provider. If that fails, the current tool continues. Updates from a release before this one keep the older order.
+
+On Linux, the installer's restart confirmation reads the terminal even when the script is piped. Without a terminal, the installer does not restart the provider; it says to pass `-y` to approve the restart. OpenRC tree preparation must succeed before the service is installed. If a systemd restart fails, the installer attempts to restore the previous unit and binary.
+
 ## 🪟 Windows Installation
 
 Install via PowerShell (no admin required):

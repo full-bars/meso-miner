@@ -8,7 +8,7 @@ You normally do nothing. This page covers how to see whether it is working, the 
 
 ```sh
 urnet-tools extender status     # is it working?
-urnet-tools extender setup      # check port 443, capability and firewall; ask before changing
+urnet-tools extender setup      # check port 443, the low-port route and firewall; ask before changing
 urnet-tools extender about      # a plain-language explanation of the ports and how it works
 urnet-tools extender disable    # off, and it stays off across restarts
 urnet-tools extender enable     # back on
@@ -17,7 +17,7 @@ urnet-tools extender enable     # back on
 For it to work the host needs:
 
 1. **Inbound TCP 443 that reaches the provider.** This is the one required port. If a web server (caddy, nginx, apache) holds it, the extender cannot be listed until you free or move that service.
-2. **Permission to use a port below 1024**, which a non-root provider gets from `cap_net_bind_service` on the binary. The installer and `urnet-tools update` apply it.
+2. **Permission to use TCP 443.** On Linux, a non-root provider can use the host-wide sysctl route or `cap_net_bind_service` on the binary. The sysctl route lets any local user bind ports 443 and above. The installer may offer the file capability on an interactive terminal. When the sysctl route is not active, `urnet-tools update` restores a previously verified capability and warns if it cannot.
 3. **A public IPv4 address**, and for IPv6 a public IPv6 address with a working route out.
 
 UDP 53 is optional and user-managed. Setup does not open it. If you want the extender to use UDP 53, decide whether to expose it and manage that firewall rule yourself. Without UDP 53 the extender can use UDP 4053; UDP 53 is not required.
@@ -89,7 +89,7 @@ A reminder repeats every 30 minutes while the port stays blocked. When it comes 
 
 **About the DNS ports.** The DNS carrier also answers ordinary DNS questions from anyone who can reach the port, resolved over DoH and rate limited per source and in total, so that from outside it looks like a small rate-limited resolver. That is part of its camouflage; it is upstream's design. It is not limited to the platform's hosts. Port 53 is probed by scanners much more than 4053. Firewall UDP 4053 and 53 like any resolver you do not want to expose, or turn the role off. Without them the host is still listed over TCP.
 
-Binding below 1024 needs root or `CAP_NET_BIND_SERVICE`. The Docker image runs as root. On a bare-metal install the installer and `urnet-tools update` apply `cap_net_bind_service` to the binary, and the log gives the exact `setcap` command if the provider is not root and lacks it. Replacing the provider binary can remove the file capability; the installer restores it after a swap and warns if it cannot verify it.
+TCP 443 needs root, an unprivileged-port sysctl threshold of 443 or lower, or the file capability `cap_net_bind_service`. The Docker image runs as root. The sysctl route is for single-purpose hosts: it writes `net.ipv4.ip_unprivileged_port_start=443` to `/etc/sysctl.d/99-urnetwork-extender.conf` and applies it with `sysctl --system`. It avoids a file capability, but any local user can then bind ports 443 and above. The file capability route can leave the running provider unreadable to an unprivileged updater, because a process with file capabilities is non-dumpable. Replacing the provider binary can remove the file capability; the installer restores it after a swap and warns if it cannot verify it.
 
 ## Prepare the host with `urnet-tools extender setup`
 
@@ -97,14 +97,15 @@ Binding below 1024 needs root or `CAP_NET_BIND_SERVICE`. The Docker image runs a
 urnet-tools extender setup
 urnet-tools extender setup --dry-run
 urnet-tools extender setup --yes
+urnet-tools extender setup --route=sysctl
 ```
 
-`urnet-tools extender setup` inspects TCP 443 occupancy, the provider binary's bind capability and the host firewall. It prints the exact commands it proposes and asks before changing anything. In a non-interactive run, only explicit `--yes` or `--force` approves changes; `--dry-run` prints the plan without applying it.
+`urnet-tools extender setup` inspects TCP 443 occupancy, the selected low-port route and the host firewall. It prints the exact commands it proposes and asks before changing anything. In a non-interactive run, only explicit `--yes` or `--force` approves changes; `--dry-run` prints the plan without applying it.
 
 1. **Port 443 occupancy.** Checks whether another process already holds TCP 443 and stops with the holder's name and PID if one does.
-2. **Low-port bind privilege.** On Linux, checks `getcap` on the installed provider binary (resolving symlinks) and the process capability bounding set (`/proc/self/status` `CapBnd`), and plans to add `cap_net_bind_service` when missing. Existing file capabilities are preserved. On FreeBSD, setup is print-only and untested this release. It makes no changes. It prints the sysctl commands and undo instructions. Regular providing on FreeBSD is unaffected.
+2. **Low-port bind privilege.** On Linux, setup selects the route first. Interactive setup offers sysctl (recommended on a single-purpose host), a binary file capability, or skip. Unattended setup must name one with `--route=sysctl|capability|skip`, even with `--yes`. The sysctl route writes `net.ipv4.ip_unprivileged_port_start=443` to `/etc/sysctl.d/99-urnetwork-extender.conf`. If that file exists, setup first keeps its contents and mode in `99-urnetwork-extender.conf.pre-urnetwork`, a name sysctl.d ignores, and the printed recovery restores it. A drop-in that setup created is removed instead. A live value of 443 or less counts as configured only when a sysctl file also persists it. Setup reads the sysctl.d directories in systemd order, where the last assignment wins, then `/etc/sysctl.conf`. If the binary still has a bind capability, setup warns that the running provider stays non-dumpable and may be unreadable to the updater. Existing file capabilities are preserved. On FreeBSD, setup is print-only and untested this release. It makes no changes. It prints the sysctl commands and undo instructions. Regular providing on FreeBSD is unaffected.
 3. **Host firewall rules.** Inspects the active local firewall (`ufw`, `firewalld`, `iptables`/`ip6tables`, `nftables`, `pf`/`ipfw`, or Windows Firewall) for inbound TCP 443 (required TLS carrier), UDP 443 (optional QUIC carrier) and UDP 4053 (optional DNS carrier), and prints only the missing commands. For firewalld, it plans runtime and permanent rules separately and does not reload the firewall. For example, if `ufw` is active and already allows `443/tcp` while `443/udp` and `4053/udp` are missing, it proposes only `ufw allow 443/udp` and `ufw allow 4053/udp`. UDP 53 is optional and user-managed; setup does not open it.
-4. **Confirmation gate.** Prints the port summary and every command it will run under `Commands to run:`, then asks `Execute these commands? [y/N]:` before changing anything. In a non-interactive session without `--yes` (or `--force`) it executes nothing and exits with an error; `--dry-run` (`-n`) prints the plan and exits without prompting.
+4. **Confirmation gate.** Prints the port summary and every command it will run under `Commands to run:`, then asks `Execute these commands? [y/N]:` before changing anything. In a non-interactive session without `--yes` (or `--force`) it executes nothing and exits with an error; `--dry-run` (`-n`) prints the plan and exits without prompting. When elevation is needed, the elevated run is pinned to the provider you inspected, and root refuses to configure a different one. If the choice cannot be expressed uniquely, setup refuses and prints the inventory command to run first.
 5. **Bind verification.** On Linux, after capability checks, runs `<provider-binary> --extender-bind-probe` as the provider's user (`sudo -n -u <user>`) when TCP 443 is free to confirm a live low-port bind. When the running provider already holds TCP 443 or the probe cannot run without a password prompt, `setup` states plainly that the live TCP 443 bind was not tested.
 
 Docker containers are not modified by `extender setup`; publish the ports on `docker run` or use `--network host` as shown below, and allow the ports in the host firewall.
@@ -296,12 +297,13 @@ The role also exports its state to Prometheus. Turn metrics on with `urnet-tools
 | What you see | What it means | What to do |
 |---|---|---|
 | `CANNOT USE tcp 443 … address already in use` | Something else holds TCP 443 (often caddy or nginx). | Stop or move it. The extender retries every 3 minutes by itself. |
-| `CANNOT USE tcp 443 … permission denied` | The provider may not bind below 1024. | `sudo setcap cap_net_bind_service=+ep <provider binary>`, or run as root. |
+| `CANNOT USE tcp 443 … permission denied` | The provider may not bind below 1024. | `urnet-tools extender setup --route=sysctl` (sysctl route), `sudo setcap cap_net_bind_service=+ep <provider binary>`, or run as root. |
 | IPv4 ACTIVE, `bound, left out by the platform (probe failed)` | The named carrier was left out after its probe failed. | Check that port in the host firewall and any cloud security group. The next renewal retries it. |
 | `dns 53 unavailable … address already in use; keeping 4053` | Another resolver holds UDP 53. | Nothing to do, 4053 serves. `URNETWORK_EXTENDER_DNS53=off` silences it. |
 | IPv6 `failed … did not answer in time` | No IPv6 route out, or inbound IPv6 blocked. | `ip -6 route show default` and `curl -6 https://api.bringyour.com/hello` on the host. |
 | `the platform says this extender key belongs to ANOTHER network` | The identity file was copied from another box or account. | Stop the provider, delete `~/.urnetwork/.provider.extender.key`, start it again. |
 | A family stays `waiting` | TCP 443 is not bound, the platform asked it to wait, or direct providing is off. | Read the status line; it says which. |
+| `elevated extender setup target changed after discovery; refusing to configure any provider` | Root resolved a different provider than the one you inspected, so setup refused before it changed anything. | Run the inventory command that setup prints, then run setup again with an explicit `--unit` or `--state-dir`. |
 | `off: direct providing is disabled` | `urnet-tools direct off` is set. | `urnet-tools direct on`. |
 | `FAILED to start: <reason>` | The role failed for a reason other than a port. | The provider keeps providing and retries every 15 seconds; fix the reason shown. |
 

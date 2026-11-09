@@ -6,6 +6,8 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 **Repository**: github.com/full-bars/meso-miner  
 **Latest published release**: v2026.11.6-1092069850-meso (see [release notes](releases/v2026.11.6-1092069850-meso.md))
 
+**Next release notes:** this release adds tool-first updates and a Linux sysctl route for extender TCP 443. It also improves installer approval, rollback and failure reporting. See [release notes](releases/next-35-7.md).
+
 ---
 
 ## Inherited from urnetwork-3.23-fix (carried by the parity port)

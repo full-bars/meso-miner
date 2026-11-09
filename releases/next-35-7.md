@@ -1,0 +1,38 @@
+# Next release
+
+I port the matching fixes from the sibling provider line into this release. The changes cover safer updates, a host-wide route for extender TCP 443, and clearer installer failures.
+
+**[redeploy]** means update the affected provider or management tool. **[installer]** means use the updated installer. **[no redeploy]** means documentation or test changes only.
+
+## What's changed
+
+### Updates
+
+- **The updater installs and reruns a newer tool first. [redeploy]** When a newer `urnet-tools` is available, `urnet-tools update` installs it and reruns it before it updates the provider. If the install or the rerun fails, the running tool continues. A loop guard stops repeated reruns. Updates from a release before this one keep the older order.
+- **An older tool can report a false failure. [redeploy]** If an update reports `read /proc/<pid>/exe: permission denied`, run `urnet-tools self-update` first, then update again.
+- **The updater explains an unreadable image. [redeploy]** When the updater cannot read the running provider's image, it prints one plain line and asks the provider for its version over the control socket. It no longer prints the raw permission error.
+- **The updater skips the capability check on the sysctl route. [redeploy]** When the live setting allows unprivileged TCP 443, updates and rollbacks no longer warn about a missing file capability.
+- **The unit type follows the binary. [redeploy]** When an update installs a binary below the HotSwap floor, the updater demotes a `Type=notify` or `Type=notify-reload` unit to `Type=simple` to match it.
+
+### Extender
+
+- **Setup can use a sysctl route for TCP 443. [redeploy]** `urnet-tools extender setup` can set `net.ipv4.ip_unprivileged_port_start=443` as an alternative to the file capability. Interactive setup asks which route to use. Unattended runs pass `--route=sysctl|capability|skip`. Any local user can bind ports 443 and above while this route is active.
+- **Setup keeps your previous drop-in. [redeploy]** An existing `/etc/sysctl.d/99-urnetwork-extender.conf` is kept as `99-urnetwork-extender.conf.pre-urnetwork`, with its mode. The printed recovery restores it. Setup reads every sysctl.d directory in systemd order, and the last assignment wins.
+- **Status shows the active route. [redeploy]** `urnet-tools extender status` reports the sysctl route. It warns when the provider binary still has a file capability.
+- **The provider stays pinned across sudo. [redeploy]** The sudo command that setup prints names the provider you inspected. The elevated run refuses to configure a different provider.
+
+### Installer
+
+- **Restart confirmation reads the terminal. [installer]** The prompt reads the terminal even when the script is piped. Without a terminal, the installer does not restart the provider, and it says to pass `-y`.
+- **Approval survives sudo. [installer]** A `-y` approval carries through the sudo step.
+- **OpenRC fails closed. [installer]** Tree preparation must succeed before the service is installed.
+- **A failed restart restores the previous unit. [installer]** When a systemd restart fails, the installer attempts to restore the previous unit and binary.
+- **Failures name the recovery step. [installer]** The optimizer tracks completed, skipped and failed steps. More failures print the command to run next.
+
+## Known limits
+
+- Some installer cleanup and ZRAM errors are still suppressed. The ZRAM check proves that ZRAM is active. Its success summary does not prove that every step worked.
+- The Alpine BusyBox `find -delete` path and the non-root OpenRC sudo path have not run on a real host.
+- The `.version` write after tree preparation is not checked.
+- The sysctl route applies to the whole host. Any local user can bind ports 443 and above.
+- The installer and updater paths were tested with stubbed system commands. They were not run on a production host.

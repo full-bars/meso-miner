@@ -26,6 +26,8 @@ urnet-tools update --tag v2026.10.20-1076956260-meso   # a specific release (a d
 
 `urnet-tools update` decides for itself: it hands off to the new binary when the node is eligible and falls back to a normal restart when it is not, and it prints which one it did and why. `update -n` is a dry run, but it currently prints only the target version, not whether the update will hotswap or restart.
 
+When a newer `urnet-tools` is available, the update installs it and reruns it before it updates the provider. If that fails, the running tool continues. Updates from a release before this one keep the older order.
+
 > [!NOTE]
 > `urnet-tools` is reachable from every kind of shell without any setup. The installer links `urnet-tools` and `urnetwork` into `~/.local/bin` (found by the shell behind `ssh host urnet-tools ...` and by cron, neither of which reads `~/.bashrc`), into `/usr/local/bin` so root and other users find them (directly when run as root, otherwise through passwordless `sudo`), and writes the PATH block to `~/.bashrc`, `~/.profile` and `~/.zshenv`. A node installed before that is repaired by its next `urnet-tools update`. If root still cannot find it, the box has no passwordless `sudo` for the installing user; the installer and `update` cannot write `/usr/local/bin` unprivileged, so run the single `sudo ln -sfn <install>/bin/urnet-tools /usr/local/bin/urnet-tools` line the installer prints.
 
