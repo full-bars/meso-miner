@@ -6,6 +6,10 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 **Repository**: github.com/full-bars/meso-miner  
 **Latest published release**: v2026.11.1-1087111111-meso (see [release notes](releases/v2026.11.1-1087111111-meso.md))
 
+## OpenBSD support
+
+The provider and urnet-tools cross-compile for OpenBSD amd64 and arm64. The OpenBSD installer uses GitHub release assets and manages the service with rcctl. The release workflow builds and packages both architectures. Runtime validation on an OpenBSD host remains pending.
+
 ---
 
 ## Inherited from urnetwork-3.23-fix (carried by the parity port)
