@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // OpenBSD lifecycle: an rc.d(8) script in /etc/rc.d driven by rcctl(8), plus
@@ -44,10 +45,34 @@ func openbsdRequireRcScript(p Provider, service string) error {
 	return nil
 }
 
+// openbsdServicePID uses the rc.d runfile and the same process match as rc.subr.
+var openbsdServicePID = func() int {
+	data, err := os.ReadFile("/var/run/rc.d/urnetwork")
+	if err != nil {
+		return 0
+	}
+	return openbsdManagedPID(string(data), func(table, pattern string) ([]byte, error) {
+		return execWithTimeout(5*time.Second, "pgrep", "-T", table, "-xf", pattern)
+	})
+}
+
+func openbsdRequireManaged(p Provider) error {
+	if p.Supervisor != "openbsd-rcd" || p.PID <= 0 || openbsdServicePID() != p.PID {
+		return fmt.Errorf("%s is not the uniquely matched rc.d-managed provider; refusing service action", providerLabel(p))
+	}
+	return nil
+}
+
 // bsdServiceControl runs `rcctl <action> <name>` for the provider's rc.d
 // service. The name is shared with FreeBSD so the generic call sites in
 // update, start, stop, restart and uninstall need no OpenBSD branch of their own.
 func bsdServiceControl(p Provider, action string) error {
+	if p.Binary == "" {
+		return fmt.Errorf("%s has no provider binary; refusing service action", providerLabel(p))
+	}
+	if err := openbsdRequireManaged(p); err != nil {
+		return err
+	}
 	service := bsdRcServiceName(p.Binary)
 	if err := openbsdRequireRcScript(p, service); err != nil {
 		return err
@@ -82,6 +107,10 @@ func setAutoStart(p Provider, on bool) error {
 func cleanupLifecycle(p Provider) {
 	if err := removeBSDUpdateCron(p); err != nil {
 		fmt.Fprintf(os.Stderr, "uninstall: could not remove auto-update cron entry: %v\n", err)
+	}
+	if err := openbsdRequireManaged(p); err != nil {
+		fmt.Fprintf(os.Stderr, "uninstall: service was not disabled: %v; check rcctl configuration manually\n", err)
+		return
 	}
 	service := bsdRcServiceName(p.Binary)
 	if _, err := os.Stat(openbsdRcScriptPath(service)); err != nil {
