@@ -42,6 +42,7 @@ func discoverProcesses() []Provider {
 				// the read to another account's home.
 				h, herr := openStateDirIn(p.StateHome, p.StateDir)
 				if herr != nil {
+					p.IdentityRestricted = errors.Is(herr, fs.ErrPermission)
 					p.StateDir = ""
 				} else {
 					raw, rerr := h.readFile("jwt", maxJWTBytes)
@@ -144,6 +145,9 @@ func parseOpenBSDRcDaemonUser(script string) string {
 // the rc.d-managed one, the binary passes the root-ownership checks, and the
 // script names a real service user that owns a non-symlink state directory.
 func discoverStopped(running []Provider) []Provider {
+	if openbsdServicePID() != 0 {
+		return nil
+	}
 	for _, r := range running {
 		if r.Supervisor == "openbsd-rcd" {
 			return nil
@@ -165,14 +169,24 @@ func discoverStopped(running []Provider) []Provider {
 	if stateDir == "" || stateDirIsSymlink(stateDir) {
 		return nil
 	}
-	return []Provider{{
+	p := Provider{
 		User:       u.Username,
 		StateDir:   stateDir,
 		StateHome:  u.HomeDir,
 		Binary:     bin,
 		Supervisor: "openbsd-rcd",
-		Running:    false,
-	}}
+	}
+	h, err := openStateDirIn(p.StateHome, p.StateDir)
+	if err == nil {
+		var raw []byte
+		raw, err = h.readFile("jwt", maxJWTBytes)
+		h.Close()
+		if err == nil {
+			p.Network, p.NetworkID, p.JWTExpires, _ = decodeJWTBytes(raw)
+		}
+	}
+	p.IdentityRestricted = errors.Is(err, fs.ErrPermission)
+	return []Provider{p}
 }
 
 func currentUserName() string {

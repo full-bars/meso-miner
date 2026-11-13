@@ -27,7 +27,14 @@ func TestOpenBSDServiceControlRejectsWrongProcess(t *testing.T) {
 	if err := openbsdRequireManaged(Provider{PID: 123, Supervisor: "openbsd-rcd"}); err != nil {
 		t.Fatalf("matching service rejected: %v", err)
 	}
+	openbsdServicePID = func() int { return -1 }
+	if err := openbsdRequireManaged(Provider{Supervisor: "openbsd-rcd"}); err == nil {
+		t.Fatal("ambiguous service accepted as stopped")
+	}
 	openbsdServicePID = func() int { return 0 }
+	if err := openbsdRequireManaged(Provider{Supervisor: "openbsd-rcd"}); err != nil {
+		t.Fatalf("stopped managed service rejected: %v", err)
+	}
 	if err := openbsdRequireManaged(Provider{PID: 123, Supervisor: "openbsd-rcd"}); err == nil {
 		t.Fatal("stale identity accepted")
 	}

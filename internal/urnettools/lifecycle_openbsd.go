@@ -49,7 +49,10 @@ func openbsdRequireRcScript(p Provider, service string) error {
 var openbsdServicePID = func() int {
 	data, err := os.ReadFile("/var/run/rc.d/urnetwork")
 	if err != nil {
-		return 0
+		if os.IsNotExist(err) {
+			return 0
+		}
+		return -1
 	}
 	return openbsdManagedPID(string(data), func(table, pattern string) ([]byte, error) {
 		return execWithTimeout(5*time.Second, "pgrep", "-T", table, "-xf", pattern)
@@ -92,6 +95,12 @@ func bsdServiceControl(p Provider, action string) error {
 
 // setAutoStart enables or disables boot-time start with rcctl.
 func setAutoStart(p Provider, on bool) error {
+	if p.Binary == "" {
+		return fmt.Errorf("%s has no provider binary; refusing service action", providerLabel(p))
+	}
+	if err := openbsdRequireManaged(p); err != nil {
+		return err
+	}
 	service := bsdRcServiceName(p.Binary)
 	if err := openbsdRequireRcScript(p, service); err != nil {
 		return err
@@ -147,4 +156,16 @@ func renderOpenBSDStatus(p Provider) error {
 
 func init() {
 	renderSystemctlStatus = renderOpenBSDStatus
+	verifyUninstallService = func(p Provider) error {
+		if p.Supervisor == "openbsd-rcd" {
+			return openbsdRequireManaged(p)
+		}
+		return nil
+	}
+	stoppedUninstallService = func(p Provider) Provider {
+		if p.Supervisor == "openbsd-rcd" {
+			p.PID, p.Running = 0, false
+		}
+		return p
+	}
 }
