@@ -56,7 +56,13 @@ var openbsdServicePID = func() int {
 	})
 }
 
+// openbsdRequireManaged accepts only the provider rc.d manages. A running row
+// must be the uniquely matched process. A stopped row (from discoverStopped)
+// is accepted only while rc.d matches no process at all.
 func openbsdRequireManaged(p Provider) error {
+	if p.Supervisor == "openbsd-rcd" && !p.Running && p.PID == 0 && openbsdServicePID() == 0 {
+		return nil
+	}
 	if p.Supervisor != "openbsd-rcd" || p.PID <= 0 || openbsdServicePID() != p.PID {
 		return fmt.Errorf("%s is not the uniquely matched rc.d-managed provider; refusing service action", providerLabel(p))
 	}
