@@ -39,6 +39,12 @@ func defaultUninstallStop(p Provider) error {
 	if runtime.GOOS == "windows" {
 		return cmdStopWindows(p, false, false)
 	}
+	if runtime.GOOS == "openbsd" {
+		if p.Supervisor != "openbsd-rcd" {
+			return stopUnitlessProvider(p, false)
+		}
+		return bsdServiceControl(p, "stop")
+	}
 	if runtime.GOOS == "freebsd" {
 		if err := bsdServiceControl(p, "stop"); err == nil {
 			return nil

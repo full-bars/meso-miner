@@ -95,6 +95,11 @@ func autoUpdateLabel(p Provider) string {
 	return "urnetwork-update"
 }
 
+// verifyUninstallService is overridden by platforms that need to retain a
+// verified service identity across the stop operation.
+var verifyUninstallService = func(Provider) error { return nil }
+var stoppedUninstallService = func(p Provider) Provider { return p }
+
 // cmdUninstall removes the provider: stops/disables the unit, removes the
 // install dir and state. Destructive gate applies.
 func cmdUninstall(args []string, force, dryRun bool) error {
@@ -119,6 +124,9 @@ func cmdUninstall(args []string, force, dryRun bool) error {
 		return nil
 	}
 
+	if err := verifyUninstallService(p); err != nil {
+		return err
+	}
 	// Windows has no unit to disable: stop the provider process itself and
 	// prove nothing still uses its files before any of them are removed.
 	if uninstallStopsProcesses {
@@ -130,7 +138,7 @@ func cmdUninstall(args []string, force, dryRun bool) error {
 	}
 	// Clean up platform lifecycle artifacts: on Unix the auto-update timer,
 	// on Windows the scheduled tasks (heavyweight review S7).
-	cleanupLifecycleFn(p)
+	cleanupLifecycleFn(stoppedUninstallService(p))
 	// Only remove paths that look like real install paths — never "/" or
 	// a bare relative path.
 	// Both guards clean the path so "/" and "/./" are caught identically.
@@ -159,11 +167,13 @@ func cmdUninstall(args []string, force, dryRun bool) error {
 	if removedAny {
 		if uninstallStopsProcesses {
 			fmt.Printf("Uninstalled %s (binary and state removed, scheduled tasks deleted)\n", providerLabel(p))
+		} else if runtime.GOOS == "openbsd" {
+			fmt.Printf("Uninstalled %s (check the service and cron warnings above)\n", providerLabel(p))
 		} else {
 			fmt.Printf("Uninstalled %s (binary removed, unit disabled)\n", providerLabel(p))
 		}
 	} else {
-		fmt.Printf("Uninstall %s: nothing removable found (unit disabled if present)\n", providerLabel(p))
+		fmt.Printf("Uninstall %s: nothing removable found (check lifecycle configuration manually)\n", providerLabel(p))
 	}
 	return nil
 }

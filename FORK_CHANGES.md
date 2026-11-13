@@ -8,6 +8,10 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Next release notes:** this release adds tool-first updates and a Linux sysctl route for extender TCP 443. It also improves installer approval, rollback and failure reporting. See [release notes](releases/next-35-7.md).
 
+## OpenBSD support
+
+The provider and urnet-tools cross-compile for OpenBSD amd64 and arm64. The OpenBSD installer uses GitHub release assets and manages the service with rcctl. The release workflow builds and packages both architectures. Runtime validation on an OpenBSD host remains pending.
+
 ---
 
 ## Inherited from urnetwork-3.23-fix (carried by the parity port)
