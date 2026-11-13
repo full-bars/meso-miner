@@ -581,9 +581,10 @@ func (self *multiClientWindow) discoverDestinations(excludeDestinations []MultiH
 			)
 		})
 		if err != nil {
-			return nil, err
-		}
-		if len(destinations) == 0 {
+			if probeOnly {
+				return nil, err
+			}
+		} else if len(destinations) == 0 {
 			self.noteIpv6Starved(now)
 		} else {
 			appendAll(destinations)

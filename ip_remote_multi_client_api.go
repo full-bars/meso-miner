@@ -114,6 +114,10 @@ func NewApiMultiClientGenerator(
 }
 
 func (self *ApiMultiClientGenerator) NextDestinations(count int, excludeDestinations []MultiHopId, rankMode string) (map[MultiHopId]DestinationStats, error) {
+	return self.NextDestinationsWithIpFamily(count, excludeDestinations, rankMode, IpFamilyFilterDefault)
+}
+
+func (self *ApiMultiClientGenerator) NextDestinationsWithIpFamily(count int, excludeDestinations []MultiHopId, rankMode string, family IpFamilyFilter) (map[MultiHopId]DestinationStats, error) {
 	excludeClientIds := slices.Clone(self.excludeClientIds)
 	excludeDestinationsIds := [][]Id{}
 	for _, excludeDestination := range excludeDestinations {
@@ -125,6 +129,7 @@ func (self *ApiMultiClientGenerator) NextDestinations(count int, excludeDestinat
 		ExcludeDestinations: excludeDestinationsIds,
 		Count:               count,
 		RankMode:            rankMode,
+		IpFamily:            family,
 	}
 
 	result, err := self.api.FindProviders2Sync(findProviders2)
@@ -134,6 +139,9 @@ func (self *ApiMultiClientGenerator) NextDestinations(count int, excludeDestinat
 
 	destinations := map[MultiHopId]DestinationStats{}
 	for _, provider := range result.Providers {
+		if family != IpFamilyFilterDefault && !family.Matches(provider.IpFamily) {
+			continue
+		}
 		ids := []Id{}
 		if 0 < len(provider.IntermediaryIds) {
 			ids = append(ids, provider.IntermediaryIds...)
@@ -147,6 +155,8 @@ func (self *ApiMultiClientGenerator) NextDestinations(count int, excludeDestinat
 			destinations[destination] = DestinationStats{
 				EstimatedBytesPerSecond: provider.EstimatedBytesPerSecond,
 				Tier:                    provider.Tier,
+				IpFamily:                provider.IpFamily.Normalize(),
+				Capabilities:            providerCapabilitiesFromIpFamily(provider.IpFamily),
 			}
 		}
 	}

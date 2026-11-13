@@ -3627,9 +3627,7 @@ func (self *multiClientWindow) discoverDestinationsWithCapabilities(
 	selectorMode, known := generator.SelectorMode()
 	legacyServer := known && !selectorMode
 	if 0 < wanted && legacyServer {
-		if err := ipv6Fill(); err != nil {
-			return nil, err
-		}
+		_ = ipv6Fill()
 	}
 	answer, err := call(self.settings.WindowExpandBlockCount, IpFamilyFilterV4Capable)
 	if err != nil {
@@ -3639,9 +3637,7 @@ func (self *multiClientWindow) discoverDestinationsWithCapabilities(
 	if 0 < wanted && !legacyServer {
 		if !answer.selectorMode {
 			// the answer that first shows a server without selector mode
-			if err := ipv6Fill(); err != nil {
-				return nil, err
-			}
+			_ = ipv6Fill()
 		} else if !destinationsCarryIpv6(answer.destinations) {
 			self.noteIpv6Starved(now)
 		}
