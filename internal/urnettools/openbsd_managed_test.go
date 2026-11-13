@@ -2,12 +2,26 @@ package urnettools
 
 import (
 	"errors"
+	"os"
 	"os/exec"
 	"testing"
 )
 
 func TestOpenBSDManagedPID(t *testing.T) {
-	noMatch := exec.Command("sh", "-c", "exit 1").Run()
+	if os.Getenv("URNETTOOLS_TEST_EXIT_ONE") == "1" {
+		os.Exit(1)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(executable, "-test.run=^TestOpenBSDManagedPID$")
+	cmd.Env = append(os.Environ(), "URNETTOOLS_TEST_EXIT_ONE=1")
+	noMatch := cmd.Run()
+	var exitErr *exec.ExitError
+	if !errors.As(noMatch, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("expected exit status 1, got %v", noMatch)
+	}
 	for _, tc := range []struct {
 		name, runfile, output string
 		lookupErr             error
