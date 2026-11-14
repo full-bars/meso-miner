@@ -69,6 +69,7 @@ For Docker, pull `ghcr.io/full-bars/meso-miner:latest`. The [Docker deployment g
 
 - **A forged handshake generation id cannot wedge a peer session. [redeploy]** A peer could send a ClientHello with a high id. The responder then dropped every later ClientHello that carried a lower id. The responder now takes an id only from a ClientHello and ignores foreign proofs and responses.
 - **The BSD cron log path uses forward slashes on every build host. [no redeploy]**
+- **A shutdown during the URL proxy source cycle no longer fails every source. [redeploy]** Before, a cancel marked every remaining source failed, set the resolution status to failed and warned once per source. The cycle now stops and logs one line with the cause. The results of finished sources are kept.
 
 ### Changed
 
