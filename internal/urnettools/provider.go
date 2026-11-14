@@ -115,10 +115,15 @@ type jwtPayload struct {
 // with an empty Network so the operator can see it exists, but targeting
 // by network will not match it.
 func decodeJWT(path string) (netName, netID string, exp time.Time, err error) {
-	raw, err := os.ReadFile(path)
+	raw, err := readJWTFile(path)
 	if err != nil {
 		return "", "", time.Time{}, err
 	}
+	return decodeJWTBytes(raw)
+}
+
+// decodeJWTBytes parses an already-read JWT file's bytes.
+func decodeJWTBytes(raw []byte) (netName, netID string, exp time.Time, err error) {
 	parts := strings.Split(strings.TrimSpace(string(raw)), ".")
 	if len(parts) != 3 {
 		return "", "", time.Time{}, fmt.Errorf("not a JWT (%d segments)", len(parts))

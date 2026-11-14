@@ -1,21 +1,10 @@
 ## [Unreleased]
 
-This release turns the extender on by default. I turned it on so that clients in censored networks can reach URnetwork. Check that TCP 443 is open before you update. After the update, run `urnet-tools extender status` to check the extender.
-
-Everything merged after `v2026.11.6-1092069850-meso`.
+Everything merged after `v2026.11.1-1087111111-meso`.
 
 ### Added
 
-- **The extender can use a sysctl route for TCP 443.** On Linux, `urnet-tools extender setup` can offer `net.ipv4.ip_unprivileged_port_start=443` in `/etc/sysctl.d/99-urnetwork-extender.conf` as an alternative to the file capability. Interactive setup asks which route to use; unattended runs pass `--route=sysctl|capability|skip`. An existing drop-in is kept as `99-urnetwork-extender.conf.pre-urnetwork` with its mode, and the printed recovery restores it. Any local user can bind ports 443 and above while the route is active. (`internal/urnettools/extender_setup.go`, `internal/urnettools/extender_platform.go`)
-- **Extender status names the active port route.** `urnet-tools extender status` reports the sysctl route when it is in effect. It warns when the provider binary still has a file capability, because that makes the running process unreadable to the updater. (`internal/urnettools/extender_status.go`)
-- **Extender setup stays bound to one provider across sudo.** The sudo command that setup prints names the inspected provider. The elevated run refuses to configure a different provider when root resolves one. (`internal/urnettools/extender_setup.go`)
-- **The extender starts by default.** The extender helps clients in censored networks reach URnetwork. It does not earn; it works like a Tor bridge. The provider starts it on its own, with no unit file edit or drop-in. `urnet-tools extender off` turns it off and keeps it off across restarts and updates. `urnet-tools extender on` turns it back on. Both commands apply at once, with no restart. `URNETWORK_EXTENDER=off` sets the start default. A proxy cannot be an extender.
-- **The extender needs TCP 443 and has optional UDP carriers.** TCP 443 is required. The extender binds it first and retries while it cannot. Its log names the process that holds the port when it can. UDP 443 (QUIC) and UDP 4053 (DNS carrier) are optional. UDP 53 is optional and user-managed; setup does not open it. The DNS ports answer ordinary DNS questions from anyone, at a strict rate limit. Firewall only the DNS ports you choose to expose.
-- **`urnet-tools extender status` shows the extender state.** The command shows the ports, the IPv4 and IPv6 state with expiry, live clients, and requests served over 24 hours, 7 days and lifetime. `urnet-tools status` and `urnet-tools top` show the same block. Extender log lines start with a bridge mark (🌉). Outcome marks show the result: ✅ worked, ⛔ refused by the platform, ❌ failed, ⚠️ warning. The provider writes a `[health][extender]` line every few minutes.
-- **`urnet-tools extender setup` checks and prepares the host.** It inspects TCP 443 occupancy, bind capability on the provider binary and host firewall rules. It prints the exact commands and asks before changing anything. Only explicit `--yes` or `--force` approves changes in non-interactive runs. It preserves existing file capabilities when it adds `cap_net_bind_service`. For firewalld, it plans runtime and permanent rules separately and does not reload. FreeBSD setup is print-only and untested this release; it prints sysctl commands and undo instructions without making changes. Regular providing on FreeBSD is unaffected. UDP 53 is optional and user-managed; setup does not open it.
-- **Unreachable TCP 443 can hold an unactivated family for 12 hours.** When the platform cannot reach TCP 443 for a family that has not activated, the provider waits for its fixed renewal interval instead of using the 10-minute-to-6-hour refusal backoff ladder.
-- **Docker needs host networking for IPv6.** `--network host` gives IPv4 and IPv6. Published ports on the default bridge give IPv4 only. In Docker, use `URNETWORK_EXTENDER=off` and restart the container to turn the extender off. Keep `/root/.urnetwork` on a persistent volume. The auth code is single-use.
-- **Capture diagnostic profiles without restarting the provider.** `urnet-tools diag` requests a private bundle over the control socket. It requires 512 MiB of free space and keeps the five newest bundles. Profiles may contain sensitive data.
+- **OpenBSD provider support.** Release assets, an installer and rcctl lifecycle support target amd64 and arm64. The installer uses GitHub releases directly. OpenBSD runtime testing is still pending.
 
 - **H1+ failure classes identify the failing stage.** The ten-minute summary and `urnet_h1plus_handshake_failures_class_total` separate timeouts, TLS, proxy connections, authentication, rejected upgrades, I/O and other failures. The class counts partition the existing total; do not add the two metrics together. SOCKS5 hop failures count as `proxy_connect`. ([#336](https://github.com/full-bars/meso-miner/pull/336))
 - **JWT store writes explain their cause.** A rate-limited line reports the call site, operation, result, change counts, byte count and suppressed repeats without printing tokens. Unchanged serialized stores skip the disk rewrite. ([#337](https://github.com/full-bars/meso-miner/pull/337))
@@ -23,18 +12,6 @@ Everything merged after `v2026.11.6-1092069850-meso`.
 
 ### Fixed
 
-- **The hotswap unit-type message names the old installer script** (`internal/urnettools/hotswap.go`). It says older versions of `Provider_Install_Linux.sh` wrote `Type=simple`.
-- **The OpenRC verify step no longer runs the provider image as root** (`internal/urnettools/update.go`). It picks the read-only version resolver first. Before, the exec-capable resolver ran the image and only then was overridden.
-- **Setup applies the sysctl route once for several providers** (`internal/urnettools/extender_setup.go`). The host-wide route was applied once per provider, which failed with "backup already exists" or backed up setup's own drop-in.
-- **CI is green so the Docker image builds.** The installer test stub handles `sudo -n` and the suite no longer stops early (`scripts/test_provider_install.sh`). The hidden port holder extender test stubs provider discovery, and a new test covers the anonymous elevation target (`internal/urnettools/extender_setup_regression_test.go`, `internal/urnettools/extender_elevation_test.go`).
-
-- **Updates can install and rerun a newer tool first.** When a newer `urnet-tools` is available, `urnet-tools update` installs it and reruns it before it updates the provider. If the install or the rerun fails, the running tool continues. A loop guard stops repeated reruns. Updates from a release before this one keep the older order. (`internal/urnettools/update.go`, `internal/urnettools/update_tool_first.go`)
-- **The updater skips the file-capability check when the sysctl route is active.** Updates and rollbacks no longer warn about a missing bind capability when the live setting already allows unprivileged TCP 443. When an update installs a binary below the HotSwap floor, the updater demotes a `Type=notify` or `Type=notify-reload` unit to `Type=simple` to match it. (`internal/urnettools/update_extender.go`, `internal/urnettools/update.go`)
-- **Unreadable running images get a plain notice.** When the updater cannot read the running provider's image, it prints one plain line and asks the provider for its version over the control socket. It no longer prints the raw permission error. (`internal/urnettools/update.go`)
-- **Installer approval, rollback and failure reporting are safer.** The restart confirmation reads the terminal even when the script is piped, and `-y` approval survives sudo. OpenRC tree preparation fails closed before the service is installed. A failed systemd restart attempts to restore the previous unit and binary. The optimizer tracks completed, skipped and failed steps, and more failures print their recovery command. (`scripts/Provider_Install_Linux.sh`)
-- **Extender carrier status distinguishes binding from platform acceptance.** Activation warnings name carriers left out by the platform. The periodic health line and status show each family's carrier state, and a later acceptance logs a recovery.
-- **The client receive loop no longer panics on three peer inputs.** Each panic stopped the whole client. A missing path in a sealed frame is now an error. A pack that belongs to another lane is now dropped. A stale head index is now healed, and the sequence opens.
-- **`urnet-tools logs` keeps showing new lines after a RAM log trim.** With RAM logs on, the log file is trimmed by rename. `urnet-tools logs` could stop showing new lines. The command now follows the file across a trim, without repeating a fragment. In Docker it uses `tail -F`.
 - **IPv6 sockets honor the selected egress interface on Windows.** The socket family is checked and a failed IPv6 pin is returned instead of accepting an IPv4-only pin, preventing a silent tunnel loop. This code path has not been run on a Windows host in this documentation pass. ([#342](https://github.com/full-bars/meso-miner/pull/342))
 - **Capacity waiters keep their place under load.** Eligible earlier waiters are protected against starvation, outstanding grants stay accounted for, and cancellation wakes followers. An impossible request or an independent child budget does not block unrelated eligible work. ([#341](https://github.com/full-bars/meso-miner/pull/341))
 - **Local H1 cancellation no longer feeds the reconnect governor as a backend failure.** Proxy handshake failures also no longer strike the platform address family or trigger family retries. ([#341](https://github.com/full-bars/meso-miner/pull/341))
@@ -52,11 +29,6 @@ Everything merged after `v2026.11.6-1092069850-meso`.
 
 - **Bittensor live numbers refreshed.** Scheduled updates changed `Bittensor-Head-Tier.md`; their timestamps describe the snapshot, not a live query. (`cab156f5d`)
 - **Operator guidance and tests were updated.** The docs clarify container commands, FreeBSD service accounts and the extender role. Proxy downloads and probes report progress, and release lookup tests use a local transport. ([#344](https://github.com/full-bars/meso-miner/pull/344), [#346](https://github.com/full-bars/meso-miner/pull/346))
-
-### Known limitations (not fixed this release)
-
-- The Docker log follower can replay retained lines.
-- A hot-swap candidate can race to bind a socket that the current provider still holds.
 
 ## [v2026.11.1-1087111111-meso] — 2026-11-01
 
