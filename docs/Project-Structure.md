@@ -2,7 +2,7 @@
 
 A map of the meso-miner repository, grouped by what each part is for. You do not need any of this to run a node. It is here for people who want to read or change the code.
 
-meso-miner is the production-oriented fork of the URnetwork provider. The Go module is still named `github.com/urnetwork/connect`, so import paths look like upstream. Go 1.27.3.
+meso-miner is the production-oriented fork of the URnetwork provider. The Go module is still named `github.com/urnetwork/connect`, so import paths look like upstream. Go 1.27.4.
 
 ## The three programs you actually run
 
