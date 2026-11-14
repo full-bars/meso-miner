@@ -30,6 +30,7 @@ Everything merged after `v2026.11.1-1087111111-meso`.
 - **Refresh previews use the reloader's desired proxy set.** URL-cached proxies are included and an unreadable cache protects unknown desired state. ([#343](https://github.com/full-bars/meso-miner/pull/343))
 - **Uninstall stops the provider and confirms exit before removing files.** Windows lifecycle commands also protect shared profiles and preserve a socket with a live listener. The PowerShell uninstaller waits for process exit. ([#347](https://github.com/full-bars/meso-miner/pull/347))
 - **Capability restoration handles container and rollback limits.** The image includes capability utilities, container scripts check the bounding set and failed rollback moves do not trigger restoration. ([#346](https://github.com/full-bars/meso-miner/pull/346))
+- **A shutdown during the URL proxy source cycle no longer fails every source** **[redeploy]** (`provider/proxy_url_source.go`). Before, a cancel that arrived while the provider read or probed its URL sources marked every remaining source failed, set the resolution status to failed and warned the operator once per source. The cycle now checks its context before each source, after a failed fetch and after each source. A cancel logs one `fetch cycle cancelled after N of M sources` line with the cause and stops the cycle. The results of finished sources are still merged, and a probe that ended because of the cancel no longer logs "all unparseable or dead" or warns. The sn line has the same logic.
 
 ### Changed
 
