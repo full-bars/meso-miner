@@ -4,9 +4,8 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/meso-miner  
-**Latest published release**: v2026.11.6-1092069850-meso (see [release notes](releases/v2026.11.6-1092069850-meso.md))
+**Latest published release**: v2026.11.9-1094055530-meso (see [release notes](releases/v2026.11.9-1094055530-meso.md))
 
-**Next release notes:** this release adds tool-first updates and a Linux sysctl route for extender TCP 443. It also improves installer approval, rollback and failure reporting. See [release notes](releases/next-35-7.md).
 
 ## OpenBSD support
 
@@ -3857,3 +3856,25 @@ The extender setup command now inspects TCP 443 occupancy, the provider binary's
 UDP 53 is optional and user-managed. Setup does not open it. FreeBSD extender setup is print-only and untested this release. It prints sysctl commands and undo instructions without making changes. Regular providing on FreeBSD is unaffected.
 
 The Docker log follower can replay retained lines. A hot-swap candidate can race to bind a socket still held by the current provider. These limitations are not fixed in this release.
+
+
+## 185. FP2 Client Window, Handshake Generation Hardening and Go 1.27.4
+
+**Purpose**: Bring the client side of the network operator's FP2 provider selection into this line, close a handshake bug where a forged generation id could wedge a peer session, and move the build to Go 1.27.4.
+
+**Files modified**: `ip_remote_multi_client.go`, `ip_remote_multi_client_family.go`, `ip_remote_multi_client_limited.go`, `ip_remote_multi_client_recent_exits.go`, `ip_remote_multi_client_sticky.go`, `ip_remote_multi_client_observability.go`, `ip_remote_multi_client_window_client_stats.go`, `ip_capability.go`, `transfer.go`, `transfer_encrypt.go`, `transfer_peer_capability_observation.go`, `internal/urnettools/lifecycle_bsd_cron.go`, `go.mod`, `Dockerfile`, the workflows, `.github/scripts/cfaa_format_check.sh`, `.github/scripts/cfaa_sync.sh` and `.github/scripts/cfaa_sync_notify.py`.
+
+**Changes**:
+- Add IPv6 admission to the multi client window. The window tracks which exits carry IPv6, keeps an IPv4 hard minimum, asks for an IPv6 candidate when the IPv6 share falls short, and swaps a loaded exit for it. Two failed IPv6 candidates in a row pause the IPv6 fill for a retry period.
+- Add a limited window of TCP-only providers. It is half the main window by default and joins the race for each TCP connection. A fixed-exit user never gets one.
+- Add the redial side of the recent exit memory, with a bounded store and a generation check against stale results. Nothing records a lost exit yet.
+- Record what each peer completed (end-to-end handshake, seal, advertised receive window) and bind the record to the live session with a weak reference.
+- Print structured `[rel] event=<name> key=value` window lines, and record the IP version of connect successes and dial failures.
+- Take a handshake generation id from a peer only through a ClientHello, ignore foreign proofs and responses, order ids only while an attempt is in flight with a positive `TlsTimeout`, and pass the wire generation through the optimistic receive path.
+- Build the BSD cron log path with `path.Join`.
+- Build with Go 1.27.4.
+- Make the blocklist sync run the blocker, CFAA, Telegram and security tests against the upstream tables before it opens a PR. When they fail the sync stops and the notification lists the upstream commits to port.
+
+**Limits**: The blocklist tables stay at the refresh before 2026-11-13, because upstream's tables from that day use a new format and list a Telegram call reflector that upstream's own test rejects. The sync check blocks them until upstream fixes the table and this line takes the matching decoder. The provider binary does not run the multi client window, so a provider fleet gets nothing from the window work by itself. The fleet gains from the operator's server change, which offers providers for the traffic they carry (see `docs/Dual-Stack.md`). Recent exit memory and the sticky redial have no producer, because this line lacks upstream's typed transport-loss signal and outage classifier. The handshake fix does not include upstream's receive-sequence rejection records. A window of size one with a single IPv6-only exit does not look for an IPv4 exit until it has room, as upstream.
+
+**Status**: Prepared for the next release.
