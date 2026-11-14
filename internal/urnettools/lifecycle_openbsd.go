@@ -27,7 +27,7 @@ func openbsdRcctl(args ...string) ([]byte, error) {
 	_, hasDoas := exec.LookPath("doas")
 	_, doasConfigErr := os.Stat("/etc/doas.conf")
 	_, hasSudo := exec.LookPath("sudo")
-	name, argv, err := openbsdRcctlArgv(os.Geteuid(), hasDoas == nil && doasConfigErr == nil, hasSudo == nil, args...)
+	name, argv, err := openbsdRcctlArgv(os.Geteuid(), openbsdDoasUsable(hasDoas, doasConfigErr), hasSudo == nil, args...)
 	if err != nil {
 		return nil, err
 	}

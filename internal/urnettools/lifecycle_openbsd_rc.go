@@ -1,6 +1,9 @@
 package urnettools
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+)
 
 // OpenBSD keeps rc.d scripts in /etc/rc.d and drives them with rcctl(8). The
 // helpers here are pure so the argv and paths can be unit-tested on any
@@ -13,6 +16,11 @@ const openbsdRcScriptDir = "/etc/rc.d"
 // openbsdRcScriptPath is the on-disk path of the rc.d script for a service.
 func openbsdRcScriptPath(service string) string {
 	return openbsdRcScriptDir + "/" + service
+}
+
+// openbsdDoasUsable leaves unknown configuration errors to doas.
+func openbsdDoasUsable(lookupErr, configErr error) bool {
+	return lookupErr == nil && !os.IsNotExist(configErr)
 }
 
 // openbsdRcctlArgv builds the command that runs `rcctl <args...>`, escalating
