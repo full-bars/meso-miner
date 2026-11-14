@@ -1,6 +1,10 @@
 ## [Unreleased]
 
-Everything merged after `v2026.11.9-1094055530-meso`.
+Everything merged after `v2026.11.14-1098553100-meso`.
+
+## [v2026.11.14-1098553100-meso] - 2026-11-14
+
+Changes after `v2026.11.9-1094055530-meso` through this tag. Notes: `releases/v2026.11.14-1098553100-meso.md`.
 
 ### Added
 
