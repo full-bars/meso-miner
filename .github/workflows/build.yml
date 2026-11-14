@@ -248,6 +248,9 @@ jobs:
               sys.exit(1)
           PYEOF
 
+      - name: ClamAV scanner script test
+        run: bash .github/scripts/test-clamav-scan.sh
+
       - name: Run Installer Script Tests
         run: |
           chmod +x scripts/test_provider_install.sh

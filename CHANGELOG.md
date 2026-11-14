@@ -2,6 +2,10 @@
 
 Everything merged after `v2026.11.14-1098553100-meso`.
 
+### Changed
+
+- **ClamAV gates the release** (`.github/workflows/release.yml`, `.github/scripts/clamav-scan.sh`, `.github/scripts/test-clamav-scan.sh`). The `create-release` job scans the exact files it uploads before it publishes, with definitions fetched by `freshclam` just before the scan. A detection, a scanner failure, a stale database or a failed refresh stops the release. Before this change the step reported clean without examining any file, because the runner has no signature database, and it could not fail. VirusTotal still runs after publication and never gates. [no redeploy]
+
 ## [v2026.11.14-1098553100-meso] - 2026-11-14
 
 Changes after `v2026.11.9-1094055530-meso` through this tag. Notes: `releases/v2026.11.14-1098553100-meso.md`.
