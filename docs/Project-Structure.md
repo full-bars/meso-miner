@@ -58,7 +58,7 @@ Test files sit beside the code they test (`*_test.go`).
 - `extender/`: extender transport.
 - `extenderrole/`, `gossip/`: extender serving core and its feed layer (see [Extender](/full-bars/meso-miner/wiki/Extender)).
 - `fingerprint/`: ClientHello capture and diff tooling.
-- `blocker/`: tool that builds the default block lists. `security/`: source list URLs for the IP blocklist.
+- `blocker/`: tool that builds the default block lists. `security/`: source list URLs for the IP blocklist. [Blocklist Sync](Blocklist-Sync) explains how the tables stay current.
 - `hotkeywallet/`, `durablesys/`, `durablevolume/`: Bittensor wallet storage and durable-disk support.
 - `emoji/`, `res/`: small assets.
 - `third_party/`: vendored Go packages (Substrate RPC client, Windows named pipes). Licenses are in `THIRD_PARTY_LICENSES.md`.
@@ -69,7 +69,7 @@ Test files sit beside the code they test (`*_test.go`).
 - `Dockerfile` and `docker/scripts/`: the container image. `entrypoint.sh` picks the start script from the `BUILD` setting.
 - `pelican/`: egg for the Pelican game-server panel.
 - `monitoring/`: ready-made Prometheus and Grafana stack. See [Monitoring](/full-bars/meso-miner/wiki/Monitoring).
-- `.github/workflows/`: CI. `build.yml` builds and tests, `release.yml` publishes releases, plus installer, OpenRC, FreeBSD, CodeQL and soak checks.
+- `.github/workflows/`: CI. `build.yml` builds and tests, `release.yml` publishes releases, plus installer, OpenRC, FreeBSD, CodeQL and soak checks. The blocklist sync runs the decoder tests against the upstream tables before it opens a PR. See [Blocklist Sync](Blocklist-Sync).
 
 ## Documentation
 
