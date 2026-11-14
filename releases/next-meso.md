@@ -34,11 +34,14 @@ Install on macOS:
 curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh -s -- install
 ```
 
-Install on Windows in PowerShell:
+Install on Windows in PowerShell. Windows Defender can flag the one-line form as a false positive, because the script downloads and unpacks a program. The safer way has two steps. Download the script, read it, then run it from disk:
 
 ```powershell
-irm https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Win32.ps1 | iex
+irm https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_Win32.ps1 -OutFile "$env:TEMP\install-win.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\install-win.ps1"
 ```
+
+The Installation guide lists the Defender labels you may see and what to do about them.
 
 Install on FreeBSD from a non-root service account with `sudo`:
 
