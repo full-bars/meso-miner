@@ -11,7 +11,7 @@ The defaults need no configuration and do not affect earnings.
 ## What works today
 
 - **The provider's own platform connection** runs both families by default through the family group described below. Only the native direct identity builds the group; a proxied identity reaches the platform through its proxy and stays on one family-agnostic transport.
-- **The proxy data plane** understands both families. The SOCKS5 UDP relay handles IPv4 and IPv6 destinations (`socks5_udp.go` accepts both ATYP 1 and 4).
+- **The proxy data plane** understands both families. The SOCKS5 UDP packet format carries IPv4 and IPv6 destinations (`socks5_udp.go` accepts both ATYP 1 and 4). For a proxied identity, the provider relays IPv4 UDP only. It refuses an IPv6 destination with `proxy udp: ipv6 destinations are not relayed`, because the relay check proves the relay over IPv4 and most relays have no IPv6 exit. The provider logs `client udp refused` for a refused flow.
 - **Clients reaching a proxy over IPv6** works when that proxy's endpoint is registered or advertised that way; the provider does not block it.
 - **The direct identity** is dual stack by default: `ip_version=dual` runs the v4 pin, the v6 pin and the standby. `ip_version=ipv4` and `ip_version=ipv6` pin it to one family, and `legacy` restores the pre-dual-stack single transport.
 

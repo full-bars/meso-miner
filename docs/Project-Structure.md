@@ -65,7 +65,8 @@ Test files sit beside the code they test (`*_test.go`).
 
 ## Install, packaging and deployment
 
-- `scripts/`: installers and uninstallers (`Provider_Install_Linux.sh`, `_Mac.sh`, `_Win32.ps1`, `_FreeBSD.sh`), the Docker host installer (`install-urnet-docker.sh`), and release helpers (`pre-tag-check.sh`, `compute-meso-tag.sh`).
+- `scripts/`: installers and uninstallers (`Provider_Install_Linux.sh`, `_Mac.sh`, `_Win32.ps1`, `_FreeBSD.sh`, `_OpenBSD.sh`), the Docker host installer (`install-urnet-docker.sh`), and release helpers (`pre-tag-check.sh`, `compute-meso-tag.sh`).
+- `.github/scripts/`: the CI, installer, release and blocklist sync helpers. See [Blocklist Sync](Blocklist-Sync) for the sync helpers.
 - `Dockerfile` and `docker/scripts/`: the container image. `entrypoint.sh` picks the start script from the `BUILD` setting.
 - `pelican/`: egg for the Pelican game-server panel.
 - `monitoring/`: ready-made Prometheus and Grafana stack. See [Monitoring](/full-bars/meso-miner/wiki/Monitoring).
