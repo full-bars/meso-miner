@@ -105,7 +105,7 @@ Add any of these to `.env`, then run `docker compose up -d`:
 - **Traffic:** billable and total bytes per second, clients per node, and the top 15 proxies by billable traffic.
 - **Proxies:** pool status, grades, recoveries and losses, and contract outcomes.
 - **Node health:** errors by category, resource pressure, memory, goroutines, sessions, and DNS-over-HTTPS failures. Two panels plot memory and file descriptors against their limits (the limit is a dashed line).
-- **Transport (H1 and H3):** payload bytes per second by transport mode and direction, the share of outbound frames carried by H3, H3 connections up, H3 connect attempts, failures and drops per hour, how many connections offered and had QUIC DATAGRAM accepted, datagram messages received and dropped per second, and the WhoDis DNS and DNS-pump transports (connections up, attempts and failures). Auto mode does not start the DNS modes, so that panel stays at zero unless a transport was built with one of those target modes.
+- **Transport (H1 and H3):** payload bytes per second by transport mode and direction, the share of outbound frames carried by H3, H3 connections up, H3 connect attempts, failures and drops per hour, how many connections offered and had QUIC DATAGRAM accepted, datagram messages received and dropped per second, and the WhoDis DNS and DNS-pump transports (connections up, attempts and failures). Those panels stay at zero until an identity falls back to one of these transports.
 - **Lifecycle:** restarts by reason, uptime per node, HotSwap outcomes per hour, and version skew (each version in the fleet and how many nodes run it).
 
 The transport panels need a provider that exports the `urnet_transport_*` and `urnet_h3_*` series. On older providers they stay empty, and the H3 and DATAGRAM series only move once `h3` and `h3_datagram` are switched on.
@@ -185,7 +185,7 @@ Because a series continues instead of resetting, `rate()` or `increase()` comput
 | `urnet_connections_active` | gauge | | Active connections |
 | `urnet_transport_frames_total` | counter | `mode`, `dir` | Payload frames carried by each platform transport mode (`h1`, `h3`, `h3dns`, `h3dnspump`) per direction. Keepalives and speed or latency echoes are excluded, persisted across restarts |
 | `urnet_transport_payload_bytes_total` | counter | `mode`, `dir` | Payload bytes carried by each platform transport mode, before framing, persisted across restarts |
-| `urnet_transport_direct_h1_frames_total` | counter | `dir` | Payload frames carried by H1 for the direct identity only. This is the fair comparison for H3, which runs for that identity alone; `urnet_transport_frames_total{mode="h1"}` is every proxy identity together, persisted across restarts |
+| `urnet_transport_direct_h1_frames_total` | counter | `dir` | Payload frames carried by H1 for the direct identity only. In the default setting this is the fair comparison for H3, which then runs for that identity alone. Under `auto`, a number or `all`, proxies can run H3 too. `urnet_transport_frames_total{mode="h1"}` is every proxy identity together, persisted across restarts |
 | `urnet_transport_direct_h1_payload_bytes_total` | counter | `dir` | Payload bytes carried by H1 for the direct identity only, persisted across restarts |
 | `urnet_h3_up` | gauge | | H3 connections up now |
 | `urnet_h3_connect_attempts_total` | counter | | H3 connect attempts, persisted across restarts |

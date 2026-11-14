@@ -96,7 +96,7 @@ TCP 443 needs root, an unprivileged-port sysctl threshold of 443 or lower, or th
 ```sh
 urnet-tools extender setup
 urnet-tools extender setup --dry-run
-urnet-tools extender setup --yes
+urnet-tools extender setup --yes --route=sysctl
 urnet-tools extender setup --route=sysctl
 ```
 
