@@ -515,12 +515,21 @@ func cmdStatus(args []string) error {
 	if narrowed {
 		printNarrowedNote(len(providers), p, "status")
 	}
+	printSigpipeRestartWarning(p)
 	if err := renderStatusBase(p); err != nil {
 		return err
 	}
 	printLiveBlock(p)
 	printExtenderBlock(p)
 	return nil
+}
+
+// printSigpipeRestartWarning prints a warning line when the effective unit would leave a SIGPIPE death dead.
+func printSigpipeRestartWarning(p Provider) {
+	if risk, err := sigpipeRestartRisk(p); err != nil || !risk {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "warning: %s: its unit can leave a SIGPIPE death dead (RestartForceExitStatus=SIGPIPE not effective). Run `urnet-tools update` to install the restart drop-in, then restart the provider with `systemctl --user restart %s` (user unit) or `sudo systemctl restart %s` (system unit).\n", p.Unit, p.Unit, p.Unit)
 }
 
 // renderStatusBase is the pre-existing status output, unchanged: the styled
