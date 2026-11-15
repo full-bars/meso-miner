@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/urfoundation/meso-miner  
-**Latest published release**: v2026.11.8-1093260920-meso (see [release notes](releases/v2026.11.8-1093260920-meso.md))
+**Latest published release**: v2026.11.15-1099303070-meso (see [release notes](releases/v2026.11.15-1099303070-meso.md))
 
 ---
 
@@ -3928,7 +3928,7 @@ Parity port of the `fragment+segment` dialer from `urfoundation/meso-miner` (PR 
 
 **How to identify in new upstream**: Check `CarrierStats` and refusal stage counters in `extender/extender.go`, `extender/extender_services.go`, `provider/extender_discovery.go`, and the `urnet_extender_carrier_*` metrics in `provider/extender_role.go`.
 
-**Status**: On `main` after `v2026.11.14-1098553390-meso` (unreleased).
+**Status**: Shipped in v2026.11.15-1099303070-meso.
 
 ---
 
@@ -3946,7 +3946,7 @@ Parity port of the `fragment+segment` dialer from `urfoundation/meso-miner` (PR 
 
 **How to identify in new upstream**: Check `provider/profile_listener.go`, `provider/pprof_control.go`, and the `pprof` control key in `provider/control_socket.go`.
 
-**Status**: On `main` after `v2026.11.14-1098553390-meso` (unreleased).
+**Status**: Shipped in v2026.11.15-1099303070-meso.
 
 ---
 
@@ -3964,7 +3964,7 @@ Parity port of the `fragment+segment` dialer from `urfoundation/meso-miner` (PR 
 
 **How to identify in new upstream**: Check `SavedLogStdout` and `SavedLogStderr` in `provider/shmlog_linux.go` and `provider/hotswap_unix.go`, `ignoreSigpipe` in `provider/sigpipe_unix.go`, and `internal/urnettools/sigpipe_restart.go`.
 
-**Status**: On `main` after `v2026.11.14-1098553390-meso` (unreleased).
+**Status**: Shipped in v2026.11.15-1099303070-meso.
 
 ---
 
@@ -3980,7 +3980,7 @@ Parity port of the `fragment+segment` dialer from `urfoundation/meso-miner` (PR 
 
 **How to identify in new upstream**: Check `epollFile` and `epollRawConn.Read` in `ip_udp_socket_poller_epoll.go`.
 
-**Status**: On `main` after `v2026.11.14-1098553390-meso` (unreleased).
+**Status**: Shipped in v2026.11.15-1099303070-meso.
 
 ---
 
@@ -3999,4 +3999,4 @@ Parity port of the `fragment+segment` dialer from `urfoundation/meso-miner` (PR 
 
 **How to identify in new upstream**: Check `provider/trim_held.go`, `internal/urnettools/process_start_linux.go`, and `urnetwork@*.service` matching in `internal/urnettools/discover.go`.
 
-**Status**: On `main` after `v2026.11.14-1098553390-meso` (unreleased).
+**Status**: Shipped in v2026.11.15-1099303070-meso.
