@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/meso-miner  
-**Latest published release**: v2026.11.9-1094055530-meso (see [release notes](releases/v2026.11.9-1094055530-meso.md))
+**Latest published release**: v2026.11.15-1099303040-meso (see [release notes](releases/v2026.11.15-1099303040-meso.md))
 
 
 ## OpenBSD support
@@ -3922,7 +3922,7 @@ Parity port of the `fragment+segment` dialer from `full-bars/urnetwork-3.23-fix`
 
 **How to Identify in New Upstream**: Check `CarrierStats` and refusal stage counters in `extender/extender.go`, `extender/extender_services.go`, `provider/extender_discovery.go`, and the `urnet_extender_carrier_*` metrics in `provider/extender_role.go`.
 
-**Status**: On `main` after v2026.11.14-1098553100-meso (unreleased).
+**Status**: Shipped in v2026.11.15-1099303040-meso.
 
 ---
 
@@ -3940,7 +3940,7 @@ Parity port of the `fragment+segment` dialer from `full-bars/urnetwork-3.23-fix`
 
 **How to Identify in New Upstream**: Check `provider/profile_listener.go`, `provider/pprof_control.go`, and the `pprof` control key in `provider/control_socket.go`.
 
-**Status**: On `main` after v2026.11.14-1098553100-meso (unreleased).
+**Status**: Shipped in v2026.11.15-1099303040-meso.
 
 ---
 
@@ -3958,7 +3958,7 @@ Parity port of the `fragment+segment` dialer from `full-bars/urnetwork-3.23-fix`
 
 **How to Identify in New Upstream**: Check `SavedLogStdout` and `SavedLogStderr` in `provider/shmlog_linux.go` and `provider/hotswap_unix.go`, `ignoreSigpipe` in `provider/sigpipe_unix.go`, and `internal/urnettools/sigpipe_restart.go`.
 
-**Status**: On `main` after v2026.11.14-1098553100-meso (unreleased).
+**Status**: Shipped in v2026.11.15-1099303040-meso.
 
 ---
 
@@ -3974,7 +3974,7 @@ Parity port of the `fragment+segment` dialer from `full-bars/urnetwork-3.23-fix`
 
 **How to Identify in New Upstream**: Check `epollFile` and `epollRawConn.Read` in `ip_udp_socket_poller_epoll.go`.
 
-**Status**: On `main` after v2026.11.14-1098553100-meso (unreleased).
+**Status**: Shipped in v2026.11.15-1099303040-meso.
 
 ---
 
@@ -3994,4 +3994,4 @@ Parity port of the `fragment+segment` dialer from `full-bars/urnetwork-3.23-fix`
 
 **How to Identify in New Upstream**: Check `provider/trim_held.go`, `internal/urnettools/process_start_linux.go`, `urnetwork@*.service` matching in `internal/urnettools/discover.go`, and `openbsdPrivilegePrefix` in `internal/urnettools/lifecycle_openbsd.go`.
 
-**Status**: On `main` after v2026.11.14-1098553100-meso (unreleased).
+**Status**: Shipped in v2026.11.15-1099303040-meso.
