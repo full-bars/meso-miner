@@ -6,6 +6,10 @@ Everything merged after `v2026.11.15-1099303070-meso`.
 
 - **The Docker shakedown checks no longer fail on harness bugs** (`.github/scripts/docker-shakedown.sh`). The in-container update checks passed `-f` to the shell `urnet-tools` wrapper that the Docker image ships, which does not accept that flag. The Go `urnet-tools` on a host still does. The proxy cache check read the cache with `python3`, which the image does not ship, so it always read -1. The profile startup wait was too short for a slow runner. The state handling of two checks was wrong. These repairs were made in the 3.23 line in October and are ported here. [no redeploy]
 
+### Added
+
+- **`urnet-tools top` can show decimal units** (`internal/tui/labels.go`, `internal/urnettools/top_model.go`). The `u` key switches every byte and rate label between binary units (KiB, MiB, GiB) and decimal units (kB, MB, GB). The graph axes follow the choice. Binary stays the default, and the choice lasts for the session. [redeploy]
+
 ## [v2026.11.15-1099303070-meso] - 2026-11-15
 
 Changes after `v2026.11.14-1098553390-meso` through this tag. Notes: `releases/v2026.11.15-1099303070-meso.md`.
