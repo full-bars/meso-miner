@@ -3859,29 +3859,38 @@ Parity port of the `fragment+segment` dialer from `urfoundation/meso-miner` (PR 
 
 **Status**: Included in `v2026.11.6-1091992770-meso`.
 
-## 184. Extender Setup Planning and Safety
+## 184. v2026.11.8: Default-On Extender, Setup Planning, Live Diagnostics and Receive-Loop Safety
 
-**Window**: Changes after the prior release-note window. This section describes the current local release candidate; no version is assigned here.
+**Window**: `v2026.11.6-1091992770-meso` to `v2026.11.8-1093260920-meso`.
 
-**Purpose**: Show operators what extender setup will change before it applies host-level capability or firewall rules.
+**Purpose**: Run the extender on the direct slot by default, show operators what extender setup will change before it applies host-level capability or firewall rules, capture live diagnostic bundles without restarting, follow RAM logs across trims, and remove three receive-loop panics.
 
-**Files Modified**: `internal/urnettools/extender_setup.go`, `internal/urnettools/extender_platform.go`, `internal/urnettools/extender_firewall.go` and related tests and operator documentation.
+**Files Modified**: `provider/extender_role.go`, `provider/extender_activation.go`, `provider/extender_status.go`, `provider/diag_bundle.go`, `transfer.go`, `internal/urnettools/extender_cmd.go`, `internal/urnettools/extender_setup.go`, `internal/urnettools/extender_platform.go`, `internal/urnettools/extender_firewall.go`, `internal/urnettools/extender_status.go`, `internal/urnettools/diag.go`, `internal/urnettools/log_stream.go`, `scripts/Provider_Install_Linux.sh`, `scripts/Provider_Uninstall_Win32.ps1` and related tests and operator documentation.
 
 **Change**:
+- The extender starts on the direct slot by default and activates with the platform (`urnet-tools extender on|off|status|setup`, `URNETWORK_EXTENDER=off`). TCP 443 binds first; status and `top` distinguish bound carriers from platform-accepted carriers.
 - Setup inspects TCP 443 occupancy, provider binary bind capability and host firewall rules. It prints exact commands and asks before applying changes. `--yes` or `--force` is the only non-interactive approval.
 - FreeBSD extender setup is print-only and untested this release. It prints the sysctl commands and undo steps and makes no changes. Regular providing on FreeBSD is unaffected.
 - UDP 53 is optional and user-managed; setup does not inspect or open it.
 - Firewalld runtime and permanent rules are planned separately without a reload. Adding the bind capability preserves existing file capabilities.
+- `urnet-tools diag` captures heap, goroutine, summary and 30-second CPU profiles over the owner-only control socket without restarting the provider, checking free space on the diagnostic directory's filesystem.
+- The client receive loop returns an error on a missing path in a sealed frame, drops a cross-lane pack and heals a stale head index instead of panicking.
+- `urnet-tools logs` follows RAM logs across rename trims, and Windows uninstall proceeds only when all reported processor records agree on the architecture.
 - The Docker log follower and hot-swap candidate bind race remain known limitations.
 
-**Status**: Prepared for the next release; no release number assigned.
+**How to identify in new upstream**: Check `provider/extender_role.go`, `provider/diag_bundle.go`, `internal/urnettools/extender_setup.go`, `internal/urnettools/diag.go` and the receive-loop checks in `transfer.go`.
 
+**Status**: Included in `v2026.11.8-1093260920-meso`.
 
-## 185. FP2 Client Window, Handshake Generation Hardening and Go 1.27.4
+---
 
-**Purpose**: Bring the client side of the network operator's FP2 provider selection into this line, close a handshake bug where a forged generation id could wedge a peer session, and move the build to Go 1.27.4.
+## 185. v2026.11.14: FP2 Client Window, Handshake Generation Hardening, OpenBSD Support, RAM-Log Reopen and Go 1.27.4
 
-**Files modified**: `ip_remote_multi_client.go`, `ip_remote_multi_client_family.go`, `ip_remote_multi_client_limited.go`, `ip_remote_multi_client_recent_exits.go`, `ip_remote_multi_client_sticky.go`, `ip_remote_multi_client_observability.go`, `ip_remote_multi_client_window_client_stats.go`, `ip_capability.go`, `transfer.go`, `transfer_encrypt.go`, `transfer_peer_capability_observation.go`, `internal/urnettools/lifecycle_bsd_cron.go`, `internal/urnettools/lifecycle_openbsd.go`, `internal/urnettools/lifecycle_openbsd_rc.go`, `go.mod`, `Dockerfile`, the workflows, `.github/scripts/cfaa_format_check.sh`, `.github/scripts/cfaa_sync.sh` and `.github/scripts/cfaa_sync_notify.py`.
+**Window**: `v2026.11.8-1093260920-meso` to `v2026.11.14-1098553390-meso`.
+
+**Purpose**: Bring the client side of the network operator's FP2 provider selection into this line, close a handshake bug where a forged generation id could wedge a peer session, add OpenBSD provider and `urnet-tools` support, reopen replaced RAM logs, harden update verification and HotSwap version gating, stop URL proxy source cycles cleanly on shutdown, and move the build to Go 1.27.4.
+
+**Files modified**: `ip_remote_multi_client.go`, `ip_remote_multi_client_family.go`, `ip_remote_multi_client_limited.go`, `ip_remote_multi_client_recent_exits.go`, `ip_remote_multi_client_sticky.go`, `ip_remote_multi_client_observability.go`, `ip_remote_multi_client_window_client_stats.go`, `ip_capability.go`, `transfer.go`, `transfer_encrypt.go`, `transfer_peer_capability_observation.go`, `ip_blocker_pack.go`, `cmd/blocklistgen/main.go`, `provider/proxy_url_source.go`, `provider/shmlog_linux.go`, `provider/shmlog_trim.go`, `provider/diag_disk_openbsd.go`, `sysmem_openbsd.go`, `internal/urnettools/discover_openbsd.go`, `internal/urnettools/discover_openbsd_parse.go`, `internal/urnettools/lifecycle_openbsd.go`, `internal/urnettools/lifecycle_openbsd_rc.go`, `internal/urnettools/openbsd_managed.go`, `internal/urnettools/jwt_read_openbsd.go`, `internal/urnettools/lifecycle_bsd_cron.go`, `internal/urnettools/lifecycle_bsd_cron_unix.go`, `internal/urnettools/hotswap.go`, `internal/urnettools/update.go`, `internal/urnettools/control_client.go`, `internal/urnettools/control_peer_linux.go`, `scripts/Provider_Install_Linux.sh`, `scripts/Provider_Install_OpenBSD.sh`, `go.mod`, `Dockerfile`, the workflows, `.github/scripts/cfaa_format_check.sh`, `.github/scripts/cfaa_sync.sh` and `.github/scripts/cfaa_sync_notify.py`.
 
 **Changes**:
 - Add IPv6 admission to the multi client window. The window tracks which exits carry IPv6, keeps an IPv4 hard minimum, asks for an IPv6 candidate when the IPv6 share falls short, and swaps a loaded exit for it. Two failed IPv6 candidates in a row pause the IPv6 fill for a retry period.
@@ -3890,11 +3899,104 @@ Parity port of the `fragment+segment` dialer from `urfoundation/meso-miner` (PR 
 - Record what each peer completed (end-to-end handshake, seal, advertised receive window) and bind the record to the live session with a weak reference.
 - Print structured `[rel] event=<name> key=value` window lines, and record the IP version of connect successes and dial failures.
 - Take a handshake generation id from a peer only through a ClientHello, ignore foreign proofs and responses, order ids only while an attempt is in flight with a positive `TlsTimeout`, and pass the wire generation through the optimistic receive path.
-- Select `sudo` on OpenBSD when `/etc/doas.conf` is missing.
+- Add OpenBSD amd64 and arm64 support (`sysmem_openbsd.go`, `provider/diag_disk_openbsd.go`, `internal/urnettools/*_openbsd*.go`, `scripts/Provider_Install_OpenBSD.sh`, `.github/workflows/release.yml`), selecting `sudo` on OpenBSD when `/etc/doas.conf` is missing while keeping `doas` on other inspection errors.
+- Accept `-meso` releases in the HotSwap version gate with `2026-10-20` as the meso version floor (`internal/urnettools/hotswap.go`), stop updates before restart when unit reconciliation is unsafe, verify unreadable running images over a peer-verified control socket (`internal/urnettools/update.go`, `internal/urnettools/control_peer_linux.go`), reopen replaced or removed RAM log files (`provider/shmlog_linux.go`, `provider/shmlog_trim.go`), and report privileged setup failures in `scripts/Provider_Install_Linux.sh`.
+- Stop the URL proxy source fetch and probe cycle cleanly on context cancellation without marking remaining sources failed or logging false warnings (`provider/proxy_url_source.go`).
 - Build the BSD cron log path with `path.Join`.
 - Build with Go 1.27.4.
-- Make the blocklist sync run the blocker, CFAA, Telegram and security tests against the upstream tables before it opens a PR. When they fail the sync stops and the notification lists the upstream commits to port.
+- Decode lossless prefix bucket blocklist tables (`ip_blocker_pack.go`), validate Frogeye feed metadata (`cmd/blocklistgen/main.go`), and make the blocklist sync run the blocker, CFAA, Telegram and security tests against the upstream tables before it opens a PR. When they fail the sync stops and the notification lists the upstream commits to port.
 
-**Limits**: The blocklist tables stay at the refresh before 2026-11-13, because upstream's tables from that day use a new format and list a Telegram call reflector that upstream's own test rejects. The sync check blocks them until upstream fixes the table and this line takes the matching decoder. The provider binary does not run the multi client window, so a provider fleet gets nothing from the window work by itself. The fleet gains from the operator's server change, which offers providers for the traffic they carry (see `docs/Dual-Stack.md`). Recent exit memory and the sticky redial have no producer, because this line lacks upstream's typed transport-loss signal and outage classifier. The handshake fix does not include upstream's receive-sequence rejection records. A window of size one with a single IPv6-only exit does not look for an IPv4 exit until it has room, as upstream.
+**How to identify in new upstream**: Check `ip_remote_multi_client_*.go`, `transfer_peer_capability_observation.go`, `transfer_encrypt.go`, `provider/proxy_url_source.go`, `provider/shmlog_linux.go`, `internal/urnettools/hotswap.go`, `internal/urnettools/control_peer_linux.go`, and `internal/urnettools/*_openbsd*.go`.
 
-**Status**: Prepared for the next release.
+**Limits**: The blocklist tables stay at the refresh before 2026-11-13, because upstream's tables from that day use a new format and list a Telegram call reflector that upstream's own test rejects. The sync check blocks them until upstream fixes the table and this line takes the matching decoder. The provider binary does not run the multi client window, so a provider fleet gets nothing from the window work by itself. The fleet gains from the operator's server change, which offers providers for the traffic they carry (see `docs/Dual-Stack.md`). Recent exit memory and the sticky redial have no producer, because this line lacks upstream's typed transport-loss signal and outage classifier. The handshake fix does not include upstream's receive-sequence rejection records. A window of size one with a single IPv6-only exit does not look for an IPv4 exit until it has room, as upstream. The OpenBSD runtime was not verified on a real OpenBSD host.
+
+**Status**: Included in `v2026.11.14-1098553390-meso`.
+
+---
+
+## 186. Per-Carrier Extender Statistics and Discovery Feed/Gossip Role
+
+**Purpose**: Give operators per-carrier request and refusal observability across the extender's TCP and UDP listeners, and allow an extender to serve the directory feed and participate in the gossip mesh behind a runtime control key.
+
+**Files Modified**: `extender/extender.go`, `extender/extender_conn.go`, `extender/extender_handler.go`, `extender/extender_proxy.go`, `provider/extender_role.go`, `provider/extender_activation.go`, `provider/extender_manager.go`, `provider/extender_status.go`, `provider/control_socket.go`, `provider/control_state.go`, `internal/urnettools/cli.go`, `internal/urnettools/control_client.go`, `internal/urnettools/extender_status.go`.
+
+**Files Added**: `extender/extender_services.go`, `provider/extender_discovery.go` and their tests.
+
+**Changes**:
+- **Per-carrier request and refusal accounting** (`extender/extender.go`, `extender/extender_conn.go`, `extender/extender_handler.go`, `extender/extender_proxy.go`, `provider/extender_role.go`, `provider/extender_status.go`, `internal/urnettools/extender_status.go`): TCP and UDP connections carry a carrier label (`tcp-443`, `udp-443`, `udp-4053`, `udp-53`), and the extender counts served requests and refused requests per carrier and by refusal stage in bounded atomic counters. Rate-limited refusal logs include the carrier label, active minutes log a per-carrier summary line, `urnet-tools extender status` displays the per-carrier breakdown and refusal reasons, and `/metrics` exports `urnet_extender_carrier_requests_total` and `urnet_extender_carrier_refused_total`.
+- **Extender directory feed and gossip discovery** (`extender/extender_services.go`, `provider/extender_discovery.go`, `provider/extender_role.go`, `provider/control_socket.go`, `internal/urnettools/cli.go`): the extender server can swap its directory feed and gossip handlers at runtime without restarting listeners. `urnet-tools set extender-discovery on|off` (control key `extender_discovery`, environment variable `URNETWORK_EXTENDER_DISCOVERY`, off by default) enables or disables feed serving and gossip mesh participation live and persists the setting in the control state.
+
+**How to identify in new upstream**: Check `CarrierStats` and refusal stage counters in `extender/extender.go`, `extender/extender_services.go`, `provider/extender_discovery.go`, and the `urnet_extender_carrier_*` metrics in `provider/extender_role.go`.
+
+**Status**: On `main` after `v2026.11.14-1098553390-meso` (unreleased).
+
+---
+
+## 187. Managed Loopback pprof Diagnostics Listener On by Default
+
+**Purpose**: Keep a loopback-only pprof listener available by default so a stuck or high-memory provider can be profiled without a restart, while letting operators turn it off or move its loopback address live over the control socket.
+
+**Files Modified**: `provider/main.go`, `provider/control_socket.go`, `provider/control_state.go`, `internal/urnettools/cli.go`, `internal/urnettools/restore_delegate.go`.
+
+**Files Added**: `provider/profile_listener.go`, `provider/pprof_control.go` and their tests.
+
+**Changes**:
+- **Default loopback listener** (`provider/profile_listener.go`, `provider/pprof_control.go`, `provider/main.go`): the provider starts a loopback-only pprof listener on `127.0.0.1:6060` by default. If the preferred port is occupied (such as during a hot swap while the outgoing process is draining), `profileListener` binds a free loopback port and moves back to the preferred port once the holder releases it.
+- **Live control key** (`provider/pprof_control.go`, `provider/control_socket.go`, `internal/urnettools/cli.go`): `urnet-tools set pprof off` stops the listener and `urnet-tools set pprof <ip:port>` moves it to another loopback address live and persists the choice across restarts. Non-loopback addresses are rejected. An explicit `URNETWORK_PPROF` environment variable still takes precedence when set.
+
+**How to identify in new upstream**: Check `provider/profile_listener.go`, `provider/pprof_control.go`, and the `pprof` control key in `provider/control_socket.go`.
+
+**Status**: On `main` after `v2026.11.14-1098553390-meso` (unreleased).
+
+---
+
+## 188. HotSwap RAM-Log Stderr Handoff and SIGPIPE Restart Protection
+
+**Purpose**: Prevent a hot-swapped successor from dying with `SIGPIPE` when the draining parent exits and closes its internal RAM-log pipe, and ensure systemd restarts a provider if `SIGPIPE` ever terminates it.
+
+**Files Modified**: `provider/hotswap_unix.go`, `provider/shmlog_linux.go`, `provider/shmlog_fallback.go`, `provider/main.go`, `internal/urnettools/update.go`, `scripts/Provider_Install_Linux.sh`.
+
+**Files Added**: `provider/sigpipe_unix.go`, `provider/sigpipe_other.go`, `internal/urnettools/sigpipe_restart.go`, `internal/urnettools/sigpipe_status.go` and their tests.
+
+**Changes**:
+- **Original stdio passed across HotSwap** (`provider/shmlog_linux.go`, `provider/shmlog_fallback.go`, `provider/hotswap_unix.go`): when `enableRamLogs` redirects stdout and stderr into its internal trimming pipe, it duplicates the original descriptors into `SavedLogStdout` and `SavedLogStderr`. `spawnCandidate` hands those saved descriptors to the candidate instead of the parent's pipe write-end. If a candidate launched by an older binary still inherits an orphaned pipe or `/dev/null` stderr while RAM logs are enabled, startup drops the broken descriptor and redirects stderr to the RAM log file.
+- **Ignore `SIGPIPE` in `provide` and restart on `SIGPIPE` in systemd** (`provider/sigpipe_unix.go`, `scripts/Provider_Install_Linux.sh`, `internal/urnettools/sigpipe_restart.go`, `internal/urnettools/sigpipe_status.go`, `internal/urnettools/update.go`): the `provide` runtime calls `signal.Ignore(syscall.SIGPIPE)`. The Linux installer writes `RestartForceExitStatus=SIGPIPE` in generated systemd units and warns when a user drop-in overrides `Restart=` or `RestartForceExitStatus=`. During `urnet-tools update`, existing systemd units are inspected and reconciled with a `sigpipe-restart.conf` drop-in when `SIGPIPE` is not already covered, without restarting the provider for the drop-in alone.
+
+**How to identify in new upstream**: Check `SavedLogStdout` and `SavedLogStderr` in `provider/shmlog_linux.go` and `provider/hotswap_unix.go`, `ignoreSigpipe` in `provider/sigpipe_unix.go`, and `internal/urnettools/sigpipe_restart.go`.
+
+**Status**: On `main` after `v2026.11.14-1098553390-meso` (unreleased).
+
+---
+
+## 189. Non-Blocking Go Netpoller Wait for UDP Readiness Shards
+
+**Purpose**: Stop UDP socket readiness shards from pinning one OS thread per shard across the lifetime of the process when epoll-based readiness shards are enabled.
+
+**Files Modified**: `ip_udp_socket_poller_epoll.go` and `ip_udp_socket_poller_epoll_threads_test.go`.
+
+**Changes**:
+- `newUdpSocketReadPoller` wraps the epoll file descriptor in an `*os.File` registered with Go's runtime netpoller and obtains its `syscall.RawConn`.
+- `waitReady` calls `epollRawConn.Read` to park the goroutine on the Go netpoller until the epoll descriptor becomes readable, and performs a non-blocking `unix.EpollWait(..., 0)` inside the callback, falling back to a direct `unix.EpollWait` only if `RawConn` is unavailable. Idle shards park as goroutines rather than holding OS threads in blocking syscalls. `SocketReadShardCount` remains 0 by default in this line.
+
+**How to identify in new upstream**: Check `epollFile` and `epollRawConn.Read` in `ip_udp_socket_poller_epoll.go`.
+
+**Status**: On `main` after `v2026.11.14-1098553390-meso` (unreleased).
+
+---
+
+## 190. Trim-Held Proxy Snapshot Accounting and Updater/Service Discovery Hardening
+
+**Purpose**: Keep trim-held proxies out of the down count in status snapshots, let `urnet-tools update` verify restarts when `cap_net_bind_service` makes `/proc/<pid>/exe` unreadable, and discover `urnetwork@*.service` template instances.
+
+**Files Modified**: `proxy_health.go`, `provider/proxy_reload.go`, `provider/node_snapshot.go`, `internal/urnettools/snapshot.go`, `internal/urnettools/snapshot_render.go`, `internal/urnettools/proxy_trim_status.go`, `internal/urnettools/update.go`, `internal/urnettools/discover.go`.
+
+**Files Added**: `provider/trim_held.go`, `internal/urnettools/process_start_linux.go`, `internal/urnettools/process_start_other.go` and their tests.
+
+**Changes**:
+- **Trim-held proxies excluded from down counts** (`proxy_health.go`, `provider/trim_held.go`, `provider/proxy_reload.go`, `provider/node_snapshot.go`, `internal/urnettools/snapshot_render.go`): proxies parked by trim are excluded from the down count in the health snapshot, draining proxies keep their active client count until the drain completes, and the node snapshot reports the parked count separately when non-zero.
+- **Restart verification for non-dumpable provider binaries** (`internal/urnettools/update.go`, `internal/urnettools/process_start_linux.go`): when file capabilities make `/proc/<pid>/exe` unreadable (`EACCES`), `verifyRestartLanded` also accepts the Linux process start time after the binary swap, the installed binary's version stamp, and the PID change as proof that the restarted process is running the new binary.
+- **Template service discovery** (`internal/urnettools/discover.go`): systemd unit discovery matches `urnetwork@*.service` template instances alongside `urnetwork.service` so `urnet-tools providers`, `status` and `update` see instance units.
+
+**How to identify in new upstream**: Check `provider/trim_held.go`, `internal/urnettools/process_start_linux.go`, and `urnetwork@*.service` matching in `internal/urnettools/discover.go`.
+
+**Status**: On `main` after `v2026.11.14-1098553390-meso` (unreleased).
