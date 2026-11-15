@@ -296,3 +296,14 @@ Because a series continues instead of resetting, `rate()` or `increase()` comput
 | `urnet_pool_latency_ms` | gauge | | Message pool average latency |
 | `urnet_loop_restarts_total` | counter | `loop` | Times a supervised background loop ended unexpectedly and was restarted, persisted across restarts |
 | `urnet_loop_up` | gauge | `loop` | 1 while a supervised loop is running, 0 while it is stopped or backing off |
+
+## Extender carrier metrics
+
+An extender host exports one series per carrier (`tcp-443`, `udp-443`, `udp-4053`, `udp-53`).
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `urnet_extender_carrier_requests_total` | counter | `carrier`, `outcome` | Requests by carrier, `outcome` is `served` or `refused`, cumulative since the provider started |
+| `urnet_extender_carrier_refused_total` | counter | `carrier`, `stage` | Refusals by carrier and the stage that refused them |
+| `urnet_extender_carrier_bytes_total` | counter | `carrier`, `direction` | Bytes this extender relayed by carrier. `direction="ingress"` is from clients and `egress` is to clients. These are relayed bytes, not earnings: the network credits contracts |
+| `urnet_extender_carrier_connections` | gauge | `carrier` | Connections this extender is relaying now |
