@@ -23,7 +23,7 @@ func newDiagTestEnv(t *testing.T) (diagEnv, *diagTestClock) {
 	t.Helper()
 	clock := &diagTestClock{t: time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)}
 	env := diagEnv{
-		stateDir:     t.TempDir(),
+		stateDir:     shortSocketDir(t),
 		now:          clock.now,
 		freeBytes:    func(string) (uint64, error) { return 1 << 40, nil },
 		runGC:        func() {},
@@ -407,7 +407,7 @@ func TestDiagUnwritableStateDir(t *testing.T) {
 // A real capture against this test process: the profiles are produced by
 // runtime/pprof itself and are valid, non-empty files.
 func TestDiagRealProfilesAreWritten(t *testing.T) {
-	env := productionDiagEnv(t.TempDir())
+	env := productionDiagEnv(shortSocketDir(t))
 	env.cpuFor = 50 * time.Millisecond
 	res, err := runDiag(context.Background(), env)
 	if err != nil {

@@ -77,7 +77,7 @@ func TestControlState_ProxyAuditValidateAndRoundtrip(t *testing.T) {
 // cleans up again, and the successor's socket must survive.
 func TestControlSocketCleanup_IdempotentAcrossSuccessor(t *testing.T) {
 	oldHome := os.Getenv("HOME")
-	home := t.TempDir()
+	home := shortSocketDir(t)
 	if err := os.Setenv("HOME", home); err != nil {
 		t.Fatal(err)
 	}
