@@ -17,12 +17,11 @@ import (
 // Panel geometry. The right column is fixed so the numbers in it do not jump
 // as the window is resized; the left column takes the rest.
 const (
-	topSideWidth = 30
-	// topProxiesRows includes four bars and UDP coverage.
-	topProxiesRows = 8
+	topSideWidth   = 30
+	topProxiesRows = 6
 	// topProxiesCompactRows is the Proxies panel for a small pool: frame plus one
 	// line. Four bars for one proxy is a lot of box for one number.
-	topProxiesCompactRows = 4
+	topProxiesCompactRows = 3
 	// topProxiesCompactMax is the largest pool drawn as one line.
 	topProxiesCompactMax = 3
 	// topEventsMin and topEventsMax bound the Events panel's content rows: it
@@ -268,7 +267,13 @@ func (m *topModel) proxiesRows() int {
 	if m.snap != nil {
 		p := m.snap.Proxies
 		if p.Up+p.Degraded+p.Connecting+p.Dead <= topProxiesCompactMax {
+			if p.UDP != nil {
+				return topProxiesCompactRows + 1
+			}
 			return topProxiesCompactRows
+		}
+		if p.UDP != nil {
+			return topProxiesRows + 2
 		}
 	}
 	return topProxiesRows
@@ -287,8 +292,7 @@ func (m *topModel) drawUDPProxyCoverage(b *tui.Buffer, y int) int {
 	th := m.theme
 	udp := m.snap.Proxies.UDP
 	if udp == nil {
-		b.Put("udp  not reported", 0, y, th.Dim)
-		return 1
+		return 0
 	}
 	checked := udp.OK + udp.NoRelay + udp.Mismatch + udp.Unknown
 	online := checked + udp.Unchecked

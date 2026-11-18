@@ -35,13 +35,33 @@ func TestTopUDPCoverage(t *testing.T) {
 	}
 }
 
+func TestTopUDPCompactAndBarsLayout(t *testing.T) {
+	for _, n := range []int{1, 900} {
+		m := newTestModel(tui.DefaultTheme(), topProviders(1), &fakeClock{t: topBase})
+		s := topFlowing(t)
+		s.Proxies = SnapshotProxies{Up: n, UDP: &SnapshotProxyUDP{OK: n}}
+		m.apply(0, s, nil)
+		got, _ := showOnSim(t, m, 120, 40)
+		if !strings.Contains(got, "udp ") {
+			t.Fatalf("pool %d: missing UDP row:\n%s", n, got)
+		}
+		want := topProxiesRows + 2
+		if n == 1 {
+			want = topProxiesCompactRows + 1
+		}
+		if height := m.proxiesRows(); height != want {
+			t.Fatalf("pool %d: height = %d, want %d", n, height, want)
+		}
+	}
+}
+
 func TestTopUDPCompactAndEmpty(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		udp  *SnapshotProxyUDP
 		want string
 	}{
-		{"old", nil, "not reported"},
+		{"old", nil, ""},
 		{"unchecked", &SnapshotProxyUDP{Unchecked: 1}, "1 unchecked"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -50,7 +70,10 @@ func TestTopUDPCompactAndEmpty(t *testing.T) {
 			s.Proxies = SnapshotProxies{Up: 1, UDP: tc.udp}
 			m.apply(0, s, nil)
 			got, _ := showOnSim(t, m, 120, 40)
-			if !strings.Contains(got, tc.want) {
+			if tc.udp == nil && strings.Contains(got, "udp ") {
+				t.Fatalf("unexpected UDP row:\n%s", got)
+			}
+			if tc.want != "" && !strings.Contains(got, tc.want) {
 				t.Fatalf("missing %q:\n%s", tc.want, got)
 			}
 		})
