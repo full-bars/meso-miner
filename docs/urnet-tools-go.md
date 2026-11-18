@@ -181,6 +181,18 @@ urnet-tools proxy trim off
 - **Persistence:** Stored at `~/.urnetwork/proxy_trim`, surviving provider restarts and reloads.
 - **AIMD Integration:** Clamps the AIMD pool controller `TargetPoolSize` so automated pressure management works within the hard cap.
 
+### UDP proxy coverage
+
+`urnet-tools status` reports coverage for online proxies. Online means up or degraded. The counts are:
+
+- `ok`: the relay works and its exit address matches TCP.
+- `no_relay`: the proxy refuses UDP ASSOCIATE or the relay does not answer.
+- `mismatch`: the relay works but its exit address differs from TCP.
+- `unknown`: the relay works but its TCP exit address is unknown.
+- `unchecked`: the result is missing, in flight or expired.
+
+The counts sum to the online total. Checked is the sum of all counts except unchecked. `ok/checked` is the percentage of checked proxies that are ok. `ok/online` is the percentage of online proxies that are ok. A zero denominator shows `n/a`. Older providers that omit the field show `udp not reported`.
+
 ### 2. Session Save and Load
 
 Securely backup, migrate, or clone provider identities:
