@@ -401,7 +401,6 @@ func TestHotRestartEnabled_GuessBooleanForms(t *testing.T) {
 // promptly.
 func TestControlSocket_WaitForReleaseUnblocksWhenListenerGone(t *testing.T) {
 	withTempHome(t)
-	t.Setenv("HOME", shortSocketDir(t))
 	// controlSocketPath() is derived from HOME.
 	path, err := controlSocketPath()
 	if err != nil {

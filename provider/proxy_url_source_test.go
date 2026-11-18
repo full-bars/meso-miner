@@ -16,7 +16,7 @@ import (
 // withTempHome redirects os.UserHomeDir() (and therefore every
 // proxy*Path() helper) to a temp directory for the duration of the test.
 func withTempHome(t *testing.T) string {
-	dir := t.TempDir()
+	dir := shortSocketDir(t)
 	t.Setenv("HOME", dir)
 	t.Setenv("USERPROFILE", dir) // os.UserHomeDir() reads this on Windows
 	// globalClientJWTStore is built at package init from the REAL home, so the
