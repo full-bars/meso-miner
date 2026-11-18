@@ -19,7 +19,7 @@ Sections 1 through 165 are inherited history from `full-bars/urnetwork-3.23-fix`
 
 ---
 
-## Stop the URL proxy source cycle cleanly on shutdown
+## 191. Stop the URL proxy source cycle cleanly on shutdown
 
 **Purpose**: A shutdown that arrives while the provider reads or probes its URL proxy sources must end the cycle quietly. Before, it failed every remaining source, set the resolution status to failed and warned the operator once per source.
 
@@ -3893,7 +3893,7 @@ Parity port of the `fragment+segment` dialer from `full-bars/urnetwork-3.23-fix`
 - Add the redial side of the recent exit memory, with a bounded store and a generation check against stale results. Nothing records a lost exit yet.
 - Record what each peer completed (end-to-end handshake, seal, advertised receive window) and bind the record to the live session with a weak reference.
 - Print structured `[rel] event=<name> key=value` window lines, and record the IP version of connect successes and dial failures.
-- Take a handshake generation id from a peer only through a ClientHello, ignore foreign proofs and responses, order ids only while an attempt is in flight with a positive `TlsTimeout`, and pass the wire generation through the optimistic receive path.
+- Take a handshake generation id from a peer only through a ClientHello, ignore foreign proofs and responses, order ids only while an attempt is in flight with a positive `TlsTimeout`, and pass the wire generation through the optimistic receive path. The handshake changes derive from upstream connect commit 9383d2d8.
 - Add OpenBSD amd64 and arm64 support (`sysmem_openbsd.go`, `provider/diag_disk_openbsd.go`, `internal/urnettools/*_openbsd*.go`, `scripts/Provider_Install_OpenBSD.sh`, `.github/workflows/release.yml`): process discovery, physical memory and disk diagnostics, `rcctl` lifecycle and service identity guards, symlink-safe JWT reads, hardened BSD cron auto-updates and an OpenBSD installer.
 - Stop the URL proxy source fetch and probe cycle cleanly on context cancellation without marking remaining sources failed or logging false warnings (`provider/proxy_url_source.go`).
 - Build the BSD cron log path with `path.Join`.
