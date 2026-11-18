@@ -18,7 +18,7 @@ Sections 1 through 165 are inherited history from `full-bars/urnetwork-3.23-fix`
 
 ---
 
-## Stop the URL proxy source cycle cleanly on shutdown
+## 192. Stop the URL proxy source cycle cleanly on shutdown
 
 **Purpose**: A shutdown that arrives while the provider reads or probes its URL proxy sources must end the cycle quietly. Before, it failed every remaining source, set the resolution status to failed and warned the operator once per source.
 
@@ -3893,7 +3893,7 @@ Parity port of the `fragment+segment` dialer from `urfoundation/meso-miner` (PR 
 **Files modified**: `transfer.go`, `transfer_encrypt.go`, `ip_blocker_pack.go`, `cmd/blocklistgen/main.go`, `provider/proxy_url_source.go`, `provider/shmlog_linux.go`, `provider/shmlog_trim.go`, `provider/diag_disk_openbsd.go`, `sysmem_openbsd.go`, `internal/urnettools/discover_openbsd.go`, `internal/urnettools/discover_openbsd_parse.go`, `internal/urnettools/lifecycle_openbsd.go`, `internal/urnettools/lifecycle_openbsd_rc.go`, `internal/urnettools/openbsd_managed.go`, `internal/urnettools/jwt_read_openbsd.go`, `internal/urnettools/lifecycle_bsd_cron.go`, `internal/urnettools/lifecycle_bsd_cron_unix.go`, `internal/urnettools/hotswap.go`, `internal/urnettools/update.go`, `internal/urnettools/control_client.go`, `internal/urnettools/control_peer_linux.go`, `scripts/Provider_Install_Linux.sh`, `scripts/Provider_Install_OpenBSD.sh`, `go.mod`, `Dockerfile`, the workflows, `.github/scripts/cfaa_format_check.sh`, `.github/scripts/cfaa_sync.sh` and `.github/scripts/cfaa_sync_notify.py`.
 
 **Changes**:
-- Take a handshake generation id from a peer only through a ClientHello, ignore foreign proofs and responses, order ids only while an attempt is in flight with a positive `TlsTimeout`, and pass the wire generation through the optimistic receive path.
+- Take a handshake generation id from a peer only through a ClientHello, ignore foreign proofs and responses, order ids only while an attempt is in flight with a positive `TlsTimeout`, and pass the wire generation through the optimistic receive path. The handshake changes derive from upstream connect commit 9383d2d8.
 - Add OpenBSD amd64 and arm64 support (`sysmem_openbsd.go`, `provider/diag_disk_openbsd.go`, `internal/urnettools/*_openbsd*.go`, `scripts/Provider_Install_OpenBSD.sh`, `.github/workflows/release.yml`), selecting `sudo` on OpenBSD when `/etc/doas.conf` is missing while keeping `doas` on other inspection errors.
 - Accept `-meso` releases in the HotSwap version gate with `2026-10-20` as the meso version floor (`internal/urnettools/hotswap.go`), stop updates before restart when unit reconciliation is unsafe, verify unreadable running images over a peer-verified control socket (`internal/urnettools/update.go`, `internal/urnettools/control_peer_linux.go`), reopen replaced or removed RAM log files (`provider/shmlog_linux.go`, `provider/shmlog_trim.go`), and report privileged setup failures in `scripts/Provider_Install_Linux.sh`.
 - Stop the URL proxy source fetch and probe cycle cleanly on context cancellation without marking remaining sources failed or logging false warnings (`provider/proxy_url_source.go`).
