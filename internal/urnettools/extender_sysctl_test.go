@@ -474,7 +474,7 @@ func TestExtenderSetupSysctlNonLinuxNoOp(t *testing.T) {
 		t.Run(platform, func(t *testing.T) {
 			cfg := &SystemPlatformConfigurer{PlatformName: platform}
 			cmds, err := cfg.PlanRequirement("/path/provider", "user")
-			if platform == "freebsd" && (err != nil || len(cmds) != 0) {
+			if platform == "freebsd" && (err != nil || len(cmds) != 1 || cmds[0].String() != "sysctl net.inet.ip.portrange.reservedhigh=0") {
 				t.Fatalf("freebsd plan requirement: cmds=%v err=%v", cmds, err)
 			}
 			route := detectBindRouteWith(platform, "/path/provider", "user", nil, nil)
