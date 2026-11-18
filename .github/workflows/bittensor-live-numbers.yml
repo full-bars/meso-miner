@@ -30,7 +30,7 @@ concurrency:
 
 jobs:
   refresh:
-    if: github.repository_owner == 'full-bars'
+    if: github.repository_owner == 'full-bars' || github.repository_owner == 'urfoundation'
     runs-on: ubuntu-latest
     steps:
       - name: Check out main
@@ -45,12 +45,13 @@ jobs:
 
       - name: Import the CI signing key
         env:
-          CI_GPG_PRIVATE_KEY: ${{ secrets.CI_GPG_PRIVATE_KEY }}
+          # urfoundation carries the release signing key under another name
+          CI_GPG_PRIVATE_KEY: ${{ secrets.CI_GPG_PRIVATE_KEY || secrets.GPG_RELEASE_KEY }}
         run: |
           # Every commit this job makes must be signed. A missing key stops the
           # job instead of letting it push unsigned commits.
           if [ -z "$CI_GPG_PRIVATE_KEY" ]; then
-            echo "CI_GPG_PRIVATE_KEY is not set; refusing to commit unsigned" >&2
+            echo "Neither CI_GPG_PRIVATE_KEY nor GPG_RELEASE_KEY is set; refusing to commit unsigned" >&2
             exit 1
           fi
           export GNUPGHOME="$RUNNER_TEMP/gnupg"
