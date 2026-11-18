@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -94,6 +95,9 @@ type fixture struct {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("durable volume ownership requires Linux")
+	}
 	root := filepath.Join(t.TempDir(), "owner")
 	if err := os.Mkdir(root, 0700); err != nil {
 		t.Fatal(err)
@@ -609,6 +613,9 @@ func TestSnapshotHeadCrashChild(t *testing.T) {
 	root := os.Getenv("SN_SYNTHETIC_SNAPSHOT_CRASH_ROOT")
 	if root == "" {
 		return
+	}
+	if runtime.GOOS != "linux" {
+		t.Skip("durable volume ownership requires Linux")
 	}
 	volume := durablefixture.New(t, t.Context(), root)
 	volume.Context = durablevolume.WithReference(volume.Context, durablevolume.Reference{Path: os.Getenv("SN_SYNTHETIC_SNAPSHOT_CRASH_REFERENCE"), Sha256: os.Getenv("SN_SYNTHETIC_SNAPSHOT_CRASH_SHA256")})
