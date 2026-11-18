@@ -12,7 +12,7 @@ import (
 // stub. Mirrors the harness in TestNotifySystemdMainPID.
 func notifyRecorder(t *testing.T) *net.UnixConn {
 	t.Helper()
-	sockPath := filepath.Join(t.TempDir(), "notify.sock")
+	sockPath := filepath.Join(shortSocketDir(t), "notify.sock")
 	l, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: sockPath, Net: "unixgram"})
 	if err != nil {
 		t.Fatalf("listen unixgram: %v", err)

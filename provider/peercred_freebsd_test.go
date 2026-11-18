@@ -13,7 +13,7 @@ import (
 // FreeBSD path. This drives it over a real AF_LOCAL socketpair-backed listener,
 // which is the only way to prove LOCAL_PEERCRED returns what the code expects.
 func TestVerifyPeerCredentialsAcceptsSameUID(t *testing.T) {
-	dir := t.TempDir()
+	dir := shortSocketDir(t)
 	path := filepath.Join(dir, "s.sock")
 	ln, err := net.Listen("unix", path)
 	if err != nil {

@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/urnetwork/connect/internal/testsocket"
 )
 
 func TestFormatProxyAuditStatus(t *testing.T) {
@@ -143,15 +143,7 @@ func startAuditSocket(t *testing.T, sockPath string, replyHandler func(req contr
 
 func shortSocketDir(t *testing.T) string {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		return t.TempDir()
-	}
-	dir, err := os.MkdirTemp("/tmp", "ut")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	return dir
+	return testsocket.Dir(t)
 }
 
 func TestCmdProxyAuditStatus_PrintsAuditLines(t *testing.T) {
