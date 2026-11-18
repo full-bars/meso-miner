@@ -12,7 +12,7 @@ import (
 // socket fallback existed. A socket response cannot change that on these
 // platforms because the listener PID is unavailable to this implementation.
 func TestPeerVersionUnsupportedPlatformFailsClosed(t *testing.T) {
-	dir := t.TempDir()
+	dir := shortSocketDir(t)
 	p := Provider{StateDir: dir}
 	startVersionMockServer(t, filepath.Join(dir, "provider.sock"), controlResponse{OK: true, BuildVersion: "new"})
 	if _, err := runningImageHandle(os.Getpid()); err == nil {

@@ -560,7 +560,7 @@ func TestDiscoverProcessesSocketVersionWinsOverProc(t *testing.T) {
 	}
 
 	// Build a minimal binary to act as a provider process.
-	tmpDir := t.TempDir()
+	tmpDir := shortSocketDir(t)
 	binPath := filepath.Join(tmpDir, "fake-provider")
 	mainGo := filepath.Join(tmpDir, "main.go")
 	if err := os.WriteFile(mainGo, []byte(`package main

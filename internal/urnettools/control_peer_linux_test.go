@@ -15,7 +15,7 @@ import (
 )
 
 func TestPeerVersionRealSocket(t *testing.T) {
-	dir := t.TempDir()
+	dir := shortSocketDir(t)
 	p := Provider{StateDir: dir}
 	startVersionMockServer(t, filepath.Join(dir, "provider.sock"), controlResponse{OK: true, BuildVersion: "v-new"})
 	if got, ok := providerVersionFromSocketForPID(p, os.Getpid()); !ok || got != "v-new" {
@@ -32,7 +32,7 @@ func TestPeerVersionRealSocket(t *testing.T) {
 // A verified peer reporting the wrong version must not confirm the update.
 func TestPeerWrongVersion(t *testing.T) {
 	stubVerifyLoop(t)
-	dir := t.TempDir()
+	dir := shortSocketDir(t)
 	startVersionMockServer(t, filepath.Join(dir, "provider.sock"), controlResponse{OK: true, BuildVersion: "old"})
 	p := testProvider(dir, os.Getpid()+1000000)
 	verifyDiscoverFn = func() []Provider { return []Provider{testProvider(dir, os.Getpid())} }
@@ -68,7 +68,7 @@ func TestPeerVersionPlantedListener(t *testing.T) {
 		}
 		return
 	}
-	dir := t.TempDir()
+	dir := shortSocketDir(t)
 	cmd := exec.Command(os.Args[0], "-test.run=^TestPeerVersionPlantedListener$")
 	cmd.Env = append(os.Environ(), "TEST_PEER_CHILD_DIR="+dir)
 	stdout, err := cmd.StdoutPipe()

@@ -94,7 +94,7 @@ func (s *mockControlServer) Close() {
 }
 
 func TestControlClient_SocketReachableRoundTrip(t *testing.T) {
-	dir := t.TempDir()
+	dir := shortSocketDir(t)
 	sockPath := filepath.Join(dir, "provider.sock")
 	server := startMockControlServer(t, sockPath)
 	defer server.Close()
@@ -148,7 +148,7 @@ func TestControlClient_SocketReachableRoundTrip(t *testing.T) {
 // reachable socket reports true, a missing/nonexistent one false, and an empty
 // StateDir (no resolvable home) never panics — false.
 func TestControlSocketReachable(t *testing.T) {
-	dir := t.TempDir()
+	dir := shortSocketDir(t)
 	sockPath := filepath.Join(dir, "provider.sock")
 	server := startMockControlServer(t, sockPath)
 	defer server.Close()
@@ -448,7 +448,7 @@ func startVersionMockServer(t *testing.T, sockPath string, resp controlResponse)
 // socket exists but returns ok=false (e.g. a provider older than the version
 // command), the function returns ok=false so the caller falls back.
 func TestProviderVersionFromSocket_NonOKResponse(t *testing.T) {
-	dir := t.TempDir()
+	dir := shortSocketDir(t)
 	sockPath := filepath.Join(dir, "provider.sock")
 	startVersionMockServer(t, sockPath, controlResponse{OK: false, Error: "unknown cmd"})
 
@@ -463,7 +463,7 @@ func TestProviderVersionFromSocket_NonOKResponse(t *testing.T) {
 // socket responds OK but build_version is empty (a newer protocol version
 // that omits the field for some reason), the function returns ok=false.
 func TestProviderVersionFromSocket_EmptyBuildVersion(t *testing.T) {
-	dir := t.TempDir()
+	dir := shortSocketDir(t)
 	sockPath := filepath.Join(dir, "provider.sock")
 	startVersionMockServer(t, sockPath, controlResponse{OK: true, BuildVersion: ""})
 
@@ -478,7 +478,7 @@ func TestProviderVersionFromSocket_EmptyBuildVersion(t *testing.T) {
 // socket returns OK with a non-empty build_version, and the function
 // extracts it correctly.
 func TestProviderVersionFromSocket_ValidResponse(t *testing.T) {
-	dir := t.TempDir()
+	dir := shortSocketDir(t)
 	sockPath := filepath.Join(dir, "provider.sock")
 	startVersionMockServer(t, sockPath, controlResponse{OK: true, BuildVersion: "3.23.1"})
 
