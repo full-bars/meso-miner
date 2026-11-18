@@ -35,7 +35,7 @@ A host waiting for platform root keys or retrying a failed discovery start keeps
 
 ```sh
 urnet-tools extender status     # is it working?
-urnet-tools extender setup      # check port 443, capability and firewall; ask before changing
+urnet-tools extender setup      # check port 443, the low-port route and firewall; ask before changing
 urnet-tools extender about      # a plain-language explanation of the ports and how it works
 urnet-tools extender disable    # off, and it stays off across restarts
 urnet-tools extender enable     # back on
