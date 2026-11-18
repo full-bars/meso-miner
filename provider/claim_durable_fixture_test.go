@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"testing"
 
@@ -30,6 +31,9 @@ import (
 // explicit test preflight, before an actual runtime owner is constructed.
 func claimQueueTestContext(t testing.TB, ctx context.Context, paths ...string) context.Context {
 	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("durable volume ownership requires Linux")
+	}
 	var roots []string
 	for _, path := range paths {
 		physical, err := canonicalClaimStateDirectory(path)

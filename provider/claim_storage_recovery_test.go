@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -25,6 +26,9 @@ import (
 
 func claimStorageTestOwner(t *testing.T, ctx context.Context, cfg *ClaimDaemonConfig) (*claimQueueStore, *durablefixture.Fixture) {
 	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("durable volume ownership requires Linux")
+	}
 	if err := os.MkdirAll(cfg.StateDir, 0700); err != nil {
 		t.Fatal(err)
 	}
