@@ -65,11 +65,34 @@ func extenderBoxRowsFor(r ExtenderReading, now time.Time, ascii bool) []topExten
 
 	var ports []string
 	portLevel := topGood
+	var dns53 *topExtenderRow
 	for _, port := range r.Ports {
+		if port.Name == "dns 53" || port.Name == "udp 53" {
+			value, level := "bound", topGood
+			if port.Disabled {
+				value, level = "off by setting", topInfo
+			} else if !port.Up {
+				value, level = "DOWN", topWarn
+				if text, informational := extenderPortReasonText(port.Reason); text != "" {
+					if informational {
+						value, level = text, topInfo
+					} else {
+						value = "DOWN: " + text
+					}
+				}
+			}
+			row := topExtenderRow{"dns 53", value, level}
+			dns53 = &row
+			continue
+		}
 		short := strings.Fields(port.Name)
 		name := port.Name
 		if len(short) > 0 {
-			name = short[0] // tcp, udp, dns: the ports are in the title row
+			name = short[0]
+		}
+		if port.Disabled {
+			ports = append(ports, name+" off")
+			continue
 		}
 		if port.Up {
 			ports = append(ports, name+" bound")
@@ -83,6 +106,11 @@ func extenderBoxRowsFor(r ExtenderReading, now time.Time, ascii bool) []topExten
 		}
 	}
 	rows = append(rows, topExtenderRow{"ports", strings.Join(ports, " "), portLevel})
+	if dns53 == nil {
+		rows = append(rows, topExtenderRow{"dns 53", "not reported", topInfo})
+	} else {
+		rows = append(rows, *dns53)
+	}
 
 	for _, f := range r.Families {
 		key := strings.ToLower(extenderFamilyName(f.IpVersion))
