@@ -8,6 +8,12 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 ---
 
+## Yamux stream refusal
+
+The vendored yamux v5.1.0 copy resets an incoming stream when its memory reservation is refused. The existing session remains open. See `third_party/go-yamux/PATCH.md` and `THIRD_PARTY_LICENSES.md`.
+
+---
+
 ## OpenBSD support
 
 The provider and urnet-tools cross-build for OpenBSD amd64 and arm64. The installer downloads verified release assets from urfoundation/meso-miner on GitHub and uses rcctl for service management. See [OpenBSD](docs/OpenBSD.md) for installation and platform limits. The installer and service have not been tested on an OpenBSD host.
