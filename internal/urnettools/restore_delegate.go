@@ -251,7 +251,7 @@ var setKeyHelps = []string{
 	"  pprof               on|off|<ip:port>  loopback diagnostics for goroutine, heap and thread profiles (default: on at 127.0.0.1:6060)",
 	"  proxy-audit         on|off        grade proxies and park the ones that prove junk. Observe mode by default (logs verdicts without acting); parking only acts when hot-restart is on (default: off)",
 	"  udp-probe           on|off        run background UDP coverage sweeps (default: on). Client safety checks remain active",
-	"  extender-discovery  off|on|feed-only  serve the directory feed and optionally join gossip (default: off)",
+	"  extender-discovery  off|on|feed-only  serve the directory feed and optionally join gossip (default: on with extender)",
 }
 
 // treatsOffAsClear reports whether `set <key> off` is turned into a generic
@@ -278,7 +278,7 @@ var setKeyHelps = []string{
 // the parrot at the next start.
 func treatsOffAsClear(canonicalKey string) bool {
 	switch canonicalKey {
-	case "hot_restart", "ramlogs", "proxy_self_heal", "metrics", "oom_cap", "baseline", "h3", "tls_hello", "extender", "pprof", "udp_probe":
+	case "hot_restart", "ramlogs", "proxy_self_heal", "metrics", "oom_cap", "baseline", "h3", "tls_hello", "extender", "extender_discovery", "pprof", "udp_probe":
 		return false
 	}
 	return true
