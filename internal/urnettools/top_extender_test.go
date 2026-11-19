@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/urnetwork/connect/internal/tui"
 )
 
 func extenderRowMap(rows []topExtenderRow) map[string]topExtenderRow {
@@ -43,6 +45,50 @@ func TestTopExtenderRowsServing(t *testing.T) {
 	}
 }
 
+func TestTopExtenderPort53Rows(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		ports []ExtenderPort
+		want  string
+	}{
+		{"bound", []ExtenderPort{{Name: "dns 53", Up: true}}, "bound"},
+		{"down", []ExtenderPort{{Name: "dns 53"}}, "DOWN"},
+		{"omitted", nil, "not reported"},
+		{"in use", []ExtenderPort{{Name: "dns 53", Reason: "address_in_use"}}, "DOWN: address already in use"},
+		{"permission", []ExtenderPort{{Name: "dns 53", Reason: "permission_denied"}}, "DOWN: permission denied"},
+		{"unknown cause", []ExtenderPort{{Name: "dns 53", Reason: "unknown"}}, "DOWN: bind failed, cause unknown"},
+		{"not requested", []ExtenderPort{{Name: "dns 53", Reason: "not_requested"}}, "not requested"},
+		{"disabled", []ExtenderPort{{Name: "dns 53", Disabled: true}}, "off by setting"},
+		{"newer reason from a newer provider", []ExtenderPort{{Name: "dns 53", Reason: "something_new"}}, "DOWN: bind failed, cause unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rows := extenderRowMap(extenderBoxRows(ExtenderReading{
+				Source: SourceControlSocket, Running: true, Ports: tc.ports,
+			}, time.Now()))
+			if got := rows["dns 53"].value; got != tc.want {
+				t.Fatalf("dns 53 = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// A port nobody asked for or an operator turned off is information. A failed
+// bind is a warning.
+func TestTopExtenderPort53Levels(t *testing.T) {
+	for reason, want := range map[string]int{
+		"not_requested":     int(topInfo),
+		"address_in_use":    int(topWarn),
+		"permission_denied": int(topWarn),
+	} {
+		rows := extenderRowMap(extenderBoxRows(ExtenderReading{
+			Source: SourceControlSocket, Running: true, Ports: []ExtenderPort{{Name: "dns 53", Reason: reason}},
+		}, time.Now()))
+		if got := int(rows["dns 53"].level); got != want {
+			t.Errorf("reason %q: level %d, want %d", reason, got, want)
+		}
+	}
+}
+
 func TestTopExtenderRowsBlockedTcpIsBad(t *testing.T) {
 	rows := extenderRowMap(extenderBoxRows(ExtenderReading{
 		Source: SourceControlSocket, Known: true, Setting: "on", Running: true, RoleState: "tcp_unavailable",
@@ -52,8 +98,8 @@ func TestTopExtenderRowsBlockedTcpIsBad(t *testing.T) {
 	if r := rows["state"]; r.level != topBad || !strings.Contains(r.value, "tcp 443") {
 		t.Errorf("a blocked tcp 443 must read bad and say why: %+v", r)
 	}
-	if r := rows["ports"]; !strings.Contains(r.value, "tcp DOWN") || r.level != topBad {
-		t.Errorf("ports row = %+v", r)
+	if r := rows["tcp 443"]; r.value != "DOWN" || r.level != topBad {
+		t.Errorf("tcp port row = %+v", r)
 	}
 }
 
@@ -155,6 +201,28 @@ func TestTopRendersTheExtenderBox(t *testing.T) {
 	}
 }
 
+func TestTopExtenderIPv6UsesMiddleTruncationAndFitsOnWideScreen(t *testing.T) {
+	m := modelWithProxies(t, 1, 0, 0, 0)
+	m.extender = ExtenderReading{
+		Source: SourceControlSocket, Known: true, Setting: "on", Running: true, RoleState: "serving", Activating: true,
+		Ports: []ExtenderPort{{Name: "tcp 443", Up: true}, {Name: "udp 443", Up: true}, {Name: "dns 4053", Up: true}},
+		Families: []ExtenderFamily{
+			{IpVersion: 4, State: "activated", Ip: "203.0.113.5"},
+			{IpVersion: 6, State: "activated", Ip: "2602:f7a3:0:2b00:1234:5678:9abc:def0"},
+		},
+		LiveClients: 3,
+		Served:      ExtenderServed{Last24h: 120, Last7d: 800, Lifetime: 5000},
+	}
+	narrow, _ := showOnSim(t, m, 120, 50)
+	if !strings.Contains(narrow, "ACTIVE 260…9abc:def0") {
+		t.Fatalf("120-col screen should middle-truncate long IPv6:\n%s", narrow)
+	}
+	wide, _ := showOnSim(t, m, 150, 50)
+	if !strings.Contains(wide, "ACTIVE 2602:f7a3:") || !strings.Contains(wide, "9abc:def0") {
+		t.Fatalf("150-col screen should show wider IPv6:\n%s", wide)
+	}
+}
+
 // A provider that cannot report the extender gets no box at all.
 func TestTopLeavesOutTheExtenderBoxWhenUnreported(t *testing.T) {
 	m := modelWithProxies(t, 1, 0, 0, 0)
@@ -162,5 +230,31 @@ func TestTopLeavesOutTheExtenderBoxWhenUnreported(t *testing.T) {
 	txt, _ := showOnSim(t, m, 120, 50)
 	if strings.Contains(txt, "Extender") {
 		t.Errorf("an unreported extender must not draw a box:\n%s", txt)
+	}
+}
+
+func TestTopExtenderDiscoveryVisibility(t *testing.T) {
+	for _, tc := range []struct {
+		state string
+		peers int
+		want  topLevel
+	}{
+		{"running", 4, topGood}, {"running", 0, topWarn}, {"waiting", 0, topWarn}, {"failed", 0, topBad},
+	} {
+		r := ExtenderReading{Source: SourceControlSocket, Known: true, Running: true, Discovery: &ExtenderDiscovery{State: tc.state, Requested: "on", Peers: tc.peers, FeedSubscribers: 3, PeerId: "peer-123", Failure: ""}}
+		messages, failures := uint64(12), uint64(2)
+		r.Discovery.MessagesAccepted = &messages
+		r.Discovery.ApplyErrors = &failures
+		row := extenderRowMap(extenderBoxRows(r, time.Now()))["gossip"]
+		if row.level != tc.want || !strings.Contains(row.value, tc.state) {
+			t.Fatalf("%s: %+v", tc.state, row)
+		}
+		m := newTopModel(nil, 0, 0, tui.DefaultTheme(), nil)
+		m.extender = r
+		b := tui.New(80, 5)
+		m.drawCarriers(b)
+		if got := b.String(); !strings.Contains(got, "peer-123") || !strings.Contains(got, "feeds 3") || !strings.Contains(got, "gossip messages 12") {
+			t.Fatalf("missing discovery details: %s", got)
+		}
 	}
 }

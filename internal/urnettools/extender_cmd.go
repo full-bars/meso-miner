@@ -11,8 +11,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const extenderUsage = "usage: urnet-tools extender [status|about|on|off|enable|disable|setup]"
-const extenderSetupUsage = "usage: urnet-tools extender setup [-y|--yes] [-f|--force] [-n|--dry-run] [target]"
+const extenderUsage = "usage: urnet-tools extender [status|events|about|on|off|enable|disable|setup]"
+const extenderSetupUsage = "usage: urnet-tools extender setup [-y|--yes] [-f|--force] [-n|--dry-run] [--route=sysctl|capability|skip] [target]"
+const extenderEventsUsage = "usage: urnet-tools extender events [--since <duration>] [--kind peer,reject,state,dial,cap,publish] [--json] [target]"
 
 // normalizeExtenderAction accepts enable and disable as plain names for on and
 // off. The second result is false for anything else.
@@ -50,21 +51,33 @@ func isExtenderSetupArgs(args []string) bool {
 }
 
 // parseExtenderSetupArgs parses flags specific to `urnet-tools extender setup`.
-func parseExtenderSetupArgs(args []string) (yes, dryRun bool, target Target, err error) {
+func parseExtenderSetupArgs(args []string) (yes, dryRun bool, route string, target Target, err error) {
 	var filtered []string
-	for _, tok := range args {
-		switch tok {
-		case "-y", "--yes", "-f", "--force":
+	for i := 0; i < len(args); i++ {
+		tok := args[i]
+		switch {
+		case tok == "-y" || tok == "--yes" || tok == "-f" || tok == "--force":
 			yes = true
-		case "-n", "--dry-run":
+		case tok == "-n" || tok == "--dry-run":
 			dryRun = true
+		case tok == "--route" && i+1 < len(args):
+			i++
+			route = strings.ToLower(strings.TrimSpace(args[i]))
+			if route != "sysctl" && route != "capability" && route != "skip" {
+				return false, false, "", Target{}, fmt.Errorf("%s (invalid route %q; must be sysctl, capability, or skip)", extenderSetupUsage, route)
+			}
+		case strings.HasPrefix(tok, "--route="):
+			route = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(tok, "--route=")))
+			if route != "sysctl" && route != "capability" && route != "skip" {
+				return false, false, "", Target{}, fmt.Errorf("%s (invalid route %q; must be sysctl, capability, or skip)", extenderSetupUsage, route)
+			}
 		default:
 			filtered = append(filtered, tok)
 		}
 	}
 	target, rest, err := parseTargetFlags(filtered)
 	if err != nil {
-		return false, false, Target{}, err
+		return false, false, "", Target{}, err
 	}
 	seenSetup := false
 	for _, tok := range rest {
@@ -72,18 +85,18 @@ func parseExtenderSetupArgs(args []string) (yes, dryRun bool, target Target, err
 			seenSetup = true
 			continue
 		}
-		return false, false, Target{}, fmt.Errorf("%s (unexpected %q)", extenderSetupUsage, tok)
+		return false, false, "", Target{}, fmt.Errorf("%s (unexpected %q)", extenderSetupUsage, tok)
 	}
 	if !seenSetup {
-		return false, false, Target{}, fmt.Errorf("%s", extenderSetupUsage)
+		return false, false, "", Target{}, fmt.Errorf("%s", extenderSetupUsage)
 	}
-	return yes, dryRun, target, nil
+	return yes, dryRun, route, target, nil
 }
 
 var runExtenderSetupFn = RunExtenderSetup
 
 func cmdExtenderSetup(args []string) error {
-	yes, dryRun, target, err := parseExtenderSetupArgs(args)
+	yes, dryRun, route, target, err := parseExtenderSetupArgs(args)
 	if err != nil {
 		return err
 	}
@@ -92,6 +105,7 @@ func cmdExtenderSetup(args []string) error {
 		Yes:    yes,
 		Force:  yes,
 		DryRun: dryRun,
+		Route:  route,
 		Target: target,
 		Stdout: os.Stdout,
 		Stderr: os.Stderr,
@@ -101,17 +115,18 @@ func cmdExtenderSetup(args []string) error {
 
 func newExtenderCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "extender [status|about|on|off|enable|disable|setup]",
+		Use:   "extender [status|events|about|on|off|enable|disable|setup]",
 		Short: "show, turn on, turn off, or prepare the host for the extender role",
 		Long: "The extender helps censored clients reach URnetwork: this host accepts their connections on tcp 443 (required), udp 443 and udp 4053 and relays them, and asks the platform to list it. " +
 			"It is ON by default and earns nothing; it is a public service like a Tor bridge. " +
 			"'status' shows whether it is working: which ports are up, what IPv4 and IPv6 are doing and when each tries next, who it is helping, and what to fix if it is blocked. " +
+			"'events' reads the in-memory gossip flight recorder over the control socket (--since, --kind, --json). " +
 			"'about' explains the ports, the firewall, IPv6, Docker and what survives a restart, and works with the provider stopped. " +
 			"'setup' inspects port 443 occupancy, binary bind capability and host firewall rules, prints the exact commands needed, and asks for confirmation before changing anything (use -y/--yes for non-interactive runs). UDP 53 is optional and user-managed. FreeBSD extender setup is untested this release and only prints manual instructions. " +
 			"'off' (or 'disable') turns it off and keeps it off across restarts; 'on' (or 'enable') turns it back on. Both apply to the running provider at once, with no restart and no unit file edit. " +
 			"In Docker this command is not available: read `docker logs <container> | grep 🌉` and set URNETWORK_EXTENDER=off to disable it. " +
 			"Honors -n/--dry-run, which prints the plan and sends nothing.",
-		Example:            "  urnet-tools extender\n  urnet-tools extender status\n  urnet-tools extender about\n  urnet-tools extender setup\n  urnet-tools extender setup --yes\n  urnet-tools extender disable\n  urnet-tools extender enable",
+		Example:            "  urnet-tools extender\n  urnet-tools extender status\n  urnet-tools extender events --since 1h --kind peer,reject,state,dial\n  urnet-tools extender about\n  urnet-tools extender setup\n  urnet-tools extender setup --yes\n  urnet-tools extender disable\n  urnet-tools extender enable",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if hasHelpFlag(args) {
@@ -119,6 +134,9 @@ func newExtenderCmd() *cobra.Command {
 			}
 			if isExtenderSetupArgs(args) {
 				return cmdExtenderSetup(args)
+			}
+			if isExtenderEventsArgs(args) {
+				return cmdExtenderEvents(args)
 			}
 			return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 				if force {
@@ -197,6 +215,9 @@ func finishExtenderChange(out io.Writer, p Provider, action string) error {
 		fmt.Fprintf(out, "\nExtender: unavailable: %v\n", err)
 		return err
 	}
+	if reading.BindRoute == "" {
+		reading.BindRoute = detectBindRoute(p.Binary, p.User)
+	}
 	formatExtenderBlock(out, *reading, time.Now())
 	return nil
 }
@@ -208,6 +229,9 @@ func printExtenderStatus(p Provider) error {
 	if err != nil {
 		fmt.Fprintf(os.Stdout, "\nExtender: unavailable: %v\n", err)
 		return err
+	}
+	if reading.BindRoute == "" {
+		reading.BindRoute = detectBindRoute(p.Binary, p.User)
 	}
 	formatExtenderBlock(os.Stdout, *reading, time.Now())
 	return nil

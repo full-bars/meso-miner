@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -26,9 +29,32 @@ const (
 
 // ExtenderPort is one carrier port.
 type ExtenderPort struct {
-	Name  string `json:"name"`
-	Up    bool   `json:"up"`
-	Error string `json:"error,omitempty"`
+	Name     string `json:"name"`
+	Up       bool   `json:"up"`
+	Error    string `json:"error,omitempty"`
+	Disabled bool   `json:"disabled,omitempty"`
+	// Reason says why a port that is not up is down: address_in_use,
+	// permission_denied, unknown or not_requested. Providers that predate it
+	// leave it empty.
+	Reason string `json:"reason,omitempty"`
+}
+
+// extenderPortReasonText is the plain-words form of a port's Reason. The
+// second result is true when the reason is no fault, so a renderer can show it
+// as information and not as a warning.
+func extenderPortReasonText(reason string) (text string, informational bool) {
+	switch reason {
+	case "":
+		return "", false
+	case "address_in_use":
+		return "address already in use", false
+	case "permission_denied":
+		return "permission denied", false
+	case "not_requested":
+		return "not requested", true
+	default:
+		return "bind failed, cause unknown", false
+	}
 }
 
 // ExtenderFamilyPort is one carrier's platform state on one address family.
@@ -56,13 +82,28 @@ type ExtenderServed struct {
 	Lifetime uint64 `json:"lifetime"`
 }
 
+type ExtenderDialStats struct {
+	Attempts uint64 `json:"attempts"`
+	Timeout  uint64 `json:"timeout"`
+	Refused  uint64 `json:"refused"`
+	Canceled uint64 `json:"canceled"`
+	Other    uint64 `json:"other"`
+}
+
 type ExtenderDiscovery struct {
-	Requested       string `json:"requested"`
-	State           string `json:"state"`
-	Failure         string `json:"failure,omitempty"`
-	PeerId          string `json:"peer_id"`
-	Peers           int    `json:"peers"`
-	FeedSubscribers int    `json:"feed_subscribers"`
+	Requested             string             `json:"requested"`
+	State                 string             `json:"state"`
+	Failure               string             `json:"failure,omitempty"`
+	PeerId                string             `json:"peer_id"`
+	Peers                 int                `json:"peers"`
+	FeedSubscribers       int                `json:"feed_subscribers"`
+	ActiveRecords         *int               `json:"active_records,omitempty"`
+	ConnectedPeers        *int               `json:"connected_peers,omitempty"`
+	Connecting            *bool              `json:"connecting,omitempty"`
+	DialStats             *ExtenderDialStats `json:"dial_stats,omitempty"`
+	MessagesAccepted      *uint64            `json:"messages_accepted,omitempty"`
+	ApplyErrors           *uint64            `json:"apply_errors,omitempty"`
+	LastAcceptedUnixMilli int64              `json:"last_accepted_unix_milli,omitempty"`
 }
 
 // ExtenderCarrierStats holds cumulative served and refused request counts for one carrier.
@@ -115,6 +156,57 @@ type ExtenderReading struct {
 	Carriers        []ExtenderCarrierStats `json:"carriers,omitempty"`
 	CarrierBytes    []ExtenderCarrierBytes `json:"carrier_bytes,omitempty"`
 	Discovery       *ExtenderDiscovery     `json:"discovery,omitempty"`
+
+	BindRoute string `json:"bind_route,omitempty"`
+}
+
+var (
+	portRoutePlatformFn = func() string { return runtime.GOOS }
+	portRouteReadFileFn = os.ReadFile
+	portRouteExecCmdFn  = func(name string, args ...string) ([]byte, error) {
+		return exec.Command(name, args...).CombinedOutput()
+	}
+)
+
+func detectBindRoute(binary, user string) string {
+	return detectBindRouteWith(portRoutePlatformFn(), binary, user, portRouteReadFileFn, portRouteExecCmdFn)
+}
+
+func detectBindRouteWith(platform, binary, user string, readFile func(string) ([]byte, error), execCmd func(string, ...string) ([]byte, error)) string {
+	if platform != "linux" {
+		return ""
+	}
+	if user == "root" {
+		return "root (no capability or sysctl needed)"
+	}
+	// 1. Sysctl
+	if readFile != nil {
+		if data, err := readFile("/proc/sys/net/ipv4/ip_unprivileged_port_start"); err == nil {
+			if val, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && val >= 0 && val <= 443 {
+				route := fmt.Sprintf("sysctl: port is available without a file capability (ip_unprivileged_port_start=%d)", val)
+				if binary != "" && execCmd != nil {
+					if out, err := execCmd("getcap", binary); err == nil && linuxHasBindCapability(binary, string(out)) {
+						cmd := setupCommand{name: "sudo", args: []string{"setcap", "-r", binary}}.String()
+						route += "; warning: binary still has a file capability, so a provider started with it is non-dumpable and may be unreadable to the updater. You must restart or hand off the provider after removing it. " + cmd
+						if strings.TrimSpace(string(out)) != binary+" cap_net_bind_service=ep" {
+							route += " removes ALL file capabilities; inspect getcap -n first and preserve other capabilities"
+						}
+					}
+				}
+				return route
+			}
+		}
+	}
+	// 2. Capability on binary
+	if binary != "" && execCmd != nil {
+		if out, err := execCmd("getcap", binary); err == nil {
+			if linuxHasBindCapability(binary, string(out)) {
+				return "capability on the binary (cap_net_bind_service)"
+			}
+		}
+	}
+	// 3. Neither
+	return "neither"
 }
 
 var socketExtenderFn = queryExtenderFromSocket
@@ -151,10 +243,14 @@ func extenderSocketError(sockPath string, err error) error {
 
 // ReadExtenderStatus asks the provider; a failure is the unavailable reading.
 func ReadExtenderStatus(p Provider) ExtenderReading {
-	if reading, err := socketExtenderFn(p); err == nil && reading != nil {
-		return *reading
+	reading := ExtenderReading{Source: SourceUnknown}
+	if r, err := socketExtenderFn(p); err == nil && r != nil {
+		reading = *r
 	}
-	return ExtenderReading{Source: SourceUnknown}
+	if reading.BindRoute == "" {
+		reading.BindRoute = detectBindRoute(p.Binary, p.User)
+	}
+	return reading
 }
 
 func extenderFamilyName(ipVersion int) string {
@@ -224,6 +320,9 @@ func extenderNextTry(f ExtenderFamily, now time.Time) string {
 func formatExtenderBlock(w io.Writer, r ExtenderReading, now time.Time) {
 	if r.Source != SourceControlSocket {
 		fmt.Fprintln(w, "\nExtender: unavailable (the provider did not answer on its control socket)")
+		if r.BindRoute != "" {
+			fmt.Fprintf(w, "  Port route:        %s\n", r.BindRoute)
+		}
 		return
 	}
 	fmt.Fprintln(w, "\nExtender:")
@@ -236,6 +335,32 @@ func formatExtenderBlock(w io.Writer, r ExtenderReading, now time.Time) {
 		d := r.Discovery
 		fmt.Fprintf(w, "  Discovery:         %s (requested: %s)\n", d.State, d.Requested)
 		fmt.Fprintf(w, "    Peer id: %s; mesh peers: %d; feed subscribers: %d\n", d.PeerId, d.Peers, d.FeedSubscribers)
+		if d.ActiveRecords != nil {
+			fmt.Fprintf(w, "    Active directory records: %d\n", *d.ActiveRecords)
+		}
+		if d.ConnectedPeers != nil {
+			fmt.Fprintf(w, "    Gossip connections: %d", *d.ConnectedPeers)
+			if d.Connecting != nil && *d.Connecting {
+				fmt.Fprint(w, "; connecting")
+			}
+			fmt.Fprintln(w)
+		}
+		if d.DialStats != nil {
+			dials := d.DialStats
+			fmt.Fprintf(w, "    Gossip dials: %d attempts; failures timeout=%d refused=%d canceled=%d other=%d\n", dials.Attempts, dials.Timeout, dials.Refused, dials.Canceled, dials.Other)
+		} else {
+			fmt.Fprintln(w, "    Gossip dials: not reported")
+		}
+		if d.MessagesAccepted != nil {
+			fmt.Fprintf(w, "    Gossip: %d valid peer messages received", *d.MessagesAccepted)
+			if d.ApplyErrors != nil {
+				fmt.Fprintf(w, "; %d apply errors", *d.ApplyErrors)
+			}
+			if d.LastAcceptedUnixMilli > 0 {
+				fmt.Fprintf(w, "; last received %s", time.UnixMilli(d.LastAcceptedUnixMilli).Local().Format(time.RFC3339))
+			}
+			fmt.Fprintln(w)
+		}
 		switch d.State {
 		case "waiting":
 			fmt.Fprintln(w, "    Discovery is waiting for the platform's root keys.")
@@ -249,6 +374,9 @@ func formatExtenderBlock(w io.Writer, r ExtenderReading, now time.Time) {
 			reason = "not running"
 		}
 		fmt.Fprintf(w, "  State:             OFF: %s\n", reason)
+		if r.BindRoute != "" {
+			fmt.Fprintf(w, "  Port route:        %s\n", r.BindRoute)
+		}
 		fmt.Fprintf(w, "  Requests served:   24h %d, 7d %d, lifetime %d\n", r.Served.Last24h, r.Served.Last7d, r.Served.Lifetime)
 		formatExtenderCarrierStats(w, r.Carriers)
 		formatExtenderTraffic(w, r)
@@ -259,12 +387,22 @@ func formatExtenderBlock(w io.Writer, r ExtenderReading, now time.Time) {
 		state += " (waiting for the direct slot to sign in before asking to be listed)"
 	}
 	fmt.Fprintf(w, "  State:             %s\n", state)
+	if r.BindRoute != "" {
+		fmt.Fprintf(w, "  Port route:        %s\n", r.BindRoute)
+	}
 
 	var ports []string
 	for _, port := range r.Ports {
 		switch {
+		case port.Disabled:
+			ports = append(ports, port.Name+" disabled by setting")
 		case port.Up:
 			ports = append(ports, port.Name+" bound")
+		case port.Reason == "not_requested":
+			ports = append(ports, port.Name+" not requested")
+		case port.Reason != "":
+			text, _ := extenderPortReasonText(port.Reason)
+			ports = append(ports, fmt.Sprintf("%s not bound (%s)", port.Name, text))
 		case port.Error != "":
 			ports = append(ports, fmt.Sprintf("%s not bound (%s)", port.Name, port.Error))
 		default:

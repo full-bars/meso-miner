@@ -21,21 +21,23 @@ These are the bytes this extender relayed. What the network credits depends on t
 
 ## Discovery
 
-Discovery serves the platform's extender directory to clients. It is off by default, separate from the extender role.
+Discovery serves the platform's extender directory to clients. When the extender role is enabled, it defaults to serving the feed and joining gossip. Explicit saved `off` or `feed-only` settings take precedence. Older versions of `urnet-tools set extender-discovery off` cleared the override rather than saving it, so that earlier CLI choice cannot be detected: after upgrading, run the command again if discovery should stay off.
 
 - `off` refuses both discovery services.
 - `feed-only` serves the directory feed and refuses gossip.
 - `on` serves the feed and joins the gossip mesh.
 
-Run `urnet-tools set extender-discovery on` to enable it. Use `feed-only` or `off` in place of `on` to change modes. The setting applies live and survives restarts. Check `urnet-tools extender status` for its state and peer counts.
+Use `urnet-tools set extender-discovery off` or `urnet-tools set extender-discovery feed-only` to change modes; `on` restores feed and gossip. The setting applies live and survives restarts. Check `urnet-tools extender status` or `urnet-tools status` for its state, peer ID, peer count, subscribers and startup failures. `urnet-tools top` shows the discovery state and counts in the Extender box and the `v` details panel. A running state means the local role started, not that peers have connected; zero peers means mesh connectivity is not yet demonstrated. On updated providers, the active directory record count includes all sources and is not proof of gossip. The valid-message count and last-received time show messages received from peers that passed validation and were accepted for directory application (including duplicates), since the gossip role started. A zero count does not prove failure: gossip carries live updates and there may not have been a new message yet. Apply errors count directory application failures, not messages rejected by the network validator. Older providers omit these counters.
 
 A host waiting for platform root keys or retrying a failed discovery start keeps working as an extender. It refuses both discovery services until discovery starts. A feed-only role costs little. A gossip role keeps up to 16 mesh peers and 256 feed subscribers.
+
+Recent gossip mesh events, peering transitions, and rate-limited anomaly dumps are recorded in a bounded ring. Use `urnet-tools extender events` to inspect them. Filters support `--since=<duration>` and `--kind=<kinds>`. For scripts, `--json` formats the output.
 
 ## Quick start
 
 ```sh
 urnet-tools extender status     # is it working?
-urnet-tools extender setup      # check port 443, capability and firewall; ask before changing
+urnet-tools extender setup      # check port 443, the low-port route and firewall; ask before changing
 urnet-tools extender about      # a plain-language explanation of the ports and how it works
 urnet-tools extender disable    # off, and it stays off across restarts
 urnet-tools extender enable     # back on
@@ -44,7 +46,7 @@ urnet-tools extender enable     # back on
 For it to work the host needs:
 
 1. **Inbound TCP 443 that reaches the provider.** This is the one required port. If a web server (caddy, nginx, apache) holds it, the extender cannot be listed until you free or move that service.
-2. **Permission to use a port below 1024**, which a non-root provider gets from `cap_net_bind_service` on the binary. The installer and `urnet-tools update` apply it.
+2. **Permission to use TCP 443.** On Linux, a non-root provider can use the host-wide sysctl route or `cap_net_bind_service` on the binary. The sysctl route lets any local user bind ports 443 and above.
 3. **A public IPv4 address**, and for IPv6 a public IPv6 address with a working route out.
 
 UDP 443 and UDP 4053 are optional. UDP 53 is also optional and remains user-managed: setup does not inspect or open it. Without UDP carriers the host is still listed over TCP.
@@ -102,9 +104,9 @@ The role runs from the provider's direct slot, because only that slot's egress i
 | Port | Role | Notes |
 |---|---|---|
 | TCP 443 | TLS carrier | **Required.** The platform proves the host over this port. |
-| UDP 443 | QUIC carrier | Optional. |
-| UDP 4053 | DNS carrier | Optional. See the note on DNS below. |
-| UDP 53 | Second DNS port | Optional and user-managed. Setup does not inspect or open it. Configure it yourself only if you choose to use it. |
+| UDP 443 | QUIC carrier | Optional. Control it with `extender-udp443`. |
+| UDP 4053 | DNS carrier | Optional. Control it with `extender-udp4053`. See the note on DNS below. |
+| UDP 53 | Second DNS port | Optional and user-managed. Control it with `extender-udp53`. Setup does not open it. `URNETWORK_EXTENDER_DNS53=off` also disables it. |
 
 TCP 443 gates everything. The extender binds it first, and **while it fails no other port is opened**: the platform could not list the host anyway, so nothing could use them. It retries every three minutes and opens the rest once it has the port. It says so plainly, naming what holds the port when the host will tell it:
 
@@ -116,7 +118,34 @@ A reminder repeats every 30 minutes while the port stays blocked. When it comes 
 
 **About the DNS ports.** The DNS carrier also answers ordinary DNS questions from anyone who can reach the port, resolved over DoH and rate limited per source and in total, so that from outside it looks like a small rate-limited resolver. That is part of its camouflage; it is upstream's design. It is not limited to the platform's hosts. Port 53 is probed by scanners much more than 4053. Firewall UDP 4053 and 53 like any resolver you do not want to expose, or turn the role off. Without them the host is still listed over TCP.
 
-Binding below 1024 needs root or `CAP_NET_BIND_SERVICE`. The Docker image runs as root. On a bare-metal install the installer and `urnet-tools update` apply `cap_net_bind_service` to the binary, and the log gives the exact `setcap` command if the provider is not root and lacks it. Replacing the provider binary can remove the file capability; the installer restores it after a swap and warns if it cannot verify it.
+TCP 443 needs root, a Linux unprivileged-port sysctl threshold of 443 or lower, or `CAP_NET_BIND_SERVICE`. The sysctl route is host-wide and lets any local user bind ports 443 and above. A file capability can make the running provider unreadable to an unprivileged updater; removing it requires a provider restart or handoff to change the running process.
+
+## Choosing carriers
+
+UDP 443 carries QUIC traffic. UDP 4053 and UDP 53 carry DNS traffic. Each setting defaults to `on` and works independently. Choose which optional carriers the host should offer:
+
+```sh
+urnet-tools set extender-udp443 off
+urnet-tools set extender-udp4053 off
+urnet-tools set extender-udp53 off
+```
+
+Use `on` to enable a carrier again. The provider saves each choice and automatically restarts an active extender role when the choice changes. An `off` carrier is not bound or listed. Status shows it as `disabled by setting`. TCP 443 remains required.
+
+UDP 53 is tried by default. A port already in use cannot bind. On Linux, a non-root provider needs `cap_net_bind_service` or an `ip_unprivileged_port_start` limit of 53 or lower. The setup sysctl limit of 443 alone does not permit binding port 53. `URNETWORK_EXTENDER_DNS53=off` also disables UDP 53 even when its setting is `on`.
+
+`urnet-tools extender status` and `urnet-tools top` always show a `dns 53` line, so you can tell why UDP 53 is not serving:
+
+| Shown | Meaning |
+|---|---|
+| `bound` | UDP 53 is open. |
+| `not bound (address already in use)` | Another service holds UDP 53. |
+| `not bound (permission denied)` | The provider may not bind a port below 1024. See the capability note above. |
+| `not bound (bind failed, cause unknown)` | The bind failed for another reason. The provider log has the error. |
+| `not requested` | `URNETWORK_EXTENDER_DNS53=off` turned UDP 53 off. |
+| `disabled by setting` | `extender-udp53 off` turned it off. |
+
+Providers that predate this show `not reported` in `top` when UDP 53 is not bound. Prometheus exports the current status via the `urnet_extender_dns53_state` gauge metric.
 
 ## Prepare the host with `urnet-tools extender setup`
 
@@ -129,7 +158,7 @@ urnet-tools extender setup --yes --route=sysctl
 `urnet-tools extender setup` inspects the host and proposes only the missing privilege and firewall steps:
 
 1. **Port 443 occupancy.** Checks whether another process already holds TCP 443 and stops with the holder's name and PID if one does.
-2. **Low-port bind privilege.** On Linux, checks whether the provider binary can bind TCP 443 and plans the missing `cap_net_bind_service` capability when needed. It preserves existing file capabilities when adding this capability. On FreeBSD, setup is print-only and untested this release. It prints the required `sysctl` commands and the undo instructions; it does not elevate or change the host. Regular providing on FreeBSD is unaffected.
+2. **Low-port bind privilege.** On Linux, choose sysctl, a binary file capability, or skip. Unattended setup needs `--route=sysctl|capability|skip`, even with `--yes`. The sysctl route writes `net.ipv4.ip_unprivileged_port_start=443` to `/etc/sysctl.d/99-urnetwork-extender.conf` and applies it. Setup preserves an existing drop-in with its mode in `99-urnetwork-extender.conf.pre-urnetwork` and prints recovery commands. It checks persistent configuration as well as the live value. On FreeBSD, setup prints commands and undo instructions without changing the host.
 3. **Host firewall rules.** Inspects the active local firewall (`ufw`, `firewalld`, `iptables`/`ip6tables`, `nftables`, `pf`/`ipfw`, or Windows Firewall) for inbound TCP 443 (required), UDP 443 and UDP 4053 (optional), and plans only missing rules. UDP 53 is user-managed; setup does not inspect or open it. For firewalld, runtime and permanent rules are planned separately. Setup does not reload firewalld.
 4. **Confirmation gate.** Prints the port summary and exact commands, then asks `Execute these commands? [y/N]:` before changing anything. `--yes` or `--force` is the only non-interactive approval. Without either flag, a non-interactive run changes nothing. `--dry-run` (`-n`) prints the plan without applying it.
 5. **Bind verification.** On Linux, after capability checks, runs the provider bind probe as the provider's user when TCP 443 is free. When the running provider already holds TCP 443 or the probe cannot run without a password prompt, setup states plainly that the live bind was not tested.
@@ -314,7 +343,7 @@ The periodic `[health][extender]` line summarises everything:
 🌉❤️ [health][extender] serving | tcp 443 bound, udp 443 bound, dns 4053 bound | IPv4 ACTIVE 203.0.113.5; tcp 443 bound, accepted by the platform; udp 443 bound, left out by the platform (probe failed); dns 4053 bound, left out by the platform (probe failed) | IPv6 not active (failed): no public IPv6 address, next try 17:23; tcp 443 bound, platform status unknown; udp 443 bound, platform status unknown; dns 4053 bound, platform status unknown | clients now 2, requests served 24h 120, 7d 800, lifetime 5000
 ```
 
-The role also exports its state to Prometheus. Turn metrics on with `urnet-tools metrics on` and read the `urnet_extender_*` series: `urnet_extender_enabled`, `urnet_extender_state{state=...}` with one series per state (`off`, `starting`, `serving`, `tcp_unavailable`, `unavailable`, `error`, `closed`), `urnet_extender_carrier_listening{carrier=...}`, `urnet_extender_carrier_listen_error{carrier=...}`, `urnet_extender_requests_total{service=...}`, `urnet_extender_refused_total{stage=...}`, `urnet_extender_carrier_requests_total{carrier=...,outcome=...}`, `urnet_extender_carrier_refused_total{carrier=...,stage=...}`, `urnet_extender_tcp_retry_total` and `urnet_extender_connections_active`.
+The role also exports its state to Prometheus. Turn metrics on with `urnet-tools metrics on` and read the `urnet_extender_*` series: `urnet_extender_enabled`, `urnet_extender_state{state=...}` with one series per state (`off`, `starting`, `serving`, `tcp_unavailable`, `unavailable`, `error`, `closed`), `urnet_extender_carrier_listening{carrier=...}`, `urnet_extender_carrier_listen_error{carrier=...}`, `urnet_extender_dns53_state{state=...}` with one series per state (`bound`, `disabled`, `address_in_use`, `permission_denied`, `unknown`, `not_requested`, `pending`), `urnet_extender_requests_total{service=...}`, `urnet_extender_refused_total{stage=...}`, `urnet_extender_carrier_requests_total{carrier=...,outcome=...}`, `urnet_extender_carrier_refused_total{carrier=...,stage=...}`, `urnet_extender_tcp_retry_total` and `urnet_extender_connections_active`.
 
 `serving on tcp` means the process bound the port inside itself. **ACTIVE** means the platform proved the host from the outside and listed it. Neither tells you that a particular client is using it; the live client count and the request totals do.
 

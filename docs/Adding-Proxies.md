@@ -6,6 +6,8 @@ couple of platform-specific pitfalls.
 
 The command is `urnet-tools proxy add <file>`, where `<file>` points to a text
 file with one proxy per line. Each line is `host:port` or `host:port:user:pass`.
+Passwords containing an `@` sign are supported when using standard URL format
+(`socks5://user:pass@host:port`).
 
 ## The universal sequence
 

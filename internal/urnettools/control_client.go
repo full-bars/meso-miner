@@ -83,7 +83,8 @@ type controlResponse struct {
 	NextCursor   string                 `json:"next_cursor,omitempty"`
 	Settings     map[string]SettingInfo `json:"settings,omitempty"`
 	// Extender answers the "extender" command (extender_status.go).
-	Extender *ExtenderReading `json:"extender,omitempty"`
+	Extender     *ExtenderReading      `json:"extender,omitempty"`
+	GossipEvents []ExtenderGossipEvent `json:"gossip_events,omitempty"`
 	// StartupValues maps restart-required keys to the values the running
 	// provider actually started with (from env vars set at startup).
 	// The dashboard compares these against current control-state values
@@ -105,6 +106,12 @@ type controlResponse struct {
 	// and "goroutines".
 	Internals  *NodeInternals   `json:"internals,omitempty"`
 	Goroutines *GoroutineGroups `json:"goroutines,omitempty"`
+	// ProxyCells is the compact per-proxy grid payload answered by
+	// "proxy_cells". 4 packed bytes per proxy, base64 by JSON.
+	ProxyCells []byte `json:"proxy_cells,omitempty"`
+	// ProxyCellDetail is the full per-proxy record for the grid's popup,
+	// answered by "proxy_cell_detail".
+	ProxyCellDetail []ProxyCellDetail `json:"proxy_cell_detail,omitempty"`
 	// ProxyAudit is the provider's proxy audit status, answered by "status" and "audit".
 	ProxyAudit *ProxyAuditStatus `json:"proxy_audit,omitempty"`
 	Audit      *ProxyAuditStatus `json:"audit,omitempty"`
@@ -178,6 +185,12 @@ var controlKeyCanonical = map[string]string{
 	"extender":                    "extender",
 	"extender-discovery":          "extender_discovery",
 	"extender_discovery":          "extender_discovery",
+	"extender-udp443":             "extender_udp443",
+	"extender_udp443":             "extender_udp443",
+	"extender-udp4053":            "extender_udp4053",
+	"extender_udp4053":            "extender_udp4053",
+	"extender-udp53":              "extender_udp53",
+	"extender_udp53":              "extender_udp53",
 	"metrics-listen":              "metrics_listen",
 }
 
@@ -237,7 +250,7 @@ func validateControlValue(canonicalKey, value string) error {
 		default:
 			return fmt.Errorf("proxy-target-family: must be v4 or proxy (got %q)", value)
 		}
-	case "fast_auth", "proxy_self_heal", "proxy_audit", "udp_probe", "smart_dialer", "baseline", "h3_datagram", "h3_datagram_send", "h1_plus", "tls_hello":
+	case "fast_auth", "proxy_self_heal", "proxy_audit", "udp_probe", "smart_dialer", "baseline", "h3_datagram", "h3_datagram_send", "h1_plus", "tls_hello", "extender_udp443", "extender_udp4053", "extender_udp53":
 		switch strings.ToLower(value) {
 		case "on", "off":
 		default:

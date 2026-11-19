@@ -292,8 +292,18 @@ func TestExtenderDiscoverySnapshotReportsPeersAndSubscribers(t *testing.T) {
 	d.reconcile(discoveryTestInputs(t, server))
 	h.roles[0].status = extenderrole.Status{PeerId: "peer-1", GossipRunning: true, FeedSubscriberCount: 3}
 	h.roles[0].status.Node.MeshPeerCount = 7
+	h.roles[0].status.Node.PeerCount = 9
+	h.roles[0].status.ActiveRecords = 8
+	h.roles[0].status.MessagesAccepted = 11
+	h.roles[0].status.DialStats.Attempts = 17
+	h.roles[0].status.DialStats.Refused = 4
+	h.roles[0].status.ApplyErrors = 2
+	h.roles[0].status.LastAcceptedUnixMilli = 123456
 	snapshot := d.snapshot()
-	if snapshot.PeerId != "peer-1" || snapshot.Peers != 7 || snapshot.FeedSubscribers != 3 {
+	if snapshot.DialStats == nil || snapshot.DialStats.Attempts != 17 || snapshot.DialStats.Refused != 4 {
+		t.Fatalf("dial stats = %+v", snapshot.DialStats)
+	}
+	if snapshot.PeerId != "peer-1" || snapshot.Peers != 7 || snapshot.FeedSubscribers != 3 || snapshot.ActiveRecords == nil || *snapshot.ActiveRecords != 8 || snapshot.ConnectedPeers == nil || *snapshot.ConnectedPeers != 9 || snapshot.MessagesAccepted == nil || *snapshot.MessagesAccepted != 11 || snapshot.ApplyErrors == nil || *snapshot.ApplyErrors != 2 || snapshot.LastAcceptedUnixMilli != 123456 {
 		t.Fatalf("snapshot = %+v", snapshot)
 	}
 }
@@ -324,6 +334,9 @@ func TestExtenderDiscoveryConcurrentToggleIsRaceFree(t *testing.T) {
 }
 
 func TestApplyExtenderDiscoveryModeWithoutARole(t *testing.T) {
+	previous := globalControlState
+	globalControlState = newControlState()
+	t.Cleanup(func() { globalControlState = previous })
 	globalExtenderRole.Store(nil)
 	if err := applyExtenderDiscoveryMode("on"); err == nil {
 		t.Fatal("applying a mode with no extender role should fail so the caller can queue it")
@@ -331,7 +344,64 @@ func TestApplyExtenderDiscoveryModeWithoutARole(t *testing.T) {
 	if err := applyExtenderDiscoveryMode("bogus"); err == nil {
 		t.Fatal("a bad mode was accepted")
 	}
-	if got := currentExtenderDiscoverySnapshot(); got.State != extenderDiscoveryStateOff || got.Requested != extenderDiscoveryOff {
+	if got := currentExtenderDiscoverySnapshot(); got.State != extenderDiscoveryStateOff || got.Requested != extenderDiscoveryOn {
 		t.Fatalf("snapshot with no role = %+v", got)
+	}
+	if err := globalControlState.set("extender_discovery", "off"); err != nil {
+		t.Fatal(err)
+	}
+	if got := currentExtenderDiscoverySnapshot(); got.Requested != "off" || got.State != extenderDiscoveryStateOff {
+		t.Fatalf("saved off with no role: %+v", got)
+	}
+}
+
+func TestExtenderDiscoveryRecordsStateEventsAndSocketServesThem(t *testing.T) {
+	h := newDiscoveryTestHarness(t)
+	server := &fakeDiscoveryServer{}
+	d := newExtenderDiscovery(context.Background(), nil)
+	clock := time.Date(2026, 11, 18, 5, 0, 0, 0, time.UTC)
+	d.now = func() time.Time { return clock }
+	_ = d.setMode("on")
+
+	// 1. Waiting for directory.
+	in := discoveryTestInputs(t, server)
+	in.directory = nil
+	d.reconcile(in)
+
+	// 2. Running.
+	clock = clock.Add(time.Second)
+	d.reconcile(discoveryTestInputs(t, server))
+	if h.settings[0].Events != &d.events {
+		t.Fatal("role settings did not receive shared event ring")
+	}
+
+	// 3. Feed-only.
+	clock = clock.Add(time.Second)
+	_ = d.setMode("feed-only")
+	d.reconcile(discoveryTestInputs(t, server))
+
+	// 4. Off.
+	clock = clock.Add(time.Second)
+	_ = d.setMode("off")
+	d.reconcile(discoveryTestInputs(t, server))
+
+	events := d.eventsSnapshot()
+	wantReasons := []string{"waiting", "running", "feed-only", "off"}
+	if len(events) != len(wantReasons) {
+		t.Fatalf("events = %+v, want %v", events, wantReasons)
+	}
+	for i, want := range wantReasons {
+		if events[i].Kind != "state" || events[i].Reason != want {
+			t.Fatalf("events[%d] = %+v, want state/%s", i, events[i], want)
+		}
+	}
+
+	role := &extenderRole{discovery: d}
+	prevRole := globalExtenderRole.Swap(role)
+	t.Cleanup(func() { globalExtenderRole.Store(prevRole) })
+
+	resp := handleControlRequest(newControlState(), controlRequest{Cmd: "extender_events"})
+	if !resp.OK || len(resp.GossipEvents) != len(wantReasons) {
+		t.Fatalf("control response = %+v", resp)
 	}
 }

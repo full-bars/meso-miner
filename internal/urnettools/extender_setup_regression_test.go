@@ -135,6 +135,7 @@ func TestExtenderSetup_UDPBusyOnly(t *testing.T) {
 		Stdout:      &stdout,
 		Stderr:      &stderr,
 		Yes:         true,
+		Route:       "capability",
 	})
 	if err != nil {
 		t.Fatalf("expected success with UDP busy, got err: %v", err)
@@ -177,6 +178,7 @@ func TestExtenderSetup_AlreadyConfigured(t *testing.T) {
 		FirewallMgr:    fwMgr,
 		IsRoot:         func() bool { return false },
 		NonInteractive: true,
+		Route:          "capability",
 		Stdout:         &stdout,
 		Stderr:         &stderr,
 	})
@@ -192,6 +194,15 @@ func TestExtenderSetup_AlreadyConfigured(t *testing.T) {
 }
 
 func TestExtenderSetupHiddenPortHolderDefersToElevation(t *testing.T) {
+	// Setup refuses to elevate unless the resolved provider has a unique unit
+	// or state dir, so the fixture must supply one. Without this seam the test
+	// resolves against whatever provider the host happens to run: it passed on
+	// a machine with a provider installed and failed on a CI runner without one.
+	oldDiscover := setupDiscoverFn
+	defer func() { setupDiscoverFn = oldDiscover }()
+	setupDiscoverFn = func() []Provider {
+		return []Provider{{Unit: "urnetwork.service", User: "provider", Binary: "/provider"}}
+	}
 	ssOut := "State Recv-Q Send-Q Local Address:Port Peer Address:Port Process\nLISTEN 0 4096 *:443 *:*\n"
 	run := func(root bool) error {
 		cfg := &mockPlatformConfigurer{platform: "linux", configured: true}
@@ -199,6 +210,7 @@ func TestExtenderSetupHiddenPortHolderDefersToElevation(t *testing.T) {
 			Platform: "linux", PlatformCfg: cfg, IsRoot: func() bool { return root },
 			Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Yes: true, Force: true,
 			NonInteractive: true,
+			Route:          "capability",
 			ElevateFunc:    func([]string) error { t.Error("unexpected elevation"); return nil },
 			LookPath:       func(string) (string, error) { return "/usr/bin/sudo", nil },
 			PortChecker: &PortChecker{Platform: "linux", ExecCmd: func(name string, args ...string) ([]byte, error) {
@@ -276,7 +288,7 @@ func TestReportExtenderBindWarnsWhenUnitSetsNoNewPrivileges(t *testing.T) {
 
 func TestExtenderSetupManualCommandKeepsArguments(t *testing.T) {
 	opts := ExtenderSetupOptions{Argv: []string{"extender", "setup", "--yes", "--state-dir", "/home/example/a b"}}
-	got := formatSetupSudoCommand(opts)
+	got := formatSetupSudoCommand(opts, "")
 	if !strings.Contains(got, "extender setup --yes --state-dir '/home/example/a b'") {
 		t.Fatalf("manual command lost arguments or shell quoting: %q", got)
 	}
@@ -375,6 +387,7 @@ func TestExtenderBindOutcomes(t *testing.T) {
 func setupRegressionOptions() ExtenderSetupOptions {
 	return ExtenderSetupOptions{
 		Platform:    "linux",
+		Route:       "capability",
 		PlatformCfg: &mockPlatformConfigurer{platform: "linux"},
 		IsRoot:      func() bool { return false },
 		Stdout:      &bytes.Buffer{},

@@ -457,6 +457,19 @@ func TestExtenderRolePublishesAndAppliesRecordsOverTheMesh(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForDirectoryKey(t, roleDirectory, extenderKey.publicKey, "the extender's own record")
+	deadline := time.Now().Add(testRoleTimeout)
+	for {
+		status := role.Status()
+		if status.MessagesAccepted > 0 && status.LastAcceptedUnixMilli > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("gossip receive counters did not update: %+v", status)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	beforeLocalPublish := role.Status().MessagesAccepted
 
 	// (b) the role publishes another extender's record: the operator applies
 	// it, and so does the role's own directory
@@ -470,6 +483,9 @@ func TestExtenderRolePublishesAndAppliesRecordsOverTheMesh(t *testing.T) {
 	}
 	waitForDirectoryKey(t, operatorDirectory, otherKey.publicKey, "the record the role published")
 	waitForDirectoryKey(t, roleDirectory, otherKey.publicKey, "the record the role published to itself")
+	if got := role.Status().MessagesAccepted; got != beforeLocalPublish {
+		t.Fatalf("local publication counted as a remote message: before %d after %d", beforeLocalPublish, got)
+	}
 
 	// (c) a record no root key signed is refused before it is relayed
 	if err := role.Publish(ctx, &protocol.ExtenderGossipMessage{
@@ -501,5 +517,9 @@ func TestExtenderRolePublishesAndAppliesRecordsOverTheMesh(t *testing.T) {
 	if publicKey := recordFramePublicKey(t, first); !bytes.Equal(publicKey, extenderKey.publicKey) {
 		t.Fatalf("the feed led with %s, expected the extender's own key %s",
 			hex.EncodeToString(publicKey), hex.EncodeToString(extenderKey.publicKey))
+	}
+
+	if events := role.Events(); len(events) > gossip.EventCapacity {
+		t.Fatalf("role returned %d events, limit %d", len(events), gossip.EventCapacity)
 	}
 }
