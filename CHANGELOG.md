@@ -4,6 +4,7 @@ Everything merged after `v2026.11.15-1099303040-meso`.
 
 ### Changed
 
+- The CFAA sync commits generated tables directly to the main branch after its format checks.
 - Removed the unused FP2 client window. No shipped binary used it. This also removes exported Go API: the peer capability recorder (`PeerCapabilityRecorder`, `NewPeerCapabilityRecorder`, `ClientSettings.PeerCapabilityRecorder`), `WindowTypeLimited` and the `LimitedWindow*` methods of `RemoteUserNatMultiClient`, the IPv6 and UDP availability methods of `RemoteUserNatMultiClient`, and the address family and capability types and fields (`DestinationStats.IpFamily`, `DestinationStats.Capabilities`, `ProviderCapabilities`, `FindProvidersSelect`, `MultiClientGeneratorWithCapabilities`). A program that imports these no longer builds. Each window still starts with the effective performance profile, as it did before the FP2 port.
 - **The Docker shakedown checks no longer fail on harness bugs** (`.github/scripts/docker-shakedown.sh`). The in-container update checks passed `-f` to the shell `urnet-tools` wrapper that the Docker image ships, which does not accept that flag. The Go `urnet-tools` on a host still does. The proxy cache check read the cache with `python3`, which the image does not ship, so it always read -1. The profile startup wait was too short for a slow runner. The state handling of two checks was wrong. These repairs were made in the 3.23 line in October and are ported here. [no redeploy]
 
@@ -20,6 +21,8 @@ Everything merged after `v2026.11.15-1099303040-meso`.
 
 ### Fixed
 
+- Backend failure counts and timestamps are published together as one snapshot.
+- Proxy add accepts passwords containing an `@` sign.
 - **Lossless prefix-bucket host blocker format and Telegram reflector test alignment** (`ip_blocker.go`, `ip_security_cfaa.go`, `ip_security_telegram_test.go`, `blocker/`). The host blocker generator and decoder support the bucketed table layout with 257 bucket offsets and 5-byte tails, preserving all 48 fingerprint bits while reducing embedded table size. Generator tests emit and verify single packed string literals and Frogeye host feed variants. The Telegram call reflector test suite aligns with upstream precedence where an address on an active IP reputation blocklist yields an IP reputation drop.
 
 ## [v2026.11.15-1099303040-meso] - 2026-11-15
