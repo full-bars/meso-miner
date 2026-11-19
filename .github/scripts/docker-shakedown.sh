@@ -854,7 +854,7 @@ if [ -n "$CID" ]; then
   ok "Y3 compose pull && up -d landed a live provider (${CID:0:12}…)"
   Y3_VER=$(docker exec dsk-y3 sh -c "provider --version" 2>/dev/null | grep -m1 -oE "v[0-9]+(\.[0-9]+)*(-[0-9]+)?-meso(\.dev)?" || echo "")
   echo "  Y3 :latest resolved to version: $Y3_VER" | tee -a "$REPORT"
-  if echo "$Y3_VER" | grep -qE '\-rc[0-9]*$|\-alpha|\-beta'; then
+  if [[ "$Y3_VER" =~ (-rc[0-9]*$|-alpha|-beta|\.dev$) ]]; then
     bad "Y3 compose pull of :latest landed a PRE-RELEASE ($Y3_VER) — fleet-safety guarantee broken"
   else
     ok "Y3 compose pull of :latest did NOT land an RC ($Y3_VER)"
@@ -1047,7 +1047,7 @@ if [ -n "$CID" ]; then
   ok "Z4 :latest-pinned container reaches a live provider (${CID:0:12}…)"
   VER=$(docker exec dsk-z4 sh -c "provider --version" 2>/dev/null | grep -m1 -oE "v[0-9]+(\.[0-9]+)*(-[0-9]+)?-meso(\.dev)?" || echo "")
   echo "  Z4 :latest resolved version: $VER" | tee -a "$REPORT"
-  if echo "$VER" | grep -qE '\-rc[0-9]*$|\-alpha|\-beta'; then
+  if [[ "$VER" =~ (-rc[0-9]*$|-alpha|-beta|\.dev$) ]]; then
     t1bad "Z4 :latest is a PRE-RELEASE ($VER) — a Watchtower-style puller would take the RC onto every :latest node"
   else
     ok "Z4 :latest is not a pre-release ($VER) — the Docker half of the fleet-safety guarantee holds under an actual puller"
@@ -1240,7 +1240,7 @@ prune_images
 
 section "AC1. Versioned image tag exists; :latest does not silently track an RC"
 IS_RC=0
-echo "$EXPECTED_VERSION" | grep -qE '\-rc[0-9]*$|\-alpha|\-beta' && IS_RC=1
+[[ "$EXPECTED_VERSION" =~ (-rc[0-9]*$|-alpha|-beta|\.dev$) ]] && IS_RC=1
 VER_DIGEST=$(docker inspect -f '{{index .RepoDigests 0}}' "${IMAGE}:${EXPECTED_VERSION}" 2>/dev/null)
 [ -n "$VER_DIGEST" ] && ok "AC1 versioned tag ${EXPECTED_VERSION} resolved to a real digest ($VER_DIGEST)" || bad "AC1 versioned tag ${EXPECTED_VERSION} has no digest"
 if [ "$IS_RC" = "1" ]; then
