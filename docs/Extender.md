@@ -31,6 +31,8 @@ Use `urnet-tools set extender-discovery off` or `urnet-tools set extender-discov
 
 A host waiting for platform root keys or retrying a failed discovery start keeps working as an extender. It refuses both discovery services until discovery starts. A feed-only role costs little. A gossip role keeps up to 16 mesh peers and 256 feed subscribers.
 
+Recent gossip mesh events, peering transitions, and rate-limited anomaly dumps are recorded in a bounded ring. Use `urnet-tools extender events` to inspect them. Filters support `--since=<duration>` and `--kind=<kinds>`. For scripts, `--json` formats the output.
+
 ## Quick start
 
 ```sh
@@ -143,7 +145,7 @@ UDP 53 is tried by default. A port already in use cannot bind. On Linux, a non-r
 | `not requested` | `URNETWORK_EXTENDER_DNS53=off` turned UDP 53 off. |
 | `disabled by setting` | `extender-udp53 off` turned it off. |
 
-Providers that predate this show `not reported` in `top` when UDP 53 is not bound.
+Providers that predate this show `not reported` in `top` when UDP 53 is not bound. Prometheus exports the current status via the `urnet_extender_dns53_state` gauge metric.
 
 ## Prepare the host with `urnet-tools extender setup`
 

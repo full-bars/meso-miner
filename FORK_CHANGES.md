@@ -4023,3 +4023,127 @@ This also removes exported Go API: the peer capability recorder (`PeerCapability
 **How to Identify in New Upstream**: Check `containsHostHash` and `blockerBlockedHostBuckets` in `ip_blocker.go`, `packHostHashes` in `blocker/main.go`, and `TestTelegramCallReflectorRanges` in `ip_security_telegram_test.go`.
 
 **Status**: Unreleased.
+
+---
+
+## 193. Proxy UDP Relay Coverage and Background Sweeps
+
+**Purpose**: Check proxy UDP relay coverage, record results across restarts and provide operator controls.
+
+**Files Modified**: `provider/proxy_udp_check.go`, `provider/proxy_udp_egress.go`, `provider/node_snapshot.go`, `provider/metrics_provider.go`, `internal/urnettools/snapshot_render.go`, `internal/urnettools/top_view.go`.
+
+**Files Added**: `provider/proxy_udp_sweep.go`, `provider/proxy_udp_persist.go`, `provider/proxy_source_line.go` and their tests.
+
+**Changes**:
+- Status, `top` and metrics report UDP relay coverage for online proxies. Paid and URL proxy sources run background sweeps.
+- Turning off the proxy sweep or `udp-probe` stops new sweeps at the next interval. A running sweep finishes. Client safety checks remain active.
+- The state file is written in the background at most once every two seconds during normal operation. Shutdown can request an immediate flush. A remembered TCP exit is reused for at most six hours.
+- A client check still running after 20 seconds is treated as unknown and the relay attempt is allowed. Proxies are never rejected or graded down for lacking UDP. Only client UDP and QUIC flows are refused through a proxy proven not to relay.
+- The shared source line classifier rejects unbracketed IPv6 lines as `invalid_fields`.
+
+**Status**: Unreleased.
+
+---
+
+## 194. Status Summary and Output Modes
+
+**Purpose**: Provide a fast health summary with structured output options and stable exit codes.
+
+**Files Modified**: `internal/urnettools/cli.go`, `internal/urnettools/status.go`, `internal/urnettools/status_summary.go`, `internal/urnettools/status_update.go`, `internal/urnettools/select_multi.go`.
+
+**Files Added**: `internal/urnettools/status_model.go`, `internal/urnettools/status_json.go`, `internal/urnettools/status_brief.go` and their tests.
+
+**Changes**:
+- The status command presents a health summary and UDP coverage.
+- `--brief` reports warnings and failures with exit codes 0 for healthy, 1 for warning, 2 for broken and 3 for unreachable. Healthy brief output is empty.
+- `--json` keeps the raw snapshot. `--json-summary` emits the stable schema document `urnet-tools-status/1`.
+- `--live` refreshes the summary in place.
+- Update checks use a time-limited cache that does not follow symbolic links.
+- Status honors `--pid` and identifies an unavailable or stopped extender.
+
+**Status**: Unreleased.
+
+---
+
+## 195. Extender UDP Controls and Port 53 Telemetry
+
+**Purpose**: Allow independent control of extender UDP carriers and report the state of UDP port 53.
+
+**Files Modified**: `provider/control_socket.go`, `provider/extender_role.go`, `extender/runner.go`, `internal/urnettools/extender_status.go`.
+
+**Files Added**: `provider/extender_carrier_edges_test.go`, `provider/extender_dns53_test.go`.
+
+**Changes**:
+- Settings `extender-udp443`, `extender-udp4053` and `extender-udp53` enable or disable each carrier independently.
+- A change restarts the active extender role. A failed control write restores the previous carrier configuration.
+- Extender status reports UDP port 53 state and bind failure reason.
+- Metric `urnet_extender_dns53_state` exports the current state of UDP port 53.
+- Linux setup supports a lower sysctl unprivileged port threshold for TCP 443. The threshold is not selectable for UDP 53 yet.
+
+**Status**: Unreleased.
+
+---
+
+## 196. Extender Gossip Visibility and Event Ring
+
+**Purpose**: Expose gossip mesh peering activity, connection events and anomaly dumps.
+
+**Files Modified**: `provider/extender_discovery_log.go`, `provider/extender_role.go`, `internal/urnettools/extender_events.go`.
+
+**Files Added**: `internal/urnettools/gossip_ring.go`, `provider/gossip_events_test.go`.
+
+**Changes**:
+- Extender diagnostics report dial attempts and failures, health transitions and recent events.
+- Anomaly dumps log recent mesh and connection events with rate limiting.
+- The health calculation retains a more severe state when cap pressure is present.
+- `urnet-tools extender events` displays recent events from the bounded event ring.
+
+**Status**: Unreleased.
+
+---
+
+## 197. Top Dashboard Enhancements and Container Support
+
+**Purpose**: Add proxy heatmap visualization, configurable afterglow, UDP coverage and container integration.
+
+**Files Modified**: `internal/urnettools/top_view.go`, `internal/urnettools/top_model.go`, `internal/urnettools/docker_top.go`.
+
+**Files Added**: `internal/urnettools/top_heatmap.go`, `internal/urnettools/top_settings.go`.
+
+**Changes**:
+- The top display includes proxy heatmap dots, a configurable fading afterglow and a UDP coverage row.
+- `urnet-docker top` forwards terminal color settings and stores preferences on a writable mount.
+- Docker execution checks for the dashboard binary before launch.
+- Help text lists real flags for status, top, providers and lifecycle commands.
+
+**Status**: Unreleased.
+
+---
+
+## 198. Linux Interface Counters
+
+**Purpose**: Read cumulative Linux network interface byte counters for traffic monitoring.
+
+**Files Added**: `internal/nicstat/nicstat.go`, `internal/nicstat/nicstat_test.go`.
+
+**Changes**:
+- The `internal/nicstat` package reads `/proc/net/dev` interface statistics on Linux.
+- It reports cumulative receive and transmit byte counters and accommodates interface resets.
+
+**Status**: Unreleased.
+
+---
+
+## 199. Proxy Input Parsing and Direct Blocklist Sync
+
+**Purpose**: Support complex proxy credentials and streamline CFAA blocklist table deployment.
+
+**Files Modified**: `provider/proxy_url.go`, `.github/workflows/cfaa-blocklist-sync.yml`.
+
+**Files Added**: `.github/scripts/commit_sync.sh`.
+
+**Changes**:
+- Proxy URL parser splits on the last `@` sign so passwords containing `@` are accepted.
+- CFAA blocklist sync verifies generated tables and commits changes directly to main.
+
+**Status**: Unreleased.
