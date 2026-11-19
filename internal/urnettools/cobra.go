@@ -296,8 +296,11 @@ Keys:
   m                menu for the color theme and graph style (remembered)
   u                switch byte units
   ?                help`,
-		"  urnet-tools top\n  urnet-tools top --interval 500ms\n  urnet-tools top --network mynetwork",
+		"  urnet-tools top\n  urnet-tools top --interval 500ms\n  urnet-tools top --network mynetwork --copy",
 		helpFlag{name: "interval", value: true, usage: "refresh every `duration`, default 1s, minimum 100ms"},
+		helpFlag{name: "no-mouse", usage: "turn off mouse support"},
+		helpFlag{name: "copy", usage: "on quit, save the last screen as a text file"},
+		helpFlag{name: "plain", usage: "with --copy, use ASCII instead of box characters"},
 	)
 }
 
