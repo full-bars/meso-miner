@@ -36,11 +36,6 @@ func cmdTop(args []string) error {
 	if err != nil {
 		return err
 	}
-	// Checked first: with no terminal there is nothing to draw on, and the
-	// question of which provider to show has no bearing on that.
-	if !topStdoutIsTerminal() {
-		return errors.New("top needs an interactive terminal (stdout is not one); use `urnet-tools status` for one-shot or scripted output, add --json for machine-readable output")
-	}
 	providers, cur := []Provider{demoProvider()}, 0
 	if !demo {
 		t, extra, err := parseTargetFlags(targetArgs)
