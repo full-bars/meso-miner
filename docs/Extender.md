@@ -31,6 +31,17 @@ Use `urnet-tools set extender-discovery off` or `urnet-tools set extender-discov
 
 A host waiting for platform root keys or retrying a failed discovery start keeps working as an extender. It refuses both discovery services until discovery starts. A feed-only role costs little. A gossip role keeps up to 16 mesh peers and 256 feed subscribers.
 
+### Gossip diagnostics and events
+
+The provider maintains an in-memory event ring of recent mesh, dial, reject and cap events. Read recent events with `urnet-tools extender events`:
+
+```sh
+urnet-tools extender events                  # list recent gossip events
+urnet-tools extender events --since 10m      # filter by age
+urnet-tools extender events --kind dial      # filter by kind: mesh, dial, reject, cap
+urnet-tools extender events --json           # output as JSON
+```
+
 ## Quick start
 
 ```sh
@@ -130,7 +141,7 @@ urnet-tools set extender-udp53 off
 
 Use `on` to enable a carrier again. The provider saves each choice and automatically restarts an active extender role when the choice changes. An `off` carrier is not bound or listed. Status shows it as `disabled by setting`. TCP 443 remains required.
 
-UDP 53 is tried by default. A port already in use cannot bind. On Linux, a non-root provider needs `cap_net_bind_service` or an `ip_unprivileged_port_start` limit of 53 or lower. The setup sysctl limit of 443 alone does not permit binding port 53. `URNETWORK_EXTENDER_DNS53=off` also disables UDP 53 even when its setting is `on`.
+UDP 53 is tried by default. A port already in use cannot bind. On Linux, a non-root provider needs `cap_net_bind_service` or an `ip_unprivileged_port_start` limit of 53 or lower. The setup sysctl limit of 443 alone does not permit binding port 53. The lower sysctl threshold for port 53 exists in the platform code, but extender setup does not select it yet. `URNETWORK_EXTENDER_DNS53=off` also disables UDP 53 even when its setting is `on`.
 
 `urnet-tools extender status` and `urnet-tools top` always show a `dns 53` line, so you can tell why UDP 53 is not serving:
 

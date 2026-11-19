@@ -6,7 +6,7 @@ It takes two steps: turn metrics on at each provider, then start the bundle on a
 
 ## Extender discovery metrics
 
-`urnet_extender_discovery_state` is a gauge with one series for each bounded state: `off`, `waiting`, `running`, `feed-only` and `failed`. The active state is 1. `urnet_extender_discovery_peers` counts mesh peers and `urnet_extender_discovery_feed_subscribers` counts feed subscribers. `urnet_extender_carrier_requests_total{carrier=...,outcome=...}` counts served and refused requests for `tcp-443`, `udp-443`, `udp-4053` and `udp-53`. `urnet_extender_carrier_refused_total{carrier=...,stage=...}` splits refused requests by carrier and refusal stage.
+`urnet_extender_discovery_state` is a gauge with one series for each bounded state: `off`, `waiting`, `running`, `feed-only` and `failed`. The active state is 1. `urnet_extender_discovery_peers` counts mesh peers and `urnet_extender_discovery_feed_subscribers` counts feed subscribers. `urnet_gossip_dial_attempts_total` counts mesh dial attempts, and `urnet_gossip_dial_failures_total` counts dial failures. `urnet_extender_dns53_state` reports the state of DNS port 53. `urnet_extender_carrier_requests_total{carrier=...,outcome=...}` counts served and refused requests for `tcp-443`, `udp-443`, `udp-4053` and `udp-53`. `urnet_extender_carrier_refused_total{carrier=...,stage=...}` splits refused requests by carrier and refusal stage.
 
 ## Before you set anything up: the built-in baseline
 
@@ -308,3 +308,7 @@ An extender host exports one series per carrier (`tcp-443`, `udp-443`, `udp-4053
 | `urnet_extender_carrier_refused_total` | counter | `carrier`, `stage` | Refusals by carrier and the stage that refused them |
 | `urnet_extender_carrier_bytes_total` | counter | `carrier`, `direction` | Bytes this extender relayed by carrier. `direction="ingress"` is from clients and `egress` is to clients. These are relayed bytes, not earnings: the network credits contracts |
 | `urnet_extender_carrier_connections` | gauge | `carrier` | Connections this extender is relaying now |
+| `urnet_extender_dns53_state` | gauge | `state` | DNS port 53 state: bound, disabled, address_in_use, permission_denied, unknown, not_requested, pending |
+| `urnet_gossip_dial_attempts_total` | counter | `mesh` | Extender gossip peering dial attempts |
+| `urnet_gossip_dial_failures_total` | counter | `mesh`, `reason` | Extender gossip peering dial failures by reason |
+| `urnet_proxy_udp_proxies` | gauge | `state` | Online proxies by UDP relay coverage state: ok, no-relay, exit-mismatch, unknown |

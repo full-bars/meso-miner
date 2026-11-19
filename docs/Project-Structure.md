@@ -28,6 +28,7 @@ Everything the provider binary does that is not the shared network stack.
 ## Operator tool (`cmd/urnet-tools/`, `cmd/urnet-docker/`, `internal/`)
 
 - `internal/urnettools/` holds operator logic: command tree (`cobra.go`), provider discovery (`discover*.go`), update with checksum verification (`update.go`, `release.go`), lifecycle commands, uninstall safety, capability restoration, proxy commands, session save/load, self-heal, logs, Docker support and extender setup. The `extender_*.go` files inspect ports, bind capability and firewalls, print exact setup commands, and apply changes only after confirmation. FreeBSD extender setup prints manual instructions and makes no changes.
+- `internal/nicstat/` reads Linux interface receive and transmit counters from `/proc/net/dev`.
 - `internal/tui/` is the terminal drawing kit behind `urnet-tools top`.
 - `internal/verdictfeed/` reads the signed backend-health feed (off by default).
 - `internal/promtext/`, `internal/durable*/` are small support packages for metrics checks and durable state.
@@ -70,7 +71,7 @@ Test files sit beside the code they test (`*_test.go`).
 - `Dockerfile` and `docker/scripts/`: the container image. `entrypoint.sh` picks the start script from the `BUILD` setting.
 - `pelican/`: egg for the Pelican game-server panel.
 - `monitoring/`: ready-made Prometheus and Grafana stack. See [Monitoring](/full-bars/meso-miner/wiki/Monitoring).
-- `.github/workflows/`: CI. `build.yml` builds and tests, `release.yml` publishes releases, plus installer, OpenRC, FreeBSD, CodeQL and soak checks. The blocklist sync runs the decoder tests against the upstream tables before it opens a PR. See [Blocklist Sync](Blocklist-Sync).
+- `.github/workflows/`: CI. `build.yml` builds and tests, `release.yml` publishes releases, plus installer, OpenRC, FreeBSD, CodeQL and soak checks. The blocklist sync runs decoder tests against upstream tables and commits verified tables directly to `main`. See [Blocklist Sync](Blocklist-Sync).
 
 ## Documentation
 
