@@ -12,6 +12,10 @@ Everything merged after `v2026.11.15-1099303070-meso`.
 - **Traffic the extender relays, per carrier** (`extender/`, `provider/`, `internal/urnettools/`). The extender counts the bytes it relays on `tcp-443`, `udp-443`, `udp-4053` and `udp-53`, on each side, with the rate, the relayed connections and a minute history. `urnet-tools extender status` prints a `Traffic` table in human units, `top` shows one row per carrier in its Extender box, and `/metrics` exports `urnet_extender_carrier_bytes_total{carrier,direction}` and `urnet_extender_carrier_connections{carrier}`. These are bytes this extender relayed, not earnings. [redeploy]
 - **`urnet-tools top` can show decimal units** (`internal/tui/labels.go`, `internal/urnettools/top_model.go`). The `u` key switches every byte and rate label between binary units (KiB, MiB, GiB) and decimal units (kB, MB, GB). The graph axes follow the choice. Binary stays the default, and the choice lasts for the session. [redeploy]
 
+### Fixed
+
+- **Lossless prefix-bucket host blocker format and Telegram reflector test alignment** (`ip_blocker.go`, `ip_security_cfaa.go`, `ip_security_telegram_test.go`, `blocker/`). The host blocker generator and decoder support the bucketed table layout with 257 bucket offsets and 5-byte tails, preserving all 48 fingerprint bits while reducing embedded table size. Generator tests emit and verify single packed string literals and Frogeye host feed variants. The Telegram call reflector test suite aligns with upstream precedence where an address on an active IP reputation blocklist yields an IP reputation drop.
+
 ## [v2026.11.15-1099303070-meso] - 2026-11-15
 
 Changes after `v2026.11.14-1098553390-meso` through this tag. Notes: `releases/v2026.11.15-1099303070-meso.md`.
