@@ -43,3 +43,5 @@ unlicensed upstream module.
 - **Vendored at**: `third_party/go-yamux/`; `PATCH.md` describes the modification.
 - **Licenses**: MPL-2.0 (`third_party/go-yamux/LICENSE`) and BSD
   (`third_party/go-yamux/LICENSE-BSD`).
+
+The Source Code Form of the modified file is in the public source tree at `third_party/go-yamux/session.go` and in the release tag’s source archive.
