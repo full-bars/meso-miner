@@ -116,7 +116,7 @@ func TestHelpFlagsMatchTheParsers(t *testing.T) {
 		{"status", newStatusCmd, []parserSource{{"cli.go", "cmdStatus"}}, []string{"--full"}},
 		{"top", newTopCmd, []parserSource{
 			{"top_cmd.go", "cmdTop"}, {"top_cmd.go", "parseTopFlags"},
-			{"top_cmd.go", "hasNoMouseFlag"}, {"top_demo.go", "stripDemoFlag"},
+			{"top_demo.go", "stripDemoFlag"},
 		}, []string{"--demo"}},
 		{"providers", newProvidersCmd, []parserSource{{"cli.go", "cmdProviders"}}, nil},
 		{"start", newStartCmd, []parserSource{{"legacy_cmds.go", "cmdStart"}}, nil},
