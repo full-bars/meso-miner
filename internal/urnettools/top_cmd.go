@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"fmt/term"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/term"
 
 	"github.com/urnetwork/connect/internal/tui"
 	"github.com/urnetwork/connect/internal/tui/tcellui"
