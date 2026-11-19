@@ -44,7 +44,7 @@ urnet-tools extender enable     # back on
 For it to work the host needs:
 
 1. **Inbound TCP 443 that reaches the provider.** This is the one required port. If a web server (caddy, nginx, apache) holds it, the extender cannot be listed until you free or move that service.
-2. **Permission to use a port below 1024**, which a non-root provider gets from `cap_net_bind_service` on the binary. The installer and `urnet-tools update` apply it.
+2. **Permission to use TCP 443.** On Linux, a non-root provider can use the host-wide sysctl route or `cap_net_bind_service` on the binary. The sysctl route lets any local user bind ports 443 and above.
 3. **A public IPv4 address**, and for IPv6 a public IPv6 address with a working route out.
 
 UDP 443 and UDP 4053 are optional. UDP 53 is also optional and remains user-managed: setup does not inspect or open it. Without UDP carriers the host is still listed over TCP.
@@ -116,7 +116,7 @@ A reminder repeats every 30 minutes while the port stays blocked. When it comes 
 
 **About the DNS ports.** The DNS carrier also answers ordinary DNS questions from anyone who can reach the port, resolved over DoH and rate limited per source and in total, so that from outside it looks like a small rate-limited resolver. That is part of its camouflage; it is upstream's design. It is not limited to the platform's hosts. Port 53 is probed by scanners much more than 4053. Firewall UDP 4053 and 53 like any resolver you do not want to expose, or turn the role off. Without them the host is still listed over TCP.
 
-Binding below 1024 needs root or `CAP_NET_BIND_SERVICE`. The Docker image runs as root. On a bare-metal install the installer and `urnet-tools update` apply `cap_net_bind_service` to the binary, and the log gives the exact `setcap` command if the provider is not root and lacks it. Replacing the provider binary can remove the file capability; the installer restores it after a swap and warns if it cannot verify it.
+TCP 443 needs root, a Linux unprivileged-port sysctl threshold of 443 or lower, or `CAP_NET_BIND_SERVICE`. The sysctl route is host-wide and lets any local user bind ports 443 and above. A file capability can make the running provider unreadable to an unprivileged updater; removing it requires a provider restart or handoff to change the running process.
 
 ## Prepare the host with `urnet-tools extender setup`
 
@@ -129,7 +129,7 @@ urnet-tools extender setup --yes --route=sysctl
 `urnet-tools extender setup` inspects the host and proposes only the missing privilege and firewall steps:
 
 1. **Port 443 occupancy.** Checks whether another process already holds TCP 443 and stops with the holder's name and PID if one does.
-2. **Low-port bind privilege.** On Linux, checks whether the provider binary can bind TCP 443 and plans the missing `cap_net_bind_service` capability when needed. It preserves existing file capabilities when adding this capability. On FreeBSD, setup is print-only and untested this release. It prints the required `sysctl` commands and the undo instructions; it does not elevate or change the host. Regular providing on FreeBSD is unaffected.
+2. **Low-port bind privilege.** On Linux, choose sysctl, a binary file capability, or skip. Unattended setup needs `--route=sysctl|capability|skip`, even with `--yes`. The sysctl route writes `net.ipv4.ip_unprivileged_port_start=443` to `/etc/sysctl.d/99-urnetwork-extender.conf` and applies it. Setup preserves an existing drop-in with its mode in `99-urnetwork-extender.conf.pre-urnetwork` and prints recovery commands. It checks persistent configuration as well as the live value. On FreeBSD, setup prints commands and undo instructions without changing the host.
 3. **Host firewall rules.** Inspects the active local firewall (`ufw`, `firewalld`, `iptables`/`ip6tables`, `nftables`, `pf`/`ipfw`, or Windows Firewall) for inbound TCP 443 (required), UDP 443 and UDP 4053 (optional), and plans only missing rules. UDP 53 is user-managed; setup does not inspect or open it. For firewalld, runtime and permanent rules are planned separately. Setup does not reload firewalld.
 4. **Confirmation gate.** Prints the port summary and exact commands, then asks `Execute these commands? [y/N]:` before changing anything. `--yes` or `--force` is the only non-interactive approval. Without either flag, a non-interactive run changes nothing. `--dry-run` (`-n`) prints the plan without applying it.
 5. **Bind verification.** On Linux, after capability checks, runs the provider bind probe as the provider's user when TCP 443 is free. When the running provider already holds TCP 443 or the probe cannot run without a password prompt, setup states plainly that the live bind was not tested.
