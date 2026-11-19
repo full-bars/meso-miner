@@ -50,8 +50,8 @@ jobs:
           # Validate before any use: the input reaches this script as an env
           # value (not expanded shell source), but a malformed tag must still
           # be rejected here rather than flowing into paths and git commands.
-          if ! echo "$TAG" | grep -qE '^v[0-9]{4}\.[0-9]+\.[0-9]+-[0-9]+-meso(\.dev)?$'; then
-            echo "::error::Tag '$TAG' does not match the meso tag shape (vYYYY.M.D-<code>-meso or vYYYY.M.D-<code>-meso.dev)"
+          if ! echo "$TAG" | grep -qE '^v[0-9]{4}\.[0-9]+\.[0-9]+-[0-9]+-meso$'; then
+            echo "::error::Tag '$TAG' does not match the meso tag shape (vYYYY.M.D-<code>-meso)"
             exit 1
           fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"

@@ -52,7 +52,7 @@ func isHotSwapSupportedVersion(ver string) bool {
 	return fixNum >= 31
 }
 
-var mesoVersionPattern = regexp.MustCompile(`^([0-9]{4})\.([0-9]{1,2})\.([0-9]{1,2})-([0-9]+)(?:-(?:fix\.)?[0-9]+(?:\.[0-9]+)*)?(?:-(?:meso|sn)(?:-hub)?|-meso\.dev)?$`)
+var mesoVersionPattern = regexp.MustCompile(`^([0-9]{4})\.([0-9]{1,2})\.([0-9]{1,2})-([0-9]+)(?:-(?:fix\.)?[0-9]+(?:\.[0-9]+)*)?(?:-(?:meso|sn)(?:-hub)?)?$`)
 
 // The first meso release with the signal listener, handoff and READY=1 is
 // v2026.10.20-1076956260-meso. Compare by calendar date only; build codes

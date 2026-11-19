@@ -161,9 +161,9 @@ if [ -z "${EXPECTED_VERSION:-}" ]; then
   echo "FAIL: EXPECTED_VERSION not set (workflow must pass it)" | tee -a "$REPORT"
   exit 75
 fi
-EXPECTED_BASE=$(echo "$EXPECTED_VERSION" | grep -oE '^v[0-9]+(\.[0-9]+)*(-[0-9]+)?-meso(\.dev)?$' | head -1)
+EXPECTED_BASE=$(echo "$EXPECTED_VERSION" | grep -oE '^v[0-9]+(\.[0-9]+)*(-[0-9]+)?-meso$' | head -1)
 if [ -z "$EXPECTED_BASE" ]; then
-  echo "FAIL: EXPECTED_VERSION $EXPECTED_VERSION does not match the meso tag format (e.g. v2026.8.24-102938475-meso or v2026.8.24-102938475-meso.dev)" | tee -a "$REPORT"
+  echo "FAIL: EXPECTED_VERSION $EXPECTED_VERSION does not match the meso tag format (e.g. v2026.8.24-102938475-meso)" | tee -a "$REPORT"
   exit 75
 fi
 echo "EXPECTED_VERSION: $EXPECTED_VERSION" >> "$REPORT"
@@ -570,7 +570,7 @@ else
         done
         RUNNING_NOW=$(docker inspect -f '{{.State.Status}}' dsk-x1 2>/dev/null)
         PID1_COMM_AFTER=$(docker exec dsk-x1 sh -c 'cat /proc/1/comm' 2>/dev/null || echo "(exec failed — container may be gone)")
-        VER_AFTER=$(docker exec dsk-x1 sh -c "provider --version" 2>/dev/null | grep -m1 -oE "v[0-9]+(\.[0-9]+)*(-[0-9]+)?-meso(\.dev)?" || echo "")
+        VER_AFTER=$(docker exec dsk-x1 sh -c "provider --version" 2>/dev/null | grep -m1 -oE "v[0-9]+(\.[0-9]+)*(-[0-9]+)?-meso" || echo "")
         echo "  X1 post-SIGUSR2: running=$RUNNING_NOW pid1_after='$PID1_COMM_AFTER' provider_version='$VER_AFTER'" | tee -a "$REPORT"
         if [ "$RUNNING_NOW" = "running" ]; then
           ok "X1 container SURVIVED the SIGUSR2 in-place execve attempt under --init (mechanism test — see reachability note above)"
@@ -652,7 +652,7 @@ else
       RUNNING_NOW=$(docker inspect -f '{{.State.Status}}' dsk-x2z2 2>/dev/null)
       RC_AFTER=$(docker inspect -f '{{.RestartCount}}' dsk-x2z2 2>/dev/null)
       OSPID_AFTER=$(docker inspect -f '{{.State.Pid}}' dsk-x2z2 2>/dev/null)
-      VER_AFTER=$(docker exec dsk-x2z2 sh -c "provider --version" 2>/dev/null | grep -m1 -oE "v[0-9]+(\.[0-9]+)*(-[0-9]+)?-meso(\.dev)?" || echo "")
+      VER_AFTER=$(docker exec dsk-x2z2 sh -c "provider --version" 2>/dev/null | grep -m1 -oE "v[0-9]+(\.[0-9]+)*(-[0-9]+)?-meso" || echo "")
       echo "  X2+Z2 after: status=$RUNNING_NOW RestartCount=$RC_AFTER host_pid=$OSPID_AFTER version=$VER_AFTER" | tee -a "$REPORT"
       if [ "$RUNNING_NOW" != "running" ]; then
         t1bad "X2+Z2 container is not running after the hotswap attempt (status=$RUNNING_NOW)"
@@ -852,7 +852,7 @@ EOF
 CID=$(wait_cid_docker dsk-y3 120)
 if [ -n "$CID" ]; then
   ok "Y3 compose pull && up -d landed a live provider (${CID:0:12}…)"
-  Y3_VER=$(docker exec dsk-y3 sh -c "provider --version" 2>/dev/null | grep -m1 -oE "v[0-9]+(\.[0-9]+)*(-[0-9]+)?-meso(\.dev)?" || echo "")
+  Y3_VER=$(docker exec dsk-y3 sh -c "provider --version" 2>/dev/null | grep -m1 -oE "v[0-9]+(\.[0-9]+)*(-[0-9]+)?-meso" || echo "")
   echo "  Y3 :latest resolved to version: $Y3_VER" | tee -a "$REPORT"
   if echo "$Y3_VER" | grep -qE '\-rc[0-9]*$|\-alpha|\-beta'; then
     bad "Y3 compose pull of :latest landed a PRE-RELEASE ($Y3_VER) — fleet-safety guarantee broken"
@@ -1002,7 +1002,7 @@ else
     echo "$UPD_OUT" | tail -10 | sed 's/^/    | /' | tee -a "$REPORT"
     [ "$UPD_RC" -eq 0 ] && ok "Z1 shell-wrapper update --tag exited 0" || bad "Z1 shell-wrapper update --tag exited $UPD_RC"
     sleep 10
-    VER_AFTER=$(docker exec dsk-z1 sh -c "provider --version" 2>/dev/null | grep -m1 -oE "v[0-9]+(\.[0-9]+)*(-[0-9]+)?-meso(\.dev)?" || echo "")
+    VER_AFTER=$(docker exec dsk-z1 sh -c "provider --version" 2>/dev/null | grep -m1 -oE "v[0-9]+(\.[0-9]+)*(-[0-9]+)?-meso" || echo "")
     echo "$VER_AFTER" | grep -q "$NEW_HOTSWAP_TAG" && ok "Z1 download/verify/swap (shell wrapper, restart-based) landed the pinned version ($VER_AFTER)" || bad "Z1 pinned update did not land $NEW_HOTSWAP_TAG (got '$VER_AFTER')"
   else
     bad "Z1 baseline container never reached a live provider"
@@ -1024,7 +1024,7 @@ if [ -n "$CID" ]; then
   echo "$UPD_OUT" | tail -10 | sed 's/^/    | /' | tee -a "$REPORT"
   [ "$UPD_RC" -eq 0 ] && ok "Z3 bare urnet-tools update exited 0" || bad "Z3 bare urnet-tools update exited $UPD_RC"
   sleep 10
-  VER_AFTER=$(docker exec dsk-z3 sh -c "provider --version" 2>/dev/null | grep -m1 -oE "v[0-9]+(\.[0-9]+)*(-[0-9]+)?-meso(\.dev)?" || echo "")
+  VER_AFTER=$(docker exec dsk-z3 sh -c "provider --version" 2>/dev/null | grep -m1 -oE "v[0-9]+(\.[0-9]+)*(-[0-9]+)?-meso" || echo "")
   echo "  Z3 bare-update resolved version: $VER_AFTER" | tee -a "$REPORT"
   if echo "$VER_AFTER" | grep -qE '\-rc[0-9]*$|\-alpha|\-beta'; then
     bad "Z3 bare update picked up a PRE-RELEASE ($VER_AFTER) — /releases/latest exclusion broken in the Docker leg"
@@ -1045,7 +1045,7 @@ docker run -d --name dsk-z4 -v "$d:/root/.urnetwork" -e BUILD=jwt -e PROXY_URL_M
 CID=$(wait_cid_docker dsk-z4 120)
 if [ -n "$CID" ]; then
   ok "Z4 :latest-pinned container reaches a live provider (${CID:0:12}…)"
-  VER=$(docker exec dsk-z4 sh -c "provider --version" 2>/dev/null | grep -m1 -oE "v[0-9]+(\.[0-9]+)*(-[0-9]+)?-meso(\.dev)?" || echo "")
+  VER=$(docker exec dsk-z4 sh -c "provider --version" 2>/dev/null | grep -m1 -oE "v[0-9]+(\.[0-9]+)*(-[0-9]+)?-meso" || echo "")
   echo "  Z4 :latest resolved version: $VER" | tee -a "$REPORT"
   if echo "$VER" | grep -qE '\-rc[0-9]*$|\-alpha|\-beta'; then
     t1bad "Z4 :latest is a PRE-RELEASE ($VER) — a Watchtower-style puller would take the RC onto every :latest node"
