@@ -258,10 +258,7 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 | Command | Use this when... |
 | :--- | :--- |
 | `urnetwork auth` | You need to log in or refresh your identity manually |
-| `urnet-tools status [--live] [--brief] [--json] [--json-summary]` | You want a one-screen health summary of one provider (version, update check, proxies, UDP coverage, extender, unit, resources) |
-| `urnet-tools top [--interval D] [--no-mouse] [--copy] [--plain]` | You want an interactive dashboard with throughput graphs, proxy health heatmap, and carrier details |
-| `urnet-tools extender events` | You want to view recent gossip mesh peering events and connection history |
-| `urnet-tools set extender-udp443\|extender-udp4053\|extender-udp53 on\|off` | You want to control individual extender carriers |
+| `urnet-tools status [--live] [--brief] [--json] [--json-summary] [--summary]` | You want the service status, an update and health line, live metrics and the extender block of one provider (`--summary` gives a one-screen overview) |
 | `urnet-tools direct [on\|off\|status]` | You want to check or toggle native direct IP providing (`off` = proxy-only stealth) |
 | `urnet-tools usage [graphs]` | You want to view persistent traffic accounting (billable relay vs control plane split) |
 | `urnet-tools proxy add <path\|url>` | You want to add proxies from a file (straight path or `--file=`) or URL source |
