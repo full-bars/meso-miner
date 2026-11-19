@@ -27,6 +27,7 @@ Everything merged after `v2026.11.15-1099303040-meso`.
 ### Fixed
 
 - A refused yamux memory reservation resets the affected stream while keeping the session open.
+- `urnet-tools top` advances live traffic graphs on each fast refresh and labels the visible duration.
 
 - The provider restores previous carrier configurations if applying a control update fails.
 - Gossip health calculations prevent cap pressure from masking a more critical health state.
