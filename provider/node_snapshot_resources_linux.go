@@ -89,17 +89,24 @@ func readCgroupPidsMax() uint64 {
 	if err != nil {
 		return 0
 	}
+	return pidsMaxForMembership(string(data), "/sys/fs/cgroup", "/sys/fs/cgroup/pids")
+}
+
+func pidsMaxForMembership(data, unifiedRoot, pidsRoot string) uint64 {
 	var limit uint64
-	for _, line := range strings.Split(string(data), "\n") {
+	for _, line := range strings.Split(data, "\n") {
 		cgroupPath := pidsCgroupPath(line)
 		if cgroupPath == "" {
 			continue
 		}
-		for _, root := range []string{"/sys/fs/cgroup", "/sys/fs/cgroup/pids"} {
-			v := pidsMaxWithin(root, cgroupPath)
-			if v > 0 && (limit == 0 || v < limit) {
-				limit = v
-			}
+		fields := strings.SplitN(line, ":", 3)
+		root := unifiedRoot
+		if fields[1] != "" {
+			root = pidsRoot
+		}
+		v := pidsMaxWithin(root, cgroupPath)
+		if v > 0 && (limit == 0 || v < limit) {
+			limit = v
 		}
 	}
 	return limit
