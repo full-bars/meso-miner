@@ -127,7 +127,7 @@ The old hub dashboard no longer exists. For many machines, run `urnet-tools metr
 ## Releases
 
 full-bars/meso-miner development releases use `v<YYYY.M.D>-<unix>-meso.dev`; urfoundation/meso-miner official releases use `v<YYYY.M.D>-<unix>-meso`. The different suffixes prevent the same release tag from colliding across the repositories.
-- The Docker image is `ghcr.io/full-bars/meso-miner`. The `:latest` tag follows the newest stable release.
+- The Docker image is `ghcr.io/full-bars/meso-miner`; `:latest` follows the newest release.
 - `urnet-tools update` resolves "latest" from this repository's releases.
 - Notes: [CHANGELOG.md](CHANGELOG.md) and `releases/`.
 
