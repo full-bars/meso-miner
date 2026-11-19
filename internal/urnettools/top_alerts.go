@@ -53,9 +53,6 @@ func topAlerts(s *NodeSnapshot, e ExtenderReading, in *NodeInternals, now time.T
 		if e.Setting == "on" && !e.Running && !e.Activating {
 			add("extender-listen", topBad, "Extender enabled but not running", "urnet-tools extender status")
 		}
-		if e.Running && e.BindRoute == "neither" {
-			add("extender-route", topBad, "Extender port route missing", "urnet-tools extender status")
-		}
 		if e.RoleState == "tcp_unavailable" || e.RoleState == "unavailable" || e.RoleState == "error" {
 			add("extender-refusing", topBad, "Extender refusing connections", "urnet-tools extender status")
 		}

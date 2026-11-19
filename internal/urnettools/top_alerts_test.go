@@ -5,6 +5,15 @@ import (
 	"time"
 )
 
+func TestTopAlertsNoUnknownRouteAlert(t *testing.T) {
+	alerts := topAlerts(nil, ExtenderReading{Source: SourceControlSocket, Known: true, Running: true}, nil, time.Time{})
+	for _, alert := range alerts {
+		if alert.key == "extender-route" {
+			t.Fatal("unknown port route produced an alert")
+		}
+	}
+}
+
 func TestTopAlerts(t *testing.T) {
 	fd, limit := 71, 100
 	mem := uint64(100)
@@ -24,7 +33,6 @@ func TestTopAlerts(t *testing.T) {
 		{name: "threads", key: "threads", snap: &NodeSnapshot{Resources: SnapshotResources{Threads: &threads, TasksMax: &tasksMax}}},
 		{name: "swap", key: "swap", snap: &NodeSnapshot{Resources: SnapshotResources{SwapUsedBytes: &swapUsed, SwapTotalBytes: &swapTotal}}},
 		{name: "extender", key: "extender-listen", ext: ExtenderReading{Source: SourceControlSocket, Known: true, Setting: "on"}},
-		{name: "route", key: "extender-route", ext: ExtenderReading{Source: SourceControlSocket, Known: true, Running: true, BindRoute: "neither"}},
 		{name: "refusing", key: "extender-refusing", ext: ExtenderReading{Source: SourceControlSocket, Known: true, RoleState: "tcp_unavailable"}},
 		{name: "sigpipe", key: "sigpipe", in: &NodeInternals{SigpipeRisk: true}},
 	}
