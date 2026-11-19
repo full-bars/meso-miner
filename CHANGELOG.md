@@ -4,6 +4,7 @@ Everything merged after `v2026.11.15-1099303040-meso`.
 
 ### Changed
 
+- Removed the unused FP2 client window. No shipped binary used it. This also removes exported Go API: the peer capability recorder (`PeerCapabilityRecorder`, `NewPeerCapabilityRecorder`, `ClientSettings.PeerCapabilityRecorder`), `WindowTypeLimited` and the `LimitedWindow*` methods of `RemoteUserNatMultiClient`, the IPv6 and UDP availability methods of `RemoteUserNatMultiClient`, and the address family and capability types and fields (`DestinationStats.IpFamily`, `DestinationStats.Capabilities`, `ProviderCapabilities`, `FindProvidersSelect`, `MultiClientGeneratorWithCapabilities`). A program that imports these no longer builds. Each window still starts with the effective performance profile, as it did before the FP2 port.
 - **The Docker shakedown checks no longer fail on harness bugs** (`.github/scripts/docker-shakedown.sh`). The in-container update checks passed `-f` to the shell `urnet-tools` wrapper that the Docker image ships, which does not accept that flag. The Go `urnet-tools` on a host still does. The proxy cache check read the cache with `python3`, which the image does not ship, so it always read -1. The profile startup wait was too short for a slow runner. The state handling of two checks was wrong. These repairs were made in the 3.23 line in October and are ported here. [no redeploy]
 
 ### Added
@@ -48,10 +49,6 @@ Changes after `v2026.11.9-1094055530-meso` through this tag. Notes: `releases/v2
 
 ### Added
 
-- **IPv6 admission, a TCP-only window and the redial side of recent exit memory in the multi client** (`ip_remote_multi_client_family.go`, `ip_remote_multi_client_limited.go`, `ip_remote_multi_client_recent_exits.go`, `ip_remote_multi_client_sticky.go`, `ip_remote_multi_client_window_client_stats.go`, `ip_capability.go`). A window now knows which exits carry IPv6 and keeps an IPv4 hard minimum, so a window of IPv6-only exits counts as empty for IPv4. When the IPv6 share falls short, the window asks the platform for an IPv6 candidate and swaps a loaded exit out for it. A failed IPv6 candidate counts toward a retry backoff, and two failures in a row pause the IPv6 fill for a retry period. A limited window holds providers that carry TCP only. It is half the size of the main window by default (`LimitedWindowSizeFraction`) and joins the race for each TCP connection. A user with a fixed exit never gets one, because it would change the exit address. A window can also take back an exit from a bounded recent exit memory, and a generation check drops a result that arrives after a newer one. Nothing fills that memory in this line yet, because it lacks upstream's typed transport-loss signal, so the redial path stays idle. The provider binary does not run this window. SDK and proxy clients built on this tree do, so a provider fleet sees no change from this entry alone.
-- **Peer capability observation** (`transfer_peer_capability_observation.go`, `transfer.go`, `transfer_encrypt.go`). The client records what each peer completed: the end-to-end handshake, the seal, and the receive window it advertised. A weak reference binds the record to the live session, so a stale session cannot replay it.
-- **Structured `[rel]` window log lines** (`ip_remote_multi_client_observability.go`). Each line is `[rel] event=<name>` followed by lowercase `key=value` pairs. The window prints `family_starved` today. `recent_exit` and `sticky_redial` are defined and wait for the memory to be filled. See `LOG_REFERENCE.md`.
-- **Connect successes and dial failures record the IP version they used.**
 - **OpenBSD provider support.** Release assets, an installer and rcctl lifecycle support target amd64 and arm64. The installer uses GitHub releases directly. OpenBSD runtime testing is still pending.
 
 ### Fixed
@@ -68,8 +65,6 @@ Changes after `v2026.11.9-1094055530-meso` through this tag. Notes: `releases/v2
 ### Known limits
 
 - The blocklist tables stay at the refresh before 2026-11-13. Upstream's tables from that day use a new format and list a Telegram call reflector (`91.108.13.57`) that upstream's own test rejects. The sync check blocks them until upstream fixes the table and this line takes the matching decoder.
-- Recent exit memory and the sticky redial of a fixed exit have no producer in this line. Filling them needs a typed transport-loss signal and an outage classifier that upstream has and this line does not.
-- With a fixed window size of one and a single IPv6-only exit, the window does not look for an IPv4 exit until it has room. Upstream behaves the same way.
 - This line does not have upstream's receive-sequence rejection records, so the handshake fix covers the handshake only. Whether an invalid contract can block lower sequence ids for good here is not verified.
 
 ## [v2026.11.9-1094055530-meso] - 2026-11-09
