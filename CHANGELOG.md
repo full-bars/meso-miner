@@ -11,16 +11,14 @@ Everything merged after `v2026.11.15-1099303070-meso`.
 ### Added
 
 - The container image includes the Go top dashboard. `urnet-docker top` forwards terminal color settings and stores preferences on a writable state mount when available. Reusing a named volume preserves them across container recreation. [redeploy]
-
 - Extender discovery now defaults to on when the extender role runs. Explicit off and feed-only settings are preserved. `urnet-tools top` shows discovery state, mesh peers, feed subscribers and validated gossip messages received from peers; the carrier details panel also shows the peer ID, last receipt time and application errors. The message count includes duplicates and resets when the gossip role restarts. Earlier CLI versions cleared the override for `off`; operators who used that command and want discovery to remain off must set it again after upgrading.
 - **Gossip visibility.** Extender events include mesh and connection activity. Health transitions and selected anomalies are logged with recent events. `urnet-tools extender events` displays the event history. [redeploy]
 - **Proxy heatmap.** The top dashboard shows proxy activity as dots and offers a configurable afterglow. [redeploy]
 - **Linux interface counters.** The interface counter reader reports cumulative receive and transmit bytes. [redeploy]
 - **Extender sysctl route.** Linux setup can allow unprivileged TCP 443 binding with a host-wide sysctl setting. Extender status reports the active route. Setup does not offer the lower threshold for UDP 53. [redeploy]
-- **Status summary.** The status command shows provider health, proxy and UDP coverage, extender state, service health and resources. It supports brief and live output. `--json` keeps the raw snapshot. `--json-summary` uses the `urnet-tools-status/1` schema.
+- **Status summary.** The status command shows provider health, proxy and UDP coverage, extender state, service health and resources. It supports brief and live output. `--brief` prints a summary when attention is needed with exit codes (0 healthy, 1 warning, 2 broken, 3 unreachable); healthy brief output is empty. `--json` keeps the raw snapshot. `--json-summary` uses the `urnet-tools-status/1` schema.
 - **Proxy UDP coverage.** The provider checks proxy UDP support in background sweeps and stores recent results across restarts. A client check that takes more than 20 seconds is treated as unknown and allowed. The background writer batches state changes with a two-second delay. Shutdown can request an immediate flush.
 - Choose the extender's UDP 443, UDP 4053 and UDP 53 carriers independently with `urnet-tools set extender-udp443|extender-udp4053|extender-udp53 on|off`. Changes restart the active extender role and persist. Status identifies disabled carriers. The `urnet_extender_dns53_state` metric reports the state of UDP port 53.
-
 - **Traffic the extender relays, per carrier** (`extender/`, `provider/`, `internal/urnettools/`). The extender counts the bytes it relays on `tcp-443`, `udp-443`, `udp-4053` and `udp-53`, on each side, with the rate, the relayed connections and a minute history. `urnet-tools extender status` prints a `Traffic` table in human units, `top` shows one row per carrier in its Extender box, and `/metrics` exports `urnet_extender_carrier_bytes_total{carrier,direction}` and `urnet_extender_carrier_connections{carrier}`. These are bytes this extender relayed, not earnings. [redeploy]
 - **`urnet-tools top` can show decimal units** (`internal/tui/labels.go`, `internal/urnettools/top_model.go`). The `u` key switches every byte and rate label between binary units (KiB, MiB, GiB) and decimal units (kB, MB, GB). The graph axes follow the choice. Binary stays the default, and the choice lasts for the session. [redeploy]
 - **`urnet-tools top` adds interactive diagnostics** (`internal/urnettools/`, `internal/tui/`). Resize panels with the mouse, inspect proxy health in a grid, and open alerts, resource gauges and carrier details. The Events panel groups repeated entries. Press `t` to cycle the graph history and `o` to compare providers. `--copy` saves the final screen as text, and `--plain` uses ASCII box characters. The colorblind theme adds a distinct set of colors and symbols.
@@ -28,7 +26,11 @@ Everything merged after `v2026.11.15-1099303070-meso`.
 ### Fixed
 
 - Backend failure counts and timestamps are published together as one snapshot.
-
+- Proxy add accepts passwords containing an `@` sign.
+- A failed carrier control write restores the previous carrier configuration and restarts the role.
+- Cap pressure preserves more severe gossip health transitions.
+- The status update cache replaces symbolic links with a regular file and honors `--pid`. Status displays an unavailable or stopped extender role.
+- `urnet-docker top` detects a missing top dashboard before execution.
 - **Lossless prefix-bucket host blocker format and Telegram reflector test alignment** (`ip_blocker.go`, `ip_security_cfaa.go`, `ip_security_telegram_test.go`, `blocker/`). The host blocker generator and decoder support the bucketed table layout with 257 bucket offsets and 5-byte tails, preserving all 48 fingerprint bits while reducing embedded table size. Generator tests emit and verify single packed string literals and Frogeye host feed variants. The Telegram call reflector test suite aligns with upstream precedence where an address on an active IP reputation blocklist yields an IP reputation drop.
 
 ## [v2026.11.15-1099303070-meso] - 2026-11-15
