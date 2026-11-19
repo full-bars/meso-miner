@@ -341,7 +341,11 @@ func (m *topModel) graphTitle(name string, sr topSeries, samples []float64, scal
 	for _, d := range sr.spans[len(sr.spans)-n:] {
 		span += d
 	}
-	title := name + ", " + tui.Duration(span)
+	duration := tui.Duration(span)
+	if span > 0 && span < time.Second {
+		duration = topIntervalText(span)
+	}
+	title := name + ", " + duration
 	if m.conn == topDisconnected {
 		title += " (stale)"
 	}
@@ -845,8 +849,12 @@ func (m *topModel) drawInternals(b *tui.Buffer) {
 		for _, v := range r.gor {
 			lo = min(lo, v)
 		}
-		vals := make([]uint64, len(r.gor))
-		for i, v := range r.gor {
+		history := r.gor
+		if m.interval <= time.Second && len(history) > min(room, 12) {
+			history = history[len(history)-min(room, 12):]
+		}
+		vals := make([]uint64, len(history))
+		for i, v := range history {
 			vals[i] = uint64(max(v-lo, 0))
 		}
 		b.Put(tui.Spark(vals, min(room, 12), th.ASCII), col+len(gor)+1, y, th.Graph)
@@ -1016,7 +1024,7 @@ func (m *topModel) drawCompact(b *tui.Buffer) {
 var helpLines = []string{
 	"q, Esc, Ctrl-C   quit",
 	"Tab, Shift-Tab   next or previous provider",
-	"+  -             refresh slower or faster; graphs follow, down to 100ms",
+	"+  -             change refresh interval, down to 100ms",
 	"w                zoom the graphs to the last 15 seconds",
 	"u                switch units between GiB (binary) and GB (decimal)",
 	"m                menu: color theme and graph style",
