@@ -25,6 +25,8 @@ Everything merged after `v2026.11.15-1099303070-meso`.
 
 ### Fixed
 
+- A refused yamux memory reservation resets the affected stream while keeping the session open.
+
 - Backend failure counts and timestamps are published together as one snapshot.
 - A pinned IP family with no route sleeps instead of redialing. A dial that the routing refuses on every attempt (no route to host or network) holds that family for 5 minutes, doubling per refusal up to 1 hour. A network change or a connection ends the hold. Before, an IPv6 pin on a host with only ULA addresses retried every few minutes. [redeploy]
 - The `[t]auth error` and `[contract]oob err` lines name the failed mode, the pinned family and the causes an exhausted request retained, such as `no route to host`. Before, they only said `http request attempts exhausted`.
