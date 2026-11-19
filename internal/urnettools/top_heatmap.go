@@ -54,9 +54,9 @@ func proxyCellSeverity(state uint8) int {
 	case connect.ProxyCellConnecting:
 		return 2
 	case connect.ProxyCellParked:
-		return 1
+		return 0
 	}
-	return 0 // up
+	return 1 // up
 }
 
 // decodeProxyCells unpacks the provider's 4-bytes-per-proxy wire format.
@@ -160,7 +160,7 @@ func (m *topModel) drawProxyGrid(b *tui.Buffer) {
 		for x := 0; x < w; x++ {
 			upperIdx := x*layout.dotRows + 2*y
 			lowerIdx := upperIdx + 1
-			var worst uint8 = connect.ProxyCellUp
+			var worst uint8 = connect.ProxyCellParked
 			var worstBucket uint8
 			hasUpper, hasLower := false, false
 			for k := 0; k < group; k++ {
