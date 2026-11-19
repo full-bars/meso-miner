@@ -39,7 +39,7 @@ Not sure which guide to read? Pick your level:
 - **Many providers per machine.** One provider per OS user, with `urnet-tools providers` to list them.
 - **Extender role.** Providers can accept client connections on TCP 443. Setup inspects port use, bind capability and firewall rules, prints the exact commands, and asks before changes. Run `urnet-tools extender setup` to prepare a host. See [Extender](docs/Extender.md).
 - **Move a node.** `urnet-tools session save` and `session load` carry your identity and proxies to another machine.
-- **Runs almost anywhere.** Linux (systemd and Alpine/OpenRC), macOS, Windows, FreeBSD and Docker.
+- **Runs almost anywhere.** Linux (systemd and Alpine/OpenRC), macOS, Windows, FreeBSD, OpenBSD and Docker.
 - **Bittensor subnet 25 tools.** Sign one wallet message to get paid, then check with `provider wallet status`. See the [Bittensor Quick Start](docs/Bittensor-Quick-Start.md).
 
 The complete list of differences from upstream is in [FORK_CHANGES.md](FORK_CHANGES.md).
@@ -62,6 +62,7 @@ Most operators need to do one thing: sign a single wallet message, once, from th
 | :--- | :--- |
 | **Get paid on Bittensor SN25 (do I need to do anything?)** | [Bittensor Quick Start](docs/Bittensor-Quick-Start.md) |
 | Install on a Linux host as a user-level service | [Installation Guide](docs/Installation.md) |
+| Install on FreeBSD or OpenBSD | [FreeBSD Guide](docs/FreeBSD.md) · [OpenBSD Guide](docs/OpenBSD.md) |
 | Run one Docker container | [Docker Deployment](docs/Docker-Deployment.md) |
 | Run multiple containers on one host | [Multi-Container Scaling](docs/Multi-Container-Scaling.md) |
 | Choose profiles, turbo mode, or host tuning | [Performance Tuning](docs/High-Volume-Performance-Tuning.md) |
@@ -97,6 +98,19 @@ curl -fSsL https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/mai
 fetch -qo urnet-install.sh https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_FreeBSD.sh
 sudo sh urnet-install.sh install
 ```
+
+**🐡 OpenBSD (rc.d)**
+
+Run this as a regular user with configured `doas` or `sudo` access.
+
+```sh
+ftp -o urnet-install.sh https://raw.githubusercontent.com/full-bars/meso-miner/refs/heads/main/scripts/Provider_Install_OpenBSD.sh && \
+  sh urnet-install.sh install
+```
+
+The installer installs the provider and an `rc.d` service managed by `rcctl`. See [docs/OpenBSD.md](docs/OpenBSD.md).
+
+For Alpine/OpenRC, run the Linux installer from a root shell. See [docs/OpenRC.md](docs/OpenRC.md).
 
 **🐋 Docker**
 
@@ -333,7 +347,7 @@ dashboard. See [Monitoring](docs/Monitoring.md).
 
 - **Base engine:** the URnetwork connect engine, brought up to the 33.1/34 generation (see [CHANGELOG.md](CHANGELOG.md)). This line began as a fork of the 3.23-fix line and has its own release numbers, such as `v2026.10.20-1076956260-meso`
 - **Language:** Go 1.27.4, compiled on Alpine
-- **Platforms:** Linux (systemd, and Alpine/OpenRC with a native boot-start service), macOS, Windows and FreeBSD. Alpine setup: [docs/OpenRC.md](docs/OpenRC.md); FreeBSD setup: [docs/FreeBSD.md](docs/FreeBSD.md)
+- **Platforms:** Linux (systemd and Alpine/OpenRC), macOS, Windows, FreeBSD and OpenBSD. See [OpenRC](docs/OpenRC.md), [FreeBSD](docs/FreeBSD.md) and [OpenBSD](docs/OpenBSD.md).
 - **Images:** Multi-arch `linux/amd64` + `linux/arm64` via GitHub Actions to GHCR. Release binaries for `darwin`, `windows` and `freebsd` are attached to each GitHub release.
 - **Bridge-friendly:** runs on standard Docker bridge networks. The extender role needs its ports published (`-p 443:443 -p 443:443/udp -p 4053:4053/udp`), and the default bridge has no IPv6, so on it the role activates for IPv4 only. For IPv6, either turn on IPv6 on the bridge in Docker's daemon config and publish the same ports, or run with `--network host`. `docker run` and Compose examples for both: [docs/Extender.md](docs/Extender.md#docker)
 
