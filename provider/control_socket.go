@@ -350,6 +350,9 @@ var liveEffectKeys = map[string]bool{
 	"metrics_listen":              true,
 	"extender":                    true,
 	"extender_discovery":          true,
+	"extender_udp443":             true,
+	"extender_udp4053":            true,
+	"extender_udp53":              true,
 	"proxy_target_family":         true,
 }
 
@@ -368,6 +371,10 @@ func validateControlValue(key, value string) error {
 	// client-side behavior in internal/urnettools/control_client.go.
 	valLower := strings.ToLower(value)
 	switch key {
+	case "extender_udp443", "extender_udp4053", "extender_udp53":
+		if valLower != "on" && valLower != "off" {
+			return fmt.Errorf("%s: must be on or off (got %q)", key, value)
+		}
 	case "extender_discovery":
 		if !validExtenderDiscoveryMode(value) {
 			return fmt.Errorf("extender_discovery: must be off, on or feed-only (got %q)", value)
@@ -511,6 +518,9 @@ var liveDefaults = map[string]string{
 	// releasing the live override so the persisted value rules.
 	"proxy_audit":        "off",
 	"extender_discovery": "on",
+	"extender_udp443":    "on",
+	"extender_udp4053":   "on",
+	"extender_udp53":     "on",
 	"pprof":              "on",
 	// Clearing ip_version hands the families back to the default: dual stack.
 	"ip_version": "dual",
@@ -734,7 +744,13 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		// txMu across the whole get-old -> set -> persist -> rollback unit so
 		// concurrent connections can't interleave (see controlState.txMu).
 		state.txMu.Lock()
-		defer state.txMu.Unlock()
+		restartCarrier := false
+		defer func() {
+			state.txMu.Unlock()
+			if restartCarrier {
+				globalExtenderManager.RestartCarriers()
+			}
+		}()
 		oldValue, oldMeta, hadOld := state.getWithMeta(req.Key)
 		if err := state.set(req.Key, req.Value); err != nil {
 			tlog("❌ [control] set %s=%s rejected: %s\n", req.Key, req.Value, err)
@@ -753,6 +769,10 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 			state.mu.Unlock()
 			tlog("❌ [control] set %s=%s failed to persist, rolled back: %s\n", req.Key, req.Value, err)
 			return controlResponse{OK: false, Error: "set applied in memory but failed to persist: " + err.Error()}
+		}
+		if isExtenderCarrierKey(req.Key) {
+			oldOn := !hadOld || !strings.EqualFold(oldValue, "off")
+			restartCarrier = oldOn != !strings.EqualFold(req.Value, "off")
 		}
 		// Only a key classified live may take effect in this process. A
 		// restart-required key must not be half-applied here: the response
@@ -789,7 +809,13 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 			return controlResponse{OK: false, Error: "key is required"}
 		}
 		state.txMu.Lock()
-		defer state.txMu.Unlock()
+		restartCarrier := false
+		defer func() {
+			state.txMu.Unlock()
+			if restartCarrier {
+				globalExtenderManager.RestartCarriers()
+			}
+		}()
 		oldValue, oldMeta, hadOld := state.getWithMeta(req.Key)
 		if err := state.clear(req.Key); err != nil {
 			tlog("❌ [control] clear %s rejected: %s\n", req.Key, err)
@@ -805,6 +831,9 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 			}
 			tlog("❌ [control] clear %s failed to persist, rolled back: %s\n", req.Key, err)
 			return controlResponse{OK: false, Error: "clear applied in memory but failed to persist: " + err.Error()}
+		}
+		if isExtenderCarrierKey(req.Key) && hadOld && strings.EqualFold(oldValue, "off") {
+			restartCarrier = true
 		}
 		// For live-applied keys, reapply the runtime default immediately
 		// instead of requiring a restart. For non-live keys, the cleared
