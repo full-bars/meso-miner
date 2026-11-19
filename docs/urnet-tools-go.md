@@ -24,10 +24,11 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | Command | What it does |
 |---|---|
 | `providers` (`list`, `ps`) | List providers: your own OS user's by default, or all providers on the box with `--all` (JWT identities, systemd units, state dirs). |
-| `status [target] [--live] [--brief] [--json] [--json-summary] [--detail] [--plain]` | One-screen health summary: version, time-boxed cached update check, proxy counts, UDP relay coverage, extender state, unit health, and resource utilization. `--live` (or `-l`, with `--interval`) refreshes in place until Ctrl-C. `--brief` prints a summary when attention is needed, with script exit codes (0 healthy, 1 warning, 2 broken, 3 unreachable). Healthy `--brief` output is empty. `--json` prints the raw snapshot. `--json-summary` prints the summary as a stable schema document (`urnet-tools-status/1`). `--detail` restores the classic full view (`systemctl status` on Linux, styled panel on Windows/macOS, followed by the live and extender blocks). `--plain` uses plain text without ANSI escapes. |
-| `start [target]` | Start provider service/process. |
-| `stop [target]` | Stop provider service/process. |
-| `restart [target]` | Restart provider service/process. |
+| `status [--live] [--brief] [--json] [--json-summary] [--summary] [--plain]` | One-screen health summary: version, time-boxed cached update check, proxy counts, UDP relay coverage, extender state, unit health, and resource utilization. `--live` (or `-l`, with `--interval`) refreshes in place until Ctrl-C. `--brief` prints warnings and failures with exit codes 0 for healthy, 1 for warning, 2 for broken and 3 for unreachable. A healthy result prints nothing. `--json` prints the raw snapshot. `--json-summary` prints the summary as a stable schema document (`urnet-tools-status/1`). `--detail` restores the classic full view (`systemctl status` on Linux, styled panel on Windows/macOS, followed by the live and extender blocks). `--plain` uses plain text without ANSI escapes. |
+| `diag` | Capture a running provider's profiles and summary. See [Diagnostics](/full-bars/urnetwork-3.23-fix/wiki/Diagnostics). |
+| `start` | Start the provider's systemd unit. Target a specific provider with target flags. |
+| `stop` | Stop the provider's systemd unit. Target a specific provider with target flags. |
+| `restart` | Restart the provider's systemd unit. Confirm-gated (`-f`/`--force` skips prompt). |
 | `reinstall [target]` | Cleanly reinstall provider binary (delegates to latest updater). |
 | `uninstall [target]` | Uninstall provider, unit files, and optional state. Confirm-gated. |
 | `update [target]` | Update provider to the latest release (or `--tag <version>`). Digest-verified. |
