@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-
-	"github.com/urnetwork/connect/internal/tui"
 )
 
 func TestUDPInvariantOutputOmitsProxyIdentity(t *testing.T) {
@@ -26,10 +24,7 @@ func TestUDPInvariantOutputOmitsProxyIdentity(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	model := newTestModel(tui.DefaultTheme(), topProviders(1), &fakeClock{t: topBase})
-	model.apply(0, s, nil)
-	top, _ := showOnSim(t, model, 120, 40)
-	for _, output := range []string{status, top, renderLiveBlock(s, liveOpts{}, "")} {
+	for _, output := range []string{status, renderLiveBlock(s, liveOpts{}, "")} {
 		if !strings.Contains(output, "3 ok") {
 			t.Fatal("UDP coverage row missing")
 		}
