@@ -12,7 +12,7 @@ Everything merged after `v2026.11.15-1099303040-meso`.
 
 - Extender status reports the state and reason for DNS port 53. The `urnet_extender_dns53_state` metric reports its current state.
 - Gossip diagnostics report dial attempts and failures, health transitions and bounded event dumps for anomalies.
-- The top dashboard renders proxy health as heatmap dots with a configurable fading glow track.
+- The proxy heatmap shows addresses on hover or click, separates the direct connection and explains the grid in help. Dense cells use stacked blocks and recent traffic fades over the afterglow interval.
 - The `internal/nicstat` package reads cumulative interface receive and transmit byte counters on Linux.
 - Command help text lists active flags and arguments for `status`, `top`, `providers`, lifecycle commands, updates and logs.
 - **Proxy UDP coverage** (`provider/`, `internal/urnettools/`). The provider checks proxy UDP support in bounded background sweeps and records results across restarts. Status and metrics report coverage for online proxies. `urnet-tools set udp-probe off` stops background sweeps while client checks remain active. A check still running after 20 seconds is treated as unknown and allowed. The `top` dashboard also shows UDP coverage. [redeploy]
