@@ -257,6 +257,7 @@ Because a series continues instead of resetting, `rate()` or `increase()` comput
 | `urnet_proxy_graded_recent` | gauge | | Proxies graded in the last hour |
 | `urnet_proxy_graded_stale` | gauge | | Proxies with an older grade |
 | `urnet_proxy_auth_failures` | gauge | | Auth failures summed over current proxies |
+| `urnet_proxy_udp_proxies` | gauge | `state` | Online proxies by cached UDP check result: `ok`, `no_relay`, `mismatch`, `unknown`, `unchecked` |
 | `urnet_url_proxy_grades` | gauge | `tier` | URL-sourced proxies by grade |
 | `urnet_url_proxy_ungraded` | gauge | | URL-sourced proxies not yet graded |
 | `urnet_contracts_total` | counter | `result` | Contract outcomes since start, persisted across restarts |
