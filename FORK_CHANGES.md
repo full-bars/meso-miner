@@ -19,7 +19,7 @@ Sections 1 through 165 are inherited history from `full-bars/urnetwork-3.23-fix`
 
 ---
 
-## Stop the URL proxy source cycle cleanly on shutdown
+## 191. Stop the URL proxy source cycle cleanly on shutdown
 
 **Purpose**: A shutdown that arrives while the provider reads or probes its URL proxy sources must end the cycle quietly. Before, it failed every remaining source, set the resolution status to failed and warned the operator once per source.
 
@@ -3888,7 +3888,7 @@ Parity port of the `fragment+segment` dialer from `full-bars/urnetwork-3.23-fix`
 **Files modified**: `transfer.go`, `transfer_encrypt.go`, `ip_blocker_pack.go`, `cmd/blocklistgen/main.go`, `provider/proxy_url_source.go`, `provider/diag_disk_openbsd.go`, `sysmem_openbsd.go`, `internal/urnettools/discover_openbsd.go`, `internal/urnettools/discover_openbsd_parse.go`, `internal/urnettools/lifecycle_openbsd.go`, `internal/urnettools/lifecycle_openbsd_rc.go`, `internal/urnettools/openbsd_managed.go`, `internal/urnettools/jwt_read_openbsd.go`, `internal/urnettools/lifecycle_bsd_cron.go`, `internal/urnettools/lifecycle_bsd_cron_unix.go`, `scripts/Provider_Install_OpenBSD.sh`, `go.mod`, `Dockerfile`, the workflows, `.github/scripts/cfaa_format_check.sh`, `.github/scripts/cfaa_sync.sh` and `.github/scripts/cfaa_sync_notify.py`.
 
 **Changes**:
-- Take a handshake generation id from a peer only through a ClientHello, ignore foreign proofs and responses, order ids only while an attempt is in flight with a positive `TlsTimeout`, and pass the wire generation through the optimistic receive path.
+- Take a handshake generation id from a peer only through a ClientHello, ignore foreign proofs and responses, order ids only while an attempt is in flight with a positive `TlsTimeout`, and pass the wire generation through the optimistic receive path. The handshake changes derive from upstream connect commit 9383d2d8.
 - Add OpenBSD amd64 and arm64 support (`sysmem_openbsd.go`, `provider/diag_disk_openbsd.go`, `internal/urnettools/*_openbsd*.go`, `scripts/Provider_Install_OpenBSD.sh`, `.github/workflows/release.yml`): process discovery, physical memory and disk diagnostics, `rcctl` lifecycle and service identity guards, symlink-safe JWT reads, hardened BSD cron auto-updates and an OpenBSD installer.
 - Stop the URL proxy source fetch and probe cycle cleanly on context cancellation without marking remaining sources failed or logging false warnings (`provider/proxy_url_source.go`).
 - Build the BSD cron log path with `path.Join`.
