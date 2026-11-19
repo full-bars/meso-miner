@@ -85,8 +85,6 @@ Apps from before these releases keep the old selection, so these providers gain 
 - A host that blocks UDP can carry UDP again. Fix the network and update the provider, because the notice says some older builds do not route UDP.
 - There is no setting to change. The provider's status in the apps shows how many of its checks failed only over HTTP/3 or only over IPv6, and what it is offered for.
 
-This line carries the client side of the design as the multi client window: IPv6 admission and a TCP-only window. SDK and proxy clients built on this tree use it. The provider binary does not.
-
 ## What you need to do
 
 - **Default:** nothing. No flag, no setting, no fleet change.
