@@ -30,6 +30,8 @@ Everything merged after `v2026.11.15-1099303040-meso`.
 - Gossip health calculations prevent cap pressure from masking a more critical health state.
 - Status update checks ignore symbolic links, status honors `--pid`, and `--brief` suppresses output when the provider is healthy.
 - Backend failure counts and timestamps are published together as one snapshot.
+- A pinned IP family with no route sleeps instead of redialing. A dial that the routing refuses on every attempt (no route to host or network) holds that family for 5 minutes, doubling per refusal up to 1 hour. A network change or a connection ends the hold. Before, an IPv6 pin on a host with only ULA addresses retried every few minutes. [redeploy]
+- The `[t]auth error` and `[contract]oob err` lines name the failed mode, the pinned family and the causes an exhausted request retained, such as `no route to host`. Before, they only said `http request attempts exhausted`.
 - Proxy add accepts passwords containing an `@` sign.
 - **Lossless prefix-bucket host blocker format and Telegram reflector test alignment** (`ip_blocker.go`, `ip_security_cfaa.go`, `ip_security_telegram_test.go`, `blocker/`). The host blocker generator and decoder support the bucketed table layout with 257 bucket offsets and 5-byte tails, preserving all 48 fingerprint bits while reducing embedded table size. Generator tests emit and verify single packed string literals and Frogeye host feed variants. The Telegram call reflector test suite aligns with upstream precedence where an address on an active IP reputation blocklist yields an IP reputation drop.
 
