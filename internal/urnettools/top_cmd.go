@@ -94,6 +94,16 @@ func cmdTop(args []string) error {
 
 // parseTopFlags pulls --interval out of args, leaving the target flags for the
 // strict target parser. It accepts a Go duration (500ms, 2s) or plain seconds.
+// hasNoMouseFlag reports whether --no-mouse was passed on the command line.
+func hasNoMouseFlag(args []string) bool {
+	for _, a := range args {
+		if a == "--no-mouse" || a == "--no-mouse=true" || a == "--no-mouse=1" {
+			return true
+		}
+	}
+	return false
+}
+
 func parseTopFlags(args []string) (interval time.Duration, rest []string, err error) {
 	interval = topDefaultInterval
 	for i := 0; i < len(args); i++ {
@@ -108,6 +118,10 @@ func parseTopFlags(args []string) (interval time.Duration, rest []string, err er
 			val = args[i]
 		case strings.HasPrefix(a, "--interval="):
 			val = strings.TrimPrefix(a, "--interval=")
+		case a == "--no-mouse" || a == "--copy" || a == "--plain":
+			// Accepted here so help and parser agree. The top screen port
+			// wires these to the terminal.
+			continue
 		default:
 			rest = append(rest, a)
 			continue
