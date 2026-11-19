@@ -13,8 +13,8 @@ func TestProxyGridParkedAndActive(t *testing.T) {
 		states []uint8
 		want   rune
 	}{
-		{"mixed", []uint8{connect.ProxyCellParked, connect.ProxyCellUp}, proxyCellASCII(connect.ProxyCellUp)},
-		{"parked", []uint8{connect.ProxyCellParked, connect.ProxyCellParked}, proxyCellASCII(connect.ProxyCellParked)},
+		{"mixed", []uint8{connect.ProxyCellParked, connect.ProxyCellUp}, '█'},
+		{"parked", []uint8{connect.ProxyCellParked, connect.ProxyCellParked}, '█'},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newTestModel(tui.MonoTheme(), topProviders(1), &fakeClock{t: topBase})
