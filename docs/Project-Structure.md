@@ -62,7 +62,7 @@ Test files sit beside the code they test (`*_test.go`).
 - `blocker/`: tool that builds the default block lists. `security/`: source list URLs for the IP blocklist. [Blocklist Sync](Blocklist-Sync) explains how the tables stay current.
 - `hotkeywallet/`, `durablesys/`, `durablevolume/`: Bittensor wallet storage and durable-disk support.
 - `emoji/`, `res/`: small assets.
-- `third_party/`: vendored Go packages (Substrate RPC client, Windows named pipes). Licenses are in `THIRD_PARTY_LICENSES.md`.
+- `third_party/`: vendored Go packages (Substrate RPC client, Windows named pipes, yamux). Licenses are in `THIRD_PARTY_LICENSES.md`.
 
 ## Install, packaging and deployment
 
