@@ -18,7 +18,7 @@ Sections 1 through 165 are inherited history from `full-bars/urnetwork-3.23-fix`
 
 ---
 
-## Stop the URL proxy source cycle cleanly on shutdown
+## 192. Stop the URL proxy source cycle cleanly on shutdown
 
 **Purpose**: A shutdown that arrives while the provider reads or probes its URL proxy sources must end the cycle quietly. Before, it failed every remaining source, set the resolution status to failed and warned the operator once per source.
 
@@ -3884,21 +3884,16 @@ Parity port of the `fragment+segment` dialer from `urfoundation/meso-miner` (PR 
 
 ---
 
-## 185. v2026.11.14: FP2 Client Window, Handshake Generation Hardening, OpenBSD Support, RAM-Log Reopen and Go 1.27.4
+## 185. v2026.11.14: Handshake Generation Hardening, OpenBSD Support, RAM-Log Reopen and Go 1.27.4
 
 **Window**: `v2026.11.8-1093260920-meso` to `v2026.11.14-1098553390-meso`.
 
-**Purpose**: Bring the client side of the network operator's FP2 provider selection into this line, close a handshake bug where a forged generation id could wedge a peer session, add OpenBSD provider and `urnet-tools` support, reopen replaced RAM logs, harden update verification and HotSwap version gating, stop URL proxy source cycles cleanly on shutdown, and move the build to Go 1.27.4.
+**Purpose**: Close a handshake bug where a forged generation id could wedge a peer session, add OpenBSD provider and `urnet-tools` support, reopen replaced RAM logs, harden update verification and HotSwap version gating, stop URL proxy source cycles cleanly on shutdown, and move the build to Go 1.27.4.
 
-**Files modified**: `ip_remote_multi_client.go`, `ip_remote_multi_client_family.go`, `ip_remote_multi_client_limited.go`, `ip_remote_multi_client_recent_exits.go`, `ip_remote_multi_client_sticky.go`, `ip_remote_multi_client_observability.go`, `ip_remote_multi_client_window_client_stats.go`, `ip_capability.go`, `transfer.go`, `transfer_encrypt.go`, `transfer_peer_capability_observation.go`, `ip_blocker_pack.go`, `cmd/blocklistgen/main.go`, `provider/proxy_url_source.go`, `provider/shmlog_linux.go`, `provider/shmlog_trim.go`, `provider/diag_disk_openbsd.go`, `sysmem_openbsd.go`, `internal/urnettools/discover_openbsd.go`, `internal/urnettools/discover_openbsd_parse.go`, `internal/urnettools/lifecycle_openbsd.go`, `internal/urnettools/lifecycle_openbsd_rc.go`, `internal/urnettools/openbsd_managed.go`, `internal/urnettools/jwt_read_openbsd.go`, `internal/urnettools/lifecycle_bsd_cron.go`, `internal/urnettools/lifecycle_bsd_cron_unix.go`, `internal/urnettools/hotswap.go`, `internal/urnettools/update.go`, `internal/urnettools/control_client.go`, `internal/urnettools/control_peer_linux.go`, `scripts/Provider_Install_Linux.sh`, `scripts/Provider_Install_OpenBSD.sh`, `go.mod`, `Dockerfile`, the workflows, `.github/scripts/cfaa_format_check.sh`, `.github/scripts/cfaa_sync.sh` and `.github/scripts/cfaa_sync_notify.py`.
+**Files modified**: `transfer.go`, `transfer_encrypt.go`, `ip_blocker_pack.go`, `cmd/blocklistgen/main.go`, `provider/proxy_url_source.go`, `provider/shmlog_linux.go`, `provider/shmlog_trim.go`, `provider/diag_disk_openbsd.go`, `sysmem_openbsd.go`, `internal/urnettools/discover_openbsd.go`, `internal/urnettools/discover_openbsd_parse.go`, `internal/urnettools/lifecycle_openbsd.go`, `internal/urnettools/lifecycle_openbsd_rc.go`, `internal/urnettools/openbsd_managed.go`, `internal/urnettools/jwt_read_openbsd.go`, `internal/urnettools/lifecycle_bsd_cron.go`, `internal/urnettools/lifecycle_bsd_cron_unix.go`, `internal/urnettools/hotswap.go`, `internal/urnettools/update.go`, `internal/urnettools/control_client.go`, `internal/urnettools/control_peer_linux.go`, `scripts/Provider_Install_Linux.sh`, `scripts/Provider_Install_OpenBSD.sh`, `go.mod`, `Dockerfile`, the workflows, `.github/scripts/cfaa_format_check.sh`, `.github/scripts/cfaa_sync.sh` and `.github/scripts/cfaa_sync_notify.py`.
 
 **Changes**:
-- Add IPv6 admission to the multi client window. The window tracks which exits carry IPv6, keeps an IPv4 hard minimum, asks for an IPv6 candidate when the IPv6 share falls short, and swaps a loaded exit for it. Two failed IPv6 candidates in a row pause the IPv6 fill for a retry period.
-- Add a limited window of TCP-only providers. It is half the main window by default and joins the race for each TCP connection. A fixed-exit user never gets one.
-- Add the redial side of the recent exit memory, with a bounded store and a generation check against stale results. Nothing records a lost exit yet.
-- Record what each peer completed (end-to-end handshake, seal, advertised receive window) and bind the record to the live session with a weak reference.
-- Print structured `[rel] event=<name> key=value` window lines, and record the IP version of connect successes and dial failures.
-- Take a handshake generation id from a peer only through a ClientHello, ignore foreign proofs and responses, order ids only while an attempt is in flight with a positive `TlsTimeout`, and pass the wire generation through the optimistic receive path.
+- Take a handshake generation id from a peer only through a ClientHello, ignore foreign proofs and responses, order ids only while an attempt is in flight with a positive `TlsTimeout`, and pass the wire generation through the optimistic receive path. The handshake changes derive from upstream connect commit 9383d2d8.
 - Add OpenBSD amd64 and arm64 support (`sysmem_openbsd.go`, `provider/diag_disk_openbsd.go`, `internal/urnettools/*_openbsd*.go`, `scripts/Provider_Install_OpenBSD.sh`, `.github/workflows/release.yml`), selecting `sudo` on OpenBSD when `/etc/doas.conf` is missing while keeping `doas` on other inspection errors.
 - Accept `-meso` releases in the HotSwap version gate with `2026-10-20` as the meso version floor (`internal/urnettools/hotswap.go`), stop updates before restart when unit reconciliation is unsafe, verify unreadable running images over a peer-verified control socket (`internal/urnettools/update.go`, `internal/urnettools/control_peer_linux.go`), reopen replaced or removed RAM log files (`provider/shmlog_linux.go`, `provider/shmlog_trim.go`), and report privileged setup failures in `scripts/Provider_Install_Linux.sh`.
 - Stop the URL proxy source fetch and probe cycle cleanly on context cancellation without marking remaining sources failed or logging false warnings (`provider/proxy_url_source.go`).
@@ -3906,9 +3901,9 @@ Parity port of the `fragment+segment` dialer from `urfoundation/meso-miner` (PR 
 - Build with Go 1.27.4.
 - Decode lossless prefix bucket blocklist tables (`ip_blocker_pack.go`), validate Frogeye feed metadata (`cmd/blocklistgen/main.go`), and make the blocklist sync run the blocker, CFAA, Telegram and security tests against the upstream tables before it opens a PR. When they fail the sync stops and the notification lists the upstream commits to port.
 
-**How to identify in new upstream**: Check `ip_remote_multi_client_*.go`, `transfer_peer_capability_observation.go`, `transfer_encrypt.go`, `provider/proxy_url_source.go`, `provider/shmlog_linux.go`, `internal/urnettools/hotswap.go`, `internal/urnettools/control_peer_linux.go`, and `internal/urnettools/*_openbsd*.go`.
+**How to identify in new upstream**: Check `transfer_encrypt.go`, `provider/proxy_url_source.go`, `provider/shmlog_linux.go`, `internal/urnettools/hotswap.go`, `internal/urnettools/control_peer_linux.go`, and `internal/urnettools/*_openbsd*.go`.
 
-**Limits**: The blocklist tables stay at the refresh before 2026-11-13, because upstream's tables from that day use a new format and list a Telegram call reflector that upstream's own test rejects. The sync check blocks them until upstream fixes the table and this line takes the matching decoder. The provider binary does not run the multi client window, so a provider fleet gets nothing from the window work by itself. The fleet gains from the operator's server change, which offers providers for the traffic they carry (see `docs/Dual-Stack.md`). Recent exit memory and the sticky redial have no producer, because this line lacks upstream's typed transport-loss signal and outage classifier. The handshake fix does not include upstream's receive-sequence rejection records. A window of size one with a single IPv6-only exit does not look for an IPv4 exit until it has room, as upstream. The OpenBSD runtime was not verified on a real OpenBSD host.
+**Limits**: The blocklist tables stay at the refresh before 2026-11-13, because upstream's tables from that day use a new format and list a Telegram call reflector that upstream's own test rejects. The sync check blocks them until upstream fixes the table and this line takes the matching decoder. The handshake fix does not include upstream's receive-sequence rejection records. The OpenBSD runtime was not verified on a real OpenBSD host.
 
 **Status**: Included in `v2026.11.14-1098553390-meso`.
 
@@ -4000,6 +3995,14 @@ Parity port of the `fragment+segment` dialer from `urfoundation/meso-miner` (PR 
 **How to identify in new upstream**: Check `provider/trim_held.go`, `internal/urnettools/process_start_linux.go`, and `urnetwork@*.service` matching in `internal/urnettools/discover.go`.
 
 **Status**: Shipped in v2026.11.15-1099303070-meso.
+
+---
+
+## 192. Unused FP2 Client Window
+
+Removed the unused FP2 client window and peer capability recorder. The removal covers `750ab4483`, `e75acb2be`, `46432e823` and `228670105`.
+
+This also removes exported Go API: the peer capability recorder (`PeerCapabilityRecorder`, `NewPeerCapabilityRecorder`, `ClientSettings.PeerCapabilityRecorder`), `WindowTypeLimited` and the `LimitedWindow*` methods of `RemoteUserNatMultiClient`, the IPv6 and UDP availability methods of `RemoteUserNatMultiClient`, and the address family and capability types and fields (`DestinationStats.IpFamily`, `DestinationStats.Capabilities`, `ProviderCapabilities`, `FindProvidersSelect`, `MultiClientGeneratorWithCapabilities`). A program that imports these no longer builds. Each window still starts with the effective performance profile, as it did before the FP2 port.
 
 ---
 
