@@ -86,42 +86,12 @@ Most operators need to do one thing: sign a single wallet message, once, from th
 curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_Linux.sh | sh
 ```
 
+For Alpine/OpenRC, run the Linux installer from a root shell. See [docs/OpenRC.md](docs/OpenRC.md).
+
 **🍎 macOS (launchd)**
 
 ```sh
 curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_Mac.sh | sh -s -- install
-```
-
-**😈 FreeBSD** (the base system's `fetch` is enough; see [docs/FreeBSD.md](docs/FreeBSD.md))
-
-```sh
-fetch -qo urnet-install.sh https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_FreeBSD.sh
-sudo sh urnet-install.sh install
-```
-
-**🐡 OpenBSD (rc.d)**
-
-Run this as a regular user with configured `doas` or `sudo` access.
-
-```sh
-ftp -o urnet-install.sh https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_OpenBSD.sh && \
-  sh urnet-install.sh install
-```
-
-The installer installs the provider and an `rc.d` service managed by `rcctl`. See [docs/OpenBSD.md](docs/OpenBSD.md).
-
-For Alpine/OpenRC, run the Linux installer from a root shell. See [docs/OpenRC.md](docs/OpenRC.md).
-
-**🐋 Docker**
-
-```sh
-docker pull ghcr.io/urfoundation/meso-miner:latest
-```
-
-**🐋 Docker Wrapper (Optional but Recommended -- For docker deployments, install this to control and interact with your container)**
-
-```sh
-curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/install-urnet-docker.sh | sh
 ```
 
 **🪟 Windows (PowerShell)**
@@ -155,6 +125,36 @@ Windows Defender may flag this one-liner. See the note below.
 - `Trojan:Win32/Bearfoos.A!ml`: a behavioural label for scheduled-task activity. The installer registers Task Scheduler tasks - a weekly update task (on `latest` installs) and, if you accept auto-start, a logon task so the provider starts at login - and a behavioural model cannot tell that apart from persistence malware.
 
 </details>
+
+**🐋 Docker**
+
+```sh
+docker pull ghcr.io/urfoundation/meso-miner:latest
+```
+
+**🐋 Docker Wrapper (Optional but Recommended -- For docker deployments, install this to control and interact with your container)**
+
+```sh
+curl -fSsL https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/install-urnet-docker.sh | sh
+```
+
+**😈 FreeBSD** (the base system's `fetch` is enough; see [docs/FreeBSD.md](docs/FreeBSD.md))
+
+```sh
+fetch -qo urnet-install.sh https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_FreeBSD.sh
+sudo sh urnet-install.sh install
+```
+
+**🐡 OpenBSD (rc.d)**
+
+Run this as a regular user with configured `doas` or `sudo` access.
+
+```sh
+ftp -o urnet-install.sh https://raw.githubusercontent.com/urfoundation/meso-miner/refs/heads/main/scripts/Provider_Install_OpenBSD.sh && \
+  sh urnet-install.sh install
+```
+
+The installer installs the provider and an `rc.d` service managed by `rcctl`. See [docs/OpenBSD.md](docs/OpenBSD.md).
 
 ### After you install
 
