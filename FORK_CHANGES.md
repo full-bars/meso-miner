@@ -4002,6 +4002,8 @@ Parity port of the `fragment+segment` dialer from `urfoundation/meso-miner` (PR 
 
 Removed the unused FP2 client window and peer capability recorder. The removal covers `750ab4483`, `e75acb2be`, `46432e823` and `228670105`.
 
+This also removes exported Go API: the peer capability recorder (`PeerCapabilityRecorder`, `NewPeerCapabilityRecorder`, `ClientSettings.PeerCapabilityRecorder`), `WindowTypeLimited` and the `LimitedWindow*` methods of `RemoteUserNatMultiClient`, the IPv6 and UDP availability methods of `RemoteUserNatMultiClient`, and the address family and capability types and fields (`DestinationStats.IpFamily`, `DestinationStats.Capabilities`, `ProviderCapabilities`, `FindProvidersSelect`, `MultiClientGeneratorWithCapabilities`). A program that imports these no longer builds. Each window still starts with the effective performance profile, as it did before the FP2 port.
+
 ---
 
 ## 191. Bucketed Host Blocker Format and Security Precedence Test Sync
