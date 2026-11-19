@@ -9,6 +9,8 @@ Everything merged after `v2026.11.15-1099303070-meso`.
 
 ### Added
 
+- The container image includes the Go top dashboard. `urnet-docker top` forwards terminal color settings and stores preferences on a writable state mount when available. Reusing a named volume preserves them across container recreation. [redeploy]
+
 - Extender discovery now defaults to on when the extender role runs. Explicit off and feed-only settings are preserved. `urnet-tools top` shows discovery state, mesh peers, feed subscribers and validated gossip messages received from peers; the carrier details panel also shows the peer ID, last receipt time and application errors. The message count includes duplicates and resets when the gossip role restarts. Earlier CLI versions cleared the override for `off`; operators who used that command and want discovery to remain off must set it again after upgrading.
 - **Extender sysctl route.** Linux setup can allow unprivileged TCP 443 binding with a host-wide sysctl setting. Extender status reports the active route. [redeploy]
 - **Status summary**. The status command shows provider health, proxy and UDP coverage, extender state, service health and resources. It supports brief and live output. JSON output keeps the raw snapshot. The JSON summary uses a stable schema.
