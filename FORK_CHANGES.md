@@ -13,12 +13,6 @@ The provider and urnet-tools cross-compile for OpenBSD amd64 and arm64. The Open
 
 ---
 
-## Proxy UDP coverage
-
-The provider checks proxy UDP support in bounded background sweeps and stores recent results across restarts. Successful UDP replies can refresh coverage. Status and metrics report coverage for online proxies. The `udp-probe` control stops background sweeps while client safety checks remain active. A check still running after 20 seconds is treated as unknown and allowed. UDP rows in `top` follow with the top port.
-
----
-
 ## Inherited from urnetwork-3.23-fix (carried by the parity port)
 
 Sections 1 through 165 are inherited history from `full-bars/urnetwork-3.23-fix`, carried over by the parity port. They are recorded here for rebase reference and are not meso-miner changes. The meso-miner parity work begins at section 166.
@@ -4022,5 +4016,61 @@ This also removes exported Go API: the peer capability recorder (`PeerCapability
 - **Telegram reflector reputation precedence** (`ip_security_cfaa.go`, `ip_security_telegram_test.go`): `cfaaDetector` exposes `inspectReason` for static rule attribution. Test assertions in `TestTelegramCallReflectorRanges` expect an IP reputation drop (`cfaaDrop` / `SecurityPolicyReasonCfaaDropIp`) when an address in the reflector snapshot is present on an active IP blocklist.
 
 **How to Identify in New Upstream**: Check `containsHostHash` and `blockerBlockedHostBuckets` in `ip_blocker.go`, `packHostHashes` in `blocker/main.go`, and `TestTelegramCallReflectorRanges` in `ip_security_telegram_test.go`.
+
+**Status**: Unreleased.
+
+---
+
+## 193. Proxy UDP Coverage
+
+The provider checks proxy UDP support in bounded background sweeps and stores recent results across restarts. Status, `top` and metrics report UDP relay coverage for online proxies. `urnet-tools set udp-probe off` stops new sweeps at the next tick while client checks remain active. A check still running after 20 seconds is treated as unknown and allowed. The state file is written in the background at most once every two seconds during normal operation, and shutdown can request an immediate flush. Client UDP and QUIC flows through a proxy are refused when the relay is confirmed unavailable or its UDP exit address differs from the TCP exit address.
+
+**Status**: Unreleased.
+
+---
+
+## 194. Status Summary and Output Modes
+
+The `urnet-tools status` command routes through a summary model. Default output is a one-screen health summary showing version, time-boxed cached update availability, proxy pool counts, UDP coverage, extender state, unit health with SIGPIPE restart risk detection and resource utilization. `--brief` provides script exit codes: 0 for healthy, 1 for warning, 2 for broken and 3 for unreachable. Healthy `--brief` output is empty. `--json` retains the raw snapshot. `--json-summary` emits a stable schema document (`urnet-tools-status/1`) and omits `jwt_expires` when the provider has no token. `--live` refreshes the summary in place. Update checks use a cache that does not follow symbolic links. Status honors `--pid` and reports when the extender role is unavailable or not running.
+
+**Status**: Unreleased.
+
+---
+
+## 195. Extender UDP Controls and Port 53 State
+
+Operators can configure extender UDP 443, UDP 4053 and UDP 53 carriers independently with `urnet-tools set extender-udp443|extender-udp4053|extender-udp53 on|off`. A setting change restarts the active extender role and persists across reboots. A failed control write restores the previous carrier configuration. Extender status reports the bind state and failure reason for UDP port 53. The `urnet_extender_dns53_state` metric exposes the current state. The lower sysctl unprivileged port threshold for port 53 is supported in the platform layer but is not selectable in setup yet.
+
+**Status**: Unreleased.
+
+---
+
+## 196. Gossip Visibility
+
+Extender discovery reports dial attempts and failures, health transitions and bounded event dumps. Peer dial failures and connection drops are tracked with atomic metrics. The health evaluation prevents cap pressure from hiding a worse gossip health state. `urnet-tools extender events` displays recent mesh, dial, reject and cap events. Anomaly event dumps are bounded and rate limited.
+
+**Status**: Unreleased.
+
+---
+
+## 197. Top Display and Container Support
+
+The top terminal dashboard is consolidated and includes proxy health heatmap dots, a configurable fading glow track, and a UDP coverage row. Panels support mouse interaction, divider dragging and theme cycling. The `u` key switches byte and rate labels between binary and decimal units. The Docker container image includes the Go top dashboard. The Docker helper detects when top is available before launching.
+
+**Status**: Unreleased.
+
+---
+
+## 198. Linux Interface Counters
+
+The `internal/nicstat` package reads cumulative interface receive and transmit byte counters from Linux `/proc/net/dev`. Counters can reset between snapshots without breaking rate calculations.
+
+**Status**: Unreleased.
+
+---
+
+## 199. Proxy Input and Blocklist Sync
+
+The `proxy add` parser accepts passwords that contain an `@` sign. Backend failure counts and failure timestamps are published together as one atomic snapshot to avoid tearing across reads. The CFAA blocklist sync workflow validates generated tables and commits them directly to the main branch.
 
 **Status**: Unreleased.

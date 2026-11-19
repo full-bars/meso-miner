@@ -24,16 +24,19 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | Command | What it does |
 |---|---|
 | `providers` (`list`, `ps`) | List providers: your own OS user's by default, or all providers on the box with `--all` (JWT identities, systemd units, state dirs). |
-| `status [target]` | Show detailed status. On Linux, displays live `systemctl status` view; on Windows/macOS, renders styled panel. The live block's pressure row prints the provider's one-sentence pressure summary (the `summary` from `~/.urnetwork/pressure_status`) when the provider writes it; older providers show the bare score. |
-| `start [target]` | Start provider service/process. |
-| `stop [target]` | Stop provider service/process. |
-| `restart [target]` | Restart provider service/process. |
+| `status [--live] [--brief] [--json] [--json-summary] [--summary] [--plain]` | One-screen health summary: version, time-boxed cached update check, proxy counts, UDP relay coverage, extender state, unit health, and resource utilization. `--live` (or `-l`, with `--interval`) refreshes in place until Ctrl-C. `--brief` prints warnings and failures with exit codes 0 for healthy, 1 for warning, 2 for broken and 3 for unreachable. A healthy result prints nothing. `--json` prints the raw snapshot. `--json-summary` prints the summary as a stable schema document (`urnet-tools-status/1`). `--detail` restores the classic full view (`systemctl status` on Linux, styled panel on Windows/macOS, followed by the live and extender blocks). `--plain` uses plain text without ANSI escapes. |
+| `diag` | Capture a running provider's profiles and summary. See [Diagnostics](/full-bars/urnetwork-3.23-fix/wiki/Diagnostics). |
+| `start` | Start the provider's systemd unit. Target a specific provider with target flags. |
+| `stop` | Stop the provider's systemd unit. Target a specific provider with target flags. |
+| `restart` | Restart the provider's systemd unit. Confirm-gated (`-f`/`--force` skips prompt). |
 | `reinstall [target]` | Cleanly reinstall provider binary (delegates to latest updater). |
 | `uninstall [target]` | Uninstall provider, unit files, and optional state. Confirm-gated. |
 | `update [target]` | Update provider to the latest release (or `--tag <version>`). Digest-verified. |
 | `hotswap` (`hot-swap`) | Zero-downtime in-process binary reload: hands live service to a verified candidate with no restart. Requires a `Type=notify` unit; see the deep-dive below. |
 | `self-update` (`selfupdate`) | Update the tool binary itself without touching running providers. |
 | `logs [target] [N]` | Stream provider logs (N lines, default 250). RAMLOGS-aware. The ramlog and file views use a native follower, so they work on Windows (no `tail` needed) and wherever `tail` is missing. It prints the last N lines and then follows. If the log is rotated or replaced it finishes the old file and follows the new one from its start, and a truncated log is followed from its start. |
+| `top [target] [--interval D] [--no-mouse] [--copy] [--plain]` (also `urtop`) | Live full-screen view of one provider: throughput graphs, clients, proxy pool heatmap dots with fading glow tracks, memory, and recent events. Read-only. Press `?` for keys, `q` to quit, `u` to toggle binary and decimal units, `m` for menu. Needs an interactive terminal; use `status` in scripts. `--copy` writes the screen to `~/.local/state/urnet-tools/top-<time>.txt` and prints it to stdout on exit; `--plain` turns the box characters into `+ - \|` for pasting. The Events panel shows relative times (`12m ago`), severity icons and collapsed repeats (`x12`); the graphs cover the provider's ten minutes or top's own binned `1h` and `24h` windows; press `t` to cycle graph history, `o` for the provider overview, and `a`, `i`, or `v` for alerts, resource gauges, or carriers. Drag panel dividers to resize them; `M` toggles mouse reporting. |
+| `get [key] [target]` (alias `show`) | Read-only view of the runtime overrides. With no key it lists every active override; pass one key to see its value. Use `set` to change anything. |
 | `version` (`--version`, `-v`) | Print stamped binary version and build metadata. |
 
 ### Restored Provider & Session Commands (v3.23.0-fix.30.4+)
@@ -47,10 +50,14 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | `usage [graphs\|graph <view>] [target]` | Display traffic & billing accounting: billable relay bytes vs control-plane protocol overhead, with rolling time-series summaries. Available with `urnet-tools`. `urnet-docker` forwards it to the image's shell `urnet-tools`, which does not implement it. |
 | `choose-network <api> <connect> [target]` | Point provider to custom API and WebSocket signaling endpoints. Use `--reset` to restore default bringyour endpoints. |
 | `fast-auth [on\|off\|status] [target]` | Toggle or check `~/.urnetwork/fast_auth` marker to bypass auth rate limiter. Confirm-gated. |
+| `extender events [--since D] [--kind K] [--json] [target]` | Inspect recent extender gossip events from the bounded memory ring. Filter by age (`--since 10m`) or kind (`--kind dial`). |
 | `set [help \| <key> <val> \| <key> off \| <key>] [target]` | Get, set, or clear runtime provider state overrides (`node-name`, `proxy-url-max`, `proxy-url-refresh`, `cleanup-scope`, `cleanup-interval`, `fast-auth`, `ip-version`, `proxy-target-family`, `h1-plus`, `h3`, `h3-datagram`, `h3-datagram-send`, `tls-hello`). `h3` accepts `off`, `direct`, `on`, a positive proxy count, `all` or `auto`; `ip-version` accepts `dual`, `ipv4`, `ipv6` or `legacy`; `proxy-target-family` accepts `v4` or `proxy`; `tls-hello` accepts `on` or `off` and selects Chrome's or Go's hello for new connections; open ones keep their handshake. Its `off` is a stored value, not a clear: it survives restarts and takes precedence over `URNETWORK_TLS_HELLO=on`. A control socket `clear` returns the key to `URNETWORK_TLS_HELLO` ([ef3508eee](https://github.com/full-bars/meso-miner/commit/ef3508eeee806477c36686431331e884a0061bfa), [27664c9fd](https://github.com/full-bars/meso-miner/commit/27664c9fdafbd7cf5d1f4ab937bd528cf0c90f6f)). Sent live over the provider control socket, or queued to `pending_overrides.json` if the provider is stopped. Confirm-gated. |
-| `set extender-discovery <off\|on\|feed-only>` | Control the extender directory feed and gossip mesh. Default: `off`. Applies live and persists. |
-| `set pprof [on\|off\|<ip:port>]` | Turn the loopback pprof diagnostics on or off, or move them to another loopback address. The default is on at `127.0.0.1:6060`. Applies live, no restart. See [Troubleshooting](/full-bars/urnetwork-3.23-fix/wiki/Troubleshooting#inspecting-a-stuck-or-heavy-provider). |
-| `rename <name> [target]` | Set the dashboard identity label on the backend. Alias for `set node-name <name>`. The setting persists in provider state and takes precedence over the legacy node name file. Use `off` to clear. Available with `urnet-tools`. `urnet-docker rename` does not work: the image's shell `urnet-tools` does not implement it. For container instructions, see [Node-Identity](/full-bars/urnetwork-3.23-fix/wiki/Node-Identity). |
+| `set extender-discovery <off\|on\|feed-only>` | Control the extender directory feed and gossip mesh. Default: `on` when the extender runs. Applies live and persists; `off` is saved explicitly. |
+| `set extender-udp443 <on\|off>` | Enable or disable the UDP 443 QUIC carrier. Default: `on`. A change restarts an active extender role. |
+| `set extender-udp4053 <on\|off>` | Enable or disable the UDP 4053 DNS carrier. Default: `on`. A change restarts an active extender role. |
+| `set extender-udp53 <on\|off>` | Enable or disable the UDP 53 DNS carrier. Default: `on`. A change restarts an active extender role. Port 53 needs bind permission. `URNETWORK_EXTENDER_DNS53=off` also disables it. |
+| `set pprof [on\|off\|<ip:port>]` | Turn the loopback pprof diagnostics on or off, or move them to another loopback address. The default is on at `127.0.0.1:6060`. Applies live, no restart. See [Troubleshooting](/full-bars/meso-miner/wiki/Troubleshooting#inspecting-a-stuck-or-heavy-provider). |
+| `rename <name> [target]` | Set the dashboard identity label on the backend. Alias for `set node-name <name>`. The setting persists in provider state and takes precedence over the legacy node name file. Use `off` to clear. Available with `urnet-tools`. `urnet-docker rename` does not work: the image's shell `urnet-tools` does not implement it. For container instructions, see [Node-Identity](/full-bars/meso-miner/wiki/Node-Identity). |
 | `session save <file> [target]` | Export encrypted AES-256-CBC bundle of provider JWT identity and state. Prompts for passphrase. |
 | `session load <file> [target] [--allow-different-account]` | Decrypt and load identity bundle into provider. Automatically backs up current state first. Verifies account identity unless bypassed. |
 | `self-heal [on\|off\|status] [target]` | Toggle or query resource-pressure self-healing monitor (`~/.urnetwork/proxy_self_heal`). |
@@ -122,6 +129,12 @@ The billable rate is the **lifetime byte counter's delta divided by the time del
 Rows: billable KiB/s, proxies up (mean), clients (mean), RSS (mean and max), host available MiB (min), swap used MiB (max), PSI full avg60 (mean and max), desired, trim cap, restarts, OOM kills. Every row shows before, after and the change.
 
 ---
+
+## Docker top
+
+`urnet-docker top [container]` opens the dashboard in the selected running container. It needs an interactive terminal and an image that includes the Go dashboard. The image keeps the existing shell tool for other Docker commands. Update and recreate an older image if the dashboard executable is missing.
+
+The dashboard uses the writable `/root/.urnetwork` mount for its settings when that mount is present. Use a named volume or a bind mount and reuse it when recreating the container. An anonymous volume is not automatically reused. Without a writable state mount, settings remain in the container and can be lost on recreation. Terminal colors follow `TERM` and `COLORTERM` when they are set on the host. Container network interfaces describe the container namespace, not necessarily the host network.
 
 ## 🎯 Targeting & Selectors
 

@@ -3,7 +3,6 @@ package urnettools
 import (
 	"errors"
 	"net"
-	"os"
 	"path/filepath"
 	"testing"
 )
@@ -11,11 +10,7 @@ import (
 // serveCmdOnce answers one control request for cmd on a fresh unix socket.
 func serveCmdOnce(t *testing.T, cmd, reply string) Provider {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "traf")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	dir := shortSocketDir(t)
 	ln, err := net.Listen("unix", filepath.Join(dir, "provider.sock"))
 	if err != nil {
 		t.Skipf("unix sockets unavailable: %v", err)

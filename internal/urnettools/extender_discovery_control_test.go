@@ -53,7 +53,7 @@ func TestExtenderDiscoveryQueue(t *testing.T) {
 	if err := json.Unmarshal(data, &ops); err != nil {
 		t.Fatal(err)
 	}
-	if len(ops) != 2 || ops[0].Key != "extender_discovery" || ops[0].Value != "feed-only" || ops[1].Op != "clear" {
+	if len(ops) != 2 || ops[0].Key != "extender_discovery" || ops[0].Value != "feed-only" || ops[1].Op != "set" || ops[1].Value != "off" {
 		t.Fatalf("queue: %+v", ops)
 	}
 }
@@ -74,5 +74,40 @@ func TestExtenderDiscoveryStatusBlock(t *testing.T) {
 		if state == "failed" && (!strings.Contains(b.String(), "bad key") || !strings.Contains(b.String(), "retry")) {
 			t.Error("no failure explanation")
 		}
+	}
+}
+
+func TestExtenderDiscoveryCounterCompatibility(t *testing.T) {
+	for _, tc := range []struct {
+		name, data string
+		present    bool
+	}{
+		{"older provider", `{"state":"running","peers":1}`, false},
+		{"new provider", `{"state":"running","peers":1,"messages_accepted":0,"apply_errors":0,"dial_stats":{"attempts":2,"timeout":1,"refused":0,"canceled":0,"other":0}}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var d ExtenderDiscovery
+			if err := json.Unmarshal([]byte(tc.data), &d); err != nil {
+				t.Fatal(err)
+			}
+			if (d.MessagesAccepted != nil) != tc.present {
+				t.Fatalf("counter presence = %+v", d.MessagesAccepted)
+			}
+			if (d.DialStats != nil) != tc.present {
+				t.Fatalf("dial stats presence = %+v", d.DialStats)
+			}
+			var b bytes.Buffer
+			formatExtenderBlock(&b, ExtenderReading{Source: SourceControlSocket, Running: true, Discovery: &d}, time.Time{})
+			wantDials := "Gossip dials: not reported"
+			if tc.present {
+				wantDials = "Gossip dials: 2 attempts; failures timeout=1 refused=0 canceled=0 other=0"
+			}
+			if !strings.Contains(b.String(), wantDials) {
+				t.Fatalf("missing dial stats %q: %s", wantDials, b.String())
+			}
+			if strings.Contains(b.String(), "valid peer messages received") != tc.present {
+				t.Fatalf("unexpected counter display: %s", b.String())
+			}
+		})
 	}
 }

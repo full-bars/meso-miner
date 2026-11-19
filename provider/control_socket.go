@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/urnetwork/connect"
+	"github.com/urnetwork/connect/gossip"
 )
 
 // controlSocketPath returns ~/.urnetwork/provider.sock — the Unix domain
@@ -91,10 +92,17 @@ type controlResponse struct {
 	// ProxyAudit is the proxy audit engine's last completed tick, answered by
 	// "status" and "audit". Nil before its first tick or on a provider that predates it.
 	ProxyAudit *proxyAuditStatus `json:"proxy_audit,omitempty"`
+	// ProxyCells is the compact per-proxy grid payload for top's heatmap,
+	// answered by "proxy_cells". 4 packed bytes per proxy, base64 by JSON.
+	ProxyCells []byte `json:"proxy_cells,omitempty"`
+	// ProxyCellDetail is the full per-proxy record for the heatmap popup,
+	// answered by "proxy_cell_detail". Not polled; fetched on hover/click.
+	ProxyCellDetail []proxyCellDetail `json:"proxy_cell_detail,omitempty"`
 	// Extender is the extender's whole picture, answered by the "extender"
 	// command (extender_status.go).
-	Extender *extenderControlReading `json:"extender,omitempty"`
-	Audit    *proxyAuditStatus       `json:"audit,omitempty"`
+	Extender     *extenderControlReading `json:"extender,omitempty"`
+	GossipEvents []gossip.Event          `json:"gossip_events,omitempty"`
+	Audit        *proxyAuditStatus       `json:"audit,omitempty"`
 }
 
 // startControlSocket opens the control socket and serves it until ctx is
@@ -344,6 +352,9 @@ var liveEffectKeys = map[string]bool{
 	"metrics_listen":              true,
 	"extender":                    true,
 	"extender_discovery":          true,
+	"extender_udp443":             true,
+	"extender_udp4053":            true,
+	"extender_udp53":              true,
 	"proxy_target_family":         true,
 }
 
@@ -362,6 +373,10 @@ func validateControlValue(key, value string) error {
 	// client-side behavior in internal/urnettools/control_client.go.
 	valLower := strings.ToLower(value)
 	switch key {
+	case "extender_udp443", "extender_udp4053", "extender_udp53":
+		if valLower != "on" && valLower != "off" {
+			return fmt.Errorf("%s: must be on or off (got %q)", key, value)
+		}
 	case "extender_discovery":
 		if !validExtenderDiscoveryMode(value) {
 			return fmt.Errorf("extender_discovery: must be off, on or feed-only (got %q)", value)
@@ -504,7 +519,10 @@ var liveDefaults = map[string]string{
 	// Clearing audit reapplies the runtime default (off = observe mode),
 	// releasing the live override so the persisted value rules.
 	"proxy_audit":        "off",
-	"extender_discovery": "off",
+	"extender_discovery": "on",
+	"extender_udp443":    "on",
+	"extender_udp4053":   "on",
+	"extender_udp53":     "on",
 	"pprof":              "on",
 	// Clearing ip_version hands the families back to the default: dual stack.
 	"ip_version": "dual",
@@ -558,7 +576,7 @@ func applyLiveDefault(key string, scoped ...*controlState) error {
 	return applyLiveSideEffect(key, def)
 }
 
-func handleControlRequest(state *controlState, req controlRequest) controlResponse {
+func handleControlRequest(state *controlState, req controlRequest) (response controlResponse) {
 	// Key check moved to individual cases — status and history don't need a key.
 
 	IncrControlCmd(req.Cmd)
@@ -568,8 +586,13 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		// Read-only. Turning the extender on or off is the persisted `set
 		// extender on|off`, so there is one way to change it and it survives a
 		// restart.
+		if req.Action == "events" {
+			return controlResponse{OK: true, GossipEvents: currentExtenderGossipEvents()}
+		}
 		reading := globalExtenderManager.Reading()
 		return controlResponse{OK: true, Extender: &reading}
+	case "extender_events", "gossip_events":
+		return controlResponse{OK: true, GossipEvents: currentExtenderGossipEvents()}
 	case "version":
 		// The provider answering for itself. Every other way to learn a
 		// running provider's version infers it from the filesystem: read
@@ -598,6 +621,20 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 
 	case "goroutines":
 		return controlResponse{OK: true, Goroutines: nodeGoroutines.Get(time.Now())}
+
+	case "proxy_cells":
+		// Compact per-proxy grid cells for urnet-tools top's proxy heatmap.
+		// Packed and base64 by the JSON encoder; cached for a second so a
+		// 4400-proxy node does not pay for the registry scan per frame.
+		cells := getProxyCellStore().Cells(time.Now())
+		return controlResponse{OK: true, ProxyCells: cells}
+
+	case "proxy_cell_detail":
+		// The full per-proxy record for the heatmap's hover/click popup:
+		// address, state, clients, interval bytes, age. Shares the grid's
+		// one-second sample so the popup describes what the grid shows.
+		detail := getProxyCellStore().Detail(time.Now())
+		return controlResponse{OK: true, ProxyCellDetail: detail}
 
 	case "mark":
 		// An operator annotation on the baseline timeline. It goes through the
@@ -714,13 +751,38 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		// txMu across the whole get-old -> set -> persist -> rollback unit so
 		// concurrent connections can't interleave (see controlState.txMu).
 		state.txMu.Lock()
-		defer state.txMu.Unlock()
+		restartCarrier := false
+		persistFailed := false
+		defer func() {
+			state.txMu.Unlock()
+			if restartCarrier {
+				var err error
+				if persistFailed {
+					err = globalExtenderManager.restartCarriersIfChanged()
+				} else {
+					err = globalExtenderManager.RestartCarriers()
+				}
+				if err != nil {
+					tlog("⚠️ [control] carrier live apply failed: %s\n", err)
+					if !persistFailed {
+						response = controlResponse{OK: false, Error: "persisted, but failed to apply carrier settings live: " + err.Error()}
+					} else {
+						response.Error += "; failed to restore carrier settings live: " + err.Error()
+					}
+				}
+			}
+		}()
 		oldValue, oldMeta, hadOld := state.getWithMeta(req.Key)
 		if err := state.set(req.Key, req.Value); err != nil {
 			tlog("❌ [control] set %s=%s rejected: %s\n", req.Key, req.Value, err)
 			return controlResponse{OK: false, Error: err.Error()}
 		}
+		if isExtenderCarrierKey(req.Key) {
+			oldOn := !hadOld || !strings.EqualFold(oldValue, "off")
+			restartCarrier = oldOn != !strings.EqualFold(req.Value, "off")
+		}
 		if err := state.persist(); err != nil {
+			persistFailed = true
 			// Restore both value and meta to preserve provenance.
 			state.mu.Lock()
 			if hadOld {
@@ -769,13 +831,37 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 			return controlResponse{OK: false, Error: "key is required"}
 		}
 		state.txMu.Lock()
-		defer state.txMu.Unlock()
+		restartCarrier := false
+		persistFailed := false
+		defer func() {
+			state.txMu.Unlock()
+			if restartCarrier {
+				var err error
+				if persistFailed {
+					err = globalExtenderManager.restartCarriersIfChanged()
+				} else {
+					err = globalExtenderManager.RestartCarriers()
+				}
+				if err != nil {
+					tlog("⚠️ [control] carrier live apply failed: %s\n", err)
+					if !persistFailed {
+						response = controlResponse{OK: false, Error: "persisted, but failed to apply carrier settings live: " + err.Error()}
+					} else {
+						response.Error += "; failed to restore carrier settings live: " + err.Error()
+					}
+				}
+			}
+		}()
 		oldValue, oldMeta, hadOld := state.getWithMeta(req.Key)
 		if err := state.clear(req.Key); err != nil {
 			tlog("❌ [control] clear %s rejected: %s\n", req.Key, err)
 			return controlResponse{OK: false, Error: err.Error()}
 		}
+		if isExtenderCarrierKey(req.Key) && hadOld && strings.EqualFold(oldValue, "off") {
+			restartCarrier = true
+		}
 		if err := state.persist(); err != nil {
+			persistFailed = true
 			// Restore both value and meta to preserve provenance.
 			if hadOld {
 				state.mu.Lock()
@@ -791,7 +877,7 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		// value takes effect on next restart.
 		liveCleared := liveEffectKeys[req.Key]
 		if liveCleared {
-			if err := applyLiveDefault(req.Key, state); err != nil && !extenderDiscoverySavedForStart(req.Key, extenderDiscoveryOff, err) {
+			if err := applyLiveDefault(req.Key, state); err != nil && !extenderDiscoverySavedForStart(req.Key, liveDefaults[req.Key], err) {
 				tlog("⚠️ [control] clear %s persisted but live default apply failed: %s\n", req.Key, err)
 				// The key is cleared but the running process did not adopt
 				// the default, so the persisted state and the live process

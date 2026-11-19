@@ -220,7 +220,7 @@ func TestYieldCoordinatorSession(t *testing.T) {
 }
 
 func TestNotifySystemdMainPID(t *testing.T) {
-	tempDir := t.TempDir()
+	tempDir := shortSocketDir(t)
 	sockPath := filepath.Join(tempDir, "notify.sock")
 
 	l, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: sockPath, Net: "unixgram"})
