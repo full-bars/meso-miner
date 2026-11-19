@@ -10,6 +10,8 @@ Everything merged after `v2026.11.15-1099303040-meso`.
 
 ### Added
 
+- Extender status reports the state and reason for DNS port 53. The `urnet_extender_dns53_state` metric reports its current state.
+- Gossip diagnostics report dial attempts and failures, health transitions and bounded event dumps for anomalies.
 - **Proxy UDP coverage** (`provider/`, `internal/urnettools/`). The provider checks proxy UDP support in bounded background sweeps and records results across restarts. Status and metrics report coverage for online proxies. `urnet-tools set udp-probe off` stops background sweeps while client checks remain active. A check still running after 20 seconds is treated as unknown and allowed. The `top` dashboard also shows UDP coverage. [redeploy]
 - The container image includes the Go top dashboard. `urnet-docker top` forwards terminal color settings and stores preferences on a writable state mount when available. Reusing a named volume preserves them across container recreation. [redeploy]
 - Extender discovery now defaults to on when the extender role runs. Explicit off and feed-only settings are preserved. `urnet-tools top` shows discovery state, mesh peers, feed subscribers and validated gossip messages received from peers; the carrier details panel also shows the peer ID, last receipt time and application errors. The message count includes duplicates and resets when the gossip role restarts. Earlier CLI versions cleared the override for `off`; operators who used that command and want discovery to remain off must set it again after upgrading.
