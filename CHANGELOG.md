@@ -4,6 +4,8 @@ Everything merged after `v2026.11.15-1099303070-meso`.
 
 ### Changed
 
+- Proxied providers send platform connections through their proxy and mark them for platform accounting. Proxied identities open no ICMP echo socket or peer connections. The platform may count them at no head, capture-the-flag or extender unit.
+
 - Removed the unused FP2 client window. No shipped binary used it. This also removes exported Go API: the peer capability recorder (`PeerCapabilityRecorder`, `NewPeerCapabilityRecorder`, `ClientSettings.PeerCapabilityRecorder`), `WindowTypeLimited` and the `LimitedWindow*` methods of `RemoteUserNatMultiClient`, the IPv6 and UDP availability methods of `RemoteUserNatMultiClient`, and the address family and capability types and fields (`DestinationStats.IpFamily`, `DestinationStats.Capabilities`, `ProviderCapabilities`, `FindProvidersSelect`, `MultiClientGeneratorWithCapabilities`). A program that imports these no longer builds. Each window still starts with the effective performance profile, as it did before the FP2 port.
 - The CFAA blocklist sync commits the generated tables directly to main after its checks pass. [no redeploy]
 - **The Docker shakedown checks no longer fail on harness bugs** (`.github/scripts/docker-shakedown.sh`). The in-container update checks passed `-f` to the shell `urnet-tools` wrapper that the Docker image ships, which does not accept that flag. The Go `urnet-tools` on a host still does. The proxy cache check read the cache with `python3`, which the image does not ship, so it always read -1. The profile startup wait was too short for a slow runner. The state handling of two checks was wrong. These repairs were made in the 3.23 line in October and are ported here. [no redeploy]
