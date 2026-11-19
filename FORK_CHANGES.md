@@ -13,6 +13,12 @@ The provider and urnet-tools cross-compile for OpenBSD amd64 and arm64. The Open
 
 ---
 
+## Proxy UDP coverage
+
+The provider checks proxy UDP support in bounded background sweeps and stores recent results across restarts. Successful UDP replies can refresh coverage. Status and metrics report coverage for online proxies. The `udp-probe` control stops background sweeps while client safety checks remain active. A check still running after 20 seconds is treated as unknown and allowed. UDP rows in `top` follow with the top port.
+
+---
+
 ## Inherited from urnetwork-3.23-fix (carried by the parity port)
 
 Sections 1 through 165 are inherited history from `full-bars/urnetwork-3.23-fix`, carried over by the parity port. They are recorded here for rebase reference and are not meso-miner changes. The meso-miner parity work begins at section 166.
