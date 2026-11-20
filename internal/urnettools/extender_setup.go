@@ -48,7 +48,11 @@ func executeExtenderSetupPlan(out io.Writer, plan []setupCommand, yes, dryRun bo
 			break
 		}
 		if (c.name == "sysctl" && len(c.args) == 1 && c.args[0] == "--system") || (c.name == "sh" && len(c.args) == 2 && strings.Contains(c.args[1], "99-urnetwork-extender.conf")) {
-			fmt.Fprintln(out, "Notice: net.ipv4.ip_unprivileged_port_start=443 removes privileged-port protection for ports 443-1023 for all users on this host.")
+			if strings.Contains(c.String(), "ip_unprivileged_port_start=53") {
+				fmt.Fprintln(out, "Notice: net.ipv4.ip_unprivileged_port_start=53 allows any local user to bind ports 53 to 1023.")
+			} else {
+				fmt.Fprintln(out, "Notice: net.ipv4.ip_unprivileged_port_start=443 removes privileged-port protection for ports 443-1023 for all users on this host.")
+			}
 			undo, _ := (&SystemPlatformConfigurer{ReadFile: func(string) ([]byte, error) { return nil, os.ErrNotExist }}).sysctlRecovery()
 			if len(recovery) > 0 {
 				undo = recovery[0]
@@ -102,6 +106,7 @@ TCP 443 and optionally UDP 443 and UDP 4053. UDP 53 is optional and user-managed
 
 // ExtenderSetupOptions controls the behavior of `urnet-tools extender setup`.
 type ExtenderSetupOptions struct {
+	UDP53          bool
 	Yes            bool
 	Force          bool
 	NonInteractive bool
@@ -149,11 +154,19 @@ func RunExtenderSetup(opts ExtenderSetupOptions) error {
 	if platform == "" {
 		platform = runtime.GOOS
 	}
+	if opts.UDP53 {
+		if platform != "linux" {
+			return fmt.Errorf("--udp53 is only supported by Linux sysctl setup")
+		}
+		if opts.Route != "" && opts.Route != "sysctl" {
+			return fmt.Errorf("--udp53 requires --route=sysctl")
+		}
+	}
 	if platform == "freebsd" {
 		fmt.Fprint(out, freeBSDSetupInstructions)
 		return nil
 	}
-	fmt.Fprintln(out, "UDP 53 is optional and user-managed; setup does not free the port or change its firewall rules.")
+	fmt.Fprintln(out, "UDP 53 is optional. Setup only changes its bind threshold with --udp53. Manage firewall access separately.")
 
 	checker := opts.PortChecker
 	if checker == nil {
@@ -242,7 +255,7 @@ func RunExtenderSetup(opts ExtenderSetupOptions) error {
 	// Select the route before checking whether that particular route is satisfied.
 	// Root providers do not need a low-port route.
 	route := strings.ToLower(strings.TrimSpace(opts.Route))
-	needsRoute := false
+	needsRoute := opts.UDP53
 	for _, p := range targets {
 		needsRoute = needsRoute || p.User != "root"
 	}
@@ -272,9 +285,17 @@ func RunExtenderSetup(opts ExtenderSetupOptions) error {
 		default:
 			return fmt.Errorf("invalid route %q (must be sysctl, capability, or skip)", route)
 		}
+		if opts.UDP53 && route != "sysctl" {
+			return fmt.Errorf("--udp53 requires --route=sysctl")
+		}
 		opts.Route = route
 		if sp, ok := platformCfg.(*SystemPlatformConfigurer); ok {
 			sp.Route = route
+			if opts.UDP53 {
+				sp.SysctlPort = 53
+			}
+		} else if opts.UDP53 {
+			return fmt.Errorf("--udp53 requires the system sysctl configurer")
 		}
 	}
 
@@ -283,7 +304,11 @@ func RunExtenderSetup(opts ExtenderSetupOptions) error {
 	var descs []string
 	var needPlatformTargets []Provider
 	for _, p := range targets {
-		ok, desc, err := platformCfg.CheckRequirement(p.Binary, p.User)
+		checkUser := p.User
+		if opts.UDP53 && checkUser == "root" {
+			checkUser = "non-root"
+		}
+		ok, desc, err := platformCfg.CheckRequirement(p.Binary, checkUser)
 		if err != nil {
 			return fmt.Errorf("checking platform requirement: %w", err)
 		}
@@ -338,6 +363,17 @@ func RunExtenderSetup(opts ExtenderSetupOptions) error {
 		}
 	}
 
+	if opts.UDP53 && len(needPlatformTargets) > 0 {
+		sp := platformCfg.(*SystemPlatformConfigurer)
+		if sp.ReadFile == nil {
+			return fmt.Errorf("cannot read current ip_unprivileged_port_start")
+		}
+		current, readErr := sp.ReadFile(extenderSysctlPortStartPath)
+		if readErr != nil {
+			return fmt.Errorf("cannot read current ip_unprivileged_port_start: %w", readErr)
+		}
+		fmt.Fprintf(out, "UDP 53 opt-in: net.ipv4.ip_unprivileged_port_start changes from %s to 53. The value is persisted in %s and applied live. Any local user can bind ports 53 to 1023.\n", strings.TrimSpace(string(current)), extenderSysctlDropin)
+	}
 	var plan []setupCommand
 	seenCmd := map[string]bool{}
 	addCmd := func(c setupCommand) {
@@ -349,7 +385,11 @@ func RunExtenderSetup(opts ExtenderSetupOptions) error {
 	}
 	for _, p := range needPlatformTargets {
 		if planner, ok := platformCfg.(platformPlanner); ok {
-			cmds, err := planner.PlanRequirement(p.Binary, p.User)
+			planUser := p.User
+			if opts.UDP53 && planUser == "root" {
+				planUser = "non-root"
+			}
+			cmds, err := planner.PlanRequirement(p.Binary, planUser)
 			if err != nil {
 				return fmt.Errorf("planning platform requirement: %w", err)
 			}
@@ -426,19 +466,23 @@ func RunExtenderSetup(opts ExtenderSetupOptions) error {
 	}
 
 	if len(plan) > 0 {
-		yes := opts.Yes || opts.Force
+		yes := opts.Yes || (opts.Force && !opts.UDP53)
 		confirmFn := opts.ConfirmFunc
 		if confirmFn == nil {
 			confirmFn = func() (bool, error) {
 				if opts.NonInteractive || !stdinIsInteractive() {
 					return false, fmt.Errorf("stdin is not a terminal; pass --yes (or -y) to confirm non-interactive setup")
 				}
-				ans, err := confirmStdinRead("Execute these commands? [y/N]: ")
+				prompt := "Execute these commands? [y/N]: "
+				if opts.UDP53 {
+					prompt = "Type yes to execute these commands: "
+				}
+				ans, err := confirmStdinRead(prompt)
 				if err != nil {
 					return false, err
 				}
 				trimmed := strings.ToLower(strings.TrimSpace(ans))
-				return trimmed == "y" || trimmed == "yes", nil
+				return trimmed == "yes" || (!opts.UDP53 && trimmed == "y"), nil
 			}
 		}
 		if err := executeExtenderSetupPlan(out, plan, yes, false, confirmFn, func(setupCommand) error { return nil }, recovery); err != nil {
@@ -455,7 +499,11 @@ func RunExtenderSetup(opts ExtenderSetupOptions) error {
 		if route == "sysctl" && sysctlApplied {
 			continue
 		}
-		applied, applyDesc, err := platformCfg.ApplyRequirement(p.Binary, p.User)
+		applyUser := p.User
+		if opts.UDP53 && applyUser == "root" {
+			applyUser = "non-root"
+		}
+		applied, applyDesc, err := platformCfg.ApplyRequirement(p.Binary, applyUser)
 		if err != nil {
 			return fmt.Errorf("applying platform requirement: %w", err)
 		}
