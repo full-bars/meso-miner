@@ -28,7 +28,6 @@ Everything merged after `v2026.11.15-1099303070-meso`.
 ### Fixed
 
 - A refused yamux memory reservation resets the affected stream while keeping the session open.
-- In `urnet-tools top`, a burst of a few seconds (for example every proxy connecting after a restart) no longer holds the graph axis high. When the peak is more than four times the 90th percentile of the visible columns, the axis follows the percentile, the burst is clipped at the top, and a note on the first row gives its real height.
 - In `urnet-tools top`, `g` opens the goroutine list as an overlay when the window has no room for the Internals panel. It used to switch a hidden view and show nothing. Esc or a click closes it and the wheel scrolls it. The `m` menu explains the selected item in a line under the rows, including what the fade time does.
 
 - `urnet-tools top` redraws at most 20 times a second. It used to redraw on every poll result, tick and mouse move, over a hundred times a second at a fast refresh interval, which used about 12 percent of a core and sent hundreds of kilobytes a second down a remote terminal.
