@@ -224,7 +224,7 @@ docker run -d \
   -e URNETWORK_RAMLOGS=1 \
   -e HOST_HOSTNAME=$(hostname) \
   -e PROXY_URL='https://example.com/your-proxy-list.txt' \
-  -v urnetwork_config:/root/.urnetwork \
+  -v urnetwork_data:/root/.urnetwork \
   -v /path/to/proxy.txt:/app/proxy.txt \
   -e URNETWORK_AUTH_CODE='YOUR_AUTH_CODE_HERE' \
   ghcr.io/urfoundation/meso-miner:latest
