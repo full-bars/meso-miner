@@ -6,11 +6,11 @@
 │20 MiB/s┤    ▁▃▅████████▅▃▁          ▁▄▆███████▇▄▂           ▂▅▇████││total     64.1 MiB/s        │
 │        │ ▁▃▆██████████████▆▄▂    ▂▅▇██████████████▆▃▁   ▁▃▆████████││ 1m avg   82.0 MiB/s        │
 │        │▇████████████████████▇▅▆█████████████████████▇▅▆███████████││ 5m avg   71.3 MiB/s        │
-│   0 B/s┤███████████████████████████████████████████████████████████││billed    45.0 GiB          │
-╰──────────────────────────╭ Menu ──────────────────────────────────────╮ved     90.0 GiB          │
-╭ Total traffic, 10m ──────│  Theme             ◂ default ▸             │ients   212               │
-│60 MiB/s┤                 │▸ Graph style       ◂ block ▸               │ssions  200 pqe / 12 cl   │
-│        │                 │  Dot fade time     ◂ 5 s ▸                 │essure  ██▊░░░░░░░░░░ 0.21│
+│   0 B/s┤█████████████████╭ Menu ──────────────────────────────────────╮lled    45.0 GiB          │
+╰──────────────────────────│  Theme             ◂ default ▸             │ved     90.0 GiB          │
+╭ Total traffic, 10m ──────│▸ Graph style       ◂ block ▸               │ients   212               │
+│60 MiB/s┤                 │  Dot fade time     ◂ 5 s ▸                 │ssions  200 pqe / 12 cl   │
+│        │                 │  Heatmap style     ◂ Glow ▸                │essure  ██▊░░░░░░░░░░ 0.21│
 │        │        ▁▄▇█▅▂   │  The symbols the graphs are drawn with.    │                          │
 │30 MiB/s┤     ▁▄▇██████▇▄▁│                                            │                          │
 │        │   ▃▆████████████│                                            │                          │
