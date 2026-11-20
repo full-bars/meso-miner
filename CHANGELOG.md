@@ -12,6 +12,7 @@ Everything merged after `v2026.11.15-1099303040-meso`.
 
 ### Added
 
+- The proxy heatmap popup shows lifetime billable and total traffic in each direction.
 - Extender status reports the state and reason for DNS port 53. The `urnet_extender_dns53_state` metric reports its current state.
 - Gossip diagnostics report dial attempts and failures, health transitions and bounded event dumps for anomalies.
 - The proxy heatmap shows addresses on hover or click, separates the direct connection and explains the grid in help. Dense cells use stacked blocks and recent traffic fades over the afterglow interval.
