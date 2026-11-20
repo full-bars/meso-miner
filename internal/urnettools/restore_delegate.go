@@ -281,7 +281,7 @@ var setKeyHelps = []string{
 // the parrot at the next start.
 func treatsOffAsClear(canonicalKey string) bool {
 	switch canonicalKey {
-	case "hot_restart", "ramlogs", "proxy_self_heal", "metrics", "oom_cap", "baseline", "h3", "tls_hello", "extender", "extender_discovery", "pprof", "udp_probe", "extender_udp443", "extender_udp4053", "extender_udp53":
+	case "hot_restart", "ramlogs", "proxy_self_heal", "metrics", "oom_cap", "baseline", "h3", "tls_hello", "extender", "extender_discovery", "pprof", "udp_probe", "proxy_udp_ipv6", "extender_udp443", "extender_udp4053", "extender_udp53":
 		return false
 	}
 	return true
