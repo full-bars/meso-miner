@@ -764,7 +764,7 @@ func (m *topModel) drawProxies(b *tui.Buffer) {
 		curY += m.drawUDPProxyCoverage(b, curY)
 	}
 	if b.Height() > curY && m.snap.Proxies.IPv6 != nil {
-		m.drawIPv6ProxyCoverage(b, curY)
+		curY += m.drawIPv6ProxyCoverage(b, curY)
 	}
 }
 
