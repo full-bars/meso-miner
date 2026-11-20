@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [v2026.11.20-1103477050-meso] - 2026-11-20
+
 Everything merged after `v2026.11.15-1099303070-meso`.
 
 ### Changed

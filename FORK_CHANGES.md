@@ -782,7 +782,7 @@ All non‑zero exit codes write a `FATAL [exit <code>]: ...` line to both stderr
     - `all` / `full`: Streams the entire buffer from the beginning (useful for capturing startup sequences after the buffer has rolled over in normal tail mode).
     - `dump`: Copies the current RAM buffer to `~/urlogs.txt` and exits. Simplifies log gathering for operators on remote systems.
 
-**Status**: 🛠 [Unreleased]
+**Status**: Released in v2026.11.20-1103477050-meso.
 
 ---
 
@@ -796,7 +796,7 @@ All non‑zero exit codes write a `FATAL [exit <code>]: ...` line to both stderr
 - Bumped `github.com/quic-go/quic-go` from `v0.59.0` to `v0.59.1`.
 - This version includes protection against handshakes that attempt to stall or leak memory before authentication is complete.
 
-**Status**: 🛠 [Unreleased]
+**Status**: Released in v2026.11.20-1103477050-meso.
 
 ---
 
@@ -814,7 +814,7 @@ All non‑zero exit codes write a `FATAL [exit <code>]: ...` line to both stderr
 
 **Benefit**: Eliminates the risk of tokens expiring unexpectedly. Multi-day outages don't cause exit-78 failures because the 48h expiry buffer provides recovery time even if weekly refresh is missed. All auth modes benefit equally via JWT-to-JWT mechanism.
 
-**Status**: 🛠 [Unreleased]
+**Status**: Released in v2026.11.20-1103477050-meso.
 
 ---
 
@@ -4028,7 +4028,7 @@ This also removes exported Go API: the peer capability recorder (`PeerCapability
 
 **How to Identify in New Upstream**: Check `containsHostHash` and `blockerBlockedHostBuckets` in `ip_blocker.go`, `packHostHashes` in `blocker/main.go`, and `TestTelegramCallReflectorRanges` in `ip_security_telegram_test.go`.
 
-**Status**: Unreleased.
+**Status**: Released in v2026.11.20-1103477050-meso.
 
 ---
 
@@ -4047,7 +4047,7 @@ This also removes exported Go API: the peer capability recorder (`PeerCapability
 - A client check still running after 20 seconds is treated as unknown and the relay attempt is allowed. Proxies are never rejected or graded down for lacking UDP. Only client UDP and QUIC flows are refused through a proxy proven not to relay.
 - The shared source line classifier rejects unbracketed IPv6 lines as `invalid_fields`.
 
-**Status**: Unreleased.
+**Status**: Released in v2026.11.20-1103477050-meso.
 
 ---
 
@@ -4067,7 +4067,7 @@ This also removes exported Go API: the peer capability recorder (`PeerCapability
 - Update checks use a time-limited cache that does not follow symbolic links.
 - Status honors `--pid` and identifies an unavailable or stopped extender.
 
-**Status**: Unreleased.
+**Status**: Released in v2026.11.20-1103477050-meso.
 
 ---
 
@@ -4086,7 +4086,7 @@ This also removes exported Go API: the peer capability recorder (`PeerCapability
 - Metric `urnet_extender_dns53_state` exports the current state of UDP port 53.
 - Linux setup supports a lower sysctl unprivileged port threshold for TCP 443. The threshold is not selectable for UDP 53 yet.
 
-**Status**: Unreleased.
+**Status**: Released in v2026.11.20-1103477050-meso.
 
 ---
 
@@ -4104,7 +4104,7 @@ This also removes exported Go API: the peer capability recorder (`PeerCapability
 - The health calculation retains a more severe state when cap pressure is present.
 - `urnet-tools extender events` displays recent events from the bounded event ring.
 
-**Status**: Unreleased.
+**Status**: Released in v2026.11.20-1103477050-meso.
 
 ---
 
@@ -4122,7 +4122,7 @@ This also removes exported Go API: the peer capability recorder (`PeerCapability
 - Docker execution checks for the dashboard binary before launch.
 - Help text lists real flags for status, top, providers and lifecycle commands.
 
-**Status**: Unreleased.
+**Status**: Released in v2026.11.20-1103477050-meso.
 
 ---
 
@@ -4136,7 +4136,7 @@ This also removes exported Go API: the peer capability recorder (`PeerCapability
 - The `internal/nicstat` package reads `/proc/net/dev` interface statistics on Linux.
 - It reports cumulative receive and transmit byte counters and accommodates interface resets.
 
-**Status**: Unreleased.
+**Status**: Released in v2026.11.20-1103477050-meso.
 
 ---
 
@@ -4152,7 +4152,7 @@ This also removes exported Go API: the peer capability recorder (`PeerCapability
 - Proxy URL parser splits on the last `@` sign so passwords containing `@` are accepted.
 - CFAA blocklist sync verifies generated tables and commits changes directly to main.
 
-**Status**: Unreleased.
+**Status**: Released in v2026.11.20-1103477050-meso.
 
 ---
 
@@ -4169,7 +4169,7 @@ This also removes exported Go API: the peer capability recorder (`PeerCapability
 - A proxied provider client makes no peer-to-peer connections (`WebRtcSettings.DisablePeerConnections`), so no ICE candidate of the host is gathered.
 - Every HTTP/1 platform dial made through a proxy sends `X-UR-Egress-Proxy: 1`. A direct slot sends nothing. The platform counts a provider that sends the header at no head tier, capture-the-flag or extender unit.
 
-**Status**: Unreleased.
+**Status**: Released in v2026.11.20-1103477050-meso.
 
 ---
 
@@ -4186,7 +4186,7 @@ This also removes exported Go API: the peer capability recorder (`PeerCapability
 - The copy is MPL-2.0 with BSD parts. Only `session.go` differs from v5.1.0. `go.mod` replaces the module with the copy.
 - Release archives carry a `LICENSES/` directory and images carry `/usr/share/doc/urnetwork/LICENSES/`.
 
-**Status**: Unreleased.
+**Status**: Released in v2026.11.20-1103477050-meso.
 
 ---
 
@@ -4205,7 +4205,7 @@ This also removes exported Go API: the peer capability recorder (`PeerCapability
 - The hover popup shows the address (host and port), state, UDP check result, clients, bytes in the interval and age. The provider detail carries the cached UDP result.
 - The UDP row names a proxy without a relay `no UDP`. The fade time menu item is `Dot fade time`.
 
-**Status**: Unreleased.
+**Status**: Released in v2026.11.20-1103477050-meso.
 
 ---
 
@@ -4222,4 +4222,4 @@ This also removes exported Go API: the peer capability recorder (`PeerCapability
 - The proxy popup reads `traffic, last second` and adds lifetime billable and total traffic per direction from the persisted per-proxy counters.
 - A test dials an IPv6 address, an IPv4 address and an IPv6-only name through a dual stack SOCKS5 server in both `proxy_target_family` modes.
 
-**Status**: Unreleased.
+**Status**: Released in v2026.11.20-1103477050-meso.
