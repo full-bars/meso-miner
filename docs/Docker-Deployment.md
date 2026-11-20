@@ -67,6 +67,8 @@ The JWT is stored inside the container at `/root/.urnetwork/jwt`. Restarting the
 
 All examples below mount a config volume at `/root/.urnetwork`. With this volume in place, the startup script detects the existing JWT and skips authentication on later starts. Auth codes are only consumed once: on first run or after manually removing the config volume.
 
+> If you already run a provider, keep using its existing volume name instead of `urnetwork_data`. A different name creates a new empty volume and a new provider identity.
+
 ## 🏃 Docker Run - GHCR
 
 The examples below use `urfix` as the container name.
@@ -106,12 +108,12 @@ docker run -d \
   --log-opt max-file=3 \
   -e AUTH=authcode \
   -e HOST_HOSTNAME=$(hostname) \
-  -v urfix_config:/root/.urnetwork \
+  -v urnetwork_data:/root/.urnetwork \
   -v /path/to/proxy.txt:/app/proxy.txt \
   ghcr.io/full-bars/meso-miner:latest AUTH_CODE_HERE
 ```
 
-Replace `AUTH_CODE_HERE` with your token from [ur.io](https://ur.io). Auth codes are single-use; the token is saved to the `urfix_config` volume on first run and reused on later starts.
+Replace `AUTH_CODE_HERE` with your token from [ur.io](https://ur.io). Auth codes are single-use; the token is saved to the `urnetwork_data` volume on first run and reused on later starts.
 
 Alternative method:
 
@@ -142,7 +144,7 @@ docker run -d \
   -e USER_AUTH=you@example.com \
   -e PASSWORD=yourpassword \
   -e HOST_HOSTNAME=$(hostname) \
-  -v urfix_config:/root/.urnetwork \
+  -v urnetwork_data:/root/.urnetwork \
   -v /path/to/proxy.txt:/app/proxy.txt \
   ghcr.io/full-bars/meso-miner:latest
 ```
@@ -166,7 +168,7 @@ docker run -d \
   --log-opt max-file=3 \
   -e AUTH=authcode \
   -e HOST_HOSTNAME=$(hostname) \
-  -v urfix_config:/root/.urnetwork \
+  -v urnetwork_data:/root/.urnetwork \
   -v /path/to/proxy.txt:/app/proxy.txt \
   ghcr.io/full-bars/meso-miner:latest AUTH_CODE_HERE
 ```
@@ -194,7 +196,7 @@ docker run -d \
   -e USER_AUTH=you@example.com \
   -e PASSWORD=yourpassword \
   -e HOST_HOSTNAME=$(hostname) \
-  -v urfix_config:/root/.urnetwork \
+  -v urnetwork_data:/root/.urnetwork \
   -v /path/to/proxy.txt:/app/proxy.txt \
   ghcr.io/full-bars/meso-miner:latest
 ```
@@ -223,7 +225,7 @@ services:
       - AUTH=authcode
       - HOST_HOSTNAME=${HOSTNAME}
     volumes:
-      - urfix_config:/root/.urnetwork
+      - urnetwork_data:/root/.urnetwork
       - ./proxy.txt:/app/proxy.txt
     logging:
       driver: json-file
@@ -232,7 +234,7 @@ services:
         max-file: "3"
 
 volumes:
-  urfix_config:
+  urnetwork_data:
 ```
 
 On first start, provide your auth code using one of these methods:
@@ -266,7 +268,7 @@ services:
       - PASSWORD=yourpassword
       - HOST_HOSTNAME=${HOSTNAME}
     volumes:
-      - urfix_config:/root/.urnetwork
+      - urnetwork_data:/root/.urnetwork
       - ./proxy.txt:/app/proxy.txt
     logging:
       driver: json-file
@@ -275,7 +277,7 @@ services:
         max-file: "3"
 
 volumes:
-  urfix_config:
+  urnetwork_data:
 ```
 
 
@@ -308,7 +310,7 @@ docker run -d \
   -e AUTH=authcode \
   -e HOST_HOSTNAME=$(hostname) \
   -e PROXY_URL='https://example.com/your-proxy-list.txt' \
-  -v urfix_config:/root/.urnetwork \
+  -v urnetwork_data:/root/.urnetwork \
   -v /path/to/proxy.txt:/app/proxy.txt \
   ghcr.io/full-bars/meso-miner:latest YOUR_AUTH_CODE
 ```
@@ -344,7 +346,7 @@ docker run -d \
   --sysctl net.ipv4.ip_forward=1 \
   -e AUTH=authcode \
   -e URNETWORK_HOT_RESTART=0 \
-  -v urfix_config:/root/.urnetwork \
+  -v urnetwork_data:/root/.urnetwork \
   -v /path/to/proxy.txt:/app/proxy.txt \
   ghcr.io/full-bars/meso-miner:latest YOUR_AUTH_CODE
 ```
@@ -407,7 +409,7 @@ docker run -d \
   -e URNETWORK_NODE_NAME=urfix \
   -e HOST_HOSTNAME=$(hostname) \
   -e PROXY_URL='https://example.com/your-proxy-list.txt' \
-  -v urfix_config:/root/.urnetwork \
+  -v urnetwork_data:/root/.urnetwork \
   -v /path/to/proxy.txt:/app/proxy.txt \
   ghcr.io/full-bars/meso-miner:latest YOUR_AUTH_CODE
 ```
@@ -430,7 +432,7 @@ docker run -d \
 ```
 
 > [!IMPORTANT]
-> The `urfix_config` volume is required when using Watchtower. Without it, Watchtower will pull a new image, recreate the container, and the auth code will be consumed again, which fails because auth codes are single-use. With the volume mounted, the existing JWT is reused.
+> The `urnetwork_data` volume is required when using Watchtower. Without it, Watchtower will pull a new image, recreate the container, and the auth code will be consumed again, which fails because auth codes are single-use. With the volume mounted, the existing JWT is reused.
 > 
 > **JWT Smart Refresh**: As of `v3.23.0-fix.17`, the container includes "smart refresh" logic. If the JWT stored in your volume expires, the provider will automatically detect this, delete the stale file, and attempt to re-authenticate using the `USER_AUTH` and `PASSWORD` environment variables if provided. This ensures your nodes stay online even if a JWT is revoked or corrupted during an update.
 
