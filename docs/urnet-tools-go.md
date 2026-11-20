@@ -145,6 +145,8 @@ The `m` menu includes a 'Heatmap style' row to cycle through six styles:
 - `Blocks` – rectangular grid: per‑index group summary bars with health‑bucket colors
 - `Timeline` – per‑index bucket history while the panel is visible, scrolling with time
 
+Styles that group proxies use ranges of proxy indexes, not geographic locations or network subnets.
+
 The chosen style is saved in `~/.config/urnet-tools/top.conf` (`proxy.heatmap_style`). All styles degrade gracefully:
 
 - `mono` – block shapes only (no color, symbols for state)

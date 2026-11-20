@@ -25,6 +25,15 @@ func TestHeatmapStyleGoldenDefault(t *testing.T) {
 	}
 }
 
+func TestHeatmapStyleGoldenSmallPool(t *testing.T) {
+	for _, s := range heatmapStyles {
+		name := fmt.Sprintf("top_heatmap_%s_default_3_100x30", strings.ToLower(s.String()))
+		m := topHeatGridModelWithStyle(t, tui.DefaultTheme(), 3, s)
+		got, _ := showOnSim(t, m, 100, 30)
+		assertGolden(t, name, got)
+	}
+}
+
 func TestHeatmapStyleGoldenMono(t *testing.T) {
 	for _, s := range heatmapStyles {
 		name := fmt.Sprintf("top_heatmap_%s_mono_100x30", strings.ToLower(s.String()))
