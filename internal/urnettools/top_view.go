@@ -613,7 +613,7 @@ func (m *topModel) drawProxies(b *tui.Buffer) {
 	}
 	// Grid mode: the provider feeds proxy_cells and the box is tall enough.
 	if m.hasProxyGridData() && proxiesBoxMode(b.Height(), b.Width()) == proxyBoxGrid {
-		m.drawProxyGrid(b)
+		m.drawProxyHeatmap(b)
 		return
 	}
 	p := m.snap.Proxies
