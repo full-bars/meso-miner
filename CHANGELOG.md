@@ -12,6 +12,7 @@ Everything merged after `v2026.11.15-1099303070-meso`.
 
 ### Added
 
+- The proxy heatmap popup shows lifetime billable and total traffic in each direction.
 - The container image includes the Go top dashboard. `urnet-docker top` forwards terminal color settings and stores preferences on a writable state mount when available. Reusing a named volume preserves them across container recreation. [redeploy]
 - Extender discovery now defaults to on when the extender role runs. Explicit off and feed-only settings are preserved. `urnet-tools top` shows discovery state, mesh peers, feed subscribers and validated gossip messages received from peers; the carrier details panel also shows the peer ID, last receipt time and application errors. The message count includes duplicates and resets when the gossip role restarts. Earlier CLI versions cleared the override for `off`; operators who used that command and want discovery to remain off must set it again after upgrading.
 - **Gossip visibility.** Extender events include mesh and connection activity. Health transitions and selected anomalies are logged with recent events. `urnet-tools extender events` displays the event history. [redeploy]
