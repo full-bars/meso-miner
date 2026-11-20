@@ -653,10 +653,6 @@ func (m *topModel) drawProxies(b *tui.Buffer) {
 	if b.Height() > 4 {
 		m.drawUDPProxyCoverage(b, 4)
 	}
-	// Legend row: non-Glow heatmap styles show the style name.
-	if m.proxyHeatmapStyle != heatmapGlow && gridH > 1 {
-		b.Put(m.proxyHeatmapStyle.String(), 0, gridH, th.Dim)
-	}
 }
 
 func (m *topModel) drawEvents(b *tui.Buffer) {
