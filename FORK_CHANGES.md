@@ -784,7 +784,7 @@ All non‑zero exit codes write a `FATAL [exit <code>]: ...` line to both stderr
     - `all` / `full`: Streams the entire buffer from the beginning (useful for capturing startup sequences after the buffer has rolled over in normal tail mode).
     - `dump`: Copies the current RAM buffer to `~/urlogs.txt` and exits. Simplifies log gathering for operators on remote systems.
 
-**Status**: 🛠 [Unreleased]
+**Status**: Released in v2026.11.20-1103478850-meso.
 
 ---
 
@@ -798,7 +798,7 @@ All non‑zero exit codes write a `FATAL [exit <code>]: ...` line to both stderr
 - Bumped `github.com/quic-go/quic-go` from `v0.59.0` to `v0.59.1`.
 - This version includes protection against handshakes that attempt to stall or leak memory before authentication is complete.
 
-**Status**: 🛠 [Unreleased]
+**Status**: Released in v2026.11.20-1103478850-meso.
 
 ---
 
@@ -816,7 +816,7 @@ All non‑zero exit codes write a `FATAL [exit <code>]: ...` line to both stderr
 
 **Benefit**: Eliminates the risk of tokens expiring unexpectedly. Multi-day outages don't cause exit-78 failures because the 48h expiry buffer provides recovery time even if weekly refresh is missed. All auth modes benefit equally via JWT-to-JWT mechanism.
 
-**Status**: 🛠 [Unreleased]
+**Status**: Released in v2026.11.20-1103478850-meso.
 
 ---
 
@@ -4023,7 +4023,7 @@ This also removes exported Go API: the peer capability recorder (`PeerCapability
 
 **How to Identify in New Upstream**: Check `containsHostHash` and `blockerBlockedHostBuckets` in `ip_blocker.go`, `packHostHashes` in `blocker/main.go`, and `TestTelegramCallReflectorRanges` in `ip_security_telegram_test.go`.
 
-**Status**: Unreleased.
+**Status**: Released in v2026.11.20-1103478850-meso.
 
 ---
 
@@ -4031,7 +4031,7 @@ This also removes exported Go API: the peer capability recorder (`PeerCapability
 
 The provider checks proxy UDP support in bounded background sweeps and stores recent results across restarts. Status, `top` and metrics report UDP relay coverage for online proxies. `urnet-tools set udp-probe off` stops new sweeps at the next tick while client checks remain active. A check still running after 20 seconds is treated as unknown and allowed. The state file is written in the background at most once every two seconds during normal operation, and shutdown can request an immediate flush. Client UDP and QUIC flows through a proxy are refused when the relay is confirmed unavailable or its UDP exit address differs from the TCP exit address.
 
-**Status**: Unreleased.
+**Status**: Released in v2026.11.20-1103478850-meso.
 
 ---
 
@@ -4039,7 +4039,7 @@ The provider checks proxy UDP support in bounded background sweeps and stores re
 
 The `urnet-tools status` command routes through a summary model. Default output is a one-screen health summary showing version, time-boxed cached update availability, proxy pool counts, UDP coverage, extender state, unit health with SIGPIPE restart risk detection and resource utilization. `--brief` provides script exit codes: 0 for healthy, 1 for warning, 2 for broken and 3 for unreachable. Healthy `--brief` output is empty. `--json` retains the raw snapshot. `--json-summary` emits a stable schema document (`urnet-tools-status/1`) and omits `jwt_expires` when the provider has no token. `--live` refreshes the summary in place. Update checks use a cache that does not follow symbolic links. Status honors `--pid` and reports when the extender role is unavailable or not running.
 
-**Status**: Unreleased.
+**Status**: Released in v2026.11.20-1103478850-meso.
 
 ---
 
@@ -4047,7 +4047,7 @@ The `urnet-tools status` command routes through a summary model. Default output 
 
 Operators can configure extender UDP 443, UDP 4053 and UDP 53 carriers independently with `urnet-tools set extender-udp443|extender-udp4053|extender-udp53 on|off`. A setting change restarts the active extender role and persists across reboots. A failed control write restores the previous carrier configuration. Extender status reports the bind state and failure reason for UDP port 53. The `urnet_extender_dns53_state` metric exposes the current state. The lower sysctl unprivileged port threshold for port 53 is supported in the platform layer but is not selectable in setup yet.
 
-**Status**: Unreleased.
+**Status**: Released in v2026.11.20-1103478850-meso.
 
 ---
 
@@ -4055,7 +4055,7 @@ Operators can configure extender UDP 443, UDP 4053 and UDP 53 carriers independe
 
 Extender discovery reports dial attempts and failures, health transitions and bounded event dumps. Peer dial failures and connection drops are tracked with atomic metrics. The health evaluation prevents cap pressure from hiding a worse gossip health state. `urnet-tools extender events` displays recent mesh, dial, reject and cap events. Anomaly event dumps are bounded and rate limited.
 
-**Status**: Unreleased.
+**Status**: Released in v2026.11.20-1103478850-meso.
 
 ---
 
@@ -4063,7 +4063,7 @@ Extender discovery reports dial attempts and failures, health transitions and bo
 
 The top terminal dashboard is consolidated and includes proxy health heatmap dots, a configurable fading glow track, and a UDP coverage row. Panels support mouse interaction, divider dragging and theme cycling. The `u` key switches byte and rate labels between binary and decimal units. The Docker container image includes the Go top dashboard. The Docker helper detects when top is available before launching.
 
-**Status**: Unreleased.
+**Status**: Released in v2026.11.20-1103478850-meso.
 
 ---
 
@@ -4071,7 +4071,7 @@ The top terminal dashboard is consolidated and includes proxy health heatmap dot
 
 The `internal/nicstat` package reads cumulative interface receive and transmit byte counters from Linux `/proc/net/dev`. Counters can reset between snapshots without breaking rate calculations.
 
-**Status**: Unreleased.
+**Status**: Released in v2026.11.20-1103478850-meso.
 
 ---
 
@@ -4079,7 +4079,7 @@ The `internal/nicstat` package reads cumulative interface receive and transmit b
 
 The `proxy add` parser accepts passwords that contain an `@` sign. Backend failure counts and failure timestamps are published together as one atomic snapshot to avoid tearing across reads. The CFAA blocklist sync workflow validates generated tables and commits them directly to the main branch.
 
-**Status**: Unreleased.
+**Status**: Released in v2026.11.20-1103478850-meso.
 
 ---
 
@@ -4096,7 +4096,7 @@ The `proxy add` parser accepts passwords that contain an `@` sign. Backend failu
 - A proxied provider client makes no peer-to-peer connections (`WebRtcSettings.DisablePeerConnections`), so no ICE candidate of the host is gathered.
 - Every HTTP/1 platform dial made through a proxy sends `X-UR-Egress-Proxy: 1`. A direct slot sends nothing. The platform counts a provider that sends the header at no head tier, capture-the-flag or extender unit.
 
-**Status**: Unreleased.
+**Status**: Released in v2026.11.20-1103478850-meso.
 
 ---
 
@@ -4113,7 +4113,7 @@ The `proxy add` parser accepts passwords that contain an `@` sign. Backend failu
 - The copy is MPL-2.0 with BSD parts. Only `session.go` differs from v5.1.0. `go.mod` replaces the module with the copy.
 - Release archives carry a `LICENSES/` directory and images carry `/usr/share/doc/urnetwork/LICENSES/`.
 
-**Status**: Unreleased.
+**Status**: Released in v2026.11.20-1103478850-meso.
 
 ---
 
@@ -4132,4 +4132,4 @@ The `proxy add` parser accepts passwords that contain an `@` sign. Backend failu
 - The hover popup shows the address (host and port), state, UDP check result, clients, bytes in the interval and age. The provider detail carries the cached UDP result.
 - The UDP row names a proxy without a relay `no UDP`. The fade time menu item is `Dot fade time`.
 
-**Status**: Unreleased.
+**Status**: Released in v2026.11.20-1103478850-meso.
