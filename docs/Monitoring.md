@@ -212,6 +212,7 @@ Because a series continues instead of resetting, `rate()` or `increase()` comput
 | `urnet_transport_pt_connects_total` | counter | `mode` | Packet-translation transport connections that authenticated, persisted across restarts |
 | `urnet_transport_pt_connect_failures_total` | counter | `mode` | Packet-translation transport connect attempts that failed, persisted across restarts |
 | `urnet_transport_pt_drops_total` | counter | `mode` | Packet-translation transport connections that ended while still wanted, persisted across restarts |
+| `urnet_tls_handshake_cancel_total` | counter | `source`, `role`, `companion` | TLS handshakes cancelled before they completed. `source` is the transition that cancelled them: `parent_lifetime`, `session_retired`, `control_enqueue_rejected`, `epoch_retired` or `unknown`. `role` is `client` or `server` and `companion` is `true` or `false`. A wave of cancellations shows as a steep rise |
 | `urnet_dualstack_mode` | gauge | `mode`, `reason` | Direct-identity platform transport mode, value always 1: `group` (v4 pin, v6 pin and standby) or `legacy` (single), with the decision reason |
 | `urnet_dualstack_transport_state` | gauge | `transport`, `state` | Per-transport state: 1 for the state the transport is in (`ipv4`, `ipv6`, `standby`) |
 | `urnet_dualstack_connect_attempts_total` | counter | `family`, `mode` | Platform connect attempts of the native identity's transports |
