@@ -4,11 +4,7 @@
 
 - **TLS handshake cancellation metric.** `urnet_tls_handshake_cancel_total` counts TLS handshakes that were cancelled before they completed. The labels are `source` (`parent_lifetime`, `session_retired`, `control_enqueue_rejected`, `epoch_retired` or `unknown`), `role` (`client` or `server`) and `companion` (`true` or `false`). Every cancellation in a wave is counted, so a canary can watch the metric for waves.
 
-- Proxy IPv6 capability probing. The background sweep checks proxies for IPv6 egress alongside the UDP relay check, controlled live by the `proxy_ipv6_probe` key and `URNETWORK_PROXY_IPV6_PROBE` environment variable.
-
-- Status, top and metrics report IPv6 proxy counts and UDP relay capability. The top proxy popup displays IPv6 exit status and exit address.
-
-- Show cached proxy TCP and UDP exit addresses in the local popup.
+- **IPv6 reporting in status and top.** `urnet-tools status` reports IPv6 proxy counts (`IPv6 proxies: <Y> yes, <N> no, <U> unknown[, <NP> not probed]`) and IPv6 UDP relay counts (`IPv6 UDP probes: <Y> yes[, <N> no][, <U> unknown]`). The top proxy popup shows `TCP exit (IPv4) <ip>`, `TCP exit (IPv6) <ip>`, `UDP exit (IPv4) <ip>`, `UDP exit (IPv6) <ip>`, and `IPv6 exit: <status> [(<ip>)]`. The cached TCP and UDP exit addresses show in the local popup. The `urnet_proxy_ipv6_transports` and related metrics report the same. [redeploy]
 
 - **Proxy IPv6 measurement.** The background UDP sweep measures IPv6 for every online proxy when its own result is due. It opens a SOCKS5 connection to an IPv6 address, and for a proxy that reaches IPv6 it learns the IPv6 TCP exit and checks the IPv6 UDP relay. The result is stored with the UDP result and survives a restart. UDP flows and H3 dials never wait for it. [redeploy]
 

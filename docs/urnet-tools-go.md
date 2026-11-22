@@ -24,7 +24,7 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | Command | What it does |
 |---|---|
 | `providers` (`list`, `ps`) | List providers: your own OS user's by default, or all providers on the box with `--all` (JWT identities, systemd units, state dirs). |
-| `status [--live] [--brief] [--json] [--json-summary] [--summary] [--plain]` | One-screen health summary: version, time-boxed cached update check, proxy counts, UDP relay coverage, extender state, unit health, and resource utilization. `--live` (or `-l`, with `--interval`) refreshes in place until Ctrl-C. `--brief` prints warnings and failures with exit codes 0 for healthy, 1 for warning, 2 for broken and 3 for unreachable. A healthy result prints nothing. `--json` prints the raw snapshot. `--json-summary` prints the summary as a stable schema document (`urnet-tools-status/1`). `--detail` restores the classic full view (`systemctl status` on Linux, styled panel on Windows/macOS, followed by the live and extender blocks). `--plain` uses plain text without ANSI escapes. |
+| `status [--live] [--brief] [--json] [--json-summary] [--summary] [--plain]` | One-screen health summary: version, time-boxed cached update check, proxy counts, UDP relay coverage, IPv6 proxy coverage, extender state, unit health, and resource utilization. `--live` (or `-l`, with `--interval`) refreshes in place until Ctrl-C. `--brief` prints warnings and failures with exit codes 0 for healthy, 1 for warning, 2 for broken and 3 for unreachable. A healthy result prints nothing. `--json` prints the raw snapshot. `--json-summary` prints the summary as a stable schema document (`urnet-tools-status/1`). `--detail` restores the classic full view (`systemctl status` on Linux, styled panel on Windows/macOS, followed by the live and extender blocks). `--plain` uses plain text without ANSI escapes. |
 | `diag` | Capture a running provider's profiles and summary. See [Diagnostics](/full-bars/urnetwork-3.23-fix/wiki/Diagnostics). |
 | `start` | Start the provider's systemd unit. Target a specific provider with target flags. |
 | `stop` | Stop the provider's systemd unit. Target a specific provider with target flags. |
@@ -236,7 +236,29 @@ urnet-tools proxy trim off
 
 The counts sum to the online total. Checked is the sum of all counts except unchecked. `ok/checked` is the percentage of checked proxies that are ok. `ok/online` is the percentage of online proxies that are ok. A zero denominator shows `n/a`. Compact `top` panels (up to 3 proxies) show the counts on one row and omit the percentage line. When a provider omits the field, the UDP row is omitted.
 
-### 2. Session Save and Load
+### IPv6 proxy coverage
+
+`urnet-tools top` and `urnet-tools status` report coverage for online proxies. Online means up or degraded.
+
+UDP coverage counts:
+
+- `ok`: the relay works and its exit address matches TCP.
+- `no UDP` (`no-udp` in narrow `top` views): the proxy refuses UDP ASSOCIATE or the relay does not answer.
+- `mismatch` (`diff` in narrow `top` views): the relay works but its exit address differs from TCP.
+- `unknown` (`unk` in narrow `top` views): the relay works but its TCP exit address is unknown.
+- `unchecked`: the result is missing, in flight or expired.
+
+The counts sum to the online total. Checked is the sum of all counts except unchecked. `ok/checked` is the percentage of checked proxies that are ok. `ok/online` is the percentage of online proxies that are ok. A zero denominator shows `n/a`. Compact `top` panels (up to 3 proxies) show the counts on one row and omit the percentage line. When a provider omits the field, the UDP row is omitted.
+
+IPv6 coverage counts:
+
+- `IPv6 proxies: <Y> yes, <N> no, <U> unknown[, <NP> not probed]` — how many online proxies were measured to carry IPv6, where yes means the IPv6 relay works with a matching exit address, no means no IPv6 capability was confirmed, unknown means the check has no confirmed result, and not probed means the proxy has not been measured yet.
+
+- `IPv6 UDP probes: <Y> yes[, <N> no][, <U> unknown]` — how many proxies had their IPv6 UDP relay measured; yes means relay works with matching exit address, no means relay refused or no relay, unknown means check has no confirmed result.
+
+The top proxy popup shows, per proxy, the exit addresses it can reach: `TCP exit (IPv4) <ip>`, `TCP exit (IPv6) <ip>`, `UDP exit (IPv4) <ip>`, `UDP exit (IPv6) <ip>`, and `IPv6 exit: <status> [(<ip>)]`.
+
+### 2. Session Save and Load### 2. Session Save and Load
 
 Securely backup, migrate, or clone provider identities:
 
