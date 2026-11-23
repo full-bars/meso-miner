@@ -28,6 +28,8 @@
 
 - **Client UDP to IPv6 destinations through measured proxies.** A proxied identity relays UDP to an IPv6 destination when its proxy was measured to carry IPv6 for TCP and UDP with matching exit addresses. Every other proxy refuses the flow at once, as before. `urnet-tools set proxy-udp-ipv6 on|off` controls it, default on. [redeploy]
 
+- **A lingering warning in `urnet-tools top`.** When a provider runs as a systemd user unit and lingering is off for its user, a full width banner says the provider stops at logout and offers the fix. A click on the banner or the `L` key opens a Yes/No dialog that shows the exact command. Yes runs `loginctl enable-linger` as the user first, and `sudo loginctl enable-linger` only after that is refused, with the terminal given back so the password prompt works. The banner goes away only when a recheck says lingering is on.
+
 ### Changed
 
 - **The graphs in `urnet-tools top` show four fixed time scales.** They draw 10s, 1m, 5m or 15m and every scale fills the plot from edge to edge. `w` steps to the next scale and `W` to the previous one, the footer names the scale, and the choice is saved as `graph.window` in `top.conf`. The earlier behavior, where the title showed however much history fitted the width, is gone.
@@ -38,6 +40,8 @@
 ### Fixed
 
 - **The page 1 graphs in `urnet-tools top` fill their plot at every scale.** The Billable and Total graphs placed the window's readings on a column axis and then passed the newest reading time as the sample anchor. That anchor is a nanosecond time, and as a float64 sample index it lost its precision, so every reading fell into one bucket and the graph drew one column at its right edge. The spread series now reaches the drawer with no anchor.
+
+- **Systemd lingering.** The installer tries to enable lingering for the service user and reports its final state. Status, update and restart warn when it is off. Auto-start refuses to enable the user unit when it is off.
 
 ### Security
 

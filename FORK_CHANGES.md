@@ -4224,3 +4224,23 @@ The `proxy add` parser accepts passwords that contain an `@` sign. Backend failu
 **How to Identify in New Upstream**: Search for `topPages`, `topPageStripRows`, `topGraphWindows`, `spreadSeries`, `BillableRxPackets` and `internal/brand`.
 
 **Status**: ✅ On the branch, pending the next tagged release.
+
+---
+
+## 207. Systemd Lingering in the Installer and in Top
+
+**Purpose**: Record the lingering step the installer now performs, the warnings the tools print, and the fix top offers on screen.
+
+**Files Modified**: `scripts/Provider_Install_Linux.sh`, `internal/urnettools/status_summary.go`, `internal/urnettools/cli.go`, `internal/urnettools/update.go`, `internal/urnettools/legacy_cmds.go`, `internal/urnettools/top_cmd.go`, `internal/urnettools/top_model.go`, `internal/urnettools/top_mouse.go`, `internal/urnettools/top_regions.go`, `internal/urnettools/top_run.go`, `internal/urnettools/top_view.go`, `internal/urnettools/top_linger.go`, `internal/urnettools/top_linger_banner.go`, `internal/tui/tcellui/adapter.go`.
+
+**Changes**:
+- The installer enables lingering for the service user after it enables the user unit and prints the final state in the completion summary. A rerun that finds the installed version current prints that state too. `URNET_INSTALL_LINGER=sudo` allows `sudo -n loginctl` in a non-interactive install, and `urnet-tools auto-start on` refuses to enable a user unit while lingering is off.
+- `urnet-tools status` shows a Linger row and a warning line, and `update` and `restart` print the same sentence on stderr when the check fails or reads off.
+- Top checks lingering for each user unit provider every 30 seconds on Linux. A full width banner above the page tabs names the user and offers the fix. A click or `L` opens a Yes/No dialog with the command, Yes runs it as the user and then with sudo, and the banner goes away only after a recheck says on.
+- The tcellui adapter gains `Suspend` and `Resume` so the terminal is handed to a sudo password prompt. A sentinel chunk drains tcell's key queue before disengage, so the input goroutine cannot block there or leave pre-suspend input for the next session.
+
+**Impact**: A provider that runs as a systemd user unit without lingering now reports it in the installer, status, update, restart and top. The top layout is unchanged while lingering is on. The fix runs only after an operator answers Yes.
+
+**How to Identify in New Upstream**: Search for `installer_linger_summary`, `statusLingerApplicable`, `lifecycleLingerWarning`, `topLingerReading`, `lingerBannerText` and `drainBeforeDisengage`.
+
+**Status**: ✅ On the branch, pending the next tagged release.
