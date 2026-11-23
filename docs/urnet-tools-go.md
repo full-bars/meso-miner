@@ -35,7 +35,7 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | `hotswap` (`hot-swap`) | Zero-downtime in-process binary reload: hands live service to a verified candidate with no restart. Requires a `Type=notify` unit; see the deep-dive below. |
 | `self-update` (`selfupdate`) | Update the tool binary itself without touching running providers. |
 | `logs [target] [N]` | Stream provider logs (N lines, default 250). RAMLOGS-aware. The ramlog and file views use a native follower, so they work on Windows (no `tail` needed) and wherever `tail` is missing. It prints the last N lines and then follows. If the log is rotated or replaced it finishes the old file and follows the new one from its start, and a truncated log is followed from its start. |
-| `top [target] [--interval D] [--no-mouse] [--copy] [--plain]` (also `urtop`) | Live full-screen view of one provider: throughput graphs, clients, proxy pool heatmap dots with fading glow tracks, memory, and recent events. Read-only. Press `?` for keys, `q` to quit, `u` to toggle binary and decimal units, `m` for menu. Needs an interactive terminal; use `status` in scripts. `--copy` writes the screen to `~/.local/state/urnet-tools/top-<time>.txt` and prints it to stdout on exit; `--plain` turns the box characters into `+ - \|` for pasting. The Events panel shows relative times (`12m ago`), severity icons and collapsed repeats (`x12`); press `+` or `-` to change the refresh interval down to 100 ms. At one second or faster, each live traffic reading adds a graph column. The title shows the visible duration; changing the interval keeps earlier columns. Longer intervals use one-second slots. The `1h` and `24h` views use binned snapshot history. Press `t` to cycle graph history, `o` for the provider overview, and `a`, `i`, or `v` for alerts, resource gauges, or carriers. Drag panel dividers to resize them; `M` toggles mouse reporting. |
+| `top [target] [--interval D] [--no-mouse] [--copy] [--plain] [--no-logo]` (also `urtop`) | Live full-screen view of one provider: throughput graphs, clients, proxy pool heatmap dots with fading glow tracks, memory, and recent events. Read-only. Press `?` for keys, `q` to quit, `u` to toggle binary and decimal units, `m` for menu. Needs an interactive terminal; use `status` in scripts. `--copy` writes the screen to `~/.local/state/urnet-tools/top-<time>.txt` and prints it to stdout on exit; `--plain` turns the box characters into `+ - \|` for pasting. The Events panel shows relative times (`12m ago`), severity icons and collapsed repeats (`x12`); press `+` or `-` to change the refresh interval down to 100 ms. Every traffic reading goes on one time axis with a fixed scale, see Pages below. Press `]` or `[` (or `PageDown`, `PageUp`, or a digit) to move between pages of graphs, `w` and `W` to change the time scale, and `A` for About. Press `t` to cycle graph history, `o` for the provider overview, and `a`, `i`, or `v` for alerts, resource gauges, or carriers. Drag panel dividers to resize them; `K` switches between mouse mode and keyboard mode, and `c` copies the screen while it runs. |
 | `get [key] [target]` (alias `show`) | Read-only view of the runtime overrides. With no key it lists every active override; pass one key to see its value. Use `set` to change anything. |
 | `version` (`--version`, `-v`) | Print stamped binary version and build metadata. |
 
@@ -159,6 +159,26 @@ The chosen style is saved in `~/.config/urnet-tools/top.conf` (`proxy.heatmap_st
 If the panel is too small for a style (less than the minimum grid height), it falls back to the classic state‑bar display exactly as today.
 
 The style name appears in the legend row when the panel is wide enough; in narrow panels the help overlay (`?`) shows all six names.
+
+## Pages, graph scales and the logo
+
+`urnet-tools top` groups its graph screens into pages. The strip under the header lists the pages the provider has data for and marks the one on screen:
+
+```
+[1 Overview] [2 Remote] [3 Billable] [4 Total] [5 Transports]
+```
+
+Press `]` or `[`, or `PageDown` and `PageUp`, to move between pages. A number key goes straight to a page, and a click on a strip tab does the same. The strip is on by default and `p` hides it or shows it again. A hidden strip gives its row back to the graphs. Page 1 keeps the dashboard that earlier versions drew.
+
+Page 2 draws the mirrored transfer chart, with billable traffic above the center line and total traffic below it. Pages 3 and 4 draw billable and total traffic by direction, upload above the line and download below. Page 3 also draws the billable packet rate as a pink curve that scales on its own peak, so a packet rate and a byte rate each reach their own maximum. Page 5 draws the share of the last 60 seconds that each transport carried, with H1 and H1+ as separate segments. A page is left out of the strip when the provider reports nothing for it.
+
+The graphs show a fixed time scale of 10s, 1m, 5m or 15m and fill the plot from edge to edge whatever the terminal width. Press `w` for the next scale and `W` for the previous one. The choice is saved in `top.conf` as `graph.window`. A scale that is still collecting says how much it holds, for example `Billable, 15m (collecting 40s)`.
+
+The Now panel keeps the highest live, one minute and five minute rate it has seen since it started, for billable and for total traffic. A one or five minute peak counts only once its window is full, so the first minute cannot set a false one. The block is left out when the column has no rows to spare, and nothing about it is stored.
+
+`K` switches between mouse mode and keyboard mode, and the footer names the mode that is on. Keyboard mode leaves the terminal's own text selection alone. `--no-mouse` starts in keyboard mode. `c` copies the current screen to the clipboard and the message says which path ran.
+
+The logo draws as a splash when top starts, as a dim watermark in a graph that has no data yet, and in the About window on `A`. Turn it off with `--no-logo`, `URNET_NO_LOGO=1` or `ui.logo = off` in the top settings file. The same switches keep the artwork out of the version output, the help pages, the full status view and the installer welcome.
 
 ## Docker top
 
