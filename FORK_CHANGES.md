@@ -23,7 +23,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 ## Peer-to-peer source checks
 
-**Purpose**: A direct peer-to-peer lane carries a bound source and a policy for frames that name a different one. Upstream has no such check.
+**Purpose**: A direct peer-to-peer lane carries a bound source and a policy for frames that name a different one. Upstream binds the lane to its adjacent peer and drops frames that name another source (connect commits `5a71282c6` and `e90fbf769`). This fork backports that, and makes the handling of a mismatch on a bound lane a setting, counted and delivered by default.
 
 **Where this fork differs from upstream**:
 - The lane keeps the transport type and the source the adjacent peer's authenticated signalling bound it to, captured with the route list before a frame is read (`transfer_route_manager.go`, `transport_p2p.go`). The production `P2pReceiveTransport` reports `TransportTypeP2p`.
