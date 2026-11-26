@@ -27,7 +27,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Where this fork differs from upstream**:
 - The lane keeps the transport type and the source the adjacent peer's authenticated signalling bound it to, captured with the route list before a frame is read (`transfer_route_manager.go`, `transport_p2p.go`). The production `P2pReceiveTransport` reports `TransportTypeP2p`.
-- The receive loop drops a frame on a direct peer-to-peer lane that names the platform or this client, and counts a frame that names another source as `decoded`, `rejected` or `dropped` (`p2p_source_controls.go`, `transfer.go`).
+- The receive loop drops a frame on a direct peer-to-peer lane that names the platform or this client, and counts a frame that names another source as `decoded`, `rejected` or `dropped` (`p2p_source_controls.go`, `transfer.go`). A frame counts `decoded` only after it passes the contract check and is delivered, so a sender with no contract counts `rejected`.
 - The two control keys `p2p_source_binding` (`off`, `count` or `drop`, default `count`) and `p2p_forged_source_drop` (`on` or `off`, default `on`) are live over the control socket with no environment variable, and the process metrics expose `urnet_p2p_forged_source_drops_total{kind}` and `urnet_p2p_source_mismatch_total{mode,outcome}` (`metrics_prometheus.go`, `provider/control_socket.go`).
 
 ---
