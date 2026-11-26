@@ -7,6 +7,25 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+func TestP2PSourceMismatchCloseDrainsRejected(t *testing.T) {
+	client := &Client{}
+	sequence := &ReceiveSequence{cancel: func() {}, packs: make(chan *ReceivePack, 4)}
+	for i := 0; i < 2; i++ {
+		sequence.packs <- &ReceivePack{sourceMismatch: newP2PSourceMismatch(client, p2pSourceModeCount)}
+	}
+	decoded := newP2PSourceMismatch(client, p2pSourceModeCount)
+	decoded.decoded()
+	sequence.packs <- &ReceivePack{sourceMismatch: decoded}
+	sequence.packs <- &ReceivePack{}
+
+	sequence.Close()
+	stats := client.ReceiveStats()
+	if stats.SourceMismatchRejectedCount != 2 || stats.SourceMismatchDecodedCount != 1 ||
+		stats.SourceMismatchDroppedCount != 0 || stats.SourceMismatchCount != 3 {
+		t.Fatalf("unexpected outcomes after draining: %+v", stats)
+	}
+}
+
 // A plaintext frame on a bound lane is counted decoded only when it is
 // accepted. This client requires encryption for the source, so the fail-closed
 // receive gate acks the plaintext pack and throws it away, and the frame is
