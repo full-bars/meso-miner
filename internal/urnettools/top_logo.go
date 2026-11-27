@@ -153,7 +153,7 @@ func (m *topModel) drawWatermark(b *tui.Buffer, top int) {
 }
 
 // topRepoName is the repository the About window names.
-const topRepoName = "full-bars/urnetwork-3.23-fix"
+const topRepoName = "full-bars/meso-miner"
 
 // topLogoOffHint is the About window's line on how to turn the logo off.
 const topLogoOffHint = "Logo off: --no-logo, URNET_NO_LOGO=1 or ui.logo = off in top.conf"

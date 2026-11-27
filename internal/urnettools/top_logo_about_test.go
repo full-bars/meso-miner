@@ -89,7 +89,7 @@ func TestTopAboutContent(t *testing.T) {
 		} {
 			m := aboutModel(t, c.th, w, h, c.env)
 			text := renderText(m, w, h)
-			for _, want := range []string{"About", "urnet-tools v36.0.0-test", "0123456789ab", "full-bars/urnetwork-3.23-fix", "--no-logo", "URNET_NO_LOGO=1", "ui.logo = off"} {
+			for _, want := range []string{"About", "urnet-tools v36.0.0-test", "0123456789ab", "full-bars/meso-miner", "--no-logo", "URNET_NO_LOGO=1", "ui.logo = off"} {
 				if !strings.Contains(text, want) {
 					t.Errorf("%dx%d %s: the About window is missing %q:\n%s", w, h, c.name, want, text)
 				}
