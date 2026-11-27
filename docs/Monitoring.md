@@ -184,11 +184,12 @@ Because a series continues instead of resetting, `rate()` or `increase()` comput
 | `urnet_uptime_seconds` | gauge | | Provider uptime |
 | `urnet_process_start_time_seconds` | gauge | | Unix time the current provider process started |
 | `urnet_billable_bytes_total` | counter | `direction` | Billable bytes, all proxies, persisted across restarts |
+| `urnet_billable_packets_total` | counter | `dir` | Billable IP packets across registered proxies by direction. Counts reset on restart |
 | `urnet_bytes_total` | counter | `direction` | All bytes, all proxies, persisted across restarts |
 | `urnet_clients_active` | gauge | | Active clients, all proxies |
 | `urnet_connections_active` | gauge | | Active connections |
-| `urnet_transport_frames_total` | counter | `mode`, `dir` | Payload frames carried by each platform transport mode (`h1`, `h3`, `h3dns`, `h3dnspump`) per direction. Keepalives and speed or latency echoes are excluded, persisted across restarts |
-| `urnet_transport_payload_bytes_total` | counter | `mode`, `dir` | Payload bytes carried by each platform transport mode, before framing, persisted across restarts |
+| `urnet_transport_frames_total` | counter | `mode`, `dir` | Payload frames carried by each platform transport mode (`h1`, `h1_websocket`, `h1_plus`, `h3`, `h3dns`, `h3dnspump`) per direction. The `h1` total is the sum of `h1_websocket` and `h1_plus`. Keepalives and speed or latency echoes are excluded, persisted across restarts |
+| `urnet_transport_payload_bytes_total` | counter | `mode`, `dir` | Payload bytes carried by each platform transport mode, before framing, persisted across restarts. Split by carrier the same way as the frame counter |
 | `urnet_transport_direct_h1_frames_total` | counter | `dir` | Payload frames carried by H1 for the direct identity only. In the default setting this is the fair comparison for H3, which then runs for that identity alone. Under `auto`, a number or `all`, proxies can run H3 too. `urnet_transport_frames_total{mode="h1"}` is every proxy identity together, persisted across restarts |
 | `urnet_transport_direct_h1_payload_bytes_total` | counter | `dir` | Payload bytes carried by H1 for the direct identity only, persisted across restarts |
 | `urnet_h3_up` | gauge | | H3 connections up now |
@@ -243,6 +244,8 @@ Because a series continues instead of resetting, `rate()` or `increase()` comput
 | `urnet_h1plus_handshake_seconds_total` | counter | | Time spent in H1+ handshakes, seconds |
 | `urnet_h1plus_messages_total` | counter | | Messages carried on H1+ connections |
 | `urnet_h1plus_bytes_total` | counter | | Message bytes carried on H1+ connections |
+| `urnet_h1plus_rx_messages_total` | counter | | Messages read on H1+ connections, persisted across restarts. `urnet_h1plus_messages_total` is the write side |
+| `urnet_h1plus_rx_bytes_total` | counter | | Message payload bytes read on H1+ connections, persisted across restarts. The framing is stripped on read, so this is the payload and not the wire bytes, unlike the write side |
 | `urnet_h1plus_writes_total` | counter | | Physical writes on H1+ connections |
 | `urnet_h1plus_flushes_total` | counter | | Batched flushes on H1+ connections |
 | `urnet_h1plus_read_errors_total` | counter | | Read errors on H1+ connections |
@@ -303,6 +306,14 @@ Because a series continues instead of resetting, `rate()` or `increase()` comput
 | `urnet_pool_latency_ms` | gauge | | Message pool average latency |
 | `urnet_loop_restarts_total` | counter | `loop` | Times a supervised background loop ended unexpectedly and was restarted, persisted across restarts |
 | `urnet_loop_up` | gauge | `loop` | 1 while a supervised loop is running, 0 while it is stopped or backing off |
+
+## Transports in the live traffic reply
+
+The provider's `traffic` reply carries a `transports` block beside the byte totals. Each kind has `bytes_tx`, `bytes_rx`, `frames_tx`, `frames_rx` and `up`, where `up` is the number of that kind's connections open now. The counters are cumulative like the byte totals, so a reader takes the difference of two readings to get a window.
+
+The kinds are `h1_websocket`, `h1_plus`, `h3`, `dns` and `dns_pump`. H1 is split into its two carriers, so a plain websocket and the authenticated framed upgrade appear as separate segments. The two H1 kinds are always present, and a provider with H1+ off reports zero for `h1_plus`. A kind the provider never ran is left out instead of sent as zeros.
+
+A provider that predates the block sends no `transports` at all. A reader then hides the transport view, the same way it hides the direction pages.
 
 ## Extender carrier metrics
 

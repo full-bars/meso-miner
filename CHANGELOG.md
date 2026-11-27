@@ -2,6 +2,8 @@
 
 ### Added
 
+- **A URnetwork Neon color theme for `urnet-tools top`.** The `m` menu `Theme` row and `--theme neon` select it, and the choice is saved as `theme` in `top.conf`. It uses the brand palette: green `#87FB67` for traffic, pale lime `#EFF7BB` for warnings, coral `#FF6F7A` for errors and packets, and blue `#007ACC` and `#0099FF` for IPv6 and H1+. Each role carries an xterm 256 entry and a base 16 color of its own, so the accents keep their hue on a terminal without truecolor. The default theme and every saved golden are unchanged.
+
 - **Pages in `urnet-tools top`.** Page 1 is the dashboard, page 2 the mirrored transfer chart, page 3 billable traffic by direction, page 4 total traffic by direction, and page 5 the transport mix of the last 60 seconds. Move with `]` or `[`, `PageDown` or `PageUp`, a digit, or a click on the strip. The strip is on by default and `p` hides it or shows it again.
 
 - **Peak rates in the Now panel of `urnet-tools top`.** The panel keeps the highest live, one minute and five minute rate for billable and for total traffic since top started. A one or five minute peak counts only once its window is full, and the cell shows a dash until then. The block is left out when the column has no rows to spare.
