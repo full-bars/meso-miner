@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Fixed
+
+- Gossip peering skips extender addresses in dial backoff and reports backoff, unavailable addresses and gate denials separately.
+
 ### Added
 
 - **TLS handshake cancellation metric.** `urnet_tls_handshake_cancel_total` counts TLS handshakes that were cancelled before they completed. The labels are `source` (`parent_lifetime`, `session_retired`, `control_enqueue_rejected`, `epoch_retired` or `unknown`), `role` (`client` or `server`) and `companion` (`true` or `false`). Every cancellation in a wave is counted, so a canary can watch the metric for waves.

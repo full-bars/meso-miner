@@ -316,5 +316,5 @@ An extender host exports one series per carrier (`tcp-443`, `udp-443`, `udp-4053
 | `urnet_extender_carrier_connections` | gauge | `carrier` | Connections this extender is relaying now |
 | `urnet_extender_dns53_state` | gauge | `state` | DNS port 53 state: bound, disabled, address_in_use, permission_denied, unknown, not_requested, pending |
 | `urnet_gossip_dial_attempts_total` | counter | `mesh` | Extender gossip peering dial attempts |
-| `urnet_gossip_dial_failures_total` | counter | `mesh`, `reason` | Extender gossip peering dial failures by reason |
+| `urnet_gossip_dial_failures_total` | counter | `class` | Failed outgoing gossip peering calls by error class (`timeout`, `refused`, `canceled`, `backoff`, `no_addrs`, `gated`, `other`) |
 | `urnet_proxy_udp_proxies` | gauge | `state` | Online proxies by UDP relay coverage state: ok, no-relay, exit-mismatch, unknown |

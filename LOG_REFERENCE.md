@@ -8,6 +8,8 @@ A plain-language guide to every log line you'll regularly see running urnetwork 
 
 The `[extender] discovery started` line says the feed and gossip mesh are active. `discovery started in feed-only mode` says the feed is active and gossip is refused. `discovery stopped` says both services are refused again. `discovery could not start` gives the reason and the next retry delay; both services remain refused while it retries. Lines tagged `[gossip]` report peer dial attempts, dial failures, mesh connection drops and health transitions. Dial failures and rejected peer messages are rate limited.
 
+`[gossip]connect <peer> class=<class> err = <error>` reports the first dial failure for a peer and class at normal log level. Repeated failures of the same class are logged at verbosity 1. A successful connection resets the class. Classes include `timeout`, `refused`, `canceled`, `backoff`, `no_addrs`, `gated` and `other`.
+
 ## 📊 System Auditor & Smart Auto
 
 ```
