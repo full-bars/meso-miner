@@ -215,6 +215,7 @@ offer_extender_capability ()
 show_help ()
 {
     echo "Usage: $me [options] <command>"
+    echo "URNET_INSTALL_LINGER=sudo allows non-interactive sudo -n loginctl during install."
     echo ""
     echo "Core Commands:"
     echo "  start                   Start the provider"
@@ -461,6 +462,62 @@ pr_warn ()
     else
         printf "%b: $fmt\n" "$argv0" "$@"
     fi
+}
+
+# install_logo draws the URnetwork wordmark at the start of an interactive
+# install. The artwork is embedded because the installer runs before anything
+# is downloaded, and it is drawn in block characters in the default
+# foreground, so it needs no color support and NO_COLOR changes nothing.
+# An unattended run (FORCE=1), output that is not a terminal, and a terminal
+# narrower than the artwork all keep the output the installer printed before.
+install_logo ()
+{
+    [ "${FORCE:-0}" = "1" ] && return 0
+    [ -t 1 ] || return 0
+    # The width is read inside a command substitution, where stdout is a pipe.
+    # Keep the real stdout on descriptor 7 so the size comes from the terminal
+    # that will show the artwork, which is not always the controlling terminal.
+    exec 7>&1
+    logo_width="$(install_logo_columns)"
+    exec 7>&-
+    [ "$logo_width" -ge 82 ] || return 0
+    cat <<'URNETWORK_WORDMARK'
+
+▗▟███▄  ▐█▌     ▟█ ▐███████▙▖                ▗▄█                         ███
+███████ ▐█▌     ██ ▐█▌    ▝▜█  ▄▄▄▄█▄ ▗▄██▄▖▗▟██▙▄▄▄ ▄▄▄▗▄▄▖▄▄██▄▖ ▄▄▄▄▙▖███ ▄▄▖
+▜█████▛ ▐█▌     ██ ▐█▙▄▄▄▄▄██  ██▛▜██ ██▛▜██▞▜██▀▐██▗███▐██▐██▛▜██ ██▛██▌███▟██▘
+ ▝▀▀▀▘  ▐█▌     ██ ▐█▛▀▀▀▜█▙   ██▌▐██▐██████▌▐██  ██████▟██▐██▌▐██ ██▌██▌█████▌
+        ▐█▙    ▗██ ▐█▌    ▝▜█  ██▌▐██▝██▌▐██▖▐██▖ ▜███▐███▌▐██▌▟██ ██▌   ███▜██▖
+         ▝▜█████▀  ▐█▌     ▐█  ██▌▐██ ▀████▀ ▝███ ▐███ ███▘ ▀████▀ ██▌   ███▝██▙
+URNETWORK_WORDMARK
+}
+
+# install_logo_tty_size prints the terminal's "rows columns": first the one
+# behind descriptor 7 (the saved stdout, see install_logo), then the
+# controlling terminal. It fails when there is neither. A function of its own so
+# the test suite can stand in for the terminal.
+install_logo_tty_size ()
+{
+    stty size 2>/dev/null <&7 || stty size 2>/dev/null </dev/tty
+}
+
+# install_logo_columns reports the terminal width. COLUMNS is what an
+# interactive shell already holds, and stty covers the case where it is not
+# exported. Anything unreadable reports 0, which prints no artwork.
+install_logo_columns ()
+{
+    logo_cols="${COLUMNS:-}"
+    if [ -z "$logo_cols" ]; then
+        # No stdout test here: this runs inside a command substitution, where
+        # stdout is a pipe. install_logo has already checked its own stdout, and
+        # the terminal itself answers the size query.
+        logo_size="$(install_logo_tty_size)" || logo_size=""
+        logo_cols="${logo_size#* }"
+    fi
+    case "$logo_cols" in
+        ''|*[!0-9]*) logo_cols=0 ;;
+    esac
+    echo "$logo_cols"
 }
 
 opt_requires_arg ()
@@ -1657,6 +1714,7 @@ Persistent=true
 WantedBy=default.target
 EOF
 
+    installer_linger_user=""
     if ! enable_out=$(systemctl --user enable urnetwork.service 2>&1); then
         if [ "$(id -u)" -eq 0 ]; then
             pr_warn "Running as root: user systemd service skipped (requires user session bus). Use Docker 'restart: unless-stopped' or manually run the provider binary."
@@ -1666,6 +1724,8 @@ EOF
             pr_info "The new binary and unit files are installed; service enable failed and this installer has not restarted the service. Once systemd works for your user, finish with: systemctl --user daemon-reload && systemctl --user enable --now urnetwork.service urnetwork-update.timer"
             exit 1
         fi
+    else
+        installer_linger_user="$(id -un)"
     fi
 
     if ! enable_out=$(systemctl --user enable --now urnetwork-update.timer 2>&1); then
@@ -2435,19 +2495,85 @@ func_run_as_user ()
     fi
 }
 
-# Enable lingering without suppressing errors or prompting for credentials.
+# installer_linger_tty_askable reports whether the installation can ask its
+# question on a terminal. The test is the open of the device: /dev/tty does not
+# open at all when the process has no controlling terminal, which is the case
+# for a job with no session behind it. The file mode of the node is not a
+# usable test, because devtmpfs creates /dev/tty as 0620 root:tty while the
+# person's own terminal opens for them.
+installer_linger_tty_askable ()
+{
+    linger_ask_tty="${linger_tty:-/dev/tty}"
+    ( : < "$linger_ask_tty" ) 2>/dev/null
+}
+
+# Enable lingering without prompting unless explicitly offered during installation.
 installer_enable_linger ()
 {
     linger_user="$1"
-    if command -v loginctl >/dev/null 2>&1; then
-        if loginctl enable-linger "$linger_user"; then
+    linger_mode="${2:-quiet}"
+    if ! command -v loginctl >/dev/null 2>&1; then
+        pr_warn "loginctl not found; install it, then run: sudo loginctl enable-linger %s" "$linger_user"
+        return 1
+    fi
+    if [ "$(loginctl show-user "$linger_user" -p Linger --value 2>/dev/null)" = yes ]; then
+        pr_info "Systemd lingering already enabled for %s." "$linger_user"
+        return 0
+    fi
+    if loginctl enable-linger --no-ask-password "$linger_user" && [ "$(loginctl show-user "$linger_user" -p Linger --value 2>/dev/null)" = yes ]; then
+        pr_info "Systemd lingering enabled for %s." "$linger_user"
+        return 0
+    fi
+    if [ "$linger_mode" = install ] && command -v sudo >/dev/null 2>&1; then
+        # A curl | sh run has no terminal on stdin, but the person is still at
+        # one, so the question is offered whenever the controlling terminal can
+        # be opened. The answer is read from that terminal, which is the same
+        # terminal as stdin when stdin is one.
+        if [ "${FORCE:-0}" != 1 ] && installer_linger_tty_askable; then
+            printf 'I can enable it with one command: sudo loginctl enable-linger %s. This asks for your sudo password. Run it now? [y/N] ' "$linger_user"
+            linger_answer=""
+            read -r linger_answer < "$linger_ask_tty" || linger_answer=""
+            case "$linger_answer" in
+                [Yy]|[Yy][Ee][Ss]) sudo loginctl enable-linger "$linger_user" || : ;;
+            esac
+        elif [ "${URNET_INSTALL_LINGER:-}" = sudo ]; then
+            sudo -n loginctl enable-linger "$linger_user" || :
+        fi
+        if [ "$(loginctl show-user "$linger_user" -p Linger --value 2>/dev/null)" = yes ]; then
+            pr_info "Systemd lingering enabled for %s." "$linger_user"
             return 0
         fi
-        pr_warn "loginctl enable-linger failed; the service may stop on logout. Run: sudo loginctl enable-linger %s" "$linger_user"
+    fi
+    if command -v sudo >/dev/null 2>&1; then
+        pr_warn "Lingering is OFF for %s. The provider will STOP when your last login session closes. Fix: sudo loginctl enable-linger %s" "$linger_user" "$linger_user"
     else
-        pr_warn "loginctl not found; the service may stop on logout. Install it, then run: sudo loginctl enable-linger %s" "$linger_user"
+        pr_warn "Lingering is OFF for %s. The provider will STOP when your last login session closes. Run as root: loginctl enable-linger %s" "$linger_user" "$linger_user"
     fi
     return 1
+}
+
+installer_linger_summary ()
+{
+    linger_user="$1"
+    if command -v loginctl >/dev/null 2>&1 && [ "$(loginctl show-user "$linger_user" -p Linger --value 2>/dev/null)" = yes ]; then
+        pr_info "Systemd lingering is on for %s." "$linger_user"
+    else
+        pr_warn "WARNING: lingering is OFF for %s. The provider will STOP when your last login session closes. Fix: sudo loginctl enable-linger %s" "$linger_user" "$linger_user"
+    fi
+    return 0
+}
+
+# installer_linger_final_check prints the read-only lingering summary for a run
+# that has nothing to install, so a rerun that finds the installed version
+# current still tells a provider with lingering off. It never prompts, never
+# runs sudo, never reinstalls, and it completes with status 0 so it cannot
+# change the installer's own exit status.
+installer_linger_final_check ()
+{
+    [ "${has_systemd:-0}" -eq 1 ] || return 0
+    linger_final_user="$(id -un)"
+    installer_linger_summary "$linger_final_user"
+    return 0
 }
 
 # Distro-agnostic creation of a dedicated unprivileged user, then finish the
@@ -2506,6 +2632,8 @@ func_assisted_user_setup ()
 
         if func_run_as_user "$newuser" "systemctl --user is-enabled urnetwork.service >/dev/null 2>&1"; then
             pr_info "Done. The provider is installed as a user service under '%s'." "$newuser"
+            installer_linger_user="$newuser"
+            installer_linger_summary "$installer_linger_user"
             exit 0
         fi
         pr_warn "Could not confirm the user service from this session."
@@ -2629,6 +2757,8 @@ do_install ()
     : "${tag:=latest}"
     : "${no_modify_bashrc:=0}"
     original_operation="$operation"
+
+    install_logo
 
     # OpenRC hosts run the provider as a system service under the service
     # user (default 'urnet'). When root installs with the DEFAULT install
@@ -2865,6 +2995,7 @@ do_install ()
                 pr_info "Version %s differs from installed version %s, continuing upgrade" "$version_to_install" "$installed_version"
             else
                 pr_info "Installed version %s is already up-to-date" "$installed_version"
+                installer_linger_final_check
                 exit 0
             fi
         else
@@ -2877,6 +3008,7 @@ do_install ()
                     pr_info "Version %s differs from installed version %s, continuing upgrade" "$version_to_install" "$installed_version"
                 else
                     pr_info "Installed version %s is already up-to-date" "$installed_version"
+                    installer_linger_final_check
                     exit 0
                 fi
             else
@@ -2887,6 +3019,7 @@ do_install ()
                     pr_info "Continuing upgrade"
                 else
                     pr_info "Installed version is up-to-date"
+                    installer_linger_final_check
                     exit 0
                 fi
             fi
@@ -3172,6 +3305,9 @@ do_install ()
 
     if [ "$has_systemd" -eq 1 ]; then
         install_systemd_units
+        if [ -n "$installer_linger_user" ]; then
+            installer_enable_linger "$installer_linger_user" install || :
+        fi
     fi
 
     if [ "$has_systemd" -eq 0 ] && [ "$has_openrc" -eq 1 ]; then
@@ -3217,8 +3353,7 @@ do_install ()
                 
                 
                 printf "\n"
-                printf "\e[1;33mNote:\e[0m Run \e[1murnet-tools optimize\e[0m to enable systemd lingering and apply OS-level optimizations.\n"
-                printf "This ensures the provider keeps running in the background after you log out.\n"
+                printf "\e[1;33mNote:\e[0m Run \e[1murnet-tools optimize\e[0m to apply OS-level optimizations.\n"
                 printf "\n"
                 printf "\e[1mRefer to <https://docs.ur.io/provider#linux-and-macos> for more detailed instructions.\e[0m\n"
             fi
@@ -3254,6 +3389,9 @@ do_install ()
             pr_info "Updated successfully"
             ;;
     esac
+    if [ -n "${installer_linger_user:-}" ]; then
+        installer_linger_summary "$installer_linger_user"
+    fi
 }
 
 do_uninstall ()
@@ -3449,6 +3587,17 @@ toggle_auto_start ()
 	fi
 
 	if test "$1" = on; then
+        auto_start_user="$(id -un)"
+        if command -v loginctl >/dev/null 2>&1; then
+            if auto_start_linger="$(loginctl show-user "$auto_start_user" -p Linger --value 2>/dev/null)"; then
+                if [ "$auto_start_linger" != yes ]; then
+                    pr_err "linger is not enabled for %s; run sudo loginctl enable-linger %s before enabling this unit" "$auto_start_user" "$auto_start_user"
+                    return 1
+                fi
+            else
+                pr_warn "setAutoStart: warning: cannot check linger for %s" "$auto_start_user"
+            fi
+        fi
 		if systemctl --user is-enabled --quiet urnetwork.service; then
 			pr_info "urnetwork.service is already enabled on login"
 			exit 0

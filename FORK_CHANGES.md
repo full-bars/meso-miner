@@ -4218,3 +4218,43 @@ The `proxy add` parser accepts passwords that contain an `@` sign. Backend failu
 **How to Identify in New Upstream**: Search for `RedactProxyCredentials`, `splitProxyURLUserinfo` and `proxyKeyDisplay`.
 
 **Status**: ✅ Shipped, pending next tagged release.
+
+## 206. Top Pages, Transport Counters, Packet Curves and the Logo
+
+**Purpose**: Record the top view rework, the counters it reads, and the artwork the tools draw.
+
+**Files Modified**: `internal/urnettools/top_*.go`, `internal/urnettools/logo.go`, `internal/tui/theme.go`, `internal/brand/`, `transport.go`, `ip.go`, `proxy_health.go`, `metrics_persist.go`, `metrics_prometheus.go`, `provider/main.go`, `provider/metrics_provider.go`, `provider/node_snapshot.go`, `provider/h1plus_metrics.go`, `provider/baseline.go`, `provider/control_socket.go`, `scripts/Provider_Install_Linux.sh`.
+
+**Changes**:
+- Page 1 of top keeps the dashboard. Page 2 draws the mirrored transfer chart, pages 3 and 4 billable and total traffic by direction, and page 5 the transport mix of the last 60 seconds. The strip takes a row of its own, `p` hides it, and a page with no data from the provider is left out.
+- The graphs draw a fixed 10s, 1m, 5m or 15m scale, saved as `graph.window` in `top.conf`. A scale that holds more readings than the plot has columns keeps the highest reading in each column.
+- The traffic reply gains a `transports` block with `bytes_tx`, `bytes_rx`, `frames_tx`, `frames_rx` and `up` per carrier, with H1 and H1+ split. The snapshot carries the same block beside the per direction sums.
+- Billable IP packets are counted per direction in `ip.go` and exported as `urnet_billable_packets_total{dir}`. The Now panel shows peak rates, and page 3 draws the packet rate as a curve of its own.
+- The logo draws on the version output, the help pages, the full status view, the top splash, the empty graph watermark and the About window on `A`, and in the Linux installer welcome. Pipes and machine output never carry it.
+- The default theme is unchanged. The neon theme is opt in from the `m` menu or `--theme neon`.
+
+**Impact**: A full layout screen gains one strip row, so a page 1 screen at the same size reflows by one row. A provider that predates the counters keeps the overview and Remote pages and no direction or transport page.
+
+**How to Identify in New Upstream**: Search for `topPages`, `topPageStripRows`, `topGraphWindows`, `spreadSeries`, `BillableRxPackets` and `internal/brand`.
+
+**Status**: ✅ On the branch, pending the next tagged release.
+
+---
+
+## 207. Systemd Lingering in the Installer and in Top
+
+**Purpose**: Record the lingering step the installer now performs, the warnings the tools print, and the fix top offers on screen.
+
+**Files Modified**: `scripts/Provider_Install_Linux.sh`, `internal/urnettools/status_summary.go`, `internal/urnettools/cli.go`, `internal/urnettools/update.go`, `internal/urnettools/legacy_cmds.go`, `internal/urnettools/top_cmd.go`, `internal/urnettools/top_model.go`, `internal/urnettools/top_mouse.go`, `internal/urnettools/top_regions.go`, `internal/urnettools/top_run.go`, `internal/urnettools/top_view.go`, `internal/urnettools/top_linger.go`, `internal/urnettools/top_linger_banner.go`, `internal/tui/tcellui/adapter.go`.
+
+**Changes**:
+- The installer enables lingering for the service user after it enables the user unit and prints the final state in the completion summary. A rerun that finds the installed version current prints that state too. `URNET_INSTALL_LINGER=sudo` allows `sudo -n loginctl` in a non-interactive install, and `urnet-tools auto-start on` refuses to enable a user unit while lingering is off.
+- `urnet-tools status` shows a Linger row and a warning line, and `update` and `restart` print the same sentence on stderr when the check fails or reads off.
+- Top checks lingering for each user unit provider every 30 seconds on Linux. A full width banner above the page tabs names the user and offers the fix. A click or `L` opens a Yes/No dialog with the command, Yes runs it as the user and then with sudo, and the banner goes away only after a recheck says on.
+- The tcellui adapter gains `Suspend` and `Resume` so the terminal is handed to a sudo password prompt. A sentinel chunk drains tcell's key queue before disengage, so the input goroutine cannot block there or leave pre-suspend input for the next session.
+
+**Impact**: A provider that runs as a systemd user unit without lingering now reports it in the installer, status, update, restart and top. The top layout is unchanged while lingering is on. The fix runs only after an operator answers Yes.
+
+**How to Identify in New Upstream**: Search for `installer_linger_summary`, `statusLingerApplicable`, `lifecycleLingerWarning`, `topLingerReading`, `lingerBannerText` and `drainBeforeDisengage`.
+
+**Status**: ✅ On the branch, pending the next tagged release.

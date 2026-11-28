@@ -6,6 +6,20 @@
 
 ### Added
 
+- **A URnetwork Neon color theme for `urnet-tools top`.** The `m` menu `Theme` row and `--theme neon` select it, and the choice is saved as `theme` in `top.conf`. It uses the brand palette: green `#87FB67` for traffic, pale lime `#EFF7BB` for warnings, coral `#FF6F7A` for errors and packets, and blue `#007ACC` and `#0099FF` for IPv6 and H1+. Each role carries an xterm 256 entry and a base 16 color of its own, so the accents keep their hue on a terminal without truecolor. The default theme and every saved golden are unchanged.
+
+- **Pages in `urnet-tools top`.** Page 1 is the dashboard, page 2 the mirrored transfer chart, page 3 billable traffic by direction, page 4 total traffic by direction, and page 5 the transport mix of the last 60 seconds. Move with `]` or `[`, `PageDown` or `PageUp`, a digit, or a click on the strip. The strip is on by default and `p` hides it or shows it again.
+
+- **Peak rates in the Now panel of `urnet-tools top`.** The panel keeps the highest live, one minute and five minute rate for billable and for total traffic since top started. A one or five minute peak counts only once its window is full, and the cell shows a dash until then. The block is left out when the column has no rows to spare.
+
+- **Billable packet counts.** The traffic reply and the snapshot report billable IP packets by direction, page 3 of top draws the packet rate as a curve of its own, and `urnet_billable_packets_total{dir}` exports the sum across registered proxies. Counts reset on restart. [redeploy]
+
+- **Transport counters in the traffic reply.** The reply gains a `transports` block with bytes and frames per carrier, H1 and H1+ counted apart, and the Transports page reads it. `urnet_transport_frames_total` and `urnet_transport_payload_bytes_total` carry the same split. [redeploy]
+
+- **`K` switches `urnet-tools top` between mouse mode and keyboard mode.** Keyboard mode leaves the terminal's own text selection alone, the footer names the mode that is on, and `--no-mouse` starts in keyboard mode. `c` copies the screen while top runs.
+
+- **The URnetwork logo in the tools.** `urnet-tools --version`, the help pages, the full `status` view, the About window on `A` in top, the splash when top starts and the Linux installer welcome draw the wordmark and icon as block art. Pipes, `--plain`, `--json`, `--json-summary`, `--brief` and the copy file never carry it. Turn it off with `--no-logo`, `URNET_NO_LOGO=1`, or `ui.logo = off` in the top settings file.
+
 - **TLS handshake cancellation metric.** `urnet_tls_handshake_cancel_total` counts TLS handshakes that were cancelled before they completed. The labels are `source` (`parent_lifetime`, `session_retired`, `control_enqueue_rejected`, `epoch_retired` or `unknown`), `role` (`client` or `server`) and `companion` (`true` or `false`). Every cancellation in a wave is counted, so a canary can watch the metric for waves.
 
 - Proxy IPv6 capability probing. The background sweep checks proxies for IPv6 egress alongside the UDP relay check, controlled live by the `proxy_ipv6_probe` key and `URNETWORK_PROXY_IPV6_PROBE` environment variable.
@@ -20,12 +34,22 @@
 
 - **Client UDP to IPv6 destinations through measured proxies.** A proxied identity relays UDP to an IPv6 destination when its proxy was measured to carry IPv6 for TCP and UDP with matching exit addresses. Every other proxy refuses the flow at once, as before. `urnet-tools set proxy-udp-ipv6 on|off` controls it, default on. [redeploy]
 
+- **A lingering warning in `urnet-tools top`.** When a provider runs as a systemd user unit and lingering is off for its user, a full width banner says the provider stops at logout and offers the fix. A click on the banner or the `L` key opens a Yes/No dialog that shows the exact command. Yes runs `loginctl enable-linger` as the user first, and `sudo loginctl enable-linger` only after that is refused, with the terminal given back so the password prompt works. The banner goes away only when a recheck says lingering is on.
+
 - **Peer-to-peer source metrics.** `urnet_p2p_forged_source_drops_total{kind}` counts frames dropped on a direct peer-to-peer lane that named the platform (`platform`) or this client (`self`). `urnet_p2p_source_mismatch_total{mode,outcome}` counts frames on a lane bound to one peer that named a different source, by the mode in force and by what happened to the frame: `decoded` when it was accepted, `rejected` when it could not be used, `dropped` when a policy discarded it. Both are in-process counters and are not persisted across restarts. The canary table and a troubleshooting section are in `docs/Monitoring.md`.
 
 ### Changed
 
+- **The graphs in `urnet-tools top` show four fixed time scales.** They draw 10s, 1m, 5m or 15m and every scale fills the plot from edge to edge. `w` steps to the next scale and `W` to the previous one, the footer names the scale, and the choice is saved as `graph.window` in `top.conf`. The earlier behavior, where the title showed however much history fitted the width, is gone.
+
 - **The provider waits as long as the platform front asks.** A 429 answer with a `Retry-After` header holds the next dial for that long, up to 60 seconds. It ends the dial negotiation, so no other route of the same dial is tried before the wait is over. When an address holds its cap of QUIC connections, the front closes the next one with a specific error. The provider then waits a minimum time plus a random share, so the refused connections come back apart. The wait covers the h1+, WebSocket and QUIC dial paths. A 429 without the header behaves as before.
 - **Control name lookups keep time for plain DNS.** For the control domains that the internal DoH resolver protects, the encrypted resolvers get the caller's deadline minus a reserve of 2 seconds. The remaining time goes to a plain DNS fallback. Fallback answers are cached for at most 60 seconds and are never served stale after that. A miss from the fallback is not cached. The fallback asks for the fully qualified name and uses the ASCII form of an international name. The settings are `BootstrapPlainDnsDomains`, `BootstrapPlainDnsReserve` and `BootstrapPlainDnsExpiration`.
+
+### Fixed
+
+- **The page 1 graphs in `urnet-tools top` fill their plot at every scale.** The Billable and Total graphs placed the window's readings on a column axis and then passed the newest reading time as the sample anchor. That anchor is a nanosecond time, and as a float64 sample index it lost its precision, so every reading fell into one bucket and the graph drew one column at its right edge. The spread series now reaches the drawer with no anchor.
+
+- **Systemd lingering.** The installer tries to enable lingering for the service user and reports its final state. Status, update and restart warn when it is off. Auto-start refuses to enable the user unit when it is off.
 
 ### Security
 
